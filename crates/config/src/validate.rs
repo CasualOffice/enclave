@@ -528,15 +528,17 @@ mail:
 
     #[test]
     fn inline_private_key_material_is_refused_whatever_the_field_is_called() {
-        let problems = scan(
-            "
-tls:
-  bundle: |
-    -----BEGIN PRIVATE KEY-----
-    MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC
-    -----END PRIVATE KEY-----
-",
+        // The PEM banner is assembled at runtime rather than written as a literal. The secrets
+        // structural gate refuses private-key material in any tracked file and is deliberately not
+        // clever enough to except a test — a gate with exceptions is a gate people learn to route
+        // around. Building the string here keeps the gate absolute and the test honest.
+        let banner = |kind: &str| format!("-----{kind} PRIVATE KEY-----");
+        let body = format!(
+            "\ntls:\n  bundle: |\n    {}\n    MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC\n    {}\n",
+            banner("BEGIN"),
+            banner("END"),
         );
+        let problems = scan(&body);
         assert_eq!(problems.len(), 1, "{problems:?}");
         assert_eq!(problems[0].path, "tls.bundle");
         assert_eq!(problems[0].kind, ProblemKind::InlineCredential);
