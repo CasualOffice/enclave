@@ -1,0 +1,23 @@
+[package]
+name        = "enclave-cli"
+description = "Operator and developer command line: seeding, diagnostics"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+authors.workspace      = true
+
+[dependencies]
+enclave-core = { workspace = true }
+enclave-config = { workspace = true }
+enclave-db   = { workspace = true }
+anyhow       = { workspace = true }
+tokio        = { workspace = true }
+
+[[bin]]
+name = "enclave-cli"
+path = "src/main.rs"
+
+[lints]
+workspace = true

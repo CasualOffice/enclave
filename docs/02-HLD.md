@@ -147,7 +147,14 @@ crates/
   workflows               Workflow engine: stages, steps, approvals, checkout, automation
   signing                 Signature requests, PAdES/CAdES, TSA, verification, providers
   branding                Tenant branding tokens and custom domains
+
+  # tooling — not part of the runtime architecture
+  cli                     Operator and developer command line (seeding, diagnostics)
+  testing                 Integration-test harness: disposable databases, tenant fixtures
 ```
+
+`xtask` sits alongside `crates/` rather than inside it. It is build tooling — the structural lints
+in `docs/12-TESTING.md §5` — and is never linked into a binary that ships.
 
 Naming rules: crate directory names are lowercase `snake_case`, plural only where the crate owns a
 collection of like things (`versions`, `embeddings`, `incidents`).
