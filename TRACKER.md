@@ -106,12 +106,12 @@ phase, not worked out of band.
 
 ## 3. Active board
 
-**In progress:** *(none — batch landed and verified)*
+**In progress:** `ENC-106` — RLS coverage gate (branch `feat/enc-106-rls-coverage-gate`)
 
 **Plan for the current milestone:** [`plans/M0-FOUNDATIONS.md`](plans/M0-FOUNDATIONS.md)
 
-**Next three, in order:** `ENC-106` (RLS coverage gate), `ENC-109` (policy engine),
-`ENC-110` (routing gate). Then `ENC-112` (test harness) unblocks the 18 ignored database tests.
+**Next three, in order:** `ENC-109` (policy engine), `ENC-110` (routing gate),
+`ENC-112` (test harness — unblocks the 18 ignored database tests). Then `ENC-113` (Compose stack).
 
 > **Deviation from §2.1, recorded deliberately.** The repo owner directed parallel execution of the
 > M0 foundation crates on 2026-08-18. Seven items are in flight at once rather than one. This is
@@ -172,7 +172,7 @@ real database, with CI enforcing the structural gates.
 | ENC-103 | `core` crate — typed IDs, `RequestContext`, `Error` | P1 | TODO | ENC-100 |
 | ENC-104 | `db` crate — pool, migrations, `TenantScoped` guard | P1 | DONE | ENC-103 |
 | ENC-105 | Migration 001: tenancy, identity, RLS policies | P1 | DONE | ENC-104 |
-| ENC-106 | RLS coverage CI gate — fails on any unprotected table | P0 | TODO | ENC-105 |
+| ENC-106 | RLS coverage CI gate — fails on any unprotected table | P0 | DONE | ENC-105 |
 | ENC-107 | `audit` crate — append-only writes, hash chain | P1 | DONE | ENC-104 |
 | ENC-108 | `events` crate — outbox, JetStream publish, idempotency | P1 | DONE | ENC-104 |
 | ENC-109 | `PolicyEngine::enforce` skeleton, all six stages wired | P1 | TODO | ENC-103, ENC-107 |
@@ -285,6 +285,8 @@ priority changes; a stale rollup is worse than none.
 | 2026-08-18 | M0 implementation plan published (ENC-023): eight locked design decisions, 16 tasks, day-10 RLS/pooling checkpoint. |
 | 2026-08-18 | **Phase D closed.** Phase 0 open. Gate G0 applies at the end of M0. |
 | 2026-08-18 | `ENC-100` workspace scaffolded: 43 crates, check/clippy/fmt clean. |
+| 2026-08-18 | PR #1 merged. Two structural gates failed on it and were right to: the audit sink read on a raw pool (would have reported "chain valid, 0 events" under RLS), and a test literal tripped the secrets gate. Both fixed; the no-raw-pool gate was rewritten to check execution rather than type names. |
+| 2026-08-18 | `ENC-106` RLS coverage gate written and run against PostgreSQL 16: 20 tenant-scoped tables all enabled, forced and policied. Proven to fail on an unprotected table and on a `USING (true)` policy. |
 | 2026-08-18 | M0 foundation batch landed: ENC-101/102/103/104/105/107/108/111. Workspace green — 279 tests pass, 18 ignored pending the ENC-112 database harness. Verified independently of the implementing agents: JWT algorithm pinned (K8 attack test present), `SET LOCAL` semantics via `set_config`, RLS forced by catalog-driven loop, audit UPDATE/DELETE revoked. |
 
 ---
