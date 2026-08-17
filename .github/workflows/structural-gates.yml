@@ -178,74 +178,29 @@ jobs:
   # Gate: no raw pool — enforceable today, purely static.
   # --------------------------------------------------------------------------
   no-raw-pool:
-    name: "RULE: no sqlx query outside the db crate bypasses TenantScoped"
+    name: 'RULE: no sqlx query outside the db crate bypasses TenantScoped'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      # Grep, not a lint, because this must hold for code that does not compile
-      # yet and for crates that are still stubs. It is intentionally blunt: the
-      # rule is "domain crates do not speak SQL, and nothing but db gets its own
-      # connection", and a blunt check is one nobody can argue around in review.
-      #
-      # The ALLOW list is the review surface (the same principle as ENC-110's
-      # handler allowlist): every entry states why that file may hold SQL. Adding
-      # a line here is a deliberate, reviewable act; the gate exists so that it
-      # cannot happen by accident.
-      - name: Reject sqlx macros and pool access outside crates/db
+      - name: No database access bypasses TenantScoped
+        run: python3 .github/scripts/no_raw_pool.py
+      - name: Explain on failure
+        if: failure()
         run: |
-          set -euo pipefail
-          RULE='No raw pool — sqlx::query* and PgPool access live only in the db crate; everything else goes through TenantScoped (docs/12-TESTING.md §5, CLAUDE.md rule "all database access through the db crate")'
-          echo "Enforcing: ${RULE}"
-
-          ALLOW=(
-            # The wrapper itself. This is the code the rule exists to funnel into.
-            'crates/db/'
-            # The transactional outbox (plans/M0-FOUNDATIONS.md D6). It takes
-            # `&mut PgConnection` — the caller's already-tenant-scoped
-            # transaction — and never a pool, so the insert runs under the same
-            # SET LOCAL and the same RLS as the state change it accompanies.
-            'crates/events/src/outbox.rs'
-            # The outbox publisher (plans/M0-FOUNDATIONS.md ENC-104, ENC-108).
-            # One of exactly three code paths that are cross-tenant by design —
-            # it drains every tenant's rows and holds the advisory lock, so it
-            # cannot run inside a single tenant's transaction. Reviewed as a
-            # platform path, not as domain code.
-            'crates/events/src/publisher.rs'
-          )
-          filter=$(printf '%s\n' "${ALLOW[@]}" | paste -sd'|' -)
-
-          hits=$(grep -rnE 'sqlx::query(_as|_scalar|_file|_file_as|_file_scalar)?!?[[:space:]]*\(|\bPgPool\b|\.acquire\(\)' \
-                   --include='*.rs' crates \
-                 | grep -vE "^(${filter})" || true)
-          if [ -n "$hits" ]; then
-            echo "$hits"
-            while IFS= read -r line; do
-              file=${line%%:*}; rest=${line#*:}; lno=${rest%%:*}
-              echo "::error file=${file},line=${lno},title=GATE FAILED: no raw pool::${RULE}"
-            done <<< "$hits"
-            {
-              echo "### ❌ FAILED — No raw pool"
-              echo ""
-              echo "**Rule:** ${RULE}"
-              echo ""
-              echo '```'
-              echo "$hits"
-              echo '```'
-              echo ""
-              echo "Route the access through \`TenantScoped\`. If this file is genuinely a"
-              echo "platform path (migrations, the outbox publisher, the scheduler's tenant"
-              echo "enumerator — and there are no others), add it to the \`ALLOW\` list in"
-              echo "\`.github/workflows/structural-gates.yml\` **with the reason**, in a commit"
-              echo "a reviewer will see."
-            } >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
-          echo "No SQL outside crates/db and the named platform paths."
-
-  # --------------------------------------------------------------------------
-  # Gate: obligations — a dropped PolicyDecision is a silently unenforced policy.
-  # --------------------------------------------------------------------------
+          {
+            echo "### FAILED - No raw pool"
+            echo ""
+            echo "A query ran against a pool rather than a \`TenantScoped\` transaction, or a"
+            echo "compile-time \`sqlx::query!\` macro appeared outside the db crate."
+            echo ""
+            echo "A pooled connection has no \`app.tenant_id\`, so under FORCE ROW LEVEL SECURITY"
+            echo "the query either fails or silently returns nothing. Open a \`TenantScoped\`"
+            echo "transaction and run the query on that."
+            echo ""
+            echo "If this is genuinely one of the cross-tenant platform paths, add it to \`ALLOW\`"
+            echo "in \`.github/scripts/no_raw_pool.py\` **with the reason**, in a commit a reviewer"
+            echo "will see."
+          } >> "$GITHUB_STEP_SUMMARY"
   obligations:
     name: "RULE: PolicyDecision is must_use and never discarded"
     runs-on: ubuntu-latest
