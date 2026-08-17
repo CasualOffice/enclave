@@ -118,6 +118,25 @@ are properties of the database.
 **deny**, and each is replaced by a real implementation in M1/M2. A stub that returns allow would
 silently disable the chain and nobody would notice until a security test was written months later.
 
+### D9 — The policy engine lives in `core`, and audit is a port
+
+`docs/03-LLD.md §12` specifies `PolicyEngine` but not which crate owns it. Two options: a new
+`policy` crate depending on all six service crates, or `core`.
+
+Decision: **`core`**, with the six service traits defined beside it. The engine is composition and
+nothing else — it holds six trait objects and calls them in order — so it needs no concrete
+implementation and adds no dependency on the crates that provide them. The canonical crate list
+(`docs/02-HLD.md §4`) is unchanged, and every entry point reaches one implementation instead of
+each binary growing its own variant.
+
+The engine must audit, and `audit` depends on `core`, so `core` depending back would be a cycle.
+Resolved with a narrow `PolicyAuditSink` port defined in `core` and implemented in `audit`:
+`record_allow` and `record_deny`, nothing more. `audit` keeps ownership of the record format, the
+canonical serialization and the hash chain; the engine only says that something happened.
+
+Rejected: a `policy` crate. It would work, but it changes the authoritative crate list to buy
+separation that the trait objects already provide.
+
 ---
 
 ## 3. Task breakdown
