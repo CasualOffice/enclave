@@ -53,7 +53,7 @@ jobs:
     env:
       DATABASE_URL: postgres://enclave:enclave@localhost:5432/enclave
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install the pinned toolchain
         run: |
@@ -107,7 +107,7 @@ jobs:
     env:
       DATABASE_URL: postgres://enclave:enclave@localhost:5432/enclave
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install the pinned toolchain
         run: |
@@ -145,7 +145,7 @@ jobs:
     name: "RULE: every route handler reaches PolicyEngine::enforce"
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install the pinned toolchain
         run: |
@@ -181,7 +181,7 @@ jobs:
     name: 'RULE: no sqlx query outside the db crate bypasses TenantScoped'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: No database access bypasses TenantScoped
         run: python3 .github/scripts/no_raw_pool.py
       - name: Explain on failure
@@ -205,7 +205,7 @@ jobs:
     name: "RULE: PolicyDecision is must_use and never discarded"
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Two halves. (a) The attribute still exists — someone removing #[must_use]
       # would turn every other check in the workspace into a no-op, and clippy
@@ -262,7 +262,7 @@ jobs:
     name: "RULE: no literal credentials in config, fixtures or code"
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Deliberately self-contained rather than a third-party scanner: this gate
       # must keep working on a fork with no network egress and no marketplace
@@ -338,7 +338,7 @@ jobs:
     name: "RULE: migrations are numbered, gapless and forward-only"
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Needs history: the forward-only check compares against the base ref.
           fetch-depth: 0
@@ -416,7 +416,7 @@ jobs:
     name: "RULE: cargo audit, cargo deny and SBOM stay wired up"
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Assert the supply-chain workflow and policy are present
         run: |
@@ -449,7 +449,7 @@ jobs:
     name: "RULE: generated OpenAPI matches the committed snapshot"
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Regenerate the spec and diff it against the snapshot
         run: |
@@ -483,7 +483,7 @@ jobs:
     name: "RULE: i18n catalog, bundle budget and axe pass on web/"
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Detect the web workspace
         id: detect
@@ -512,7 +512,7 @@ jobs:
 
       - name: Set up Node
         if: steps.detect.outputs.present == 'true'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "20"
           cache: npm
