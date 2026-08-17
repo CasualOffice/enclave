@@ -106,7 +106,7 @@ phase, not worked out of band.
 
 ## 3. Active board
 
-**In progress:** `ENC-109` — policy engine (branch `feat/enc-109-policy-engine`)
+**In progress:** *(none)*
 
 **Plan for the current milestone:** [`plans/M0-FOUNDATIONS.md`](plans/M0-FOUNDATIONS.md)
 
@@ -169,7 +169,7 @@ real database, with CI enforcing the structural gates.
 | ENC-100 | Cargo workspace, crate skeletons per `docs/02 §4` | P1 | DONE | 43 crates; check/clippy/fmt clean |
 | ENC-101 | CI: fmt, clippy, test, structural gates (`docs/12 §5`) | P1 | DONE | ENC-100 |
 | ENC-102 | `config` crate — layered config + secret references | P1 | DONE | ENC-100 |
-| ENC-103 | `core` crate — typed IDs, `RequestContext`, `Error` | P1 | TODO | ENC-100 |
+| ENC-103 | `core` crate — typed IDs, `RequestContext`, `Error` | P1 | DONE | ENC-100 |
 | ENC-104 | `db` crate — pool, migrations, `TenantScoped` guard | P1 | DONE | ENC-103 |
 | ENC-105 | Migration 001: tenancy, identity, RLS policies | P1 | DONE | ENC-104 |
 | ENC-106 | RLS coverage CI gate — fails on any unprotected table | P0 | DONE | ENC-105 |
@@ -286,6 +286,7 @@ priority changes; a stale rollup is worse than none.
 | 2026-08-18 | **Phase D closed.** Phase 0 open. Gate G0 applies at the end of M0. |
 | 2026-08-18 | `ENC-100` workspace scaffolded: 43 crates, check/clippy/fmt clean. |
 | 2026-08-18 | PR #1 merged. Two structural gates failed on it and were right to: the audit sink read on a raw pool (would have reported "chain valid, 0 events" under RLS), and a test literal tripped the secrets gate. Both fixed; the no-raw-pool gate was rewritten to check execution rather than type names. |
+| 2026-08-18 | Two P0s: `main` went red twice, both because a PR was merged while its checks were still running. (1) fmt on the ENC-106 test — my error, I did not re-run fmt after writing it. (2) A flaky key-redaction test in `auth`, failing 0.8% of runs because it searched Debug output for a single DER byte rendered as "48"; the `kid` contains "48" by chance. Both fixed. **Branch protection requiring green checks before merge would have prevented both** — pending a decision. |
 | 2026-08-18 | `ENC-109` policy engine implemented in `enclave-core::engine`: six stage traits, deny-by-default stubs, obligation accumulation, audit on allow and deny. Design decision D9 recorded; `docs/02 §4` and `docs/03 §12` updated. |
 | 2026-08-18 | `ENC-106` RLS coverage gate written and run against PostgreSQL 16: 20 tenant-scoped tables all enabled, forced and policied. Proven to fail on an unprotected table and on a `USING (true)` policy. |
 | 2026-08-18 | M0 foundation batch landed: ENC-101/102/103/104/105/107/108/111. Workspace green — 279 tests pass, 18 ignored pending the ENC-112 database harness. Verified independently of the implementing agents: JWT algorithm pinned (K8 attack test present), `SET LOCAL` semantics via `set_config`, RLS forced by catalog-driven loop, audit UPDATE/DELETE revoked. |
