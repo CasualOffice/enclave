@@ -502,11 +502,40 @@ mod tests {
 
     #[test]
     fn private_material_never_appears_in_debug_output() {
+        // This assertion used to test for the first DER byte rendered as a decimal string — `48`,
+        // the SEQUENCE tag. The kid is 22 characters of base64url, so it contains "48" by chance
+        // roughly one run in 125 (measured: 15/2000). A security test that fails 0.8% of the time
+        // is worse than no test: rare enough to be dismissed as "just re-run it", frequent enough
+        // that someone eventually quarantines it. Assert on the whole secret instead, in every
+        // encoding it could plausibly leak in.
         let key = PrivateSigningKey::generate(Utc::now()).expect("generate");
         let rendered = format!("{key:?}");
-        assert!(rendered.contains("<redacted>"));
-        // The first bytes of the DER header would appear as decimal numbers in a derived Debug.
-        assert!(!rendered.contains(&format!("{}", key.pkcs8_der()[0])));
+        let der = key.pkcs8_der();
+
+        assert!(rendered.contains("<redacted>"), "the redaction marker is missing: {rendered}");
+        assert!(
+            rendered.contains(key.kid().as_str()),
+            "Debug should still identify which key this is: {rendered}"
+        );
+
+        // A derived Debug would print the byte array. Sixteen bytes is far past coincidence.
+        let as_debug_bytes = format!("{:?}", &der[..16]);
+        let inner = as_debug_bytes.trim_start_matches('[').trim_end_matches(']');
+        assert!(!rendered.contains(inner), "the DER bytes are in the Debug output: {rendered}");
+
+        // And the encodings a careless log line might use.
+        let hex: String = der.iter().map(|b| format!("{b:02x}")).collect();
+        let hex_upper = hex.to_uppercase();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(der);
+        let b64_url = URL_SAFE_NO_PAD.encode(der);
+        for (label, encoded) in
+            [("hex", &hex), ("HEX", &hex_upper), ("base64", &b64), ("base64url", &b64_url)]
+        {
+            assert!(
+                !rendered.contains(encoded.as_str()),
+                "the private key appears in Debug output as {label}: {rendered}"
+            );
+        }
     }
 
     #[test]
