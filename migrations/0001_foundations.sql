@@ -48,47 +48,24 @@ SET search_path TO public;
 -- secret store; a literal password in a migration is a committed secret
 -- (CLAUDE.md rule 11). Until one is set these roles cannot authenticate.
 --
--- CREATE ROLE has no IF NOT EXISTS and roles are cluster-wide, not per-database.
---
--- A `IF NOT EXISTS (SELECT 1 FROM pg_roles ...)` guard is not enough: it is a
--- check-then-act race. Two databases in the same cluster migrating concurrently
--- both pass the check and both issue CREATE ROLE, and one gets
--- `duplicate key value violates unique constraint "pg_authid_rolname_index"`.
--- That is not hypothetical — it is what the ENC-112 harness hit the first time
--- two test databases were created at once, and it would equally hit two API
--- replicas starting together against different databases in one cluster.
---
--- Catching the failure is the race-safe form: it commits to the create and
--- tolerates losing the race, rather than trying to predict it.
---
--- BOTH conditions are needed. A name collision detected by PostgreSQL's own
--- check raises duplicate_object (42710), but losing a genuine race raises
--- unique_violation (23505) from pg_authid_rolname_index — which is precisely
--- the error the harness saw. Catching only duplicate_object handles the case
--- that was never the problem and misses the one that is.
+-- CREATE ROLE has no IF NOT EXISTS and roles are cluster-wide, so each is guarded.
 
 DO $$
 BEGIN
-    BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'enclave_migrator') THEN
         CREATE ROLE enclave_migrator WITH
             LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-    EXCEPTION WHEN duplicate_object OR unique_violation THEN
-        NULL;
-    END;
+    END IF;
 
-    BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'enclave_app') THEN
         CREATE ROLE enclave_app WITH
             LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-    EXCEPTION WHEN duplicate_object OR unique_violation THEN
-        NULL;
-    END;
+    END IF;
 
-    BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'enclave_platform') THEN
         CREATE ROLE enclave_platform WITH
             LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION BYPASSRLS;
-    EXCEPTION WHEN duplicate_object OR unique_violation THEN
-        NULL;
-    END;
+    END IF;
 END
 $$;
 

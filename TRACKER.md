@@ -114,6 +114,16 @@ phase, not worked out of band.
 **Next three, in order:** `ENC-110` (routing gate), `ENC-112` (test harness — unblocks the 18
 ignored database tests), `ENC-113` (Compose stack). Then the two P2s close Phase 0.
 
+> **ENC-116 needs a decision, not a fix.** The clean fix is to catch `duplicate_object` **and**
+> `unique_violation` in migration 0001 — but 0001 is merged, and migrations are forward-only
+> (`CLAUDE.md`), which the structural gate enforces with no escape hatch. A later migration cannot
+> repair it: 0001 runs first and fails before anything else executes. So the options are (a) amend
+> 0001 and grant the gate a narrow, reviewable pre-release exception, (b) move role creation out of
+> migrations entirely into deployment provisioning — which is where 0001's own comments say
+> credentials come from — or (c) accept it, since production role provisioning is a deployment
+> concern anyway. My recommendation is (b): migrations arguably should not be creating cluster-wide
+> roles at all. Not decided unilaterally, because it touches a control.
+
 > **Deviation from §2.1, recorded deliberately.** The repo owner directed parallel execution of the
 > M0 foundation crates on 2026-08-18. Seven items are in flight at once rather than one. This is
 > sound here only because the tasks touch disjoint directories and share no files, and because an
@@ -183,6 +193,7 @@ real database, with CI enforcing the structural gates.
 | ENC-113 | Dev Compose stack: PG, Redis, NATS, MinIO, Milvus, ClamAV | P1 | TODO | — |
 | ENC-114 | OpenTelemetry wiring + span attribute conventions | P2 | TODO | ENC-103 |
 | ENC-115 | `enclave-cli seed` for dev tenants | P2 | TODO | ENC-112 |
+| ENC-116 | Migration 0001 `CREATE ROLE` is check-then-act; concurrent first-migration across databases in one cluster fails | P1 | TODO | Found by ENC-112. Reproduced 10/10. Worked around in the harness with an advisory lock; the defect itself remains. Two API replicas starting together against different databases in one cluster would hit it. **Needs a decision** — see the note below. |
 
 ### Phase 1 — MVP
 
@@ -287,7 +298,7 @@ priority changes; a stale rollup is worse than none.
 | 2026-08-18 | **Phase D closed.** Phase 0 open. Gate G0 applies at the end of M0. |
 | 2026-08-18 | `ENC-100` workspace scaffolded: 43 crates, check/clippy/fmt clean. |
 | 2026-08-18 | PR #1 merged. Two structural gates failed on it and were right to: the audit sink read on a raw pool (would have reported "chain valid, 0 events" under RLS), and a test literal tripped the secrets gate. Both fixed; the no-raw-pool gate was rewritten to check execution rather than type names. |
-| 2026-08-18 | `ENC-112` harness landed and immediately earned itself: it exposed a race in migration 0001. Concurrent `CREATE ROLE` across databases in one cluster failed 10/10 runs — the `IF NOT EXISTS` guard is check-then-act, and losing the race raises `unique_violation` (23505) from `pg_authid_rolname_index`, not `duplicate_object` (42710). Fixed by catching both; 0/10 failures after. Would have hit two API replicas starting together in production. |
+| 2026-08-18 | `ENC-112` harness landed and immediately earned itself: it exposed a race in migration 0001. Concurrent `CREATE ROLE` across databases in one cluster failed 10/10 runs — the `IF NOT EXISTS` guard is check-then-act, and losing the race raises `unique_violation` (23505) from `pg_authid_rolname_index`, not `duplicate_object` (42710). First attempt amended 0001; the forward-only migrations gate correctly rejected that. Reverted, worked around with an advisory lock in the harness (0/10 failures), and logged the real defect as `ENC-116` for a decision. |
 | 2026-08-18 | Two P0s: `main` went red twice, both because a PR was merged while its checks were still running. (1) fmt on the ENC-106 test — my error, I did not re-run fmt after writing it. (2) A flaky key-redaction test in `auth`, failing 0.8% of runs because it searched Debug output for a single DER byte rendered as "48"; the `kid` contains "48" by chance. Both fixed. **Branch protection requiring green checks before merge would have prevented both** — pending a decision. |
 | 2026-08-18 | `ENC-109` policy engine implemented in `enclave-core::engine`: six stage traits, deny-by-default stubs, obligation accumulation, audit on allow and deny. Design decision D9 recorded; `docs/02 §4` and `docs/03 §12` updated. |
 | 2026-08-18 | `ENC-106` RLS coverage gate written and run against PostgreSQL 16: 20 tenant-scoped tables all enabled, forced and policied. Proven to fail on an unprotected table and on a `USING (true)` policy. |

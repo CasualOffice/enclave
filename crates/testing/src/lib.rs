@@ -76,6 +76,12 @@ pub enum HarnessError {
     Migrate(#[from] enclave_db::DbError),
 }
 
+/// Advisory-lock key serialising test-database setup across the cluster.
+///
+/// Arbitrary but fixed, and namespaced high enough not to collide with the application's own
+/// advisory locks (the audit chain uses per-tenant keys derived from tenant ids).
+const SETUP_LOCK: i64 = 0x0e11_c1a1_7e57_0001_u64 as i64;
+
 /// A disposable database, dropped when this handle is.
 pub struct TestDb {
     admin_url: String,
@@ -109,18 +115,51 @@ impl TestDb {
         let name = format!("enclave_test_{}", &suffix[..16]);
 
         let mut admin = connect(&admin_url).await?;
-        // The name is generated here from a UUID, never from caller input, so interpolating it is
-        // safe — and CREATE DATABASE cannot take a bind parameter anyway.
-        admin.execute(format!(r#"CREATE DATABASE "{name}""#).as_str()).await?;
+
+        // Serialise setup across every TestDb in this cluster.
+        //
+        // Migration 0001 creates three cluster-wide roles, guarded by
+        // `IF NOT EXISTS (SELECT 1 FROM pg_roles ...)`. That guard is check-then-act: two databases
+        // migrating at once both pass the check, both issue CREATE ROLE, and one fails with
+        // `unique_violation` on pg_authid_rolname_index. Reproduced 10 times out of 10 before this
+        // lock existed.
+        //
+        // The lock is taken here rather than fixing the migration because migrations are
+        // forward-only (`CLAUDE.md`) and 0001 is already merged. The underlying migration defect is
+        // tracked as ENC-116; this makes the harness deterministic without editing history or
+        // weakening the gate that forbids it.
+        //
+        // Session-level, on a connection this function owns for its whole duration, so it is
+        // released when `admin` closes even if we return early.
+        sqlx::query("SELECT pg_advisory_lock($1)").bind(SETUP_LOCK).execute(&mut admin).await?;
+
+        let result = Self::create_and_migrate(&admin_url, &name, &mut admin).await;
+
+        let _ignored =
+            sqlx::query("SELECT pg_advisory_unlock($1)").bind(SETUP_LOCK).execute(&mut admin).await;
         let _ignored = admin.close().await;
 
-        let url = swap_database(&admin_url, &name);
-
-        let mut conn = connect(&url).await?;
-        enclave_db::run_migrations_on(&mut conn).await?;
-        let _ignored = conn.close().await;
-
+        let url = result?;
         Ok(Self { admin_url, name, url })
+    }
+
+    /// Creates the database and applies migrations, with the setup lock already held.
+    async fn create_and_migrate(
+        admin_url: &str,
+        name: &str,
+        admin: &mut PgConnection,
+    ) -> Result<String, HarnessError> {
+        // The name is generated from a UUID, never from caller input, so interpolating it is safe —
+        // and CREATE DATABASE cannot take a bind parameter anyway.
+        admin.execute(format!(r#"CREATE DATABASE "{name}""#).as_str()).await?;
+
+        let url = swap_database(admin_url, name);
+        let mut conn = connect(&url).await?;
+        let migrated = enclave_db::run_migrations_on(&mut conn).await;
+        let _ignored = conn.close().await;
+        migrated?;
+
+        Ok(url)
     }
 
     /// The connection URL for this database.
