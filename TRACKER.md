@@ -117,7 +117,14 @@ step: is this foundation sound enough to build on? See `ROADMAP.md §6`.
 `plans/M1-CONTENT-CORE.md`. The 8 Dependabot PRs also need triage — four are clean, four fail CI
 and need code changes.
 
-> **ENC-116 needs a decision, not a fix.** The clean fix is to catch `duplicate_object` **and**
+> **ENC-116 is mitigated; the remaining question is whether to fix it properly.** Roles are now
+> pre-provisioned by the deployment — `deploy/compose/init/01-roles.sql` locally, the credential
+> provisioning step in production (`docs/11-OPERATIONS.md §12`) — so 0001's guard is a no-op and the
+> race cannot fire. Verified: 0 failures in 10 stress runs where it previously failed 10/10.
+> Dropped from P1 to P2 because nothing reachable now triggers it. What remains is whether the racy
+> statement should be removed from 0001 at all, which needs an amendment to a merged migration.
+
+> **The original framing, kept for the decision record.** The clean fix is to catch `duplicate_object` **and**
 > `unique_violation` in migration 0001 — but 0001 is merged, and migrations are forward-only
 > (`CLAUDE.md`), which the structural gate enforces with no escape hatch. A later migration cannot
 > repair it: 0001 runs first and fails before anything else executes. So the options are (a) amend
@@ -196,7 +203,7 @@ real database, with CI enforcing the structural gates.
 | ENC-113 | Dev Compose stack: PG, Redis, NATS, MinIO, Milvus, ClamAV | P1 | DONE | — |
 | ENC-114 | OpenTelemetry wiring + span attribute conventions | P2 | DONE | ENC-103 |
 | ENC-115 | `enclave-cli seed` for dev tenants | P2 | DONE | ENC-112 |
-| ENC-116 | Migration 0001 `CREATE ROLE` is check-then-act; concurrent first-migration across databases in one cluster fails | P1 | TODO | Found by ENC-112. Reproduced 10/10. Worked around in the harness with an advisory lock; the defect itself remains. Two API replicas starting together against different databases in one cluster would hit it. **Needs a decision** — see the note below. |
+| ENC-116 | Migration 0001 `CREATE ROLE` is check-then-act; concurrent first-migration across databases in one cluster fails | P2 | MITIGATED | Found by ENC-112. Reproduced 10/10. Worked around in the harness with an advisory lock; the defect itself remains. Two API replicas starting together against different databases in one cluster would hit it. **Needs a decision** — see the note below. |
 
 ### Phase 1 — MVP
 

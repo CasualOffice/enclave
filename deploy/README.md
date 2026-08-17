@@ -149,3 +149,15 @@ run. It is git-ignored, and no key material is ever committed — not even a thr
 throwaway keys get copied into production more often than anyone admits
 ([`plans/M0-FOUNDATIONS.md`](../plans/M0-FOUNDATIONS.md) D5). To rotate locally, delete the
 directory and restart the API.
+
+## Database roles
+
+`compose/init/01-roles.sql` runs once, before PostgreSQL accepts connections, and creates
+`enclave_app`, `enclave_migrator` and `enclave_platform`.
+
+Migration 0001 creates them too, but its `IF NOT EXISTS` guard is check-then-act and roles are
+cluster-wide, so two databases migrating concurrently can race — it reproduced 10 times out of 10
+before this file existed. Creating them up front closes the window.
+
+Production should do the same, in the step that provisions their credentials. Roles are a
+deployment concern; see `docs/11-OPERATIONS.md §12` and tracker item `ENC-116`.

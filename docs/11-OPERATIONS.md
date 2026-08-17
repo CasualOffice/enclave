@@ -256,6 +256,14 @@ notification timelines.
 **Provisioning** — create tenant, apply the infrastructure profile, seed roles and classifications,
 verify storage/mail/AV connectivity, then enable login.
 
+**Cluster provisioning, before any migration runs.** The three database roles — `enclave_app`,
+`enclave_migrator`, `enclave_platform` — are created by the deployment, not by the application.
+Migration 0001 also creates them, but its guard is check-then-act and roles are cluster-wide: two
+replicas migrating different databases in one cluster can race and one fails
+(`unique_violation` on `pg_authid_rolname_index`). Provisioning the roles first makes that guard a
+no-op. The dev stack does this in `deploy/compose/init/01-roles.sql`; production does it in the
+same step that provisions their credentials. Tracked as `ENC-116`.
+
 **Suspension** — `status = SUSPENDED`: authentication refused, data retained, background processing
 paused, admin export still possible.
 
