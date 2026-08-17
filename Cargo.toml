@@ -44,6 +44,9 @@ members = [
     "crates/workflows",
     "crates/signing",
     "crates/branding",
+    "crates/testing",
+    "crates/cli",
+    "xtask",
 ]
 
 [workspace.package]
@@ -101,6 +104,8 @@ enclave-notifications = { path = "crates/notifications" }
 enclave-workflows = { path = "crates/workflows" }
 enclave-signing = { path = "crates/signing" }
 enclave-branding = { path = "crates/branding" }
+enclave-testing = { path = "crates/testing" }
+enclave-cli = { path = "crates/cli" }
 
 # async runtime and http
 tokio        = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time", "fs"] }
@@ -111,7 +116,7 @@ hyper        = "1"
 
 # data
 sqlx         = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json", "macros", "migrate"] }
-uuid         = { version = "1", features = ["v4", "v7", "serde"] }
+uuid         = { version = "1", features = ["v4", "v5", "v7", "serde"] }
 chrono       = { version = "0.4", features = ["serde"] }
 
 # serialization

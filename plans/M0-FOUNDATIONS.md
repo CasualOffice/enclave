@@ -112,6 +112,15 @@ Mocks are used for *external* providers only (SMTP, AV engines, embedding endpoi
 database, because the properties being tested — RLS, transactional outbox, constraint enforcement —
 are properties of the database.
 
+**Amended at ENC-112.** The harness takes a `DATABASE_URL` and creates a disposable database per
+test binary, rather than embedding a container runtime. The essential property of D7 — a real
+PostgreSQL rather than a mock — is unchanged; what changes is who starts the server. The Compose
+stack (ENC-113) and CI's service container both have to exist regardless, so a container library
+would duplicate them and put an image pull on the critical path of every local test run. It also
+sidesteps a practical problem: anonymous Docker Hub pulls were returning 401 during development.
+If per-test isolation ever becomes necessary, testcontainers can be added behind a feature flag
+without changing a single test's shape.
+
 ### D8 — Stub policy services deny by default
 
 `PolicyEngine` is wired in M0 with stub implementations of all six services. Every stub returns

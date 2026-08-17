@@ -106,7 +106,8 @@ phase, not worked out of band.
 
 ## 3. Active board
 
-**In progress:** *(none)*
+**In progress:** `ENC-112` (harness, done pending review) · `ENC-110`, `ENC-113`, `ENC-114`,
+`ENC-115` running as a parallel batch at the repo owner's direction.
 
 **Plan for the current milestone:** [`plans/M0-FOUNDATIONS.md`](plans/M0-FOUNDATIONS.md)
 
@@ -178,7 +179,7 @@ real database, with CI enforcing the structural gates.
 | ENC-109 | `PolicyEngine::enforce` skeleton, all six stages wired | P1 | DONE | ENC-103, ENC-107 |
 | ENC-110 | Policy-routing CI gate — every handler reaches the engine | P1 | TODO | ENC-109 |
 | ENC-111 | `auth` crate — Argon2id, JWT issue/verify, refresh rotation | P1 | DONE | ENC-105 |
-| ENC-112 | Test harness: testcontainers + `tenant-alpha`/`tenant-beta` fixtures | P1 | TODO | ENC-105 |
+| ENC-112 | Test harness: disposable databases + `tenant-alpha`/`tenant-beta` fixtures | P1 | DONE | ENC-105 |
 | ENC-113 | Dev Compose stack: PG, Redis, NATS, MinIO, Milvus, ClamAV | P1 | TODO | — |
 | ENC-114 | OpenTelemetry wiring + span attribute conventions | P2 | TODO | ENC-103 |
 | ENC-115 | `enclave-cli seed` for dev tenants | P2 | TODO | ENC-112 |
@@ -286,6 +287,7 @@ priority changes; a stale rollup is worse than none.
 | 2026-08-18 | **Phase D closed.** Phase 0 open. Gate G0 applies at the end of M0. |
 | 2026-08-18 | `ENC-100` workspace scaffolded: 43 crates, check/clippy/fmt clean. |
 | 2026-08-18 | PR #1 merged. Two structural gates failed on it and were right to: the audit sink read on a raw pool (would have reported "chain valid, 0 events" under RLS), and a test literal tripped the secrets gate. Both fixed; the no-raw-pool gate was rewritten to check execution rather than type names. |
+| 2026-08-18 | `ENC-112` harness landed and immediately earned itself: it exposed a race in migration 0001. Concurrent `CREATE ROLE` across databases in one cluster failed 10/10 runs — the `IF NOT EXISTS` guard is check-then-act, and losing the race raises `unique_violation` (23505) from `pg_authid_rolname_index`, not `duplicate_object` (42710). Fixed by catching both; 0/10 failures after. Would have hit two API replicas starting together in production. |
 | 2026-08-18 | Two P0s: `main` went red twice, both because a PR was merged while its checks were still running. (1) fmt on the ENC-106 test — my error, I did not re-run fmt after writing it. (2) A flaky key-redaction test in `auth`, failing 0.8% of runs because it searched Debug output for a single DER byte rendered as "48"; the `kid` contains "48" by chance. Both fixed. **Branch protection requiring green checks before merge would have prevented both** — pending a decision. |
 | 2026-08-18 | `ENC-109` policy engine implemented in `enclave-core::engine`: six stage traits, deny-by-default stubs, obligation accumulation, audit on allow and deny. Design decision D9 recorded; `docs/02 §4` and `docs/03 §12` updated. |
 | 2026-08-18 | `ENC-106` RLS coverage gate written and run against PostgreSQL 16: 20 tenant-scoped tables all enabled, forced and policied. Proven to fail on an unprotected table and on a `USING (true)` policy. |
