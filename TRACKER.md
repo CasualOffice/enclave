@@ -108,7 +108,7 @@ phase, not worked out of band.
 
 **In progress:** *(none)*
 
-**Phase 0 is complete except `ENC-116`** — every other P1 and P2 is `DONE`. Gate **G0** is the next
+**Phase 0 is complete** — every other P1 and P2 is `DONE`. Gate **G0** is the next
 step: is this foundation sound enough to build on? See `ROADMAP.md §6`.
 
 **Plan for the current milestone:** [`plans/M0-FOUNDATIONS.md`](plans/M0-FOUNDATIONS.md)
@@ -213,7 +213,8 @@ real database, with CI enforcing the structural gates.
 | ENC-114 | OpenTelemetry wiring + span attribute conventions | P2 | DONE | ENC-103 |
 | ENC-115 | `enclave-cli seed` for dev tenants | P2 | DONE | ENC-112 |
 | ENC-116 | Migration 0001 `CREATE ROLE` is check-then-act; concurrent first-migration across databases in one cluster fails | P2 | DONE |
-| ENC-117 | Make the accepted ENC-116 race legible when it fires | P2 | DONE | Researched, decided and implemented rather than escalated. sqlx locks per **database**, so same-database replicas are already safe; only multi-database-per-cluster races. The defect worth fixing was the opaque error, not the race. | Found by ENC-112. Reproduced 10/10. Worked around in the harness with an advisory lock; the defect itself remains. Two API replicas starting together against different databases in one cluster would hit it. **Needs a decision** — see the note below. |
+| ENC-117 | Make the accepted ENC-116 race legible when it fires | P2 | DONE |
+| ENC-118 | Run the database tests in CI — 24 of 27 ran nowhere | P0 | DONE | Gate G0 finding. Hid five self-deadlocks, an env-var split, cross-test interference and three prose blocks masquerading as doc-tests. | Researched, decided and implemented rather than escalated. sqlx locks per **database**, so same-database replicas are already safe; only multi-database-per-cluster races. The defect worth fixing was the opaque error, not the race. | Found by ENC-112. Reproduced 10/10. Worked around in the harness with an advisory lock; the defect itself remains. Two API replicas starting together against different databases in one cluster would hit it. **Needs a decision** — see the note below. |
 
 ### Phase 1 — MVP
 
@@ -318,6 +319,7 @@ priority changes; a stale rollup is worse than none.
 | 2026-08-18 | **Phase D closed.** Phase 0 open. Gate G0 applies at the end of M0. |
 | 2026-08-18 | `ENC-100` workspace scaffolded: 43 crates, check/clippy/fmt clean. |
 | 2026-08-18 | PR #1 merged. Two structural gates failed on it and were right to: the audit sink read on a raw pool (would have reported "chain valid, 0 events" under RLS), and a test literal tripped the secrets gate. Both fixed; the no-raw-pool gate was rewritten to check execution rather than type names. |
+| 2026-08-18 | `ENC-118`: the CI `test` job had no database, so 24 of 27 tests ran nowhere — including the D3 pool-exhaustion proof this milestone was sequenced around. Wiring one in surfaced five self-deadlocking tests (`pool.close()` awaited while a handle was still held — they would have hung CI indefinitely, not failed), a split between `DATABASE_URL` and `ENCLAVE_TEST_DATABASE_URL` that made a whole crate's tests unreachable, two tests interfering through the deliberately cross-tenant outbox publisher, and three prose blocks fenced as ```ignore doc-tests. Now 403 passing, 0 ignored. |
 | 2026-08-18 | Phase 0 batch two landed: `ENC-110` policy-routing lint now enforcing (was warning "not enforced yet"), `ENC-113` dev Compose stack, `ENC-114` observability with structural secret redaction, `ENC-115` CLI seed/migrate/doctor. 380 tests pass. Verified independently: the routing lint flags a deliberately unprotected handler and exits 1. |
 | 2026-08-18 | `ENC-112` harness landed and immediately earned itself: it exposed a race in migration 0001. Concurrent `CREATE ROLE` across databases in one cluster failed 10/10 runs — the `IF NOT EXISTS` guard is check-then-act, and losing the race raises `unique_violation` (23505) from `pg_authid_rolname_index`, not `duplicate_object` (42710). First attempt amended 0001; the forward-only migrations gate correctly rejected that. Reverted, worked around with an advisory lock in the harness (0/10 failures), and logged the real defect as `ENC-116` for a decision. |
 | 2026-08-18 | Two P0s: `main` went red twice, both because a PR was merged while its checks were still running. (1) fmt on the ENC-106 test — my error, I did not re-run fmt after writing it. (2) A flaky key-redaction test in `auth`, failing 0.8% of runs because it searched Debug output for a single DER byte rendered as "48"; the `kid` contains "48" by chance. Both fixed. **Branch protection requiring green checks before merge would have prevented both** — pending a decision. |

@@ -5,6 +5,14 @@
 //! unintelligible when someone skips that step — PostgreSQL reports SQLSTATE 23505 against
 //! `pg_authid_rolname_index`, which says nothing about roles, provisioning, or what to do.
 //!
+//! # Why this test runs alone
+//!
+//! It drops the three cluster-wide roles to recreate the starting conditions. Roles are shared by
+//! every database in the cluster, so running this beside the rest of the suite is not merely
+//! flaky — it is destructive: other test binaries hold databases that depend on those roles, which
+//! both prevents the drop (this test then fails on its own precondition) and would break them if it
+//! succeeded. It therefore has its own CI job and its own database server.
+//!
 //! This reproduces the race deliberately — many databases, migrated concurrently, roles dropped
 //! first — and asserts that whatever comes back is `RolesNotProvisioned` and never a raw
 //! `Migrate`. It lives here rather than in `enclave-db` because reproducing it needs the harness,
@@ -40,7 +48,8 @@ async fn migrate_one(url: String) -> Result<(), DbError> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-#[ignore = "requires a live PostgreSQL; CI runs it with --include-ignored"]
+#[ignore = "destructive and cluster-global: drops the shared roles. Runs in its own CI job \
+            (`role-race`) against a dedicated PostgreSQL, never alongside the rest of the suite."]
 async fn a_lost_role_creation_race_reports_what_to_do_about_it() {
     let Some(admin_url) = admin_url() else { panic!("DATABASE_URL must be set") };
 

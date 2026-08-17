@@ -331,6 +331,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires a live PostgreSQL with migration 0001 applied (ENC-112 fixtures)"]
     async fn a_publisher_killed_mid_batch_resumes_without_loss() {
+        let _outbox_guard = test_support::outbox_lock().lock().await;
         let pool = test_support::pool().await;
         let tenant = TenantId::new_v7();
         let batch = events(tenant, 5);
@@ -376,6 +377,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires a live PostgreSQL with migration 0001 applied (ENC-112 fixtures)"]
     async fn a_permanently_rejected_row_is_stepped_over_and_eventually_quarantined() {
+        let _outbox_guard = test_support::outbox_lock().lock().await;
         let pool = test_support::pool().await;
         let tenant = TenantId::new_v7();
         let batch = events(tenant, 2);
@@ -412,6 +414,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires a live PostgreSQL with migration 0001 applied (ENC-112 fixtures)"]
     async fn only_one_publisher_holds_leadership_at_a_time() {
+        let _outbox_guard = test_support::outbox_lock().lock().await;
         let pool = test_support::pool().await;
         let key = test_support::unique_lock_key();
 

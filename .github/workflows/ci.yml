@@ -91,6 +91,32 @@ jobs:
   test:
     name: test — cargo test --workspace
     runs-on: ubuntu-latest
+
+    # The suite needs a real PostgreSQL. Without one, 24 of the workspace's tests are silently
+    # skipped — including `no_transaction_ever_observes_another_tenants_context`, the
+    # pool-exhaustion proof that plan decision D3 is scheduled against, and the RLS coverage
+    # assertions. A green tick over a suite that never ran its tenant-isolation proofs is worse
+    # than a red one, because it is believed.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: enclave
+          POSTGRES_PASSWORD: enclave
+          POSTGRES_DB: enclave
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U enclave"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # The harness creates a throwaway database per test binary from this one, so it must point at
+      # a database whose role may CREATE DATABASE.
+      DATABASE_URL: postgres://enclave:enclave@localhost:5432/enclave
+
     steps:
       - uses: actions/checkout@v7
 
@@ -124,13 +150,19 @@ jobs:
       # testcontainers harness; they are then run by their own job, not by removing
       # the ignore. CLAUDE.md: a security test is never skipped to get a build green.
       - name: cargo test --workspace
-        run: cargo test --workspace --locked
+        # `--skip` excludes the one test that cannot share a cluster: it drops the cluster-wide
+        # roles to recreate the race it exists to prove, which would break every other binary
+        # holding a database. It runs in the `role-race` job below, against its own server.
+        run: cargo test --workspace --locked -- --include-ignored --skip a_lost_role_creation_race
 
-      - name: Report ignored tests
+      - name: Report tests that were still skipped
         if: always()
         run: |
           set -euo pipefail
-          echo "Ignored tests in this run (must be infrastructure-bound, never security assertions):"
+          # With --include-ignored above, anything still reported here genuinely did not run.
+          # It should be empty. If it is not, something is skipping and the reason needs to be
+          # a deliberate, written one — never "it was flaky".
+          echo "Tests that did not run in this job:"
           cargo test --workspace --locked -- --ignored --list 2>/dev/null || true
 
   build:
@@ -182,10 +214,48 @@ jobs:
   # Single required check for branch protection. Without it, adding a job means
   # remembering to add it to the protected-branch list, and a forgotten job is a
   # gate that quietly stops blocking anything.
+  role-race:
+    name: role-race — the destructive cluster-global test
+    runs-on: ubuntu-latest
+
+    # Its own PostgreSQL, because this test drops the roles every other database depends on.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: enclave
+          POSTGRES_PASSWORD: enclave
+          POSTGRES_DB: enclave
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U enclave"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgres://enclave:enclave@localhost:5432/enclave
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the pinned toolchain
+        run: |
+          set -euo pipefail
+          channel=$(grep -E '^[[:space:]]*channel' rust-toolchain.toml | head -1 | sed -E 's/.*"(.*)".*/\1/')
+          rustup toolchain install "$channel" --profile minimal --no-self-update
+          rustup default "$channel"
+
+      - name: Reproduce the role race and assert it is legible
+        run: |
+          cargo test --locked -p enclave-testing --test role_race -- \
+            --include-ignored --exact a_lost_role_creation_race_reports_what_to_do_about_it
+
   ci-status:
     name: CI status
     if: always()
-    needs: [fmt, clippy, test, build]
+    needs: [fmt, clippy, test, build, role-race]
     runs-on: ubuntu-latest
     steps:
       - name: Fail unless every CI job succeeded
