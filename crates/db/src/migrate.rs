@@ -78,9 +78,49 @@ pub async fn run_migrations(config: &DbConfig) -> Result<(), DbError> {
 /// role a migration runs as is a configuration decision rather than a call-site decision.
 pub async fn run_migrations_on(conn: &mut PgConnection) -> Result<(), DbError> {
     tracing::info!(count = MIGRATIONS.iter().len(), "applying migrations");
-    MIGRATIONS.run(&mut *conn).await.map_err(DbError::Migrate)?;
+    if let Err(error) = MIGRATIONS.run(&mut *conn).await {
+        return Err(classify_migration_failure(error));
+    }
     tracing::info!("migrations applied");
     Ok(())
+}
+
+/// Turns an unreadable migration failure into one an operator can act on.
+///
+/// Only one case is special-cased, and it earns it: the cluster-wide role race (`ENC-116`). Every
+/// other failure passes through unchanged, because inventing friendly text for errors we have not
+/// actually seen produces confident, wrong advice.
+fn classify_migration_failure(error: sqlx::migrate::MigrateError) -> DbError {
+    if is_role_creation_race(&error) {
+        return DbError::RolesNotProvisioned { source: error };
+    }
+    DbError::Migrate(error)
+}
+
+/// Whether a migration failure is the losing side of a concurrent `CREATE ROLE`.
+///
+/// Matched on the structured fields rather than the message string: SQLSTATE 23505
+/// (`unique_violation`) against `pg_authid`, PostgreSQL's role catalogue. Message text is
+/// localised and changes between releases; the SQLSTATE and the relation name do not.
+///
+/// Note that 42710 (`duplicate_object`, "role already exists") is deliberately **not** matched.
+/// That is the sequential collision, it already reads clearly, and 0001's guard swallows it.
+fn is_role_creation_race(error: &sqlx::migrate::MigrateError) -> bool {
+    let mut source: Option<&(dyn std::error::Error + 'static)> = Some(error);
+    while let Some(current) = source {
+        if let Some(db) =
+            current.downcast_ref::<sqlx::Error>().and_then(sqlx::Error::as_database_error)
+        {
+            let unique_violation = db.code().as_deref() == Some("23505");
+            let against_roles = db.table() == Some("pg_authid")
+                || db.constraint().is_some_and(|c| c.contains("pg_authid"));
+            if unique_violation && against_roles {
+                return true;
+            }
+        }
+        source = current.source();
+    }
+    false
 }
 
 #[cfg(test)]

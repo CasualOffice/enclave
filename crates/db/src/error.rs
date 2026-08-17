@@ -66,6 +66,37 @@ pub enum DbError {
     #[error("migration failed")]
     Migrate(#[source] sqlx::migrate::MigrateError),
 
+    /// Two migrations raced to create the cluster-wide roles, and this one lost.
+    ///
+    /// Roles are cluster-wide; sqlx's migration advisory lock is keyed on the *database* name
+    /// (`generate_lock_id(&database_name)`), so two processes migrating **different** databases in
+    /// one cluster do not serialise. Migration 0001's `IF NOT EXISTS` guard is then check-then-act:
+    /// both pass it, both issue `CREATE ROLE`, and one fails on `pg_authid_rolname_index`.
+    ///
+    /// This variant exists because the raw failure is unreadable. PostgreSQL reports
+    /// `duplicate key value violates unique constraint "pg_authid_rolname_index"` — SQLSTATE 23505
+    /// against a system catalog, with nothing connecting it to roles, to provisioning, or to what
+    /// the operator should do. Sequential collisions raise 42710 with a plain "role already exists";
+    /// only the racing path produces the opaque one, which is exactly the path someone meets at
+    /// three in the morning on a first deploy.
+    ///
+    /// The race itself is an accepted risk (`ENC-116`): provisioning the roles before migrations
+    /// run makes the guard a no-op, which is what `deploy/compose/init/01-roles.sql` and the
+    /// production provisioning step in `docs/11-OPERATIONS.md §12` do. What is not acceptable is
+    /// the failure being unintelligible when someone skips that step.
+    #[error(
+        "the database roles were not provisioned before migrations ran, and two migrations raced \
+         to create them. Provision enclave_app, enclave_migrator and enclave_platform before \
+         starting the application — deploy/compose/init/01-roles.sql locally, or the credential \
+         provisioning step in docs/11-OPERATIONS.md §12 — then retry. Retrying without \
+         provisioning may also succeed, because the roles now exist."
+    )]
+    RolesNotProvisioned {
+        /// The underlying failure, kept for diagnosis.
+        #[source]
+        source: sqlx::migrate::MigrateError,
+    },
+
     /// A cross-tenant path was requested on a deployment that has not configured one.
     ///
     /// Deliberately an error rather than a silent fall back to the application pool: the
@@ -86,6 +117,8 @@ impl DbError {
     pub fn is_retryable(&self) -> bool {
         match self {
             Self::InvalidConfig { .. } | Self::PlatformNotConfigured | Self::Migrate(_) => false,
+            // Retryable: the losing racer's next attempt finds the roles already there.
+            Self::RolesNotProvisioned { .. } => true,
             Self::Acquire(_) => true,
             Self::Connect(source)
             | Self::TenantContext(source)
