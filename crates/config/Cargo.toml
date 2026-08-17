@@ -1,0 +1,28 @@
+[package]
+name        = "enclave-config"
+description = "Layered configuration and secret references"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+authors.workspace      = true
+
+[dependencies]
+enclave-core = { workspace = true }
+async-trait  = { workspace = true }
+ipnetwork    = { workspace = true }
+serde        = { workspace = true }
+serde_yaml   = { workspace = true }
+subtle       = { workspace = true }
+thiserror    = { workspace = true }
+tokio        = { workspace = true }
+tracing      = { workspace = true }
+url          = { workspace = true, features = ["serde"] }
+zeroize      = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }
+
+[lints]
+workspace = true

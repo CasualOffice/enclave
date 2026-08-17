@@ -1,0 +1,4 @@
+# Policy decisions and obligations must never be dropped silently.
+# See plans/M0-FOUNDATIONS.md D2.
+too-many-arguments-threshold = 10
+cognitive-complexity-threshold = 30

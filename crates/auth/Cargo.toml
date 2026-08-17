@@ -1,0 +1,37 @@
+[package]
+name        = "enclave-auth"
+description = "Passwords, MFA, WebAuthn, JWT issue/verify, refresh rotation"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+authors.workspace      = true
+
+[dependencies]
+enclave-core = { workspace = true }
+
+anyhow        = { workspace = true }
+# `std` is not in argon2's default feature set, and without it `password_hash::Error`
+# does not implement `std::error::Error` — which `thiserror`'s `#[source]` requires.
+argon2        = { workspace = true, features = ["std"] }
+async-trait   = { workspace = true }
+base64        = { workspace = true }
+chrono        = { workspace = true }
+ed25519-dalek = { workspace = true }
+jsonwebtoken  = { workspace = true }
+rand          = { workspace = true }
+serde         = { workspace = true }
+serde_json    = { workspace = true }
+sha2          = { workspace = true }
+subtle        = { workspace = true }
+thiserror     = { workspace = true }
+tracing       = { workspace = true }
+uuid          = { workspace = true }
+zeroize       = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[lints]
+workspace = true

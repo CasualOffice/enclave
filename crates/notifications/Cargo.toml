@@ -1,0 +1,15 @@
+[package]
+name        = "enclave-notifications"
+description = "In-app and email notification fan-out"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+authors.workspace      = true
+
+[dependencies]
+enclave-core = { workspace = true }
+
+[lints]
+workspace = true

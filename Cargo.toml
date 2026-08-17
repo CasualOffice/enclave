@@ -1,0 +1,170 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/api",
+    "crates/worker",
+    "crates/scheduler",
+    "crates/core",
+    "crates/config",
+    "crates/db",
+    "crates/events",
+    "crates/audit",
+    "crates/auth",
+    "crates/identity",
+    "crates/authorization",
+    "crates/conditional_access",
+    "crates/information_barriers",
+    "crates/classification",
+    "crates/dlp",
+    "crates/incidents",
+    "crates/retention",
+    "crates/legal_hold",
+    "crates/records",
+    "crates/workspaces",
+    "crates/libraries",
+    "crates/files",
+    "crates/versions",
+    "crates/uploads",
+    "crates/metadata",
+    "crates/lists",
+    "crates/pages",
+    "crates/sharing",
+    "crates/search",
+    "crates/indexing",
+    "crates/embeddings",
+    "crates/mcp",
+    "crates/storage",
+    "crates/secrets",
+    "crates/mail",
+    "crates/antivirus",
+    "crates/preview",
+    "crates/ai",
+    "crates/sync",
+    "crates/notifications",
+    "crates/workflows",
+    "crates/signing",
+    "crates/branding",
+]
+
+[workspace.package]
+version      = "0.1.0"
+edition      = "2021"
+rust-version = "1.96"
+license      = "Apache-2.0"
+repository   = "https://github.com/CasualOffice/enclave"
+authors      = ["Casual Office"]
+
+# Every shared dependency is pinned once, here. Crates inherit with
+# `workspace = true` so two crates can never disagree on a version.
+[workspace.dependencies]
+# internal
+enclave-api = { path = "crates/api" }
+enclave-worker = { path = "crates/worker" }
+enclave-scheduler = { path = "crates/scheduler" }
+enclave-core = { path = "crates/core" }
+enclave-config = { path = "crates/config" }
+enclave-db = { path = "crates/db" }
+enclave-events = { path = "crates/events" }
+enclave-audit = { path = "crates/audit" }
+enclave-auth = { path = "crates/auth" }
+enclave-identity = { path = "crates/identity" }
+enclave-authorization = { path = "crates/authorization" }
+enclave-conditional_access = { path = "crates/conditional_access" }
+enclave-information_barriers = { path = "crates/information_barriers" }
+enclave-classification = { path = "crates/classification" }
+enclave-dlp = { path = "crates/dlp" }
+enclave-incidents = { path = "crates/incidents" }
+enclave-retention = { path = "crates/retention" }
+enclave-legal_hold = { path = "crates/legal_hold" }
+enclave-records = { path = "crates/records" }
+enclave-workspaces = { path = "crates/workspaces" }
+enclave-libraries = { path = "crates/libraries" }
+enclave-files = { path = "crates/files" }
+enclave-versions = { path = "crates/versions" }
+enclave-uploads = { path = "crates/uploads" }
+enclave-metadata = { path = "crates/metadata" }
+enclave-lists = { path = "crates/lists" }
+enclave-pages = { path = "crates/pages" }
+enclave-sharing = { path = "crates/sharing" }
+enclave-search = { path = "crates/search" }
+enclave-indexing = { path = "crates/indexing" }
+enclave-embeddings = { path = "crates/embeddings" }
+enclave-mcp = { path = "crates/mcp" }
+enclave-storage = { path = "crates/storage" }
+enclave-secrets = { path = "crates/secrets" }
+enclave-mail = { path = "crates/mail" }
+enclave-antivirus = { path = "crates/antivirus" }
+enclave-preview = { path = "crates/preview" }
+enclave-ai = { path = "crates/ai" }
+enclave-sync = { path = "crates/sync" }
+enclave-notifications = { path = "crates/notifications" }
+enclave-workflows = { path = "crates/workflows" }
+enclave-signing = { path = "crates/signing" }
+enclave-branding = { path = "crates/branding" }
+
+# async runtime and http
+tokio        = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time", "fs"] }
+axum         = { version = "0.8", features = ["macros"] }
+tower        = "0.5"
+tower-http   = { version = "0.6", features = ["trace", "cors", "limit", "timeout"] }
+hyper        = "1"
+
+# data
+sqlx         = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json", "macros", "migrate"] }
+uuid         = { version = "1", features = ["v4", "v7", "serde"] }
+chrono       = { version = "0.4", features = ["serde"] }
+
+# serialization
+serde        = { version = "1", features = ["derive"] }
+serde_json   = "1"
+serde_yaml   = "0.9"
+
+# errors and tracing
+thiserror    = "2"
+anyhow       = "1"
+tracing      = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# crypto and auth
+argon2       = "0.5"
+ed25519-dalek = { version = "2", features = ["rand_core", "pkcs8"] }
+jsonwebtoken = "9"
+sha2         = "0.10"
+rand         = "0.8"
+base64       = "0.22"
+subtle       = "2"
+zeroize      = { version = "1", features = ["derive"] }
+
+# misc
+async-trait  = "0.1"
+futures      = "0.3"
+ipnetwork    = "0.20"
+url          = "2"
+
+# dev
+trybuild     = "1"
+
+# Lints are declared once and inherited by every crate via `[lints] workspace = true`.
+[workspace.lints.rust]
+unsafe_code             = "forbid"
+missing_debug_implementations = "warn"
+unreachable_pub         = "warn"
+rust_2018_idioms        = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+all                     = { level = "warn", priority = -1 }
+# `PolicyDecision` and `Obligations` are #[must_use]; dropping one must never
+# be silent. See plans/M0-FOUNDATIONS.md D2 and docs/03-LLD.md §12.
+let_underscore_must_use = "deny"
+unwrap_used             = "warn"
+expect_used             = "warn"
+panic                   = "warn"
+todo                    = "allow"          # scaffolding; tightened at gate G0
+
+[profile.release]
+lto           = "thin"
+codegen-units = 1
+strip         = "debuginfo"
+
+[profile.dev]
+debug = 1

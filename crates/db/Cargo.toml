@@ -1,0 +1,29 @@
+[package]
+name        = "enclave-db"
+description = "SQLx pool, migrations, tenant-scoped query guard"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+authors.workspace      = true
+
+[dependencies]
+enclave-core = { workspace = true }
+enclave-config = { workspace = true }
+
+# `anyhow` appears here, against the usual "anyhow only in binaries" rule
+# (plans/M0-FOUNDATIONS.md D2), for exactly one reason: `enclave_core::Error::Internal` *holds* an
+# `anyhow::Error`, so any crate that maps its own error into the canonical type must be able to
+# construct one. It is never used as this crate's own error type.
+anyhow    = { workspace = true }
+sqlx      = { workspace = true }
+uuid      = { workspace = true }
+thiserror = { workspace = true }
+tracing   = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[lints]
+workspace = true
