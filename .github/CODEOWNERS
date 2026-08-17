@@ -1,0 +1,46 @@
+# Code owners — review routing.
+#
+# PLACEHOLDER. @CasualOffice/maintainers does not exist yet. GitHub silently
+# ignores an owner entry that names a non-existent team or a user without write
+# access: the file parses, the rules simply never match, and nothing is ever
+# requested for review. Until the team is created in the CasualOffice
+# organisation and given write access to this repository, this file assigns
+# nobody. Treat it as inert, not as coverage.
+#
+# Two things must happen for it to take effect:
+#   1. create the @CasualOffice/maintainers team and grant it write access;
+#   2. enable "Require review from Code Owners" in the branch protection rule
+#      for `main`.
+# Until (2), an owner review is advisory even once (1) is done.
+#
+# Later, split this file by area — auth, policy, data model and search each want
+# different reviewers. One blanket team is the right starting point precisely
+# because it is honest about the current size of the team; a fake split creates
+# the appearance of specialist review that is not happening.
+
+# Default owner for everything not matched below.
+*                       @CasualOffice/maintainers
+
+# The specification. Each document is authoritative for exactly one concern
+# (docs/README.md §1), so a docs change is a contract change and gets the same
+# scrutiny as code.
+/docs/                  @CasualOffice/maintainers
+
+# All Rust crates.
+/crates/                @CasualOffice/maintainers
+
+# Schema. Forward-only, and every tenant-scoped table needs RLS in the same
+# migration — the two mistakes that are expensive after they ship.
+/migrations/            @CasualOffice/maintainers
+
+# The gates themselves. A change here can disable enforcement everywhere else,
+# which is the one category of change that must never be self-merged.
+/.github/               @CasualOffice/maintainers
+/deny.toml              @CasualOffice/maintainers
+/clippy.toml            @CasualOffice/maintainers
+/rust-toolchain.toml    @CasualOffice/maintainers
+
+# The rules of engagement.
+/CLAUDE.md              @CasualOffice/maintainers
+/CONTRIBUTING.md        @CasualOffice/maintainers
+/SECURITY.md            @CasualOffice/maintainers

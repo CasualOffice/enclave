@@ -1,0 +1,139 @@
+# cargo-deny policy — what we are willing to ship inside a customer's trust
+# boundary. Reviewed like code, because every line here is a decision someone
+# would otherwise make silently while adding a dependency.
+#
+# Run locally exactly as CI does:
+#     cargo deny --workspace check --show-stats
+#
+# The four checks below are independent: `advisories` (is it vulnerable),
+# `licenses` (may we redistribute it), `bans` (do we have five copies of it),
+# `sources` (did it come from where we think).
+
+# ---------------------------------------------------------------------------
+[graph]
+# Evaluate the graph for the platforms we actually ship. A Windows-only
+# transitive dependency's licence is not a licence obligation for a Linux
+# server image, and pretending otherwise produces exceptions that mean nothing.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
+]
+# Optional features can pull in differently-licensed code, so evaluate them all
+# rather than only the default set.
+all-features = true
+
+[output]
+feature-depth = 1
+
+# ---------------------------------------------------------------------------
+# Advisories — RustSec. In schema version 2 every advisory is an error and the
+# `ignore` list is the only way past one. That is deliberate: an exception must
+# be a diff with a reviewer, not a config flag someone flipped.
+# ---------------------------------------------------------------------------
+[advisories]
+version = 2
+db-urls = ["https://github.com/rustsec/advisory-db"]
+
+# A yanked crate was withdrawn by its author — often for a security reason that
+# never became an advisory. Treat it as a build failure, not a note.
+yanked = "deny"
+
+# Every entry MUST carry: the advisory ID, why we are exposed (or why we are
+# not), what unblocks it, and a date to revisit. An ignore with no expiry is a
+# permanent vulnerability with a comment attached.
+#
+# Format:
+#   { id = "RUSTSEC-0000-0000", reason = "why + owner + revisit YYYY-MM-DD" },
+ignore = []
+
+# ---------------------------------------------------------------------------
+# Licences — permissive only.
+#
+# Enclave ships as software an enterprise self-hosts (docs/08-BYO-INFRA.md), so
+# a copyleft dependency anywhere in the graph is a distribution obligation on
+# every one of those customers. Rather than assess that case by case under time
+# pressure, the allowlist is closed: anything not listed fails the build and
+# becomes a conversation before it becomes a dependency.
+# ---------------------------------------------------------------------------
+[licenses]
+version = 2
+
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    # Unicode data tables (icu, unicode-ident and friends). Permissive, and
+    # unavoidable for any correct text handling.
+    "Unicode-3.0",
+    "Zlib",
+]
+
+# SPDX expression matching is textual; below this confidence cargo-deny treats
+# the licence as unknown and fails rather than guessing.
+confidence-threshold = 0.93
+
+# Per-crate exceptions to the allowlist above. An exception is a licence
+# obligation we have accepted for one named crate; it is scoped to that crate
+# precisely so it cannot quietly become a general permission.
+exceptions = [
+    # CDLA-Permissive-2.0. This crate is the Mozilla CA root store compiled into
+    # a Rust constant — data, not code, under a permissive data licence with no
+    # copyleft and no attribution obligation on redistribution. Both major
+    # versions appear because the TLS stack is mid-transition. Reviewed
+    # 2026-08-18; revisit if the licence changes upstream.
+    { name = "webpki-roots", allow = ["CDLA-Permissive-2.0"] },
+]
+
+# ---------------------------------------------------------------------------
+# Bans — graph hygiene.
+# ---------------------------------------------------------------------------
+[bans]
+# Warn, do not fail. Duplicate versions are almost always the transitive graph's
+# doing rather than ours, and failing on them would mean pinning transitive
+# dependencies — which delays security updates to buy tidiness. They are still
+# worth seeing: each duplicate is compile time, binary size, and one more copy
+# to patch on advisory day.
+multiple-versions = "warn"
+
+# A wildcard version requirement means the next release of that crate ships to
+# our users without anyone deciding to take it.
+#
+# "warn", not "deny", for one specific and temporary reason: the workspace's own
+# path dependencies (`enclave-api` → `enclave-core`, …) are declared without a
+# version, which cargo-deny counts as wildcards. `allow-wildcard-paths` below
+# exempts them, but only for crates that are private — and these are publishable
+# by default. The one-line fix is `publish = false` in `[workspace.package]`;
+# when that lands, flip this to "deny" and the gate becomes real for third-party
+# crates too. Until then it reports rather than blocks, which is the honest state
+# of affairs and not a silent pass.
+wildcards = "warn"
+allow-wildcard-paths = true
+
+# When a duplicate is reported, show every path to it — otherwise the report
+# says "two versions of X" without saying who asked for either.
+highlight = "all"
+
+# Crates we will not take at any version. Empty today; the intended shape is
+# e.g. an unmaintained TLS stack or a crate superseded by one already in the
+# tree, each with a reason.
+deny = []
+
+# Duplicate-version allowances, scoped as tightly as possible.
+skip = []
+skip-tree = []
+
+# ---------------------------------------------------------------------------
+# Sources — where code is allowed to come from.
+#
+# crates.io only. A git dependency is a moving target that no lockfile audit,
+# advisory database or SBOM covers properly; if one is ever genuinely needed it
+# gets an entry here, pinned to a revision, with a reason.
+# ---------------------------------------------------------------------------
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

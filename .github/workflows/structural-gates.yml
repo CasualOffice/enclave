@@ -1,0 +1,622 @@
+# Structural gates — assertions about the codebase itself, not its behaviour.
+# Source of truth for the list: docs/12-TESTING.md §5. One job per gate, on
+# purpose: when a gate breaks the red check must read "no raw pool" or
+# "RLS coverage", not "tests failed". A developer should know which rule they
+# broke from the check name alone, before opening a single log.
+#
+# Gates that need a migrated database (RLS coverage, composite FKs) and gates
+# that need code that does not exist yet (policy routing, OpenAPI, the web app)
+# are written HERE AND NOW, in their final form, and report PENDING loudly until
+# their dependency lands. They never silently succeed: a pending gate emits a
+# warning annotation and a step-summary row, so "green" and "not yet enforced"
+# can be told apart at a glance.
+name: Structural gates
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  merge_group:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: structural-gates-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+
+jobs:
+  # --------------------------------------------------------------------------
+  # Gate: RLS coverage — needs a migrated database (ENC-105 + ENC-106).
+  # --------------------------------------------------------------------------
+  rls-coverage:
+    name: "RULE: every tenant_id table has RLS enabled, forced, and a policy"
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: enclave
+          POSTGRES_PASSWORD: enclave
+          POSTGRES_DB: enclave
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U enclave"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://enclave:enclave@localhost:5432/enclave
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned toolchain
+        run: |
+          set -euo pipefail
+          channel=$(grep -E '^[[:space:]]*channel' rust-toolchain.toml | head -1 | sed -E 's/.*"(.*)".*/\1/')
+          rustup toolchain install "$channel" --profile minimal --no-self-update
+          rustup default "$channel"
+          rustc --version
+
+      # The gate is a Rust integration test (ENC-106) rather than a shell script
+      # so the same command proves the same rule locally and in CI.
+      - name: Enumerate information_schema and assert RLS
+        run: |
+          set -euo pipefail
+          RULE='RLS coverage — every table with a tenant_id column has rowsecurity AND forcerowsecurity AND at least one policy (docs/12-TESTING.md §5, CLAUDE.md rule 4)'
+          GATE_TEST=crates/db/tests/rls_coverage.rs
+          if [ ! -f "$GATE_TEST" ]; then
+            echo "::warning title=GATE PENDING: RLS coverage::${RULE} — NOT ENFORCED YET. ${GATE_TEST} does not exist; it lands with ENC-106. This gate is pending, not passing."
+            {
+              echo "### ⏳ PENDING — RLS coverage"
+              echo ""
+              echo "**Rule:** ${RULE}"
+              echo ""
+              echo "Not enforced yet: \`${GATE_TEST}\` is missing (lands with **ENC-106**)."
+              echo "Until then this gate proves nothing. Do not read its green tick as coverage."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "Enforcing: ${RULE}"
+          cargo test -p enclave-db --locked --test rls_coverage -- --include-ignored --nocapture
+
+  # --------------------------------------------------------------------------
+  # Gate: composite foreign keys — same dependency, different rule.
+  # --------------------------------------------------------------------------
+  composite-fks:
+    name: "RULE: every FK between tenant-scoped tables includes tenant_id"
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: enclave
+          POSTGRES_PASSWORD: enclave
+          POSTGRES_DB: enclave
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U enclave"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://enclave:enclave@localhost:5432/enclave
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned toolchain
+        run: |
+          set -euo pipefail
+          channel=$(grep -E '^[[:space:]]*channel' rust-toolchain.toml | head -1 | sed -E 's/.*"(.*)".*/\1/')
+          rustup toolchain install "$channel" --profile minimal --no-self-update
+          rustup default "$channel"
+          rustc --version
+
+      # A single-column FK to a tenant-scoped parent lets a child row point at a
+      # parent in another tenant. RLS does not catch it; the constraint must.
+      - name: Assert composite foreign keys
+        run: |
+          set -euo pipefail
+          RULE='Composite FKs — every foreign key between tenant-scoped tables carries tenant_id in the constraint (docs/12-TESTING.md §5, CLAUDE.md rule 4)'
+          GATE_TEST=crates/db/tests/composite_fk_coverage.rs
+          if [ ! -f "$GATE_TEST" ]; then
+            echo "::warning title=GATE PENDING: Composite FKs::${RULE} — NOT ENFORCED YET. ${GATE_TEST} does not exist; it lands with ENC-106. This gate is pending, not passing."
+            {
+              echo "### ⏳ PENDING — Composite FKs"
+              echo ""
+              echo "**Rule:** ${RULE}"
+              echo ""
+              echo "Not enforced yet: \`${GATE_TEST}\` is missing (lands with **ENC-106**)."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "Enforcing: ${RULE}"
+          cargo test -p enclave-db --locked --test composite_fk_coverage -- --include-ignored --nocapture
+
+  # --------------------------------------------------------------------------
+  # Gate: policy routing — the ENC-110 xtask call-graph lint.
+  # --------------------------------------------------------------------------
+  policy-routing:
+    name: "RULE: every route handler reaches PolicyEngine::enforce"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned toolchain
+        run: |
+          set -euo pipefail
+          channel=$(grep -E '^[[:space:]]*channel' rust-toolchain.toml | head -1 | sed -E 's/.*"(.*)".*/\1/')
+          rustup toolchain install "$channel" --profile minimal --no-self-update
+          rustup default "$channel"
+          rustc --version
+
+      - name: Walk the api crate's route registrations
+        run: |
+          set -euo pipefail
+          RULE='Policy routing — every Axum route handler reaches PolicyEngine::enforce; exemptions live in an allowlist with a written reason (docs/12-TESTING.md §5, CLAUDE.md rule 1)'
+          if [ ! -d xtask ]; then
+            echo "::warning title=GATE PENDING: Policy routing::${RULE} — NOT ENFORCED YET. The xtask lint does not exist; it lands with ENC-110. This gate is pending, not passing."
+            {
+              echo "### ⏳ PENDING — Policy routing"
+              echo ""
+              echo "**Rule:** ${RULE}"
+              echo ""
+              echo "Not enforced yet: the \`xtask\` call-graph lint lands with **ENC-110**."
+              echo "Until then, routing to \`enforce\` is a review responsibility — see the PR checklist."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "Enforcing: ${RULE}"
+          cargo run --locked -p xtask -- policy-routing
+
+  # --------------------------------------------------------------------------
+  # Gate: no raw pool — enforceable today, purely static.
+  # --------------------------------------------------------------------------
+  no-raw-pool:
+    name: "RULE: no sqlx query outside the db crate bypasses TenantScoped"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Grep, not a lint, because this must hold for code that does not compile
+      # yet and for crates that are still stubs. It is intentionally blunt: the
+      # rule is "domain crates do not speak SQL, and nothing but db gets its own
+      # connection", and a blunt check is one nobody can argue around in review.
+      #
+      # The ALLOW list is the review surface (the same principle as ENC-110's
+      # handler allowlist): every entry states why that file may hold SQL. Adding
+      # a line here is a deliberate, reviewable act; the gate exists so that it
+      # cannot happen by accident.
+      - name: Reject sqlx macros and pool access outside crates/db
+        run: |
+          set -euo pipefail
+          RULE='No raw pool — sqlx::query* and PgPool access live only in the db crate; everything else goes through TenantScoped (docs/12-TESTING.md §5, CLAUDE.md rule "all database access through the db crate")'
+          echo "Enforcing: ${RULE}"
+
+          ALLOW=(
+            # The wrapper itself. This is the code the rule exists to funnel into.
+            'crates/db/'
+            # The transactional outbox (plans/M0-FOUNDATIONS.md D6). It takes
+            # `&mut PgConnection` — the caller's already-tenant-scoped
+            # transaction — and never a pool, so the insert runs under the same
+            # SET LOCAL and the same RLS as the state change it accompanies.
+            'crates/events/src/outbox.rs'
+            # The outbox publisher (plans/M0-FOUNDATIONS.md ENC-104, ENC-108).
+            # One of exactly three code paths that are cross-tenant by design —
+            # it drains every tenant's rows and holds the advisory lock, so it
+            # cannot run inside a single tenant's transaction. Reviewed as a
+            # platform path, not as domain code.
+            'crates/events/src/publisher.rs'
+          )
+          filter=$(printf '%s\n' "${ALLOW[@]}" | paste -sd'|' -)
+
+          hits=$(grep -rnE 'sqlx::query(_as|_scalar|_file|_file_as|_file_scalar)?!?[[:space:]]*\(|\bPgPool\b|\.acquire\(\)' \
+                   --include='*.rs' crates \
+                 | grep -vE "^(${filter})" || true)
+          if [ -n "$hits" ]; then
+            echo "$hits"
+            while IFS= read -r line; do
+              file=${line%%:*}; rest=${line#*:}; lno=${rest%%:*}
+              echo "::error file=${file},line=${lno},title=GATE FAILED: no raw pool::${RULE}"
+            done <<< "$hits"
+            {
+              echo "### ❌ FAILED — No raw pool"
+              echo ""
+              echo "**Rule:** ${RULE}"
+              echo ""
+              echo '```'
+              echo "$hits"
+              echo '```'
+              echo ""
+              echo "Route the access through \`TenantScoped\`. If this file is genuinely a"
+              echo "platform path (migrations, the outbox publisher, the scheduler's tenant"
+              echo "enumerator — and there are no others), add it to the \`ALLOW\` list in"
+              echo "\`.github/workflows/structural-gates.yml\` **with the reason**, in a commit"
+              echo "a reviewer will see."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "No SQL outside crates/db and the named platform paths."
+
+  # --------------------------------------------------------------------------
+  # Gate: obligations — a dropped PolicyDecision is a silently unenforced policy.
+  # --------------------------------------------------------------------------
+  obligations:
+    name: "RULE: PolicyDecision is must_use and never discarded"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Two halves. (a) The attribute still exists — someone removing #[must_use]
+      # would turn every other check in the workspace into a no-op, and clippy
+      # would report nothing at all. (b) No call site launders the decision
+      # through `let _ =`, which suppresses must_use by design.
+      - name: Assert must_use survives, and nothing discards a decision
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2016  # ${...} and backticks below are prose, not expansions
+          RULE='Obligations — PolicyDecision and Obligations are #[must_use] and no call site discards them with `let _ =` (docs/12-TESTING.md §5, CLAUDE.md rule 8)'
+          echo "Enforcing: ${RULE}"
+          failed=0
+
+          policy_rs=crates/core/src/policy.rs
+          if [ ! -f "$policy_rs" ]; then
+            echo "::error title=GATE FAILED: obligations::${policy_rs} is missing — PolicyDecision must be defined in enclave-core."
+            exit 1
+          fi
+          for ty in PolicyDecision Obligations; do
+            if ! grep -B4 -E "pub struct ${ty}\b" "$policy_rs" | grep -q 'must_use'; then
+              echo "::error file=${policy_rs},title=GATE FAILED: obligations::${RULE} — ${ty} has lost its #[must_use] attribute."
+              failed=1
+            fi
+          done
+
+          # Comment lines are excluded: docs and doc-examples legitimately show
+          # the forbidden form in order to name it as forbidden.
+          discards=$(grep -rnE 'let[[:space:]]+_[[:space:]]*(:[^=]+)?=[^;]*\b(enforce|PolicyDecision|Obligations|allow_unconditional)\b' \
+                       --include='*.rs' crates \
+                     | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|/\*|\*)' || true)
+          if [ -n "$discards" ]; then
+            echo "$discards"
+            while IFS= read -r line; do
+              file=${line%%:*}; rest=${line#*:}; lno=${rest%%:*}
+              echo "::error file=${file},line=${lno},title=GATE FAILED: obligations::${RULE} — a policy decision is being discarded."
+            done <<< "$discards"
+            failed=1
+          fi
+
+          if [ "$failed" -ne 0 ]; then
+            {
+              echo "### ❌ FAILED — Obligations"
+              echo ""
+              echo "**Rule:** ${RULE}"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "must_use intact; no discarded decisions."
+
+  # --------------------------------------------------------------------------
+  # Gate: secrets — references only, never literals.
+  # --------------------------------------------------------------------------
+  secrets:
+    name: "RULE: no literal credentials in config, fixtures or code"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Deliberately self-contained rather than a third-party scanner: this gate
+      # must keep working on a fork with no network egress and no marketplace
+      # trust decision, and its rule set has to be readable in review.
+      # `vault://`, `env://`, `file://` and `${...}` interpolation are the only
+      # legal right-hand sides (CLAUDE.md rule 11, docs/08-BYO-INFRA.md §19).
+      - name: Scan for credential literals
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2016  # ${VAR} below is prose, not an expansion
+          RULE='Secrets — credentials are references (vault://, env://, ${VAR}), never literals, in configuration, fixtures or code (docs/12-TESTING.md §5, CLAUDE.md rule 11)'
+          echo "Enforcing: ${RULE}"
+          failed=0
+
+          # Private key material, in any file, is never acceptable — not even a
+          # throwaway dev key (plans/M0-FOUNDATIONS.md D5).
+          keys=$(grep -rlE --exclude-dir=.git --exclude-dir=target --exclude-dir=node_modules \
+                   -e '-----BEGIN [A-Z ]*PRIVATE KEY-----' . || true)
+          if [ -n "$keys" ]; then
+            for f in $keys; do
+              echo "::error file=${f},title=GATE FAILED: secrets::${RULE} — this file contains private key material."
+            done
+            failed=1
+          fi
+
+          # Cloud provider long-lived credentials.
+          cloud=$(grep -rnE --exclude-dir=.git --exclude-dir=target --exclude-dir=node_modules \
+                    --exclude-dir=.github --exclude='*.lock' \
+                    -e '\bAKIA[0-9A-Z]{16}\b' -e '\bASIA[0-9A-Z]{16}\b' \
+                    -e '\bghp_[A-Za-z0-9]{36}\b' -e '\bxox[baprs]-[A-Za-z0-9-]{10,}' . || true)
+          if [ -n "$cloud" ]; then
+            echo "$cloud"
+            echo "::error title=GATE FAILED: secrets::${RULE} — a provider access key or token literal is committed. Rotate it, then remove it."
+            failed=1
+          fi
+
+          # Inline credential assignments in configuration and fixtures.
+          cfg=$(find deploy tests fixtures crates -type f \
+                  \( -name '*.yaml' -o -name '*.yml' -o -name '*.json' -o -name '*.toml' -o -name '*.env' \) \
+                  -not -name 'Cargo.toml' -not -name 'Cargo.lock' 2>/dev/null || true)
+          if [ -n "$cfg" ]; then
+            # shellcheck disable=SC2086  # $cfg is a file list; splitting is the point
+            inline=$(grep -nHiE '(password|passwd|secret|client_secret|api_?key|access_?token|private_?key)[[:space:]]*[:=][[:space:]]*"?[^"[:space:]]+' $cfg \
+                     | grep -viE '(vault|env|file|aws-secrets|gcp-secrets|azure-keyvault)://' \
+                     | grep -vE '\$\{' \
+                     | grep -viE '[:=][[:space:]]*"?(null|~|""|<[^>]*>|CHANGE_?ME|REPLACE_?ME|example|placeholder|true|false)"?[[:space:]]*$' || true)
+            if [ -n "$inline" ]; then
+              echo "$inline"
+              while IFS= read -r line; do
+                file=${line%%:*}; rest=${line#*:}; lno=${rest%%:*}
+                echo "::error file=${file},line=${lno},title=GATE FAILED: secrets::${RULE} — inline credential; use a vault:// or env:// reference."
+              done <<< "$inline"
+              failed=1
+            fi
+          fi
+
+          if [ "$failed" -ne 0 ]; then
+            {
+              echo "### ❌ FAILED — Secrets"
+              echo ""
+              echo "**Rule:** ${RULE}"
+              echo ""
+              echo "Rotate anything that was committed. Removing it from the tree does not un-leak it."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "No credential literals found."
+
+  # --------------------------------------------------------------------------
+  # Gate: migrations — numbered, gapless, forward-only.
+  # --------------------------------------------------------------------------
+  migrations:
+    name: "RULE: migrations are numbered, gapless and forward-only"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Needs history: the forward-only check compares against the base ref.
+          fetch-depth: 0
+
+      - name: Assert numbering, and that no applied migration was edited
+        run: |
+          set -euo pipefail
+          RULE='Migrations — numbered NNNN_name.sql, no gaps, no duplicate numbers, forward-only: an already-merged migration is never edited (docs/12-TESTING.md §5, CLAUDE.md SQL conventions)'
+          echo "Enforcing: ${RULE}"
+          failed=0
+
+          if [ ! -d migrations ]; then
+            echo "::error title=GATE FAILED: migrations::migrations/ does not exist."
+            exit 1
+          fi
+
+          expected=1
+          for f in $(find migrations -maxdepth 1 -name '*.sql' | sort); do
+            base=$(basename "$f")
+            if ! echo "$base" | grep -qE '^[0-9]{4}_[a-z0-9_]+\.sql$'; then
+              echo "::error file=${f},title=GATE FAILED: migrations::${RULE} — '${base}' is not NNNN_snake_case_name.sql."
+              failed=1
+              continue
+            fi
+            n=$(echo "$base" | cut -c1-4 | sed 's/^0*//')
+            n=${n:-0}
+            if [ "$n" -ne "$expected" ]; then
+              echo "::error file=${f},title=GATE FAILED: migrations::${RULE} — expected migration $(printf '%04d' "$expected"), found '${base}'. Gaps and duplicates break checksum ordering."
+              failed=1
+            fi
+            expected=$((n + 1))
+          done
+
+          # Forward-only: on a PR, a migration that already exists on the base
+          # branch must be byte-identical. Editing one silently diverges every
+          # database that already applied it.
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            base_sha=$(git merge-base "origin/${GITHUB_BASE_REF}" HEAD 2>/dev/null || true)
+            if [ -n "$base_sha" ]; then
+              changed=$(git diff --name-only --diff-filter=MD "$base_sha" HEAD -- migrations/ || true)
+              if [ -n "$changed" ]; then
+                for f in $changed; do
+                  echo "::error file=${f},title=GATE FAILED: migrations::${RULE} — this migration already exists on ${GITHUB_BASE_REF} and was modified or deleted. Add a new migration instead."
+                done
+                failed=1
+              fi
+            else
+              echo "::warning title=migrations::Could not resolve the merge base; the forward-only half of this gate did not run."
+            fi
+          fi
+
+          # Contract-phase DDL is legal but must be deliberate, so it is surfaced
+          # for review rather than blocked (expand-then-contract across releases).
+          contract=$(grep -rniE '^[[:space:]]*(alter table[^;]*drop (column|constraint)|drop (table|column|type|index))' migrations/*.sql || true)
+          if [ -n "$contract" ]; then
+            echo "$contract"
+            echo "::warning title=Contract-phase migration::Destructive DDL detected. Confirm the expand phase shipped in a previous release and that no running version reads the dropped object."
+          fi
+
+          if [ "$failed" -ne 0 ]; then
+            {
+              echo "### ❌ FAILED — Migrations"
+              echo ""
+              echo "**Rule:** ${RULE}"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "Migration numbering and immutability hold."
+
+  # --------------------------------------------------------------------------
+  # Gate: dependencies — the work happens in security.yml; this asserts the
+  # gate itself still exists, because a deleted workflow is a silent green.
+  # --------------------------------------------------------------------------
+  dependencies:
+    name: "RULE: cargo audit, cargo deny and SBOM stay wired up"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assert the supply-chain workflow and policy are present
+        run: |
+          set -euo pipefail
+          RULE='Dependencies — cargo audit and cargo deny run on PRs and on a schedule, and an SBOM is produced (docs/12-TESTING.md §5)'
+          echo "Enforcing: ${RULE}"
+          failed=0
+          wf=.github/workflows/security.yml
+          for path in "$wf" deny.toml; do
+            if [ ! -f "$path" ]; then
+              echo "::error title=GATE FAILED: dependencies::${RULE} — ${path} is missing."
+              failed=1
+            fi
+          done
+          if [ -f "$wf" ]; then
+            for needle in 'cargo audit' 'cargo deny' 'cyclonedx' 'schedule:'; do
+              if ! grep -q "$needle" "$wf"; then
+                echo "::error file=${wf},title=GATE FAILED: dependencies::${RULE} — '${needle}' no longer appears in the security workflow."
+                failed=1
+              fi
+            done
+          fi
+          [ "$failed" -eq 0 ] || exit 1
+          echo "Supply-chain gate intact. Its verdict is in the Security workflow."
+
+  # --------------------------------------------------------------------------
+  # Gate: API contract — pending until the api crate can emit a spec.
+  # --------------------------------------------------------------------------
+  api-contract:
+    name: "RULE: generated OpenAPI matches the committed snapshot"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Regenerate the spec and diff it against the snapshot
+        run: |
+          set -euo pipefail
+          RULE='API contract — the generated OpenAPI document matches docs/api/openapi.yaml, or the diff is explicitly approved (docs/12-TESTING.md §5, docs/05-API.md)'
+          SNAPSHOT=docs/api/openapi.yaml
+          if [ ! -f "$SNAPSHOT" ]; then
+            echo "::warning title=GATE PENDING: API contract::${RULE} — NOT ENFORCED YET. ${SNAPSHOT} does not exist; it lands with the first API surface (M1). This gate is pending, not passing."
+            {
+              echo "### ⏳ PENDING — API contract"
+              echo ""
+              echo "**Rule:** ${RULE}"
+              echo ""
+              echo "Not enforced yet: \`${SNAPSHOT}\` is missing (lands with the first API surface, **M1**)."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "Enforcing: ${RULE}"
+          cargo run --locked -p enclave-api --bin openapi -- --output /tmp/openapi.yaml
+          if ! diff -u "$SNAPSHOT" /tmp/openapi.yaml; then
+            echo "::error file=${SNAPSHOT},title=GATE FAILED: API contract::${RULE} — the generated spec differs from the snapshot. Commit the regenerated file in the same PR as the change that caused it."
+            exit 1
+          fi
+
+  # --------------------------------------------------------------------------
+  # Web gates — pending until web/ exists. Grouped in one job because they share
+  # a single dependency and a single "does web/ exist" answer; each still names
+  # its own rule in its own step.
+  # --------------------------------------------------------------------------
+  web-gates:
+    name: "RULE: i18n catalog, bundle budget and axe pass on web/"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect the web workspace
+        id: detect
+        run: |
+          set -euo pipefail
+          if [ -f web/package.json ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: PENDING notice
+        if: steps.detect.outputs.present != 'true'
+        run: |
+          set -euo pipefail
+          {
+            echo "### ⏳ PENDING — web structural gates"
+            echo ""
+            echo "\`web/\` does not exist yet (frontend lands in **M6**). Not enforced:"
+            echo ""
+            echo "- **i18n** — no untranslated user-facing string literals in \`web/src\` (docs/14-I18N-L10N.md §8)"
+            echo "- **Bundle size** — main bundle ≤ 250 KB gzipped (docs/12-TESTING.md §5)"
+            echo "- **Accessibility** — axe passes on every primary route"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::warning title=GATE PENDING: web structural gates::i18n, bundle size and accessibility are NOT ENFORCED — web/ does not exist yet (M6). Pending, not passing."
+
+      - name: Set up Node
+        if: steps.detect.outputs.present == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install web dependencies
+        if: steps.detect.outputs.present == 'true'
+        working-directory: web
+        run: npm ci
+
+      - name: "RULE: no untranslated user-facing strings in web/src"
+        if: steps.detect.outputs.present == 'true'
+        working-directory: web
+        run: npm run lint:i18n
+
+      - name: "RULE: main bundle <= 250 KB gzipped"
+        if: steps.detect.outputs.present == 'true'
+        working-directory: web
+        run: npm run check:bundle-size
+
+      - name: "RULE: axe passes on every primary route"
+        if: steps.detect.outputs.present == 'true'
+        working-directory: web
+        run: npm run test:a11y
+
+  # --------------------------------------------------------------------------
+  # One required check for branch protection, and one place that says out loud
+  # which gates are enforced and which are still pending.
+  # --------------------------------------------------------------------------
+  structural-gates-status:
+    name: Structural gates status
+    if: always()
+    needs:
+      - rls-coverage
+      - composite-fks
+      - policy-routing
+      - no-raw-pool
+      - obligations
+      - secrets
+      - migrations
+      - dependencies
+      - api-contract
+      - web-gates
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail unless every gate succeeded
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          echo "$NEEDS"
+          {
+            echo "## Structural gates"
+            echo ""
+            echo "Gates reporting ⏳ PENDING above are **not enforced yet**. They are wired and will"
+            echo "start blocking the moment their dependency lands (ENC-105/106, ENC-110, M1, M6)."
+          } >> "$GITHUB_STEP_SUMMARY"
+          if echo "$NEEDS" | grep -qE '"result"[[:space:]]*:[[:space:]]*"(failure|cancelled|skipped)"'; then
+            echo "::error title=Structural gate failed::A structural rule was broken — the failing check's name is the rule."
+            exit 1
+          fi
+          echo "Every structural gate that is currently enforceable passed."

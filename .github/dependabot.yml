@@ -1,0 +1,83 @@
+# Dependency updates arrive as reviewable PRs rather than as a quarterly
+# "upgrade everything" branch that nobody can review. Weekly, on Monday, before
+# the working week starts, so the security scan (schedule in security.yml, also
+# Monday) and the update PRs land together and can be triaged in one sitting.
+#
+# Every PR here still passes the full CI matrix and the structural gates — a
+# dependency bump is a code change with the same blast radius as any other.
+version: 2
+
+updates:
+  # ---------------------------------------------------------------------------
+  # Rust. Versions are pinned once in [workspace.dependencies] at the root, so
+  # a bump touches exactly one manifest and one lockfile.
+  # ---------------------------------------------------------------------------
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "chore(deps)"
+      prefix-development: "chore(deps-dev)"
+    labels:
+      - dependencies
+      - rust
+    groups:
+      # Patch and minor updates arrive as one PR: individually they are noise,
+      # together they are a single review with a single CI run. Majors stay
+      # separate because each needs its own migration decision.
+      cargo-minor-and-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  # ---------------------------------------------------------------------------
+  # Frontend. web/ does not exist yet — it lands in M6 (ROADMAP.md). This entry
+  # is written now so the ecosystem is not forgotten at the moment the directory
+  # appears; until then Dependabot reports "no manifest found" for it, which is
+  # visible and harmless. Remove this comment when web/package.json lands.
+  # ---------------------------------------------------------------------------
+  - package-ecosystem: npm
+    directory: "/web"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 10
+    versioning-strategy: increase
+    commit-message:
+      prefix: "chore(deps)"
+      prefix-development: "chore(deps-dev)"
+    labels:
+      - dependencies
+      - frontend
+    groups:
+      npm-minor-and-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  # ---------------------------------------------------------------------------
+  # The CI workflows themselves. An action is executable code running with
+  # repository credentials; an unmaintained or compromised one is a supply-chain
+  # compromise of the build, which is a worse position than a vulnerable library.
+  # ---------------------------------------------------------------------------
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci(deps)"
+    labels:
+      - dependencies
+      - ci
+    groups:
+      github-actions:
+        patterns: ["*"]

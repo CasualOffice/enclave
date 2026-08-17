@@ -1,0 +1,174 @@
+# Supply-chain gate: advisories, licences, sources, and an SBOM.
+#
+# This runs on a schedule as well as on pull requests because a dependency becomes
+# vulnerable without anyone touching the repository — a repo that only checks on
+# PRs is unaudited for as long as it is quiet, which is exactly when it looks safe.
+name: Security
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    # Mondays 05:23 UTC. An odd minute avoids the top-of-hour scheduling backlog.
+    - cron: "23 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  # Bump to force a rebuild of the cached CI tool binaries (new tool release,
+  # corrupted cache, toolchain change).
+  TOOL_CACHE_EPOCH: "1"
+
+jobs:
+  audit:
+    name: cargo audit — no known-vulnerable dependency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned toolchain
+        run: |
+          set -euo pipefail
+          channel=$(grep -E '^[[:space:]]*channel' rust-toolchain.toml | head -1 | sed -E 's/.*"(.*)".*/\1/')
+          rustup toolchain install "$channel" --profile minimal --no-self-update
+          rustup default "$channel"
+          rustc --version
+
+      - name: Cache cargo-audit binary
+        id: audit-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-audit
+          key: ${{ runner.os }}-cargo-audit-${{ env.TOOL_CACHE_EPOCH }}-${{ hashFiles('rust-toolchain.toml') }}
+
+      - name: Install cargo-audit
+        if: steps.audit-cache.outputs.cache-hit != 'true'
+        run: cargo install --locked cargo-audit
+
+      # The advisory database is deliberately NOT cached: a stale advisory DB is a
+      # green build that means nothing.
+      - name: cargo audit
+        # cargo-audit reads Cargo.lock, which lists packages that are never
+        # compiled — including drivers behind features we do not enable. Each
+        # --ignore below therefore states the advisory, why we are not exposed,
+        # what removes the ignore, and when to look again. Nothing is ignored
+        # because it is inconvenient.
+        #
+        # RUSTSEC-2023-0071 (rsa, Marvin timing side-channel, no fix available):
+        #   rsa is pulled by sqlx-mysql. We use PostgreSQL only; `cargo tree -i
+        #   rsa` returns nothing, so no rsa code is in any binary we ship, and
+        #   cargo-deny (which walks the built graph rather than the lockfile)
+        #   reports clean. It disappears from the lockfile entirely once sqlx is
+        #   declared with `default-features = false` in the root manifest —
+        #   remove this ignore in the same commit. Revisit 2026-11-18.
+        run: cargo audit --deny warnings --ignore RUSTSEC-2023-0071
+
+  deny:
+    name: cargo deny — advisories, licences, bans, sources
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned toolchain
+        run: |
+          set -euo pipefail
+          channel=$(grep -E '^[[:space:]]*channel' rust-toolchain.toml | head -1 | sed -E 's/.*"(.*)".*/\1/')
+          rustup toolchain install "$channel" --profile minimal --no-self-update
+          rustup default "$channel"
+          rustc --version
+
+      - name: Cache cargo-deny binary
+        id: deny-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-deny
+          key: ${{ runner.os }}-cargo-deny-${{ env.TOOL_CACHE_EPOCH }}-${{ hashFiles('rust-toolchain.toml') }}
+
+      - name: Install cargo-deny
+        if: steps.deny-cache.outputs.cache-hit != 'true'
+        run: cargo install --locked cargo-deny
+
+      # Policy lives in deny.toml at the repository root, reviewed like code.
+      # `bans` is warn-only for duplicate versions (see deny.toml) so it reports
+      # without blocking; advisories, licences and sources block.
+      - name: cargo deny check
+        run: cargo deny --workspace check --show-stats
+
+  sbom:
+    name: SBOM — CycloneDX inventory of the dependency graph
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned toolchain
+        run: |
+          set -euo pipefail
+          channel=$(grep -E '^[[:space:]]*channel' rust-toolchain.toml | head -1 | sed -E 's/.*"(.*)".*/\1/')
+          rustup toolchain install "$channel" --profile minimal --no-self-update
+          rustup default "$channel"
+          rustc --version
+
+      - name: Cache cargo-cyclonedx binary
+        id: cyclonedx-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-cyclonedx
+          key: ${{ runner.os }}-cargo-cyclonedx-${{ env.TOOL_CACHE_EPOCH }}-${{ hashFiles('rust-toolchain.toml') }}
+
+      - name: Install cargo-cyclonedx
+        if: steps.cyclonedx-cache.outputs.cache-hit != 'true'
+        run: cargo install --locked cargo-cyclonedx
+
+      # An SBOM is what lets an operator answer "are we affected?" on the day an
+      # advisory lands, without rebuilding the tree. Enterprise buyers ask for it.
+      - name: Generate SBOM
+        run: |
+          set -euo pipefail
+          mkdir -p sbom
+          cargo cyclonedx --all --format json --output-pattern package --output-prefix sbom/enclave
+          ls -la sbom
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-cyclonedx-${{ github.sha }}
+          path: sbom/
+          if-no-files-found: error
+          retention-days: 90
+
+  # A weekly run that fails must produce something a human sees. A red scheduled
+  # workflow with nobody watching is the same as no workflow at all.
+  report-scheduled-failure:
+    name: Raise a P0 for a failed scheduled scan
+    if: failure() && github.event_name == 'schedule'
+    needs: [audit, deny, sbom]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Open a tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          title="P0: scheduled dependency scan failed ($(date -u +%Y-%m-%d))"
+          body="The weekly \`Security\` workflow failed with no code change: a dependency has become vulnerable, yanked, or licence-noncompliant.
+
+          Run: $RUN_URL
+
+          Per TRACKER.md §1 this is an automatic P0. Add a tracker row, triage the advisory, and either upgrade or record an explicit, dated exception in \`deny.toml\`."
+          # The label may not exist yet in a fresh repository; never let labelling
+          # be the reason the alert does not get filed.
+          gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body" --label security \
+            || gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
