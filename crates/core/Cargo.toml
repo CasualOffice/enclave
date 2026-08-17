@@ -12,7 +12,8 @@ authors.workspace      = true
 # crate appears here, and nothing that performs I/O does either. Every dependency below is a
 # vocabulary type that ends up in a public signature.
 [dependencies]
-anyhow    = { workspace = true }
+anyhow      = { workspace = true }
+async-trait = { workspace = true }
 chrono    = { workspace = true }
 serde     = { workspace = true }
 thiserror = { workspace = true }
@@ -20,6 +21,7 @@ uuid      = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
+tokio      = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
 [lints]
 workspace = true

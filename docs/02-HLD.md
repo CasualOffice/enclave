@@ -98,7 +98,7 @@ crates/
   scheduler               Time-driven jobs (retention, rescan, sync, cleanup)
 
   # foundation
-  core                    Shared domain types, IDs, errors, RequestContext
+  core                    Shared domain types, IDs, errors, RequestContext, PolicyEngine
   config                  Layered configuration and secret references
   db                      SQLx pool, migrations, tenant-scoped query guard
   events                  Outbox, JetStream publish/consume, idempotency

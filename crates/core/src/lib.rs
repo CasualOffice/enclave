@@ -130,6 +130,7 @@ macro_rules! wire_enum {
 pub mod action;
 pub mod actor;
 pub mod context;
+pub mod engine;
 pub mod error;
 pub mod id;
 pub mod policy;
@@ -140,6 +141,11 @@ pub use action::{
 pub use actor::{Actor, ActorKind, ClientType};
 pub use context::{
     AuthStrength, DeviceContext, DevicePosture, NetworkContext, RequestContext, ScopeSet,
+};
+pub use engine::{
+    AuthorizationService, BarrierService, ClassificationService, ConditionalAccessService,
+    DlpService, PolicyAuditSink, PolicyEngine, RetentionService, Stage, StageDecision,
+    StageOutcome,
 };
 pub use error::{
     Dependency, Error, FieldError, QuotaKind, ReasonCode, Remediation, Result, UnknownVariant,

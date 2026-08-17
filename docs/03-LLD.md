@@ -307,6 +307,16 @@ pub trait RetentionService: Send + Sync {
 
 One function. Every entry point calls it; nothing else evaluates policy piecemeal.
 
+It lives in `enclave-core::engine`. The engine is pure composition over six trait objects, so it
+needs no concrete policy implementation and introduces no dependency on the crates that provide
+them; putting it in `core` means `api`, `worker`, `scheduler` and `mcp` reach the same code rather
+than each growing a variant. The six service traits are defined alongside it, and each security
+crate implements the trait for its own stage.
+
+Auditing is the exception. `audit` depends on `core`, so `core` cannot depend back — the engine
+calls a narrow `PolicyAuditSink` port defined in `core` and implemented in `audit`, which keeps the
+dependency pointing inward.
+
 ```rust
 pub struct PolicyEngine {
     conditional_access: Arc<dyn ConditionalAccessService>,
