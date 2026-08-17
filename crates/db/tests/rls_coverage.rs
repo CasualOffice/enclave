@@ -109,7 +109,10 @@ async fn every_tenant_scoped_table_has_rls_enabled_forced_and_a_policy() {
         }
 
         if missing.is_empty() {
-            println!("  ok      {name} ({policies} polic{})", if policies == 1 { "y" } else { "ies" });
+            println!(
+                "  ok      {name} ({policies} polic{})",
+                if policies == 1 { "y" } else { "ies" }
+            );
         } else {
             failures.push(format!("{name}: missing {}", missing.join(", ")));
         }
