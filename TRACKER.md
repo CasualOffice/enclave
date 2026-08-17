@@ -106,13 +106,12 @@ phase, not worked out of band.
 
 ## 3. Active board
 
-**In progress:** `ENC-101`, `ENC-102`, `ENC-104`, `ENC-105`, `ENC-107`, `ENC-108`, `ENC-111`
-— parallel batch, see the note below.
+**In progress:** *(none — batch landed and verified)*
 
 **Plan for the current milestone:** [`plans/M0-FOUNDATIONS.md`](plans/M0-FOUNDATIONS.md)
 
 **Next three, in order:** `ENC-106` (RLS coverage gate), `ENC-109` (policy engine),
-`ENC-110` (routing gate) — all gated on the batch above landing and integrating.
+`ENC-110` (routing gate). Then `ENC-112` (test harness) unblocks the 18 ignored database tests.
 
 > **Deviation from §2.1, recorded deliberately.** The repo owner directed parallel execution of the
 > M0 foundation crates on 2026-08-18. Seven items are in flight at once rather than one. This is
@@ -168,17 +167,17 @@ real database, with CI enforcing the structural gates.
 | ID | Item | Pri | Status | Depends on |
 |---|---|---|---|---|
 | ENC-100 | Cargo workspace, crate skeletons per `docs/02 §4` | P1 | DONE | 43 crates; check/clippy/fmt clean |
-| ENC-101 | CI: fmt, clippy, test, structural gates (`docs/12 §5`) | P1 | TODO | ENC-100 |
-| ENC-102 | `config` crate — layered config + secret references | P1 | TODO | ENC-100 |
+| ENC-101 | CI: fmt, clippy, test, structural gates (`docs/12 §5`) | P1 | DONE | ENC-100 |
+| ENC-102 | `config` crate — layered config + secret references | P1 | DONE | ENC-100 |
 | ENC-103 | `core` crate — typed IDs, `RequestContext`, `Error` | P1 | TODO | ENC-100 |
-| ENC-104 | `db` crate — pool, migrations, `TenantScoped` guard | P1 | TODO | ENC-103 |
-| ENC-105 | Migration 001: tenancy, identity, RLS policies | P1 | TODO | ENC-104 |
+| ENC-104 | `db` crate — pool, migrations, `TenantScoped` guard | P1 | DONE | ENC-103 |
+| ENC-105 | Migration 001: tenancy, identity, RLS policies | P1 | DONE | ENC-104 |
 | ENC-106 | RLS coverage CI gate — fails on any unprotected table | P0 | TODO | ENC-105 |
-| ENC-107 | `audit` crate — append-only writes, hash chain | P1 | TODO | ENC-104 |
-| ENC-108 | `events` crate — outbox, JetStream publish, idempotency | P1 | TODO | ENC-104 |
+| ENC-107 | `audit` crate — append-only writes, hash chain | P1 | DONE | ENC-104 |
+| ENC-108 | `events` crate — outbox, JetStream publish, idempotency | P1 | DONE | ENC-104 |
 | ENC-109 | `PolicyEngine::enforce` skeleton, all six stages wired | P1 | TODO | ENC-103, ENC-107 |
 | ENC-110 | Policy-routing CI gate — every handler reaches the engine | P1 | TODO | ENC-109 |
-| ENC-111 | `auth` crate — Argon2id, JWT issue/verify, refresh rotation | P1 | TODO | ENC-105 |
+| ENC-111 | `auth` crate — Argon2id, JWT issue/verify, refresh rotation | P1 | DONE | ENC-105 |
 | ENC-112 | Test harness: testcontainers + `tenant-alpha`/`tenant-beta` fixtures | P1 | TODO | ENC-105 |
 | ENC-113 | Dev Compose stack: PG, Redis, NATS, MinIO, Milvus, ClamAV | P1 | TODO | — |
 | ENC-114 | OpenTelemetry wiring + span attribute conventions | P2 | TODO | ENC-103 |
@@ -284,7 +283,9 @@ priority changes; a stale rollup is worse than none.
 | 2026-08-18 | Product renamed Vault → Enclave; tracker IDs renumbered to `ENC-` phase blocks (ENC-020). |
 | 2026-08-18 | Git repository initialized on `main`; specification pack, guidance, tracker and roadmap committed; remote set to `CasualOffice/enclave` (ENC-022). |
 | 2026-08-18 | M0 implementation plan published (ENC-023): eight locked design decisions, 16 tasks, day-10 RLS/pooling checkpoint. |
-| 2026-08-18 | **Phase D closed.** Phase 0 open. Next item `ENC-100`. Gate G0 applies at the end of M0. |
+| 2026-08-18 | **Phase D closed.** Phase 0 open. Gate G0 applies at the end of M0. |
+| 2026-08-18 | `ENC-100` workspace scaffolded: 43 crates, check/clippy/fmt clean. |
+| 2026-08-18 | M0 foundation batch landed: ENC-101/102/103/104/105/107/108/111. Workspace green — 279 tests pass, 18 ignored pending the ENC-112 database harness. Verified independently of the implementing agents: JWT algorithm pinned (K8 attack test present), `SET LOCAL` semantics via `set_config`, RLS forced by catalog-driven loop, audit UPDATE/DELETE revoked. |
 
 ---
 
