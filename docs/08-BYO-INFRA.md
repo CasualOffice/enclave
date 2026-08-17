@@ -1,0 +1,573 @@
+# 08 — BYO Infrastructure & Configuration
+
+> **Status:** Draft · **Version:** 2.0 · **Owner:** Platform Engineering · **Last updated:** 2026-08-18
+> **Authoritative for:** provider traits, BYO infrastructure, configuration model and precedence.
+
+## 1. Principle
+
+The platform must not force an enterprise to use platform-owned storage, secrets, mail, vector
+database, embedding, LLM or antivirus infrastructure. Business logic depends on provider traits; no domain
+crate references a cloud SDK.
+
+## 2. Provider interfaces
+
+| Trait | Crate | Purpose |
+|---|---|---|
+| `BlobStore` | `storage` | Object storage for versions and renditions |
+| `SecretProvider` | `secrets` | Resolve secret references |
+| `KeyProvider` | `secrets` | Signing and envelope-encryption keys |
+| `MailProvider` | `mail` | Outbound email |
+| `VectorStore` | `search` | Vector/hybrid retrieval |
+| `EmbeddingProvider` | `embeddings` | Text embeddings, classification-routed |
+| `LlmProvider` | `ai` | Chat/completion for RAG answers, summarization, auto-classification |
+| `AntivirusScanner` | `antivirus` | Malware scanning of ingested content |
+| `RenditionStore` | `preview` | Cached preview artifacts |
+| `IdentityProvider` | `identity` | External authentication and directory sync |
+
+```rust
+#[async_trait]
+pub trait BlobStore: Send + Sync {
+    async fn create_upload(&self, request: UploadRequest) -> Result<UploadSession>;
+    async fn complete_upload(&self, session: &UploadSession) -> Result<ObjectMeta>;
+    async fn signed_download(&self, key: &str, ttl: Duration) -> Result<Url>;
+    async fn read_range(&self, key: &str, range: ByteRange) -> Result<ByteStream>;
+    async fn copy(&self, from: &str, to: &str) -> Result<()>;
+    async fn delete(&self, key: &str) -> Result<()>;
+    fn capabilities(&self) -> StoreCapabilities;   // multipart, single-use URLs, object lock
+}
+
+#[async_trait]
+pub trait SecretProvider: Send + Sync {
+    async fn read(&self, reference: &SecretRef) -> Result<SecretValue>;
+    async fn health(&self) -> Result<()>;
+}
+
+#[async_trait]
+pub trait KeyProvider: Send + Sync {
+    async fn sign(&self, kid: &str, payload: &[u8]) -> Result<Vec<u8>>;
+    async fn public_key(&self, kid: &str) -> Result<Vec<u8>>;
+    async fn wrap_data_key(&self, key_ref: &str, dek: &[u8]) -> Result<Vec<u8>>;
+    async fn unwrap_data_key(&self, key_ref: &str, wrapped: &[u8]) -> Result<Vec<u8>>;
+}
+
+#[async_trait]
+pub trait MailProvider: Send + Sync {
+    async fn send(&self, message: OutboundMail) -> Result<DeliveryId>;
+    async fn verify(&self) -> Result<()>;          // admin "test connection"
+}
+
+#[async_trait]
+pub trait VectorStore: Send + Sync {
+    async fn upsert_chunks(&self, tenant: TenantId, chunks: Vec<IndexedChunk>) -> Result<()>;
+    async fn update_metadata(&self, tenant: TenantId, updates: Vec<ChunkMetadataUpdate>) -> Result<()>;
+    async fn search(&self, ctx: &SearchSecurityContext, request: SearchRequest) -> Result<Vec<SearchHit>>;
+    async fn delete_file_version(&self, tenant: TenantId, file: FileId, version: VersionId) -> Result<()>;
+    async fn delete_by_library(&self, tenant: TenantId, library: LibraryId) -> Result<()>;
+}
+
+#[async_trait]
+pub trait EmbeddingProvider: Send + Sync {
+    async fn embed(&self, classification: Classification, texts: &[String]) -> Result<Vec<Vec<f32>>>;
+    fn model_id(&self) -> &str;
+    fn dimensions(&self) -> usize;
+    fn residency(&self) -> Residency;              // LOCAL, REGION(x), EXTERNAL
+}
+
+#[async_trait]
+pub trait LlmProvider: Send + Sync {
+    async fn complete(&self, request: LlmRequest) -> Result<LlmResponse>;
+    async fn stream(&self, request: LlmRequest) -> Result<BoxStream<'_, Result<LlmDelta>>>;
+    fn model_id(&self) -> &str;
+    fn context_window(&self) -> usize;
+    fn residency(&self) -> Residency;
+    fn capabilities(&self) -> LlmCapabilities;   // streaming, tool use, json mode, vision
+}
+
+#[async_trait]
+pub trait AntivirusScanner: Send + Sync {
+    async fn scan(&self, stream: ByteStream, hint: ScanHint) -> Result<ScanVerdict>;
+    async fn engine_info(&self) -> Result<EngineInfo>;
+}
+```
+
+`SearchSecurityContext` is constructed entirely server-side:
+
+```rust
+pub struct SearchSecurityContext {
+    pub tenant_id: TenantId,
+    pub accessible_libraries: Vec<LibraryId>,
+    pub allowed_barriers: Vec<String>,
+    pub maximum_classification: i32,
+    pub denylisted_files: Vec<FileId>,
+}
+```
+
+`EmbeddingProvider::residency()` is what makes classification routing enforceable rather than
+advisory — the `embeddings` crate refuses a `LOCAL_ONLY` classification on a provider that does not
+report `Residency::Local`.
+
+## 3. BYO object storage
+
+Initial providers: local filesystem, generic S3-compatible, AWS S3, MinIO, Ceph, Cloudflare R2,
+Wasabi, Backblaze B2 (S3 API). Later: Azure Blob, Google Cloud Storage.
+
+Recommended scope: a tenant-level storage profile, with an optional workspace- or library-level
+profile for regulated deployments.
+
+Requirements for any provider used in production:
+
+- server-side encryption at rest;
+- pre-signed URL support with a configurable short TTL;
+- multipart upload for large files;
+- versioning or object-lock where records/legal hold are used;
+- a bucket that is **not** publicly readable, verified by a startup self-check.
+
+## 4. Storage profile
+
+```text
+storage_profiles
+  id
+  tenant_id
+  provider                 s3 | minio | ceph | r2 | wasabi | b2 | local | azure | gcs
+  name
+  endpoint
+  bucket
+  region
+  path_style               bool
+  credential_reference     secret_ref, never a literal
+  encryption_config        provider | kms:{key_ref} | envelope
+  options                  JSON
+  residency_region
+  enabled
+```
+
+Raw credentials are never returned to clients, never logged, and never written to
+`config_versions`. Admin UI shows a masked fingerprint and a "test connection" result.
+
+## 5. Least privilege
+
+Storage credentials should grant only `GetObject`, `PutObject`, `DeleteObject`, `AbortMultipartUpload`,
+`ListBucket` on the configured prefix — never account-wide administration. The admin UI documents the
+minimal IAM policy per provider and the startup self-check reports anything broader than expected.
+
+## 6. BYO Vault / secret manager
+
+Supported: environment variables, Docker secrets, Kubernetes secrets, HashiCorp Vault, AWS Secrets
+Manager, Azure Key Vault, GCP Secret Manager.
+
+Configuration holds references, never values:
+
+```yaml
+smtp:
+  password:
+    secret_ref: "vault://workspace/smtp#password"
+```
+
+Reference syntax: `{scheme}://{path}#{field}`. Schemes: `env`, `file`, `k8s`, `vault`, `awssm`,
+`azkv`, `gcpsm`.
+
+Secrets are cached in memory with a lease-aware TTL, zeroized on drop, and never written to disk,
+traces or logs. On provider outage, cached values continue to be used within their lease; new fetches
+fail closed.
+
+### 6.1 Vault use cases
+
+Database credentials, S3 credentials, SMTP password, LDAP bind password, OIDC/SAML client secrets,
+webhook signing secrets, JWT signing keys, encryption keys, integration API tokens, and the optional
+password pepper.
+
+## 7. BYO KMS and encryption
+
+Three modes:
+
+| Mode | Key custody | Use |
+|---|---|---|
+| `PROVIDER` | Storage provider | Default; simplest operationally |
+| `KMS` | Customer KMS (AWS KMS, Azure Key Vault, GCP KMS, Vault Transit) | Customer-controlled keys, revocable |
+| `ENVELOPE` | Application-generated DEK wrapped by a customer KEK | Maximum control; the platform never holds an unwrapped long-lived key |
+
+In `ENVELOPE` mode a per-version data key is generated, used to encrypt the object, wrapped by the
+tenant KEK via `KeyProvider::wrap_data_key`, and stored in `file_versions.encryption_key_ref`.
+Revoking the KEK renders content unreadable — including to the operator, which is the point. That
+consequence is stated plainly in the admin UI before the mode can be enabled.
+
+Data residency must consider object storage, database, backups, Milvus, preview artifacts,
+embeddings and logs. A residency setting that only covers primary storage is a false claim.
+
+## 8. BYO SMTP
+
+Generic SMTP with STARTTLS or implicit TLS, and compatible services (SES SMTP, SendGrid SMTP,
+Mailgun SMTP, on-prem relays).
+
+Admin features: test connection, send test email, custom CA bundle, certificate validation toggle
+(off requires an explicit acknowledgement), sender name/address, reply-to, white-label templates,
+per-tenant rate caps.
+
+## 9. BYO antivirus
+
+| Provider | Mode |
+|---|---|
+| `clamav` | Embedded `libclamav` or `clamd` over TCP/socket |
+| `icap` | Enterprise ICAP gateway (Symantec, McAfee, Trend Micro) |
+| `http` | Vendor HTTP scanning API |
+| `none` | Explicitly disabled — refused in `enterprise` deployment profile |
+
+Configuration declares the maximum object size to scan, archive depth, timeout, and the
+`unavailable_policy` (`HOLD` or `ALLOW_AND_RESCAN`). See `06-SECURITY-DLP-ACCESS.md §6`.
+
+## 10. BYO Milvus / vector store
+
+Supported: platform-operated Milvus, customer-operated Milvus, and the provider abstraction for
+future vector stores.
+
+High-security tenants may be pinned to a dedicated Milvus database, collection or cluster. The
+`VectorStore` trait is deliberately narrow so an alternative implementation is a contained piece of
+work, not a rewrite.
+
+## 11. BYO embedding provider
+
+Options: local model, customer-hosted inference endpoint, OpenAI-compatible endpoint, approved cloud
+AI provider.
+
+Classification-aware routing:
+
+```text
+RESTRICTED           -> local / internal model only
+HIGHLY_CONFIDENTIAL  -> approved enterprise endpoint
+CONFIDENTIAL         -> approved enterprise endpoint
+INTERNAL / PUBLIC    -> any approved provider
+```
+
+Changing the embedding model changes `index_manifests.embedding_model` and triggers a full reindex
+of affected content (`07-SEARCH-INDEXING.md §9`). The admin UI states the estimated reindex cost
+before the change is applied.
+
+## 12. BYO LLM (bring your own model)
+
+Generative features — RAG answers, summarization, auto-classification suggestions, metadata
+extraction — run through `LlmProvider`. No feature calls a vendor SDK directly, and no vendor is
+assumed.
+
+### 12.1 Supported provider kinds
+
+| Kind | Examples | Residency |
+|---|---|---|
+| `local` | vLLM, Ollama, llama.cpp, TGI running in-cluster or on tenant GPUs | `LOCAL` |
+| `openai_compatible` | Any `/v1/chat/completions` endpoint — customer-hosted or third-party gateway | Declared per endpoint |
+| `anthropic` | Claude models via the Anthropic API or a customer's Bedrock/Vertex deployment | `EXTERNAL` or `REGION(x)` |
+| `azure_openai` | Azure OpenAI deployment in a named region | `REGION(x)` |
+| `bedrock` / `vertex` | Cloud-hosted models under the customer's own account | `REGION(x)` |
+| `none` | Generative features disabled entirely | — |
+
+The `openai_compatible` adapter is the workhorse: most self-hosted inference servers speak it, so a
+tenant can point the platform at their own GPU cluster with two configuration values.
+
+### 12.2 Classification-aware routing
+
+The same principle as embeddings (`§11`), and it is enforced in code, not documentation. Each
+classification declares which provider tier may see its content:
+
+```yaml
+llm:
+  default_profile: "enterprise"
+  profiles:
+    local:
+      provider: "local"
+      endpoint_env: "LOCAL_LLM_ENDPOINT"
+      model: "configured-by-deployment"
+      residency: "LOCAL"
+    enterprise:
+      provider: "openai_compatible"
+      endpoint_env: "ENTERPRISE_LLM_ENDPOINT"
+      api_key:
+        secret_ref: "vault://workspace/llm#api_key"
+      model: "configured-by-deployment"
+      residency: "REGION(ap-south-1)"
+  routing:
+    RESTRICTED: "local"          # or "deny"
+    HIGHLY_CONFIDENTIAL: "local"
+    CONFIDENTIAL: "enterprise"
+    INTERNAL: "enterprise"
+    PUBLIC: "enterprise"
+  limits:
+    max_input_tokens: 32000
+    max_output_tokens: 2000
+    request_timeout: "60s"
+    max_concurrent: 8
+  controls:
+    log_prompts: false
+    log_completions: false
+    zero_retention_required: true
+    tool_use_enabled: false
+```
+
+Rules:
+
+- An answer's routing tier is chosen by the **maximum classification across all retrieved sources**,
+  not by the question. Mixing a `PUBLIC` and a `RESTRICTED` chunk routes to the `RESTRICTED` tier.
+- `routing: "deny"` means the platform refuses to generate over that classification at all and says
+  so in the UI, rather than silently downgrading the answer by dropping sources.
+- `zero_retention_required: true` refuses to start against a provider profile not marked as
+  zero-retention, so a tenant cannot accidentally send regulated content to a training-enabled
+  endpoint.
+- Residency validation applies exactly as it does to storage: a tenant pinned to a region cannot be
+  routed to an endpoint outside it (`§17`).
+
+### 12.3 Safety and cost controls
+
+- **Prompt/response logging is off by default.** When enabled for debugging, it is a tenant-scoped,
+  time-boxed, audited setting, and prompts are redacted of detector-matched values.
+- **Auditing is by reference**: chunk IDs, model ID, token counts, latency and decision — never the
+  prompt or completion text (`07-SEARCH-INDEXING.md §8`).
+- **Budgets**: per-tenant daily token caps and per-user rate limits, surfaced through the
+  `MCP_CALLS_PER_DAY` and dedicated LLM quota kinds (`04-DATA-MODEL.md §16`). Exceeding a budget
+  degrades generative features while leaving search fully functional.
+- **Circuit breaking**: a failing or slow provider trips a breaker and generative features degrade to
+  plain retrieval results, with the UI stating that answers are unavailable.
+- **No tool use by default.** Enabling `tool_use_enabled` lets the model call MCP tools on the user's
+  behalf; those calls run through the identical policy chain as any MCP client, with the acting
+  user's permissions and an explicit audit trail.
+
+### 12.4 Model changes
+
+Changing the model for a profile is a versioned, audited configuration change. Unlike an embedding
+model change it does **not** require a reindex, because generation is stateless — which is precisely
+why generation and embedding are separate provider traits.
+
+## 13. BYO PostgreSQL
+
+Self-hosted enterprise deployments may operate their own PostgreSQL, subject to: version 15+,
+required extensions (`pgcrypto`, `pg_trgm`), the ability to create a non-owner application role for
+RLS (`04-DATA-MODEL.md §3`), and a connection count sufficient for the configured pool.
+
+SaaS mode does not expose arbitrary per-tenant database endpoints unless dedicated isolation is
+explicitly purchased.
+
+## 14. Infrastructure profiles
+
+A reusable bundle, so a regulated tenant is configured once rather than seven times:
+
+```text
+Infrastructure Profile
+ ├── Object Storage
+ ├── Secret Provider
+ ├── SMTP
+ ├── Vector Store
+ ├── Embedding Provider
+ ├── LLM Provider
+ ├── Antivirus
+ └── KMS
+```
+
+Example — `India Production`: S3 Mumbai, Vault Mumbai, SES Mumbai, internal Milvus, internal
+embedding GPU, self-hosted LLM on tenant GPUs, ICAP scanner in the Mumbai DC, KMS key in
+`ap-south-1`.
+
+## 15. Main configuration example
+
+```yaml
+server:
+  bind: "0.0.0.0"
+  port: 8080
+  public_url: "https://workspace.example.com"
+  trusted_proxies:
+    - cidr: "10.20.0.0/16"
+      hops: 1
+
+database:
+  url_env: "DATABASE_URL"
+  max_connections: 50
+  statement_timeout: "30s"
+  application_role: "enclave_app"        # non-owner, RLS applies
+
+redis:
+  url_env: "REDIS_URL"
+
+events:
+  nats_url_env: "NATS_URL"
+  stream: "vault"
+
+storage:
+  profile: "tenant-default"
+
+search:
+  provider: "milvus"
+  endpoint_env: "MILVUS_ENDPOINT"
+  default_mode: "hybrid"
+  dense: true
+  sparse: true
+  bm25: true
+  overfetch_factor: 3
+  denylist_degrade_threshold: 10000
+
+embedding:
+  provider: "local"
+  model: "configured-by-deployment"
+  batch_size: 32
+
+antivirus:
+  provider: "clamav"
+  endpoint_env: "CLAMD_ADDR"
+  max_scan_bytes: 2147483648
+  archive_depth: 5
+  unavailable_policy: "HOLD"
+
+auth:
+  access_token:
+    algorithm: "EdDSA"
+    ttl: "10m"
+    privileged_ttl: "5m"
+    issuer: "https://workspace.example.com"
+    audience: "enclave-api"
+  refresh_token:
+    idle_ttl: "14d"
+    absolute_ttl: "90d"
+    rotation: true
+    reuse_detection: "REVOKE_FAMILY"
+    cookie:
+      name: "enclave_rt"
+      same_site: "strict"
+      path: "/api/v1/auth"
+  signing_keys:
+    provider: "vault"
+    key_ref: "vault://workspace/jwt#ed25519"
+    rotation_interval: "90d"
+    overlap: "24h"
+
+security:
+  password:
+    min_length: 12
+    max_length: 128
+    breach_check: true
+    argon2:
+      memory_kib: 65536
+      iterations: 3
+      parallelism: 4
+  mfa:
+    admins_required: true
+    step_up_max_age: "15m"
+  privileged_denylist_failure: "FAIL_CLOSED"
+
+dlp:
+  enabled: true
+  default_mode: "monitor"
+  facts_unavailable: "FAIL_CLOSED"
+
+preview:
+  sandbox: true
+  max_pages: 500
+  rendition_cache_bytes: 107374182400
+  watermark_cache: false
+
+sync:
+  enabled: true
+  max_devices_per_user: 5
+
+mcp:
+  enabled: true
+  write_tools:
+    enabled: false
+
+quotas:
+  default_storage_bytes: 5497558138880
+  soft_limit_pct: 80
+
+audit:
+  enabled: true
+  hash_chain: true
+  external_anchor: "s3://enclave-audit-anchor/"
+  retention_days: 400
+```
+
+## 16. LDAP example
+
+```yaml
+identity:
+  ldap:
+    enabled: true
+    url: "ldaps://directory.internal:636"
+    bind_dn_env: "LDAP_BIND_DN"
+    bind_password:
+      secret_ref: "vault://workspace/ldap#bind_password"
+    base_dn: "DC=company,DC=local"
+    users:
+      base_dn: "OU=Users,DC=company,DC=local"
+      id_attribute: "objectGUID"
+      username_attribute: "sAMAccountName"
+      email_attribute: "mail"
+      filter: "(&(objectClass=user)(!(userAccountControl:1.2.840.113556.1.4.803:=2)))"
+    groups:
+      base_dn: "OU=Groups,DC=company,DC=local"
+      id_attribute: "objectGUID"
+      membership_attribute: "member"
+      nested: true
+      max_depth: 8
+    sync:
+      enabled: true
+      interval: "15m"
+      deprovision_action: "SUSPEND"     # never hard-delete on a sync glitch
+    tls:
+      verify_certificate: true
+      ca_bundle_ref: "file:///etc/vault/ldap-ca.pem"
+```
+
+`deprovision_action: SUSPEND` is the default deliberately: a directory outage that returns an empty
+result set must not delete every user in the tenant.
+
+## 17. SMTP example
+
+```yaml
+mail:
+  provider: smtp
+  smtp:
+    host: smtp.company.com
+    port: 587
+    security: starttls
+    username:
+      secret_ref: "vault://workspace/smtp#username"
+    password:
+      secret_ref: "vault://workspace/smtp#password"
+    from:
+      address: workspace@company.com
+      name: Company Workspace
+    reply_to: no-reply@company.com
+    rate_limit_per_minute: 300
+```
+
+## 18. Data residency
+
+A tenant may declare preferred, required and allowed regions, and may prohibit cross-region
+replication.
+
+Residency applies to authoritative **and** derived content: object storage, database, Milvus,
+backups, previews and renditions, embedding endpoints, LLM endpoints, and logs. A startup validation refuses a
+configuration whose providers contradict a tenant's declared residency, rather than discovering the
+violation during an audit.
+
+## 19. Deployment profiles
+
+**Community** — single node, local filesystem or MinIO, Milvus standalone, ClamAV embedded.
+
+**Production** — horizontally scaled API/workers, HA data services, S3, Milvus cluster.
+
+**Enterprise** — multi-AZ, BYO Vault/KMS/storage/SMTP/AV/Milvus, SSO, DLP, SIEM, data residency, DR.
+The `enterprise` profile refuses to start with `antivirus.provider: none`, `audit.enabled: false`, or
+a storage bucket that fails the public-access self-check.
+
+## 20. Configuration precedence
+
+```text
+defaults -> YAML/TOML config file -> environment variables -> secret provider
+```
+
+Plaintext secrets are never committed to repository configuration. A pre-flight check scans the
+resolved configuration for values that look like credentials and refuses to start if any appear
+inline rather than as references.
+
+## 21. Configuration versioning
+
+Security-sensitive configuration changes are versioned, diffable, auditable and rollback-capable via
+`config_versions` (`04-DATA-MODEL.md §14`). Payloads store secret *references*, so a rolled-back
+configuration never resurrects a rotated credential.
+
+Maker/checker approval may be required per scope (`06-SECURITY-DLP-ACCESS.md §22`).

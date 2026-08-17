@@ -1,0 +1,475 @@
+# 05 — API Surface
+
+> **Status:** Draft · **Version:** 1.0 · **Owner:** Platform Engineering · **Last updated:** 2026-08-18
+> **Authoritative for:** REST contracts, error model, pagination, idempotency, versioning, rate limits.
+
+## 1. Principles
+
+- Base path `/api/v1`. A machine-readable OpenAPI 3.1 document is generated from the Axum routes and
+  served at `/api/v1/openapi.json`; it is a build artifact, not a hand-maintained file.
+- JSON request and response bodies, `camelCase` field names, UTF-8.
+- Every response carries `X-Request-Id`. Clients echo it in bug reports; it joins logs, traces and
+  audit rows.
+- Resource identifiers are opaque UUIDs. Clients never construct object-storage paths.
+- Mutations that change security posture return the new `revision` so clients can chain `If-Match`.
+- No endpoint returns data that the policy chain (`02-HLD.md §14`) has not cleared.
+
+## 2. Versioning and compatibility
+
+`v1` is stable once released. Within `v1`: fields may be added, enum members may be added, and
+optional request fields may be introduced. Removing a field, tightening validation, or changing a
+default is a `v2` change. Clients must ignore unknown fields.
+
+Deprecations carry `Deprecation` and `Sunset` response headers for at least two minor releases.
+
+## 3. Authentication
+
+All authenticated requests carry:
+
+```http
+Authorization: Bearer <access-token>
+```
+
+Access tokens are JWTs as specified in `03-LLD.md §5`. Refresh tokens are opaque and, for browser
+clients, live only in an `HttpOnly; Secure; SameSite=Strict` cookie scoped to `/api/v1/auth`.
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/auth/login` | Password (+ MFA) login; returns an access token and sets the refresh cookie |
+| `POST` | `/auth/mfa/verify` | Completes a `MFA_REQUIRED` challenge |
+| `POST` | `/auth/refresh` | Rotates the refresh token, returns a new access token |
+| `POST` | `/auth/logout` | Revokes the current refresh family and denylists the presented `jti` |
+| `POST` | `/auth/logout-all` | Bumps `token_epoch`; kills every session for the user |
+| `GET` | `/auth/sessions` | Lists active refresh families with device, IP and last-use |
+| `DELETE` | `/auth/sessions/{sid}` | Revokes one family |
+| `GET` | `/auth/oidc/{provider}/start` · `/callback` | OIDC authorization code + PKCE |
+| `POST` | `/auth/saml/{provider}/acs` | SAML assertion consumer |
+| `POST` | `/auth/webauthn/register/start` · `/finish` | Passkey registration |
+| `POST` | `/auth/webauthn/login/start` · `/finish` | Passkey authentication |
+| `POST` | `/auth/token` | OAuth2 client credentials for service accounts and MCP clients |
+| `GET` | `/.well-known/jwks.json` | Public signing keys (unauthenticated) |
+
+### 3.1 Login
+
+```http
+POST /api/v1/auth/login
+Content-Type: application/json
+
+{ "email": "amara@example.com", "password": "…", "deviceId": "01937f44-…" }
+```
+
+`200 OK`
+
+```json
+{
+  "accessToken": "eyJhbGciOiJFZERTQSIsImtpZCI6Im…",
+  "tokenType": "Bearer",
+  "expiresIn": 600,
+  "sessionId": "01937f30-…",
+  "user": { "id": "01937f2c-…", "displayName": "Amara Osei", "isAdmin": false }
+}
+```
+
+`401` with `{"error":{"code":"MFA_REQUIRED","challengeId":"…","methods":["TOTP","WEBAUTHN"]}}` when a
+second factor is outstanding. The challenge is single-use and expires in 5 minutes.
+
+### 3.2 Refresh
+
+```http
+POST /api/v1/auth/refresh
+Cookie: enclave_rt=…
+X-CSRF-Token: …
+```
+
+Returns the same shape as login. The response sets a **new** refresh cookie; the presented token is
+consumed. Reuse of a consumed token revokes the whole family and returns `401 SESSION_REPLAY`
+(`03-LLD.md §5.3`).
+
+Refresh re-evaluates conditional access. A client that has moved to a blocked network receives
+`403 NETWORK_NOT_ALLOWED` and must re-authenticate from a permitted location.
+
+### 3.3 Step-up
+
+Any endpoint may respond `403` with `{"error":{"code":"STEP_UP_REQUIRED","acr":"mfa","maxAge":300}}`.
+The client completes `/auth/mfa/verify`, receives a token with a fresh `auth_time`, and retries.
+
+## 4. Common request conventions
+
+| Header | Applies to | Meaning |
+|---|---|---|
+| `If-Match: "{revision}"` | All mutations of versioned resources | Optimistic concurrency; `409` on mismatch |
+| `Idempotency-Key: {uuid}` | `POST` that creates or transfers | 24-hour replay protection (`03-LLD.md §13`) |
+| `X-Justification: {text}` | Actions carrying a `RequireJustification` obligation | Recorded in audit and the incident |
+| `Prefer: return=minimal` | Any mutation | Returns `204` instead of the entity |
+
+## 5. Error model
+
+Every error uses one envelope:
+
+```json
+{
+  "error": {
+    "code": "DOWNLOAD_BLOCKED_BY_POLICY",
+    "message": "Downloading this file is restricted outside the corporate network.",
+    "remediation": "Connect to the corporate VPN, or request an exception from your security administrator.",
+    "requestId": "01937f60-…",
+    "details": []
+  }
+}
+```
+
+Rules:
+
+- `code` is stable and machine-readable; `message` and `remediation` are user-safe and localizable.
+- Policy denials never disclose which policy matched, its conditions, or whether other users have
+  access. Internal reasoning goes to audit, not to the client.
+- Validation errors populate `details` with `{ "field": "name", "code": "TOO_LONG" }` entries.
+
+| HTTP | Use |
+|---|---|
+| `400` | Malformed request or failed validation |
+| `401` | Missing, expired or invalid token; MFA challenge outstanding |
+| `403` | Authenticated but denied by policy — ACL, conditional access, DLP, classification, retention |
+| `404` | Not found **or** cross-tenant / barrier-blocked (deliberately indistinguishable) |
+| `409` | Revision conflict, name collision, idempotency-key mismatch, lock held |
+| `413` | Body or file exceeds the configured limit |
+| `422` | Well-formed but semantically rejected (e.g. circular folder move) |
+| `429` | Rate limit or quota-rate exceeded; `Retry-After` present |
+| `451` | Blocked for legal/residency reasons |
+| `503` | Dependency degraded; `Retry-After` present when retry is sensible |
+
+Representative policy codes: `ACCESS_DENIED`, `DOWNLOAD_BLOCKED_BY_POLICY`,
+`EXTERNAL_SHARE_BLOCKED`, `PREVIEW_ONLY`, `NETWORK_NOT_ALLOWED`, `DEVICE_NOT_MANAGED`,
+`STEP_UP_REQUIRED`, `DLP_BLOCKED`, `DLP_JUSTIFICATION_REQUIRED`, `DLP_APPROVAL_REQUIRED`,
+`CLASSIFICATION_CEILING`, `LEGAL_HOLD_ACTIVE`, `RETENTION_BLOCKS_DELETE`, `RECORD_IMMUTABLE`,
+`QUOTA_EXCEEDED`, `SYNC_NOT_PERMITTED`, `MALWARE_DETECTED`, `SESSION_REPLAY`.
+
+## 6. Pagination
+
+Cursor-based, everywhere:
+
+```http
+GET /api/v1/libraries/{id}/items?limit=100&cursor=eyJrIjoi…
+```
+
+```json
+{
+  "items": [ … ],
+  "page": { "nextCursor": "eyJrIjoi…", "hasMore": true, "limit": 100 }
+}
+```
+
+`limit` defaults to 50, maximum 500. Cursors are opaque, signed and bound to the filter set and
+tenant (`03-LLD.md §17`). Total counts are **not** returned by default: counting a filtered,
+ACL-trimmed set is expensive and leaks information about inaccessible items. `?includeApproximateCount=true`
+returns a lower-bounded estimate over accessible rows only.
+
+## 7. Files and folders
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/libraries/{libraryId}/items` | Browse; `parentId`, `viewId`, filter, sort params |
+| `POST` | `/libraries/{libraryId}/folders` | Create folder |
+| `GET` | `/files/{id}` | Metadata + effective permissions for the caller |
+| `PATCH` | `/files/{id}` | Rename, reparent, change content type; `If-Match` required |
+| `DELETE` | `/files/{id}` | Soft delete to trash |
+| `POST` | `/files/{id}/restore` | Restore from trash |
+| `POST` | `/files/{id}/copy` · `/move` | Bulk-capable; DLP evaluated per destination |
+| `GET` | `/files/{id}/versions` | Version history |
+| `GET` | `/files/{id}/versions/{versionId}` | Version metadata |
+| `POST` | `/files/{id}/versions/{versionId}/restore` | Creates a new version from an old one |
+| `GET` | `/files/{id}/permissions` | Effective + explicit ACL |
+| `PUT` | `/files/{id}/permissions` | Replace ACL; bumps `aclRevision` |
+| `POST` | `/files/{id}/permissions/break-inheritance` | Materializes inherited entries |
+| `GET` | `/files/{id}/activity` | Audit-derived activity feed |
+| `POST` | `/files/{id}/checkout` · `/checkin` | Explicit lock lifecycle |
+
+`GET /files/{id}` includes what the caller may do, so the UI never renders an action that the server
+will reject:
+
+```json
+{
+  "id": "01937fa0-…",
+  "name": "FY26 Board Pack.pdf",
+  "mimeType": "application/pdf",
+  "sizeBytes": 4210332,
+  "classification": { "key": "CONFIDENTIAL", "label": "Confidential", "rank": 30 },
+  "currentVersion": { "id": "01937fa1-…", "major": 3, "minor": 0, "status": "AVAILABLE" },
+  "revision": 12,
+  "aclRevision": 4,
+  "capabilities": {
+    "preview": true, "download": false, "print": false, "export": false,
+    "edit": true, "share": true, "shareExternal": false, "delete": false, "sync": false
+  },
+  "obligations": { "watermark": true, "justificationRequired": ["download"] },
+  "governance": { "onLegalHold": true, "isRecord": false, "retentionPolicy": "Board Records 7y" }
+}
+```
+
+`capabilities` is computed by the same policy engine that will enforce the action — it is a UI hint
+derived from the real decision, not a parallel implementation.
+
+## 8. Upload
+
+```text
+POST   /api/v1/uploads                       → { uploadId, method, urls|uploadUrl, partSize }
+PUT    <signed part URLs>                    → direct to object storage
+POST   /api/v1/uploads/{id}/complete         → { fileId, versionId, state }
+GET    /api/v1/uploads/{id}                  → progress and state
+DELETE /api/v1/uploads/{id}                  → abort and release staged bytes
+```
+
+- The API never proxies file bytes for large uploads; it issues scoped, short-lived signed URLs.
+- `POST /uploads` runs the full policy chain **before** issuing URLs, including quota and
+  file-type checks, so a rejected upload never consumes bandwidth.
+- `complete` verifies size and SHA-256 against what was declared, then drives the state machine in
+  `03-LLD.md §15`.
+- The response after `complete` is `202` with `state: "SCANNING"`. Clients poll or subscribe; a file
+  is not presented as ready before antivirus and required processing finish.
+
+## 9. Preview, download, export
+
+```text
+GET  /api/v1/files/{id}/preview?page=1&profile=page-png-2x
+GET  /api/v1/files/{id}/thumbnail?size=256
+POST /api/v1/files/{id}/download
+POST /api/v1/files/{id}/export        { "format": "pdf" }
+POST /api/v1/files/{id}/print-token
+```
+
+`POST /files/{id}/download`:
+
+```json
+{ "justification": "Client audit request #4412", "versionId": null }
+```
+
+`200 OK`
+
+```json
+{ "url": "https://s3…/…?X-Amz-Expires=120", "expiresIn": 120, "singleUse": true }
+```
+
+Download is a `POST` because it has side effects: it consumes a share-link download budget, records
+an audit event, and may require a justification. Signed URLs are short-lived (default 120 s) and
+single-use where the storage provider supports it.
+
+Preview responses set `Cache-Control: private, no-store` and carry
+`Content-Security-Policy: sandbox` for HTML renditions. Watermarked page images are generated per
+request and never cached (`06-SECURITY-DLP-ACCESS.md §5`).
+
+## 10. Sharing
+
+| Method | Path | Notes |
+|---|---|---|
+| `POST` | `/files/{id}/shares` | Create a share link; DLP-evaluated |
+| `GET` | `/files/{id}/shares` | List links for a resource |
+| `PATCH` | `/shares/{id}` | Change expiry, permission, download budget |
+| `DELETE` | `/shares/{id}` | Revoke |
+| `POST` | `/shares/{token}/authenticate` | Password / OTP / MFA for a link recipient |
+| `GET` | `/shares/{token}` | Resolve a link to a scoped, resource-bound access token |
+
+The raw token appears exactly once, in the creation response. Only its SHA-256 hash is stored.
+
+## 11. Search
+
+```http
+POST /api/v1/search
+```
+
+```json
+{
+  "query": "deployment architecture",
+  "mode": "hybrid",
+  "workspaceIds": [],
+  "libraryIds": [],
+  "types": ["pdf", "docx"],
+  "classificationMax": "CONFIDENTIAL",
+  "modifiedAfter": "2026-01-01T00:00:00Z",
+  "limit": 20,
+  "cursor": null
+}
+```
+
+```json
+{
+  "results": [
+    {
+      "fileId": "01937fa0-…",
+      "versionId": "01937fa1-…",
+      "title": "Platform Deployment Architecture",
+      "path": "Engineering / Architecture / Platform",
+      "workspace": "Engineering",
+      "mimeType": "application/pdf",
+      "classification": "INTERNAL",
+      "score": 0.834,
+      "excerpt": "…multi-AZ deployment with <em>Milvus</em> replicas…",
+      "location": { "page": 12, "sectionPath": "3.2 Topology" },
+      "capabilities": { "preview": true, "download": true }
+    }
+  ],
+  "page": { "nextCursor": null, "hasMore": false },
+  "diagnostics": { "mode": "hybrid", "degraded": false }
+}
+```
+
+- `excerpt` is returned only when the caller holds `ContentRead`; metadata-only callers get title and
+  path.
+- `diagnostics.degraded` is `true` when the vector store is unavailable and the query fell back to
+  lexical-only, so the UI can say so honestly rather than silently returning fewer results.
+- Related: `POST /search/suggest`, `POST /search/answer` (RAG; always returns cited chunk sources).
+
+## 12. Lists, pages, views, metadata
+
+```text
+GET|POST         /workspaces/{id}/lists
+GET|PATCH|DELETE /lists/{id}
+GET|POST         /lists/{id}/items
+GET|PATCH|DELETE /lists/{id}/items/{itemId}
+GET|POST         /workspaces/{id}/pages
+GET|PATCH|DELETE /pages/{id}
+POST             /pages/{id}/publish
+GET|POST         /libraries/{id}/views
+GET|PATCH|DELETE /views/{id}
+GET|PUT          /files/{id}/metadata
+GET|POST         /libraries/{id}/fields
+```
+
+## 13. Sync
+
+```text
+POST /api/v1/sync/devices                    register a device
+GET  /api/v1/sync/devices                    list; admin can list tenant-wide
+POST /api/v1/sync/devices/{id}/wipe          request remote cache wipe
+GET  /api/v1/sync/delta?scope=…&cursor=…     ordered change feed
+POST /api/v1/sync/reserve                    claim an upload slot for a changed local file
+```
+
+Delta entries carry `syncEligible`; ineligible files appear as tombstones with a reason so the client
+can show "available on the web only" rather than silently omitting them. Full semantics:
+`10-SYNC-AND-EDITING.md §4`.
+
+## 14. Administration
+
+```text
+/admin/users            /admin/groups             /admin/guests
+/admin/workspaces       /admin/libraries          /admin/quotas
+/admin/identity-providers                          /admin/scim/v2/*
+/admin/dlp/policies     /admin/dlp/incidents      /admin/dlp/simulate
+/admin/conditional-access/policies                 /admin/conditional-access/simulate
+/admin/classifications  /admin/barriers           /admin/network-zones
+/admin/retention        /admin/legal-holds        /admin/records
+/admin/audit            /admin/audit/verify       /admin/audit/export
+/admin/storage-profiles /admin/mail               /admin/secrets/test
+/admin/search/reindex   /admin/search/status
+/admin/mcp/clients      /admin/branding           /admin/domains
+/admin/config/versions  /admin/webhooks
+```
+
+Admin endpoints require an access token whose `acr` is `mfa` and whose `auth_time` is within the
+configured step-up window (default 15 minutes) for any privileged mutation listed in
+`06-SECURITY-DLP-ACCESS.md §22`.
+
+Simulation endpoints (`/admin/*/simulate`) accept a proposed policy plus a sample set or a historical
+time range and return the decisions that *would* have been made, with no side effects.
+
+## 15. MCP
+
+MCP is served at `/mcp` over Streamable HTTP, authenticated with the same bearer tokens
+(`typ: "mcp"`). Tools map one-to-one onto domain services; there is no privileged MCP path.
+
+| Scope | Tools |
+|---|---|
+| `SEARCH` | `search_files`, `semantic_search` |
+| `READ_METADATA` | `get_file_metadata`, `get_file_outline`, `list_workspace_files`, `query_list` |
+| `READ_CONTENT` | `get_file`, `get_file_text` |
+| `CREATE` | `create_folder`, `upload_file`, `create_page`, `create_list_item` |
+| `UPDATE` | `update_metadata`, `move_file` |
+| `SHARE` | `share_file` |
+
+Every tool call is audited with the MCP client identity. Write tools are disabled by default per
+client (`mcp_clients.write_tools_enabled`). A tool result never includes content above the client's
+`classification_ceiling`, even when the acting user could read it directly.
+
+## 16. Workflows and signing
+
+Semantics, states and the signing pipeline are in `15-WORKFLOWS-AND-SIGNING.md`; the contracts are
+registered here.
+
+```text
+GET|POST         /api/v1/workflows/definitions
+GET|PATCH|DELETE /api/v1/workflows/definitions/{id}
+POST             /api/v1/workflows/definitions/{id}/simulate
+POST             /api/v1/files/{id}/workflows                start an instance
+GET              /api/v1/workflows/instances/{id}
+POST             /api/v1/workflows/instances/{id}/cancel     { reason }
+GET              /api/v1/workflows/tasks                     steps assigned to me
+POST             /api/v1/workflows/steps/{id}/approve        { comment }
+POST             /api/v1/workflows/steps/{id}/reject         { comment }   comment required
+POST             /api/v1/workflows/steps/{id}/delegate       { toUserId, reason }
+
+POST   /api/v1/files/{id}/signature-requests                 prepare + seal byte hash
+GET    /api/v1/signature-requests/{id}
+POST   /api/v1/signature-requests/{id}/send
+POST   /api/v1/signature-requests/{id}/void                  { reason }
+POST   /api/v1/signature-requests/{id}/remind
+GET    /api/v1/signature-requests/{id}/certificate           evidence package (PDF + JSON)
+GET    /api/v1/sign/{token}                                  signer view, server-rendered
+POST   /api/v1/sign/{token}/authenticate
+POST   /api/v1/sign/{token}/consent
+POST   /api/v1/sign/{token}/sign                             { signatureImage | signedDigest }
+POST   /api/v1/sign/{token}/decline                          { reason }
+GET    /api/v1/files/{id}/versions/{versionId}/signatures
+POST   /api/v1/files/{id}/versions/{versionId}/verify-signature
+```
+
+Signer endpoints under `/sign/{token}` are the only endpoints authenticated by a signing token rather
+than a bearer access token. That token is single-purpose, single-document, single-use and
+short-lived; it grants nothing beyond the ceremony it was issued for.
+
+Additional policy codes: `SIGNING_NOT_PERMITTED`, `DOCUMENT_NOT_SIGNABLE`,
+`SIGNATURE_ORDER_VIOLATION`, `SIGNER_AUTH_REQUIRED`, `SIGNATURE_EXPIRED`,
+`DOCUMENT_MODIFIED_SINCE_SEAL`, `CERTIFICATE_UNAVAILABLE`,
+`PROVIDER_NOT_PERMITTED_FOR_CLASSIFICATION`.
+
+## 17. Webhooks
+
+```text
+GET|POST         /admin/webhooks
+DELETE           /admin/webhooks/{id}
+POST             /admin/webhooks/{id}/test
+```
+
+Deliveries are signed: `X-Enclave-Signature: t=<unix>,v1=<hex hmac-sha256>` over `t.body`, with the
+secret held in the secret provider. Receivers must reject timestamps older than 5 minutes. Retries
+use exponential backoff for 24 hours, then dead-letter with an admin notification.
+
+Webhook payloads carry identifiers and event types only — never file content, never DLP match
+excerpts.
+
+## 18. Rate limiting
+
+Independent buckets by IP, account, tenant, token and MCP client. The strictest applicable bucket
+wins.
+
+| Bucket | Default |
+|---|---|
+| `POST /auth/login` | 10 / 5 min per account, 60 / 5 min per IP |
+| `POST /auth/refresh` | 60 / hour per family |
+| `POST /search` | 120 / min per user |
+| `POST /files/*/download` | 300 / hour per user; bulk export separately capped |
+| `POST /files/*/shares` | 60 / hour per user |
+| MCP tool calls | Per-client profile, default 600 / min |
+| All others | 1000 / min per user |
+
+Responses include `RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset` and, on `429`,
+`Retry-After`. Rate-limit rejections are audited when they concern authentication or sharing.
+
+## 19. Health and metadata endpoints
+
+```text
+GET /health/live            liveness
+GET /health/ready           readiness (PostgreSQL, migrations, object storage)
+GET /health/dependencies    per-dependency status, unauthenticated summary / authenticated detail
+GET /api/v1/bootstrap       branding, feature flags, locale, policy hints for the SPA
+GET /api/v1/me              current identity, groups, capabilities, quota headroom
+```
