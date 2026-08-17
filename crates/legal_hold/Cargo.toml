@@ -1,0 +1,15 @@
+[package]
+name        = "enclave-legal_hold"
+description = "Hold custodians and deletion blocking"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+authors.workspace      = true
+
+[dependencies]
+enclave-core = { workspace = true }
+
+[lints]
+workspace = true

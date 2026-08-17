@@ -1,0 +1,23 @@
+[package]
+name        = "enclave-worker"
+description = "Event-driven processing (extract, embed, scan, notify)"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+authors.workspace      = true
+
+[dependencies]
+enclave-core = { workspace = true }
+enclave-config = { workspace = true }
+enclave-db = { workspace = true }
+enclave-events = { workspace = true }
+enclave-audit = { workspace = true }
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "enclave-worker"
+path = "src/main.rs"

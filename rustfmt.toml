@@ -1,0 +1,7 @@
+edition           = "2021"
+max_width         = 100
+use_small_heuristics = "Max"
+newline_style     = "Unix"
+
+# imports_granularity / group_imports are nightly-only; revisit if we ever
+# pin a nightly for fmt. Import ordering is enforced by review until then.

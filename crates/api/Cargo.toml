@@ -1,0 +1,23 @@
+[package]
+name        = "enclave-api"
+description = "HTTP surface, policy enforcement, MCP gateway"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+authors.workspace      = true
+
+[dependencies]
+enclave-core = { workspace = true }
+enclave-config = { workspace = true }
+enclave-db = { workspace = true }
+enclave-events = { workspace = true }
+enclave-audit = { workspace = true }
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "enclave-api"
+path = "src/main.rs"

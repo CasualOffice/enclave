@@ -1,0 +1,23 @@
+[package]
+name        = "enclave-scheduler"
+description = "Time-driven jobs (retention, rescan, sync, cleanup)"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+authors.workspace      = true
+
+[dependencies]
+enclave-core = { workspace = true }
+enclave-config = { workspace = true }
+enclave-db = { workspace = true }
+enclave-events = { workspace = true }
+enclave-audit = { workspace = true }
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "enclave-scheduler"
+path = "src/main.rs"
