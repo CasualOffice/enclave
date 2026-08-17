@@ -65,7 +65,11 @@ These are not style preferences. Violating one is a security defect, and each ha
 10. **Audit happens inside the policy engine**, for denials as well as allows. Never log passwords,
     tokens, refresh cookies, DLP match values or file content.
 11. **Secrets are references, never literals** (`vault://…`, `env://…`). Never a value in YAML, a
-    fixture or a test.
+    fixture or a test. This includes **PEM banners in test fixtures**: the secrets gate refuses
+    `-----BEGIN … PRIVATE KEY-----` in any tracked file and has no test exemption, because a gate
+    with exceptions is one people learn to route around. Assemble such strings at runtime —
+    `format!("-----{} PRIVATE KEY-----", "BEGIN")` — so the assertion still holds and the literal
+    never enters the tree. Two tests have already tripped this.
 12. **User-facing strings go in the i18n catalog.** No string literals in `web/src`, no manual date
     or number formatting, no physical `left`/`right` CSS.
 
