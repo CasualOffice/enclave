@@ -1,0 +1,50 @@
+# Rust
+/target/
+**/target/
+*.pdb
+*.rs.bk
+
+# Node / web
+node_modules/
+web/dist/
+web/.vite/
+*.tsbuildinfo
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Local configuration and secrets — never commit resolved secrets, only references
+enclave.yaml
+*.local.yaml
+*.local.toml
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+!deploy/config/*.example.yaml
+
+# Build and test artifacts
+/coverage/
+/playwright-report/
+/test-results/
+*.profraw
+sbom.json
+
+# Local data volumes from the dev Compose stack
+/.data/
+/deploy/compose/.data/
+
+# Editors
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.example.json
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db

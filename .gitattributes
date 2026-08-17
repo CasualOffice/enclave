@@ -1,0 +1,23 @@
+# Normalize line endings on checkin; check out native.
+* text=auto eol=lf
+
+*.rs      text diff=rust
+*.toml    text diff=toml
+*.sql     text
+*.md      text diff=markdown
+*.yaml    text
+*.yml     text
+*.json    text
+*.ts      text
+*.tsx     text
+
+# Generated or vendored — keep out of diffs and language stats.
+Cargo.lock          linguist-generated=true -diff
+web/package-lock.json linguist-generated=true -diff
+docs/**             linguist-documentation=true
+
+# Binary
+*.png binary
+*.jpg binary
+*.pdf binary
+*.woff2 binary
