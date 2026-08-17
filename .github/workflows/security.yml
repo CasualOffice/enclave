@@ -134,8 +134,12 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p sbom
-          cargo cyclonedx --all --format json --output-pattern package --output-prefix sbom/enclave
+          # cargo-cyclonedx writes <crate>.cdx.json beside each manifest; it has no
+          # output-directory flag, so collect afterwards rather than assuming one.
+          cargo cyclonedx --all --format json
+          find . -name '*.cdx.json' -not -path './sbom/*' -print -exec mv {} sbom/ \;
           ls -la sbom
+          test -n "$(ls -A sbom)" || { echo "::error::SBOM generation produced no files"; exit 1; }
 
       - name: Upload SBOM
         uses: actions/upload-artifact@v4
