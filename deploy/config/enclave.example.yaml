@@ -1,0 +1,224 @@
+# Enclave — example configuration.
+#
+#   cp deploy/config/enclave.example.yaml enclave.yaml
+#
+# `enclave.yaml` is git-ignored; this file is the template that is not. It is tuned for the
+# development stack in `deploy/compose/dev.yml` and is a *starting point* for a real deployment,
+# not a template for one — the notes below say which values must change before anything leaves a
+# laptop.
+#
+# Authoritative shape: `docs/08-BYO-INFRA.md §15`. Precedence: defaults → this file → environment
+# (`ENCLAVE_` + `__` between path segments, e.g. `ENCLAVE_SERVER__PORT=9090`) → resolved secrets
+# (`docs/03-LLD.md §21`). Anything omitted takes the compiled default, and every default is the
+# safe choice, so a short file is a safe file.
+#
+# ---------------------------------------------------------------------------------------------
+# Secrets
+# ---------------------------------------------------------------------------------------------
+# No credential appears in this file, and none may appear in yours: every field that names one
+# holds a *reference* — `env://NAME`, `file:///path`, `vault://path#field`, `k8s://ns/name#key`,
+# `awssm://…`, `azkv://…`, `gcpsm://…` (CLAUDE.md rule 11, `docs/08-BYO-INFRA.md §6`). Startup
+# scans the merged configuration and refuses to start if a value that looks like a credential was
+# written inline, naming the field. That check is the reason this file can be committed at all.
+#
+# The `*_env` spellings below (`url_env: DATABASE_URL`) are shorthand for `url: env://DATABASE_URL`
+# and exist because that is how `docs/08-BYO-INFRA.md §15` writes them.
+
+# What this deployment promises it can do: community | production | enterprise.
+# `enterprise` additionally refuses to start with antivirus or the audit trail disabled
+# (`docs/08-BYO-INFRA.md §19`), which is exactly why a laptop is `community`.
+profile: community
+
+server:
+  # Loopback, not 0.0.0.0. A service is exposed deliberately or not at all; a deployment behind a
+  # load balancer sets this to 0.0.0.0 *and* fills in trusted_proxies below.
+  bind: "127.0.0.1"
+  port: 8080
+  # Used for the token issuer, the refresh-cookie domain and links in mail. Must be the URL clients
+  # actually reach, or tokens will be issued for an audience nobody validates against.
+  public_url: "http://localhost:8080"
+  # Networks whose X-Forwarded-For may be believed, and how many hops each strips. Empty means the
+  # peer address is the client address — the only safe assumption when nothing is known, because a
+  # believed forwarding header from an untrusted peer lets any client claim any source IP and walk
+  # straight through conditional access (`docs/06-SECURITY-DLP-ACCESS.md`).
+  trusted_proxies: []
+  # Behind a proxy, this would read:
+  # trusted_proxies:
+  #   - cidr: "10.20.0.0/16"
+  #     hops: 1
+
+database:
+  # The dev stack's DSN:
+  #   export DATABASE_URL=postgres://enclave:enclave@localhost:5432/enclave
+  url_env: "DATABASE_URL"
+  max_connections: 50
+  min_connections: 1
+  acquire_timeout: "10s"
+  # A server-side cap, so one pathological query cannot hold a pool slot indefinitely.
+  statement_timeout: "30s"
+  # The non-owner role the application SET ROLEs to after connecting. It is NOBYPASSRLS and owns
+  # nothing, so row-level security applies to it unconditionally — that is the second of the two
+  # layers behind tenant isolation (`plans/M0-FOUNDATIONS.md` D3).
+  application_role: "enclave_app"
+
+redis:
+  #   export REDIS_URL=redis://localhost:6379
+  url_env: "REDIS_URL"
+  pool_size: 16
+
+events:
+  #   export NATS_URL=nats://localhost:4222
+  nats_url_env: "NATS_URL"
+  stream: "vault"
+  # Rows claimed per outbox publish pass. Bounded so a backlog drains steadily rather than in one
+  # transaction that holds locks for minutes.
+  publish_batch: 256
+
+auth:
+  access_token:
+    # Closed set of one. Never read from the token header — that is the K8 algorithm-confusion
+    # defence (`docs/12-TESTING.md §4.6`), and it belongs in configuration precisely so a token
+    # cannot influence it.
+    algorithm: "EdDSA"
+    # Short by design: revoking a bearer token is approximate, so the window is the real control.
+    ttl: "10m"
+    privileged_ttl: "5m"
+    # Omitted on purpose — taken from server.public_url, so it cannot drift from it.
+    # issuer: "https://workspace.example.com"
+    audience: "enclave-api"
+  refresh_token:
+    idle_ttl: "14d"
+    absolute_ttl: "90d"
+    # Rotation is what makes reuse detectable at all: without it there is no consumed token to
+    # replay, and therefore no signal.
+    rotation: true
+    reuse_detection: "REVOKE_FAMILY"
+    cookie:
+      name: "enclave_rt"
+      same_site: "strict"
+      # Narrow, so the refresh token is not attached to every API call and therefore not exposed
+      # to every handler.
+      path: "/api/v1/auth"
+      # Stays true in development too. A "just for localhost" exception here has a way of reaching
+      # production; use `http://localhost` in a browser that treats it as a secure context, or a
+      # local TLS terminator.
+      secure: true
+  signing_keys:
+    # Absent means the development file provider generates an Ed25519 key on first run, under
+    # `deploy/config/dev-keys/`, which is git-ignored. No key material is ever committed, not even
+    # a throwaway one — throwaway keys get copied into production more often than anyone admits
+    # (`plans/M0-FOUNDATIONS.md` D5).
+    # A real deployment sets a reference instead:
+    # key_ref: "vault://workspace/jwt#ed25519"
+    rotation_interval: "90d"
+    # How long the retired key stays in the JWKS, so tokens signed just before a rotation still
+    # verify. Shorter than the access-token TTL would reject valid tokens.
+    overlap: "24h"
+
+security:
+  password:
+    min_length: 12
+    # Bounded, so a very long password cannot turn hashing into a denial of service.
+    max_length: 128
+    breach_check: true
+    argon2:
+      memory_kib: 65536
+      iterations: 3
+      parallelism: 4
+    # Mixed into every password hash and held outside the database, so a database dump alone is
+    # not enough to mount an offline attack. Unset in development; a reference in production:
+    # pepper: "vault://workspace/password#pepper"
+  mfa:
+    admins_required: true
+    step_up_max_age: "15m"
+  # What happens when the privileged-token denylist cannot be reached. FAIL_CLOSED locks admins
+  # out during an outage; FAIL_OPEN keeps revoked admin tokens working. The first is an incident,
+  # the second is a breach.
+  privileged_denylist_failure: "FAIL_CLOSED"
+
+dlp:
+  enabled: true
+  # `monitor` records matches and allows the action; `enforce` blocks. Monitor first so a new
+  # deployment does not block work before its rules have been tuned.
+  default_mode: "monitor"
+  # When the facts a rule needs (classification, labels) cannot be loaded, the rule has not
+  # allowed anything.
+  facts_unavailable: "FAIL_CLOSED"
+
+audit:
+  enabled: true
+  # Each event carries the hash of its predecessor, so a retroactive edit is detectable.
+  hash_chain: true
+  # Where periodic chain anchors are published. An anchor outside the system is what makes the
+  # chain evidence rather than self-assertion; unset locally.
+  # external_anchor: "s3://enclave-audit-anchor/"
+  retention_days: 400
+
+antivirus:
+  # Nothing is AVAILABLE before antivirus completes (CLAUDE.md rule 9). The dev stack's ClamAV is
+  # behind the `av` Compose profile:
+  #   docker compose -f deploy/compose/dev.yml --profile av up -d --wait
+  #   export CLAMD_ADDR=tcp://localhost:3310
+  provider: "clamav"
+  endpoint_env: "CLAMD_ADDR"
+  max_scan_bytes: 2147483648
+  archive_depth: 5
+  timeout: "120s"
+  # HOLD keeps an object in SCANNING until a scanner is reachable — the only value consistent with
+  # rule 9. ALLOW_AND_RESCAN trades a malware window for availability and must be chosen.
+  unavailable_policy: "HOLD"
+
+# ---------------------------------------------------------------------------------------------
+# Sections below are not modelled yet — they land with the milestones that implement them
+# (`docs/08-BYO-INFRA.md §15`). They are ignored today rather than rejected, so that a complete
+# operator file loads unchanged, and they are still scanned for inline credentials.
+# ---------------------------------------------------------------------------------------------
+
+storage:
+  profile: "tenant-default"
+  provider: "s3"
+  # MinIO from the dev stack.
+  endpoint_env: "S3_ENDPOINT"          # http://localhost:9000
+  region: "us-east-1"
+  bucket: "enclave-content"
+  # Path style, because a MinIO endpoint has no per-bucket DNS.
+  force_path_style: true
+  access_key_env: "S3_ACCESS_KEY_ID"
+  secret_key_env: "S3_SECRET_ACCESS_KEY"
+
+search:
+  provider: "milvus"
+  # Behind the `search` Compose profile; M0 does not use it.
+  endpoint_env: "MILVUS_ENDPOINT"      # http://localhost:19530
+  default_mode: "hybrid"
+  dense: true
+  sparse: true
+  bm25: true
+  # Candidates are over-fetched because the PostgreSQL post-filter removes the ones the caller may
+  # not see. The post-filter is never conditional (CLAUDE.md rule 5).
+  overfetch_factor: 3
+  denylist_degrade_threshold: 10000
+
+embedding:
+  provider: "local"
+  model: "configured-by-deployment"
+  batch_size: 32
+
+preview:
+  sandbox: true
+  max_pages: 500
+  rendition_cache_bytes: 107374182400
+  watermark_cache: false
+
+sync:
+  enabled: true
+  max_devices_per_user: 5
+
+mcp:
+  enabled: true
+  write_tools:
+    enabled: false
+
+quotas:
+  default_storage_bytes: 5497558138880
+  soft_limit_pct: 80

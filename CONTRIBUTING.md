@@ -19,28 +19,57 @@ By contributing you agree that your contributions are licensed under the
 
 ## Development setup
 
-Requirements: Rust 1.85+, Node 20+, Docker, `sqlx-cli`.
+Requirements: Rust 1.96+ (the toolchain is pinned in `rust-toolchain.toml`, so `rustup` will fetch
+it), Node 20+, and Docker. No `sqlx-cli` — migrations run through `enclave-cli`, so the version that
+applies them is always the one the code was built against.
 
 ```bash
 git clone https://github.com/CasualOffice/enclave.git && cd enclave
 
-# infrastructure: PostgreSQL, Redis, NATS, MinIO, Milvus, ClamAV
-docker compose -f deploy/compose/dev.yml up -d
+# infrastructure: PostgreSQL, Redis, NATS, MinIO
+# --wait returns when every service is healthy, not merely created
+docker compose -f deploy/compose/dev.yml up -d --wait
 
-cp deploy/config/enclave.example.yaml enclave.yaml
 export DATABASE_URL=postgres://enclave:enclave@localhost:5432/enclave
-sqlx migrate run
+export REDIS_URL=redis://localhost:6379
+export NATS_URL=nats://localhost:4222
 
-cargo run -p enclave-api            # http://localhost:8080
-
-cd web && npm install && npm run dev   # http://localhost:5173
+cargo run -p enclave-cli -- migrate              # applies 0001 and 0002
+cargo run -p enclave-cli -- seed --profile dev   # tenant-alpha and tenant-beta
+cargo run -p enclave-cli -- doctor               # read-only; run this when something is wrong
 ```
 
-Seed a development tenant:
+Milvus and ClamAV are opt-in — they are the two heavy images and nothing in M0 uses either:
 
 ```bash
-cargo run -p enclave-cli -- seed --profile dev
+docker compose -f deploy/compose/dev.yml --profile search up -d --wait   # milvus + etcd
+docker compose -f deploy/compose/dev.yml --profile av     up -d --wait   # clamav
 ```
+
+To run from a configuration file rather than the environment, copy the template — it is a working
+development configuration, and it holds references (`env://…`) rather than credentials, which is
+why it can be committed at all:
+
+```bash
+cp deploy/config/enclave.example.yaml enclave.yaml   # git-ignored
+cargo run -p enclave-cli -- --config enclave.yaml doctor
+```
+
+Then the application:
+
+```bash
+cargo run -p enclave-api                 # http://localhost:8080
+```
+
+The web client (`web/`, `npm install && npm run dev`, http://localhost:5173) lands with the
+frontend milestone; there is nothing to start yet.
+
+`cargo test --workspace` needs `DATABASE_URL` set as above: the harness creates a uniquely-named
+database per test binary and drops it afterwards, so a test run never disturbs the database you
+have been working in.
+
+Ports, service-by-service notes, and how to reset the stack are in
+[`deploy/README.md`](deploy/README.md).
 
 ## Workflow
 
@@ -55,12 +84,15 @@ cargo run -p enclave-cli -- seed --profile dev
 ```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-cargo sqlx prepare --check           # offline query metadata current
+cargo test --workspace               # needs DATABASE_URL and the dev stack
 
-cd web
-npm run lint && npm run typecheck && npm run test
+# once web/ exists:
+# cd web && npm run lint && npm run typecheck && npm run test
 ```
+
+There is no `cargo sqlx prepare` step: the compile-time-checked `sqlx::query!` macros are not used,
+deliberately — they need a live database at build time, which puts a running PostgreSQL on the
+critical path of every `cargo check`. See `crates/db/src/lib.rs` for the full reasoning.
 
 CI runs all of the above plus the structural gates in
 [`docs/12-TESTING.md §5`](docs/12-TESTING.md) — RLS coverage, policy routing, secret scanning,

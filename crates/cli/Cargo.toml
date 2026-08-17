@@ -12,8 +12,20 @@ authors.workspace      = true
 enclave-core = { workspace = true }
 enclave-config = { workspace = true }
 enclave-db   = { workspace = true }
+# The fixtures are defined once, in the test harness, and reused here. A second
+# definition of "a seeded tenant" would drift from the one every test asserts
+# against, and the drift would show up as tests that pass while the stack a
+# contributor is looking at is different (plans/M0-FOUNDATIONS.md D7).
+enclave-testing = { workspace = true }
 anyhow       = { workspace = true }
+chrono       = { workspace = true }
+# Not yet in [workspace.dependencies]; see the ENC-115 report — the integrator
+# promotes this to the workspace manifest so a second crate cannot pick another
+# major version.
+clap         = { version = "4", features = ["derive"] }
+sqlx         = { workspace = true }
 tokio        = { workspace = true }
+uuid         = { workspace = true }
 
 [[bin]]
 name = "enclave-cli"

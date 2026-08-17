@@ -155,24 +155,34 @@ jobs:
           rustup default "$channel"
           rustc --version
 
+      # Enforced since ENC-110. The lint prints its allowlist on every run, so every exemption
+      # from the policy chain appears in the log of every pull request rather than only in source.
       - name: Walk the api crate's route registrations
         run: |
           set -euo pipefail
           RULE='Policy routing — every Axum route handler reaches PolicyEngine::enforce; exemptions live in an allowlist with a written reason (docs/12-TESTING.md §5, CLAUDE.md rule 1)'
-          if [ ! -d xtask ]; then
-            echo "::warning title=GATE PENDING: Policy routing::${RULE} — NOT ENFORCED YET. The xtask lint does not exist; it lands with ENC-110. This gate is pending, not passing."
-            {
-              echo "### ⏳ PENDING — Policy routing"
-              echo ""
-              echo "**Rule:** ${RULE}"
-              echo ""
-              echo "Not enforced yet: the \`xtask\` call-graph lint lands with **ENC-110**."
-              echo "Until then, routing to \`enforce\` is a review responsibility — see the PR checklist."
-            } >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
           echo "Enforcing: ${RULE}"
           cargo run --locked -p xtask -- policy-routing
+
+      - name: Explain on failure
+        if: failure()
+        run: |
+          set -euo pipefail
+          {
+            echo "### ❌ FAILED — Policy routing"
+            echo ""
+            echo "**Rule:** Every Axum route handler reaches \`PolicyEngine::enforce\`"
+            echo "(docs/12-TESTING.md §5, CLAUDE.md rule 1)."
+            echo ""
+            echo "A route was registered whose handler has no reachable call to the policy engine."
+            echo "The annotations above name the handler and the line. Either call"
+            echo "\`PolicyEngine::enforce\` before touching tenant data, or — if the endpoint"
+            echo "genuinely has no policy decision to make — add it to \`ALLOWLIST\` in"
+            echo "\`xtask/src/policy_routing.rs\` **with the reason**, which is printed on every run"
+            echo "and is the review surface for exemptions."
+            echo ""
+            echo "Run it locally with \`cargo run -p xtask -- policy-routing\`."
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # --------------------------------------------------------------------------
   # Gate: no raw pool — enforceable today, purely static.

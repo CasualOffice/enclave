@@ -1,0 +1,298 @@
+# Enclave — development stack (ENC-113, plans/M0-FOUNDATIONS.md).
+#
+#   docker compose -f deploy/compose/dev.yml up -d --wait
+#
+# Every service declares a healthcheck, so `--wait` means "the stack is usable", not "the
+# containers were created". Without one, `up --wait` returns while PostgreSQL is still replaying
+# WAL and the first `cargo test` fails for a reason that has nothing to do with the code.
+#
+# Profiles
+# --------
+#   (default)  postgres, redis, nats, minio — everything M0 needs, and a fast `up`.
+#   search     etcd + milvus standalone. Milvus is by far the heaviest container here (it wants
+#              gigabytes of RAM and pulls ~1 GB) and *nothing in M0 uses it* — search lands in M2
+#              (docs/07-SEARCH-INDEXING.md). Opt in with `--profile search`.
+#   av         clamav. M0 has no upload path, so nothing scans anything yet; the image is also
+#              ~1 GB with signatures. Opt in with `--profile av`.
+#
+# Registries
+# ----------
+# Anonymous Docker Hub pulls are rate-limited per source IP and, during development of this file,
+# were returning `401 unauthorized` outright. Anything a fresh clone must pull therefore comes from
+# a registry that does not require authentication or a Hub account:
+#
+#   * `public.ecr.aws/docker/library/*` — AWS's mirror of the Docker official images;
+#   * `quay.io/minio/*`, `quay.io/coreos/*` — the upstream projects' own registries.
+#
+# ClamAV and Milvus publish to Docker Hub only. That is the second reason both sit behind profiles:
+# a registry outage or a rate limit on an image the default stack does not need must not be able to
+# break `docker compose up` for every contributor.
+#
+# Every tag is pinned. `:latest` turns "works on my machine" into a function of when you last
+# pulled, and a database that silently majors-upgrades under a data volume is unrecoverable.
+#
+# Credentials
+# -----------
+# The values below are local-loopback development credentials, not secrets: they exist because the
+# images require *a* username and password to start. They are overridable from the environment, and
+# nothing reads them out of this file at runtime — the application takes its DSN from
+# `DATABASE_URL` and `deploy/config/enclave.example.yaml` holds only references (CLAUDE.md rule 11).
+# Never reuse them anywhere that is reachable from another host.
+
+name: enclave
+
+services:
+  # ---------------------------------------------------------------------------
+  # PostgreSQL — the authoritative store (docs/04-DATA-MODEL.md).
+  # ---------------------------------------------------------------------------
+  # 16, per plans/M0-FOUNDATIONS.md Q3. The superuser is `enclave`, which is what migration 0001
+  # needs: it creates the enclave_app / enclave_migrator / enclave_platform roles and installs
+  # extensions, neither of which an ordinary role may do. It is also what the test harness needs,
+  # because `TestDb::start` creates a throwaway database per test binary.
+  #
+  # `max_connections` is raised because the D3 pool-exhaustion proof runs many concurrent
+  # transactions, and the default of 100 is shared with every other local test binary.
+  postgres:
+    image: public.ecr.aws/docker/library/postgres:16.9-alpine
+    command:
+      - postgres
+      - -c
+      - max_connections=200
+      # Loud logs are the point of a development database: a query that trips the statement
+      # timeout in production should have been visible locally first.
+      - -c
+      - log_min_duration_statement=500
+    environment:
+      POSTGRES_USER: ${ENCLAVE_DEV_DB_USER:-enclave}
+      POSTGRES_PASSWORD: ${ENCLAVE_DEV_DB_PASSWORD:-enclave}
+      POSTGRES_DB: ${ENCLAVE_DEV_DB_NAME:-enclave}
+      # Deterministic collation, so an index built locally sorts the way CI's does.
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    ports:
+      - "${ENCLAVE_DEV_DB_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      # `pg_isready` against the actual database, not just the port: initdb runs a temporary server
+      # on a Unix socket first, and a TCP check can pass against it moments before it is shut down.
+      test:
+        ["CMD-SHELL", "pg_isready -U ${ENCLAVE_DEV_DB_USER:-enclave} -d ${ENCLAVE_DEV_DB_NAME:-enclave} -h 127.0.0.1"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 10s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Redis — caching and rate limiting (docs/03-LLD.md §21).
+  # ---------------------------------------------------------------------------
+  # Persistence is off. Everything Enclave puts in Redis is derived from PostgreSQL and must
+  # survive its loss, so a development instance that forgets on restart is a feature: it makes an
+  # accidental dependency on cached state fail here rather than in production.
+  redis:
+    image: public.ecr.aws/docker/library/redis:7.4-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "${ENCLAVE_DEV_REDIS_PORT:-6379}:6379"
+    healthcheck:
+      # `redis-cli ping` exits 0 while the server is still loading a dataset, so the reply itself
+      # is checked rather than the exit status.
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 3s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # NATS with JetStream — the outbox destination (plans/M0-FOUNDATIONS.md D6).
+  # ---------------------------------------------------------------------------
+  # JetStream is explicit (`-js`): core NATS is fire-and-forget, and an outbox publishing into a
+  # subject with no stream behind it loses every event without erroring.
+  nats:
+    image: public.ecr.aws/docker/library/nats:2.10-alpine
+    command: ["-js", "-sd", "/data", "-m", "8222"]
+    ports:
+      - "${ENCLAVE_DEV_NATS_PORT:-4222}:4222"
+      - "${ENCLAVE_DEV_NATS_MONITOR_PORT:-8222}:8222"
+    volumes:
+      - nats-data:/data
+    healthcheck:
+      # `/healthz` reports on JetStream too, so this fails if the store directory is unwritable —
+      # which is the failure that otherwise shows up as events silently not arriving.
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8222/healthz | grep -q ok"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 3s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # MinIO — S3-compatible object storage (docs/08-BYO-INFRA.md §5).
+  # ---------------------------------------------------------------------------
+  minio:
+    image: quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${ENCLAVE_DEV_MINIO_USER:-enclave}
+      MINIO_ROOT_PASSWORD: ${ENCLAVE_DEV_MINIO_PASSWORD:-enclave-dev-minio}
+      # Quiet the console's update nag; a dev stack should not phone home.
+      MINIO_UPDATE: "off"
+    ports:
+      - "${ENCLAVE_DEV_MINIO_PORT:-9000}:9000"
+      - "${ENCLAVE_DEV_MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 5s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # MinIO bucket creation.
+  # ---------------------------------------------------------------------------
+  # First-run initialization belongs in the stack rather than in a paragraph of CONTRIBUTING.md
+  # that half of new contributors will skip. `mb --ignore-existing` makes a re-run a no-op, so this
+  # is safe on every `up`.
+  #
+  # It creates the buckets, drops a marker file, and then idles. The idling is deliberate: Docker
+  # Compose reports a service that has exited as a failure of `up --wait`, even on exit code 0, so
+  # a container that did its job and stopped would make `--wait` return 1 on a perfectly healthy
+  # stack — verified against Compose v2.35. Staying alive with a healthcheck over the marker turns
+  # "the buckets exist" into something `--wait` can actually wait for. Idle cost is a few MB.
+  minio-init:
+    image: quay.io/minio/mc:RELEASE.2025-04-16T18-13-26Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        mc alias set enclave http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"
+        mc mb --ignore-existing enclave/${ENCLAVE_DEV_MINIO_BUCKET:-enclave-content}
+        mc mb --ignore-existing enclave/${ENCLAVE_DEV_MINIO_BUCKET:-enclave-content}-previews
+        mc mb --ignore-existing enclave/milvus
+        touch /tmp/buckets-ready
+        echo "buckets ready"
+        exec sleep infinity
+    environment:
+      MINIO_ROOT_USER: ${ENCLAVE_DEV_MINIO_USER:-enclave}
+      MINIO_ROOT_PASSWORD: ${ENCLAVE_DEV_MINIO_PASSWORD:-enclave-dev-minio}
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/buckets-ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 3s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # etcd — Milvus's metadata store. Profile: search.
+  # ---------------------------------------------------------------------------
+  etcd:
+    profiles: ["search"]
+    image: quay.io/coreos/etcd:v3.5.18
+    command:
+      - etcd
+      - --advertise-client-urls=http://127.0.0.1:2379
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --data-dir=/etcd
+    environment:
+      # Milvus writes a lot of small revisions; without compaction the data dir grows without
+      # bound and etcd wedges on its quota.
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: "1000"
+      ETCD_QUOTA_BACKEND_BYTES: "4294967296"
+      ETCD_SNAPSHOT_COUNT: "50000"
+    ports:
+      - "${ENCLAVE_DEV_ETCD_PORT:-2379}:2379"
+    volumes:
+      - etcd-data:/etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Milvus standalone — vector index. Profile: search.
+  # ---------------------------------------------------------------------------
+  # A candidate generator only. Results are always confirmed against PostgreSQL before they are
+  # returned (CLAUDE.md rule 5, docs/07-SEARCH-INDEXING.md §6), which is why losing this volume
+  # costs a reindex and nothing else.
+  #
+  # Image is Docker Hub — Milvus publishes nowhere else. See the registry note at the top.
+  milvus:
+    profiles: ["search"]
+    image: docker.io/milvusdb/milvus:v2.5.4
+    command: ["milvus", "run", "standalone"]
+    depends_on:
+      etcd:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+      MINIO_ACCESS_KEY_ID: ${ENCLAVE_DEV_MINIO_USER:-enclave}
+      MINIO_SECRET_ACCESS_KEY: ${ENCLAVE_DEV_MINIO_PASSWORD:-enclave-dev-minio}
+      MINIO_BUCKET_NAME: milvus
+    ports:
+      - "${ENCLAVE_DEV_MILVUS_PORT:-19530}:19530"
+      - "${ENCLAVE_DEV_MILVUS_METRICS_PORT:-9091}:9091"
+    volumes:
+      - milvus-data:/var/lib/milvus
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:9091/healthz"]
+      interval: 15s
+      timeout: 10s
+      # Generous: a cold Milvus takes a minute or two to come up on a laptop, and a healthcheck
+      # that gives up first turns a slow start into a failed one.
+      retries: 24
+      start_period: 90s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # ClamAV — malware scanning (docs/08-BYO-INFRA.md §9). Profile: av.
+  # ---------------------------------------------------------------------------
+  # Nothing is AVAILABLE before antivirus completes (CLAUDE.md rule 9), so this is not optional in
+  # a real deployment — only in M0, which has no upload path yet.
+  #
+  # The `_base` tag ships without signature databases and downloads them on first start, which
+  # keeps the image small at the cost of a slow first boot; hence the long `start_period`. Image is
+  # Docker Hub — ClamAV publishes nowhere else. See the registry note at the top.
+  clamav:
+    profiles: ["av"]
+    image: docker.io/clamav/clamav:1.4_base
+    environment:
+      CLAMAV_NO_MILTERD: "true"
+      # Freshclam on a schedule rather than never: stale signatures are a silent failure.
+      FRESHCLAM_CHECKS: "1"
+    ports:
+      - "${ENCLAVE_DEV_CLAMAV_PORT:-3310}:3310"
+    volumes:
+      - clamav-signatures:/var/lib/clamav
+    healthcheck:
+      # Shipped with the image; it PINGs clamd over the socket, so it only passes once the
+      # signature database is loaded and scanning actually works.
+      test: ["CMD", "clamdcheck.sh"]
+      interval: 20s
+      timeout: 10s
+      retries: 30
+      start_period: 300s
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  nats-data:
+  minio-data:
+  etcd-data:
+  milvus-data:
+  clamav-signatures:
