@@ -8,8 +8,18 @@ license.workspace      = true
 repository.workspace   = true
 authors.workspace      = true
 
+# `core` sits at the bottom of the dependency graph (plans/M0-FOUNDATIONS.md D1): no workspace
+# crate appears here, and nothing that performs I/O does either. Every dependency below is a
+# vocabulary type that ends up in a public signature.
 [dependencies]
+anyhow    = { workspace = true }
+chrono    = { workspace = true }
+serde     = { workspace = true }
+thiserror = { workspace = true }
+uuid      = { workspace = true }
 
+[dev-dependencies]
+serde_json = { workspace = true }
 
 [lints]
 workspace = true
