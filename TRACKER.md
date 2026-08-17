@@ -106,7 +106,9 @@ phase, not worked out of band.
 
 ## 3. Active board
 
-**In progress:** *(none — Phase 0 not yet started)*
+**In progress:** *(none — `ENC-100` is next up)*
+
+**Plan for the current milestone:** [`plans/M0-FOUNDATIONS.md`](plans/M0-FOUNDATIONS.md)
 
 **Next three, in order:**
 
@@ -151,6 +153,8 @@ Design pack. Exit criterion: every subsystem specified, no contradictions betwee
 | ENC-019 | Development roadmap: milestones, gates, sequencing, risks | P1 | DONE | Requested 2026-08-18 · `ROADMAP.md` |
 | ENC-020 | Product rename Vault → Enclave; ID prefix `VLT-` → `ENC-` | P1 | DONE | Requested 2026-08-18. HashiCorp Vault references deliberately preserved |
 | ENC-021 | Rename the working directory `services/vault` → `services/enclave` | P2 | TODO | Filesystem-level; left to the repo owner to avoid breaking active paths |
+| ENC-022 | Initialize git repository, initial history, remote on `CasualOffice/enclave` | P1 | DONE | Requested 2026-08-18 · branch `main`, private |
+| ENC-023 | M0 implementation plan (`plans/M0-FOUNDATIONS.md`) | P1 | DONE | Requested 2026-08-18 · task-level breakdown for Phase 0 |
 
 ### Phase 0 — Foundations
 
@@ -253,12 +257,12 @@ the leakage matrix green.
 
 | Phase | P0 | P1 | P2 | P3 | Done | Open |
 |---|---|---|---|---|---|---|
-| D — Specification | 2 | 15 | 4 | 0 | 18 | 3 |
+| D — Specification | 2 | 17 | 4 | 0 | 20 | 3 |
 | 0 — Foundations | 1 | 12 | 3 | 0 | 0 | 16 |
 | 1 — MVP | 3 | 22 | 2 | 0 | 0 | 27 |
 | 2 — Enterprise V1 | 1 | 16 | 3 | 0 | 0 | 20 |
 | 3 — Beyond V1 | 0 | 0 | 1 | 5 | 0 | 6 |
-| **Total** | **7** | **65** | **13** | **5** | **18** | **72** |
+| **Total** | **7** | **67** | **13** | **5** | **20** | **72** |
 
 Counts include completed items in their priority column. Update this table whenever a row's status or
 priority changes; a stale rollup is worse than none.
@@ -274,7 +278,9 @@ priority changes; a stale rollup is worse than none.
 | 2026-08-18 | Tracker and working rules established (ENC-016). |
 | 2026-08-18 | Roadmap published (ENC-019): 11 milestones, MVP GA target 2027-03-13, Enterprise V1 GA target 2027-09-25. |
 | 2026-08-18 | Product renamed Vault → Enclave; tracker IDs renumbered to `ENC-` phase blocks (ENC-020). |
-| 2026-08-18 | **Phase D closed.** Phase 0 is next; not started. Gate G0 applies at the end of M0. |
+| 2026-08-18 | Git repository initialized on `main`; specification pack, guidance, tracker and roadmap committed; remote set to `CasualOffice/enclave` (ENC-022). |
+| 2026-08-18 | M0 implementation plan published (ENC-023): eight locked design decisions, 16 tasks, day-10 RLS/pooling checkpoint. |
+| 2026-08-18 | **Phase D closed.** Phase 0 open. Next item `ENC-100`. Gate G0 applies at the end of M0. |
 
 ---
 

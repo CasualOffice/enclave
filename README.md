@@ -4,7 +4,7 @@
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
-A [Casual Office](https://casualoffice.org) project · [`github.com/casualoffice/enclave`](https://github.com/casualoffice/enclave)
+A [Casual Office](https://casualoffice.org) project · [`github.com/CasualOffice/enclave`](https://github.com/CasualOffice/enclave)
 
 Enclave is a self-hostable, cloud-ready enterprise content and collaboration platform — SharePoint-class
 in purpose, built around modern APIs, Rust performance, a React interface, strong security
@@ -127,7 +127,7 @@ enclave/
 Once implementation begins:
 
 ```bash
-git clone https://github.com/casualoffice/enclave.git && cd enclave
+git clone https://github.com/CasualOffice/enclave.git && cd enclave
 
 # bring up PostgreSQL, Redis, NATS, MinIO, Milvus, ClamAV
 docker compose -f deploy/compose/dev.yml up -d
@@ -153,15 +153,15 @@ publicly-readable storage bucket.
 ## Security
 
 Security issues must not be filed as public issues — report them to **security@casualoffice.org** or
-through [private vulnerability reporting](https://github.com/casualoffice/enclave/security/advisories/new).
+through [private vulnerability reporting](https://github.com/CasualOffice/enclave/security/advisories/new).
 See [`SECURITY.md`](SECURITY.md) for scope and response targets. The permanent leakage-test matrix that guards this system is in
 [`docs/12-TESTING.md §4`](docs/12-TESTING.md).
 
 ## Contributing
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md). Questions go to
-[discussions](https://github.com/casualoffice/enclave/discussions); bugs and features to
-[issues](https://github.com/casualoffice/enclave/issues).
+[discussions](https://github.com/CasualOffice/enclave/discussions); bugs and features to
+[issues](https://github.com/CasualOffice/enclave/issues).
 
 ## License
 

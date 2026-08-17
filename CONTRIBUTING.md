@@ -22,7 +22,7 @@ By contributing you agree that your contributions are licensed under the
 Requirements: Rust 1.85+, Node 20+, Docker, `sqlx-cli`.
 
 ```bash
-git clone https://github.com/casualoffice/enclave.git && cd enclave
+git clone https://github.com/CasualOffice/enclave.git && cd enclave
 
 # infrastructure: PostgreSQL, Redis, NATS, MinIO, Milvus, ClamAV
 docker compose -f deploy/compose/dev.yml up -d
@@ -147,6 +147,6 @@ or SEV2 defect is open, and migrations verify both forward and against the previ
 
 ## Questions
 
-Open a [discussion](https://github.com/casualoffice/enclave/discussions) for design questions, an
-[issue](https://github.com/casualoffice/enclave/issues) for bugs and feature requests, and see
+Open a [discussion](https://github.com/CasualOffice/enclave/discussions) for design questions, an
+[issue](https://github.com/CasualOffice/enclave/issues) for bugs and feature requests, and see
 [`SECURITY.md`](SECURITY.md) for anything security-related.

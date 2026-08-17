@@ -5,7 +5,7 @@
 **Do not open a public issue for a security vulnerability.**
 
 Report privately to **security@casualoffice.org**, or through GitHub's private vulnerability
-reporting on [`casualoffice/enclave`](https://github.com/casualoffice/enclave/security/advisories/new).
+reporting on [`CasualOffice/enclave`](https://github.com/CasualOffice/enclave/security/advisories/new).
 
 Please include:
 

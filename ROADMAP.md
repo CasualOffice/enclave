@@ -119,7 +119,7 @@ shock absorber, and it is the first thing consumed when an estimate is wrong.
 **Goal.** A request can traverse the full policy chain against a real database, and CI enforces the
 structural rules that keep it that way.
 
-**Tracker:** ENC-100 … ENC-115
+**Tracker:** ENC-100 … ENC-115 · **Plan:** [`plans/M0-FOUNDATIONS.md`](plans/M0-FOUNDATIONS.md)
 
 **Steps, in order**
 
