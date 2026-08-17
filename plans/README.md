@@ -8,8 +8,9 @@ and the order.
 
 | Plan | Milestone | Status |
 |---|---|---|
-| [`M0-FOUNDATIONS.md`](M0-FOUNDATIONS.md) | M0 — Foundations (Phase 0) | Active |
-| — | M1 — Content core | Written at gate G0 |
+| [`M0-FOUNDATIONS.md`](M0-FOUNDATIONS.md) | M0 — Foundations (Phase 0) | Complete |
+| [`G0-GATE.md`](G0-GATE.md) | Gate G0 — foundations assessment | Held, PASS |
+| [`M1-CONTENT-CORE.md`](M1-CONTENT-CORE.md) | M1 — Content core (Phase 1) | Active |
 | — | M2 … M10 | Written at the start of each milestone |
 
 ## Why plans are written one milestone ahead, not all at once
