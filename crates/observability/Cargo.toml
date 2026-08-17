@@ -1,0 +1,33 @@
+[package]
+name        = "enclave-observability"
+description = "Tracing subscriber, span attribute conventions and log redaction"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+authors.workspace      = true
+
+[features]
+default = []
+# OTLP export. Declared so that call sites and deployment profiles can name the flag today, but
+# deliberately fails the build rather than silently producing a binary that claims to export
+# traces and does not: the exporter crates (`opentelemetry`, `opentelemetry_sdk`,
+# `opentelemetry-otlp`, `tracing-opentelemetry`) are not yet pinned in the workspace manifest.
+# Until they are, compose an OTLP layer in the binary and hand it to `init_with_layer`.
+otlp = []
+
+# `observability` sits beside `core` and `config` at the bottom of the graph
+# (plans/M0-FOUNDATIONS.md D1): it depends on `core` for the vocabulary it records onto spans and
+# on nothing else in the workspace, so every crate above may depend on it without a cycle.
+[dependencies]
+enclave-core       = { workspace = true }
+chrono             = { workspace = true }
+serde              = { workspace = true }
+serde_json         = { workspace = true }
+thiserror          = { workspace = true }
+tracing            = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[lints]
+workspace = true
