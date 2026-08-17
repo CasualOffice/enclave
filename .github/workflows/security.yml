@@ -33,7 +33,7 @@ jobs:
     name: cargo audit — no known-vulnerable dependency
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install the pinned toolchain
         run: |
@@ -45,7 +45,7 @@ jobs:
 
       - name: Cache cargo-audit binary
         id: audit-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cargo/bin/cargo-audit
           key: ${{ runner.os }}-cargo-audit-${{ env.TOOL_CACHE_EPOCH }}-${{ hashFiles('rust-toolchain.toml') }}
@@ -76,7 +76,7 @@ jobs:
     name: cargo deny — advisories, licences, bans, sources
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install the pinned toolchain
         run: |
@@ -88,7 +88,7 @@ jobs:
 
       - name: Cache cargo-deny binary
         id: deny-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cargo/bin/cargo-deny
           key: ${{ runner.os }}-cargo-deny-${{ env.TOOL_CACHE_EPOCH }}-${{ hashFiles('rust-toolchain.toml') }}
@@ -107,7 +107,7 @@ jobs:
     name: SBOM — CycloneDX inventory of the dependency graph
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install the pinned toolchain
         run: |
@@ -119,7 +119,7 @@ jobs:
 
       - name: Cache cargo-cyclonedx binary
         id: cyclonedx-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cargo/bin/cargo-cyclonedx
           key: ${{ runner.os }}-cargo-cyclonedx-${{ env.TOOL_CACHE_EPOCH }}-${{ hashFiles('rust-toolchain.toml') }}
@@ -142,7 +142,7 @@ jobs:
           test -n "$(ls -A sbom)" || { echo "::error::SBOM generation produced no files"; exit 1; }
 
       - name: Upload SBOM
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: sbom-cyclonedx-${{ github.sha }}
           path: sbom/

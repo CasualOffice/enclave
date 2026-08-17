@@ -33,7 +33,7 @@ jobs:
     name: fmt — cargo fmt --check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install the pinned toolchain
         run: |
@@ -55,7 +55,7 @@ jobs:
     name: clippy — --workspace --all-targets -D warnings
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install the pinned toolchain
         run: |
@@ -73,7 +73,7 @@ jobs:
       # Keyed on Cargo.lock (dependency graph) and rust-toolchain.toml (compiler
       # version): either changing invalidates every compiled artifact.
       - name: Cache cargo registry and target
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry/index
@@ -92,7 +92,7 @@ jobs:
     name: test — cargo test --workspace
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install the pinned toolchain
         run: |
@@ -108,7 +108,7 @@ jobs:
           esac
 
       - name: Cache cargo registry and target
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry/index
@@ -137,7 +137,7 @@ jobs:
     name: build — release binaries
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install the pinned toolchain
         run: |
@@ -153,7 +153,7 @@ jobs:
           esac
 
       - name: Cache cargo registry and target
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry/index
