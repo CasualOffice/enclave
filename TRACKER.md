@@ -212,7 +212,8 @@ real database, with CI enforcing the structural gates.
 | ENC-113 | Dev Compose stack: PG, Redis, NATS, MinIO, Milvus, ClamAV | P1 | DONE | — |
 | ENC-114 | OpenTelemetry wiring + span attribute conventions | P2 | DONE | ENC-103 |
 | ENC-115 | `enclave-cli seed` for dev tenants | P2 | DONE | ENC-112 |
-| ENC-116 | Migration 0001 `CREATE ROLE` is check-then-act; concurrent first-migration across databases in one cluster fails | P2 | DONE | Found by ENC-112. Reproduced 10/10. Worked around in the harness with an advisory lock; the defect itself remains. Two API replicas starting together against different databases in one cluster would hit it. **Needs a decision** — see the note below. |
+| ENC-116 | Migration 0001 `CREATE ROLE` is check-then-act; concurrent first-migration across databases in one cluster fails | P2 | DONE |
+| ENC-117 | Make the accepted ENC-116 race legible when it fires | P2 | DONE | Researched, decided and implemented rather than escalated. sqlx locks per **database**, so same-database replicas are already safe; only multi-database-per-cluster races. The defect worth fixing was the opaque error, not the race. | Found by ENC-112. Reproduced 10/10. Worked around in the harness with an advisory lock; the defect itself remains. Two API replicas starting together against different databases in one cluster would hit it. **Needs a decision** — see the note below. |
 
 ### Phase 1 — MVP
 
