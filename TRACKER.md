@@ -106,15 +106,19 @@ phase, not worked out of band.
 
 ## 3. Active board
 
-**In progress:** *(none — `ENC-100` is next up)*
+**In progress:** `ENC-101`, `ENC-102`, `ENC-104`, `ENC-105`, `ENC-107`, `ENC-108`, `ENC-111`
+— parallel batch, see the note below.
 
 **Plan for the current milestone:** [`plans/M0-FOUNDATIONS.md`](plans/M0-FOUNDATIONS.md)
 
-**Next three, in order:**
+**Next three, in order:** `ENC-106` (RLS coverage gate), `ENC-109` (policy engine),
+`ENC-110` (routing gate) — all gated on the batch above landing and integrating.
 
-1. `ENC-100` — Cargo workspace + crate skeletons (P1, Phase 0) — see `ROADMAP.md §9`
-2. `ENC-101` — CI pipeline with structural gates (P1, Phase 0)
-3. `ENC-102` — `config` crate: layered config + secret references (P1, Phase 0)
+> **Deviation from §2.1, recorded deliberately.** The repo owner directed parallel execution of the
+> M0 foundation crates on 2026-08-18. Seven items are in flight at once rather than one. This is
+> sound here only because the tasks touch disjoint directories and share no files, and because an
+> integration step (`cargo check`/`clippy`/`test` across the workspace, by one person) follows before
+> anything is marked `DONE`. It is not the new default: the rule resumes at `ENC-106`.
 
 **Paused / blocked:** none.
 
@@ -163,7 +167,7 @@ real database, with CI enforcing the structural gates.
 
 | ID | Item | Pri | Status | Depends on |
 |---|---|---|---|---|
-| ENC-100 | Cargo workspace, crate skeletons per `docs/02 §4` | P1 | TODO | — |
+| ENC-100 | Cargo workspace, crate skeletons per `docs/02 §4` | P1 | DONE | 43 crates; check/clippy/fmt clean |
 | ENC-101 | CI: fmt, clippy, test, structural gates (`docs/12 §5`) | P1 | TODO | ENC-100 |
 | ENC-102 | `config` crate — layered config + secret references | P1 | TODO | ENC-100 |
 | ENC-103 | `core` crate — typed IDs, `RequestContext`, `Error` | P1 | TODO | ENC-100 |
