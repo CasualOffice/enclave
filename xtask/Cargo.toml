@@ -9,6 +9,11 @@ publish     = false
 
 [dependencies]
 anyhow = { workspace = true }
+# Not in [workspace.dependencies]: syn is xtask's alone — no other crate parses Rust, and pinning it
+# workspace-wide would imply a shared contract that does not exist. `span-locations` is what turns a
+# violation into a `::error file=…,line=…` annotation on the offending line.
+syn = { version = "2", features = ["full", "visit", "parsing"] }
+proc-macro2 = { version = "1", features = ["span-locations"] }
 
 [lints]
 workspace = true
