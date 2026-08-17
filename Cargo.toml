@@ -137,7 +137,7 @@ argon2       = "0.5"
 ed25519-dalek = { version = "2", features = ["rand_core", "pkcs8"] }
 jsonwebtoken = "9"
 sha2         = "0.11"
-rand         = "0.8"
+rand         = "0.10"
 base64       = "0.23"
 subtle       = "2"
 zeroize      = { version = "1", features = ["derive"] }
