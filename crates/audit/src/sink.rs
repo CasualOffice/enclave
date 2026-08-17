@@ -20,7 +20,9 @@ use enclave_core::{
 };
 use sha2::{Digest, Sha256};
 use sqlx::postgres::PgRow;
-use sqlx::{PgPool, Postgres, Row, Transaction};
+use sqlx::{PgConnection, Row};
+
+use enclave_db::{DbPool, TenantScoped};
 
 use crate::canonical::CANONICAL_VERSION;
 use crate::chain::{seal, verify_chain, EventHash, VerifyResult};
@@ -143,14 +145,14 @@ pub fn chain_lock_key(tenant: TenantId) -> i64 {
 /// row and the state change it describes commit or roll back together (`docs/03-LLD.md §15`).
 #[derive(Debug, Clone)]
 pub struct PgAuditSink {
-    pool: PgPool,
+    pool: DbPool,
     chain: ChainMode,
 }
 
 impl PgAuditSink {
     /// Builds a sink over an existing pool.
     #[must_use]
-    pub const fn new(pool: PgPool, chain: ChainMode) -> Self {
+    pub const fn new(pool: DbPool, chain: ChainMode) -> Self {
         Self { pool, chain }
     }
 
@@ -175,13 +177,16 @@ impl PgAuditSink {
         after_sequence: i64,
         limit: i64,
     ) -> Result<Vec<AuditEvent>> {
+        let mut tx = TenantScoped::begin(&self.pool, tenant).await?;
         let rows = sqlx::query(SELECT_PAGE_SQL)
             .bind(tenant.as_uuid())
             .bind(after_sequence)
             .bind(limit)
-            .fetch_all(&self.pool)
+            .fetch_all(&mut *tx)
             .await?;
-        rows.iter().map(event_from_row).collect()
+        let events: Result<Vec<AuditEvent>> = rows.iter().map(event_from_row).collect();
+        tx.commit().await?;
+        events
     }
 
     /// Verifies a tenant's chain from the beginning, one page at a time.
@@ -249,7 +254,7 @@ impl AuditSink for PgAuditSink {
     /// action that also changes state: use [`record_in_tx`] there, so the audit row cannot commit
     /// while the change it describes rolls back, or the reverse.
     async fn record(&self, event: AuditEvent) -> Result<Recorded> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = TenantScoped::begin(&self.pool, event.tenant_id).await?;
         let recorded = record_in_tx(&mut tx, event, self.chain).await?;
         tx.commit().await?;
         Ok(recorded)
@@ -266,7 +271,7 @@ impl AuditSink for PgAuditSink {
 ///
 /// Storage failures. A failure here must fail the surrounding transaction.
 pub async fn record_in_tx(
-    tx: &mut Transaction<'_, Postgres>,
+    conn: &mut PgConnection,
     mut event: AuditEvent,
     chain: ChainMode,
 ) -> Result<Recorded> {
@@ -275,17 +280,17 @@ pub async fn record_in_tx(
         // serialize each other.
         sqlx::query("SELECT pg_advisory_xact_lock($1)")
             .bind(chain_lock_key(event.tenant_id))
-            .execute(&mut **tx)
+            .execute(&mut *conn)
             .await?;
     }
 
     event.sequence =
-        sqlx::query_scalar::<_, i64>(NEXTVAL_SQL).bind(SEQUENCE_NAME).fetch_one(&mut **tx).await?;
+        sqlx::query_scalar::<_, i64>(NEXTVAL_SQL).bind(SEQUENCE_NAME).fetch_one(&mut *conn).await?;
 
     if chain == ChainMode::Enabled {
         let previous: Option<Option<Vec<u8>>> = sqlx::query_scalar(SELECT_HEAD_SQL)
             .bind(event.tenant_id.as_uuid())
-            .fetch_optional(&mut **tx)
+            .fetch_optional(&mut *conn)
             .await?;
         let previous = match previous.flatten() {
             Some(bytes) => Some(EventHash::from_slice(&bytes)?),
@@ -335,7 +340,7 @@ pub async fn record_in_tx(
         .bind(detail)
         .bind(event.previous_hash.map(|h| h.as_bytes().to_vec()))
         .bind(event.event_hash.map(|h| h.as_bytes().to_vec()))
-        .execute(&mut **tx)
+        .execute(&mut *conn)
         .await?;
 
     tracing::debug!(

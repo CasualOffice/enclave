@@ -24,6 +24,12 @@ pub enum AuditError {
     #[error("audit storage failure")]
     Storage(#[from] sqlx::Error),
 
+    /// A tenant-scoped transaction could not be opened. Audit reads and standalone audit writes go
+    /// through `TenantScoped` so row-level security sees a tenant; without one, PostgreSQL would
+    /// either reject the write or silently return no rows.
+    #[error("audit database failure")]
+    Database(#[from] enclave_db::DbError),
+
     /// A detail payload contained field names that this crate refuses to persist.
     ///
     /// See [`crate::redact`] — this is the structural half of `U4` (audit never contains
