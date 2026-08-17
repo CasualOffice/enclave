@@ -117,7 +117,23 @@ step: is this foundation sound enough to build on? See `ROADMAP.md §6`.
 `plans/M1-CONTENT-CORE.md`. The 8 Dependabot PRs also need triage — four are clean, four fail CI
 and need code changes.
 
-> **ENC-116 needs a decision, not a fix.** The clean fix is to catch `duplicate_object` **and**
+> **ENC-116 — decided 2026-08-18 by the repo owner: option (c), accept.** The racy `CREATE ROLE`
+> stays in migration 0001. It is not amended, so the forward-only rule and the gate that enforces it
+> remain intact with no exception carved into either.
+>
+> The risk is accepted on the basis that role provisioning is a deployment concern: roles are created
+> before any migration runs — `deploy/compose/init/01-roles.sql` locally, the credential provisioning
+> step in production (`docs/11-OPERATIONS.md §12`) — which makes 0001's guard a no-op. Verified at
+> 0 failures in 10 stress runs where it previously failed 10 out of 10.
+>
+> **The residual risk, stated plainly so it is not rediscovered as a surprise:** anyone who migrates
+> into a cluster where the roles were never provisioned can still hit the race, and the symptom is an
+> opaque `unique_violation` on `pg_authid_rolname_index` during startup. `docs/11-OPERATIONS.md §12`
+> documents the provisioning step as a requirement rather than a suggestion, which is what makes this
+> acceptance defensible rather than merely convenient. Revisit if migrations ever create another
+> cluster-wide object.
+
+> **The original framing, kept for the decision record.** The clean fix is to catch `duplicate_object` **and**
 > `unique_violation` in migration 0001 — but 0001 is merged, and migrations are forward-only
 > (`CLAUDE.md`), which the structural gate enforces with no escape hatch. A later migration cannot
 > repair it: 0001 runs first and fails before anything else executes. So the options are (a) amend
@@ -196,7 +212,7 @@ real database, with CI enforcing the structural gates.
 | ENC-113 | Dev Compose stack: PG, Redis, NATS, MinIO, Milvus, ClamAV | P1 | DONE | — |
 | ENC-114 | OpenTelemetry wiring + span attribute conventions | P2 | DONE | ENC-103 |
 | ENC-115 | `enclave-cli seed` for dev tenants | P2 | DONE | ENC-112 |
-| ENC-116 | Migration 0001 `CREATE ROLE` is check-then-act; concurrent first-migration across databases in one cluster fails | P1 | TODO | Found by ENC-112. Reproduced 10/10. Worked around in the harness with an advisory lock; the defect itself remains. Two API replicas starting together against different databases in one cluster would hit it. **Needs a decision** — see the note below. |
+| ENC-116 | Migration 0001 `CREATE ROLE` is check-then-act; concurrent first-migration across databases in one cluster fails | P2 | DONE | Found by ENC-112. Reproduced 10/10. Worked around in the harness with an advisory lock; the defect itself remains. Two API replicas starting together against different databases in one cluster would hit it. **Needs a decision** — see the note below. |
 
 ### Phase 1 — MVP
 

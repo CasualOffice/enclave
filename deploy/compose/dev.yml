@@ -71,6 +71,9 @@ services:
     ports:
       - "${ENCLAVE_DEV_DB_PORT:-5432}:5432"
     volumes:
+      # Runs once, single-threaded, before the server accepts connections — which is what makes
+      # it the right place to create cluster-wide roles (ENC-116).
+      - ./init:/docker-entrypoint-initdb.d:ro
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
       # `pg_isready` against the actual database, not just the port: initdb runs a temporary server
