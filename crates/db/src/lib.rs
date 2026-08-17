@@ -19,7 +19,7 @@
 //!
 //! # Using it
 //!
-//! ```ignore
+//! ```text
 //! let pool = DbPool::connect(&config).await?;
 //!
 //! let mut tx = pool.begin(ctx.tenant_id).await?;          // SET LOCAL app.tenant_id happens here
@@ -82,8 +82,19 @@ mod test_support {
 
     /// Configuration for a database the harness has already started and migrated.
     pub(crate) fn test_config() -> DbConfig {
-        let url = std::env::var("ENCLAVE_TEST_DATABASE_URL")
-            .unwrap_or_else(|_| "postgres://postgres@localhost:5432/enclave_test".to_owned());
+        // `DATABASE_URL` first, because that is what every other consumer already uses — the
+        // enclave-testing harness, the RLS coverage gate, sqlx's own tooling and psql.
+        //
+        // Two names for one thing is why these tests ran nowhere. CI set `DATABASE_URL`; these
+        // tests read `ENCLAVE_TEST_DATABASE_URL`, found nothing, fell back to a default pointing at
+        // a database that did not exist, and were `#[ignore]`d so nobody saw them fail. The
+        // fallback is kept for anyone with the old variable exported, but it is no longer the
+        // only name that works.
+        let url = std::env::var("DATABASE_URL")
+            .ok()
+            .filter(|u| !u.trim().is_empty())
+            .or_else(|| std::env::var("ENCLAVE_TEST_DATABASE_URL").ok())
+            .unwrap_or_else(|| "postgres://postgres@localhost:5432/enclave_test".to_owned());
         // The harness's container gives one superuser credential, so it is both the application
         // and the migration URL there. A real deployment separates them, which is why the two
         // fields exist rather than one.

@@ -96,6 +96,22 @@ pub(crate) mod test_support {
     use sqlx::{PgConnection, PgPool, Row};
     use std::sync::atomic::{AtomicI64, Ordering};
 
+    /// Serialises every test that touches `events_outbox`.
+    ///
+    /// The publisher drains the outbox **across all tenants** — that is the whole point of it, and
+    /// why it is one of the three cross-tenant platform paths. So per-test tenant ids do not
+    /// isolate these tests from each other: a publisher started by one test happily publishes
+    /// another test's rows, and both then disagree with their own counts. It showed up as
+    /// `published: 7` against an expected `2`.
+    ///
+    /// A lock rather than a database per test, because it matches the thing being modelled: there
+    /// is one publisher per cluster, holding one advisory lock. Tests that run it should queue for
+    /// the same reason production instances do.
+    pub(crate) fn outbox_lock() -> &'static tokio::sync::Mutex<()> {
+        static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+        LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+    }
+
     /// Connects to the database named by `DATABASE_URL`.
     pub(crate) async fn pool() -> PgPool {
         let url = std::env::var("DATABASE_URL")

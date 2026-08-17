@@ -293,6 +293,12 @@ mod tests {
         let mut scoped = pool.begin(TenantId::new_v7()).await.expect("begin");
         let result = sqlx::query("SELECT pg_sleep(5)").execute(&mut *scoped).await;
         assert!(result.is_err(), "the statement timeout did not fire");
+
+        // Release the transaction BEFORE closing the pool. `PgPool::close` waits for every
+        // connection to come back, and `scoped` holds one until the end of this function — so
+        // closing first is a self-deadlock that hangs forever rather than failing. It went
+        // unnoticed because the test was `#[ignore]`d and had never actually run (ENC-118).
+        drop(scoped);
         pool.close().await;
     }
 }

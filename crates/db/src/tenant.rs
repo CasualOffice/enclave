@@ -53,7 +53,7 @@ const TENANT_GUC: &str = "app.tenant_id";
 /// Obtained only from [`DbPool::begin`]. Dereferences to a [`PgConnection`], so it is used exactly
 /// like a `sqlx` transaction:
 ///
-/// ```ignore
+/// ```text
 /// let mut tx = pool.begin(ctx.tenant_id).await?;
 /// let row = sqlx::query("SELECT id FROM files WHERE id = $1")
 ///     .bind(sql(file_id))
@@ -282,6 +282,10 @@ mod tests {
             "tenant context survived the transaction and reached the next checkout"
         );
 
+        // `PgPool::close` waits for every connection to be returned, and `conn` holds one until the
+        // end of this function — so closing first is a self-deadlock that hangs rather than
+        // fails. Hidden until now because the test was `#[ignore]`d and had never run (ENC-118).
+        drop(conn);
         pool.close().await;
     }
 
@@ -305,6 +309,10 @@ mod tests {
             "tenant context survived a rollback"
         );
 
+        // `PgPool::close` waits for every connection to be returned, and `conn` holds one until the
+        // end of this function — so closing first is a self-deadlock that hangs rather than
+        // fails. Hidden until now because the test was `#[ignore]`d and had never run (ENC-118).
+        drop(conn);
         pool.close().await;
     }
 
@@ -330,6 +338,10 @@ mod tests {
             "tenant context survived a dropped handle"
         );
 
+        // `PgPool::close` waits for every connection to be returned, and `conn` holds one until the
+        // end of this function — so closing first is a self-deadlock that hangs rather than
+        // fails. Hidden until now because the test was `#[ignore]`d and had never run (ENC-118).
+        drop(conn);
         pool.close().await;
     }
 
@@ -344,6 +356,10 @@ mod tests {
         let mut scoped = pool.begin(tenant).await.expect("begin");
         assert_eq!(scoped.tenant_id(), tenant);
         assert_eq!(scoped.observed_tenant_context().await.expect("read"), Some(tenant));
+        // `PgPool::close` waits for every connection to be returned, and `scoped` holds one until the
+        // end of this function — so closing first is a self-deadlock that hangs rather than
+        // fails. Hidden until now because the test was `#[ignore]`d and had never run (ENC-118).
+        drop(scoped);
         pool.close().await;
     }
 

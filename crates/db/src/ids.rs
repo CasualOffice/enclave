@@ -12,7 +12,7 @@
 //! reasoning that made `core` generate them from a single macro applies here: fourteen hand-written
 //! implementations are fourteen chances for one of them to bind the wrong column type.
 //!
-//! ```ignore
+//! ```text
 //! // binding
 //! sqlx::query("SELECT * FROM files WHERE id = $1").bind(sql(file_id))
 //!

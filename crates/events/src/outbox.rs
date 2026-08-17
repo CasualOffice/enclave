@@ -309,6 +309,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires a live PostgreSQL with migration 0001 applied (ENC-112 fixtures)"]
     async fn a_rolled_back_transaction_publishes_nothing() {
+        let _outbox_guard = test_support::outbox_lock().lock().await;
         let pool = test_support::pool().await;
         let tenant = TenantId::new_v7();
         let event = sample(tenant);
@@ -336,6 +337,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires a live PostgreSQL with migration 0001 applied (ENC-112 fixtures)"]
     async fn a_committed_transaction_publishes_once_even_if_the_event_is_written_twice() {
+        let _outbox_guard = test_support::outbox_lock().lock().await;
         let pool = test_support::pool().await;
         let tenant = TenantId::new_v7();
         let event = sample(tenant);
