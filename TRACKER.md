@@ -117,6 +117,13 @@ step: is this foundation sound enough to build on? See `ROADMAP.md §6`.
 
 **Plan for the current milestone:** [`plans/M0-FOUNDATIONS.md`](plans/M0-FOUNDATIONS.md)
 
+**Accepted risk, `ENC-138`:** `RUSTSEC-2026-0253` — unsoundness in `lru`, reached transitively
+through `aws-sdk-s3`. `LruCache::pop()` is not panic-safe. Accepted because there is nowhere to
+move to: `lru 0.16.4` is the latest release, the advisory names no patched version, and the SDK pins
+it. Suppressed in `.cargo/audit.toml` with its reason and its expiry condition — it ends when
+`aws-sdk-s3` bumps past the fix, and `cargo audit` will say so on the first build after that. An
+acceptance, not a resolution.
+
 **Next:** `ENC-129` upload state machine and multipart, then `ENC-131` immutable versions and
 `ENC-132` antivirus — the three that together let content actually enter the system.
 

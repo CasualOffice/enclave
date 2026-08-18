@@ -70,7 +70,9 @@ jobs:
         #   reports clean. It disappears from the lockfile entirely once sqlx is
         #   declared with `default-features = false` in the root manifest —
         #   remove this ignore in the same commit. Revisit 2026-11-18.
-        run: cargo audit --deny warnings --ignore RUSTSEC-2023-0071
+        run: # Suppressions live in audit.toml, where each carries its reason and its expiry
+          # condition. --deny warnings keeps unsoundness advisories blocking, not advisory.
+          cargo audit --deny warnings
 
   deny:
     name: cargo deny — advisories, licences, bans, sources
