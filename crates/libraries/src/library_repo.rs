@@ -207,12 +207,19 @@ impl LibraryRepository {
     /// `workspace_id` is not settable. Moving a library re-parents its ACL inheritance, which is a
     /// different operation with different audit and different consequences.
     ///
+    /// `inherit_permissions` is not settable here either, and for the same kind of reason: breaking
+    /// inheritance has to copy the effective entries down in the same transaction, or every
+    /// ancestor `DENY` silently stops applying (`ENC-141`). Sending a value that differs from the
+    /// stored one is [`LibraryError::InheritanceNotSettableHere`] rather than a quiet no-op —
+    /// see `enclave_authorization::break_library_inheritance`.
+    ///
     /// Returns `Ok(None)` when there is no such live library in this tenant.
     ///
     /// # Errors
     ///
     /// [`LibraryError::RevisionConflict`] when the revision has moved on — carrying the current
-    /// value, with nothing written — and storage or decode failures.
+    /// value, with nothing written — [`LibraryError::InheritanceNotSettableHere`] when the settings
+    /// would change `inherit_permissions`, and storage or decode failures.
     pub async fn update(
         conn: &mut PgConnection,
         tenant: TenantId,
@@ -225,10 +232,24 @@ impl LibraryRepository {
             .bind(sql(tenant))
             .bind(sql(library))
             .bind(expected_revision);
-        let row = bind_settings(query, settings).bind(now).fetch_optional(&mut *conn).await?;
+        let row = bind_settings_without_inheritance(query, settings)
+            .bind(now)
+            .fetch_optional(&mut *conn)
+            .await?;
 
         match row {
-            Some(row) => library_from_row(&row).map(Some),
+            Some(row) => {
+                let library = library_from_row(&row)?;
+                // Refused, not ignored. A caller who sent `inherit_permissions: false` and got back
+                // `200 OK` would believe the library no longer inherits — and would keep believing
+                // it while the workspace's entries went on applying. Returning an error puts the
+                // disagreement where the caller can see it, and rolls back the rest of their
+                // settings change with it.
+                if library.settings.inherit_permissions != settings.inherit_permissions {
+                    return Err(LibraryError::InheritanceNotSettableHere);
+                }
+                Ok(Some(library))
+            }
             None => match Self::current_revision(conn, tenant, library).await? {
                 Some(current_revision) => Err(LibraryError::RevisionConflict { current_revision }),
                 None => Ok(None),
@@ -315,6 +336,34 @@ impl LibraryRepository {
 /// parameters, two hand-written bind sequences would eventually differ by one, and a transposition
 /// between two `BOOLEAN`s — `mcp_visible` and `sync_enabled`, say — is accepted by PostgreSQL
 /// without complaint. The compiler cannot catch it; not writing it twice can.
+/// The same, minus `inherit_permissions`, for the update path.
+///
+/// A separate function rather than a flag on [`bind_settings`] because the bind *positions* differ:
+/// getting them silently out of step would write one column's value into another, and every column
+/// here governs what leaves the tenant.
+fn bind_settings_without_inheritance<'q>(
+    query: sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments>,
+    settings: &'q LibrarySettings,
+) -> sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments> {
+    query
+        .bind(&settings.name)
+        .bind(normalize_slug(&settings.slug))
+        .bind(settings.default_classification_id)
+        .bind(settings.versioning_mode.as_str())
+        .bind(settings.version_limit)
+        .bind(settings.require_checkout)
+        .bind(settings.require_approval)
+        .bind(extensions_to_json(settings.allowed_extensions.as_ref()))
+        .bind(extensions_to_json(settings.blocked_extensions.as_ref()))
+        .bind(settings.max_file_size_bytes)
+        .bind(settings.external_sharing.as_str())
+        .bind(settings.ai_indexing_enabled)
+        .bind(settings.mcp_visible)
+        .bind(settings.sync_enabled)
+        .bind(settings.storage_profile_id)
+        .bind(settings.retention_policy_id)
+}
+
 fn bind_settings<'q>(
     query: sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments>,
     settings: &'q LibrarySettings,
@@ -400,13 +449,18 @@ const SELECT_LIBRARY_PAGE: &str = "SELECT id, tenant_id, workspace_id, name, slu
      LIMIT $5";
 
 /// The optimistic-concurrency update. The revision comparison is in the `WHERE` clause on purpose.
+/// `inherit_permissions` is deliberately absent from the `SET` list. Flipping it to `FALSE` breaks
+/// ACL inheritance, and a break that does not first materialise the effective set drops every
+/// ancestor `DENY` — the `ENC-141` privilege escalation. It changes only through
+/// `enclave_authorization::break_library_inheritance`, which does both halves in one transaction.
+/// The column is still returned, so [`LibraryRepository::update`] can see that a caller tried.
 const UPDATE_LIBRARY: &str = "UPDATE libraries \
-     SET name = $4, slug = $5, inherit_permissions = $6, default_classification_id = $7, \
-         versioning_mode = $8, version_limit = $9, require_checkout = $10, require_approval = $11, \
-         allowed_extensions = $12, blocked_extensions = $13, max_file_size_bytes = $14, \
-         external_sharing = $15, ai_indexing_enabled = $16, mcp_visible = $17, sync_enabled = $18, \
-         storage_profile_id = $19, retention_policy_id = $20, \
-         revision = revision + 1, updated_at = $21 \
+     SET name = $4, slug = $5, default_classification_id = $6, \
+         versioning_mode = $7, version_limit = $8, require_checkout = $9, require_approval = $10, \
+         allowed_extensions = $11, blocked_extensions = $12, max_file_size_bytes = $13, \
+         external_sharing = $14, ai_indexing_enabled = $15, mcp_visible = $16, sync_enabled = $17, \
+         storage_profile_id = $18, retention_policy_id = $19, \
+         revision = revision + 1, updated_at = $20 \
      WHERE tenant_id = $1 AND id = $2 AND revision = $3 AND deleted_at IS NULL \
      RETURNING id, tenant_id, workspace_id, name, slug, inherit_permissions, \
      default_classification_id, versioning_mode, version_limit, require_checkout, \
@@ -493,7 +547,13 @@ mod tests {
             insert_columns.split(',').map(|column| column.trim().to_owned()).collect();
         assert_eq!(listed, expected);
 
-        // The update lists them as assignments, in the same order, from `$4` upward.
+        // The update lists them as assignments, in the same order, from `$4` upward — minus
+        // `inherit_permissions`, which it may not write (`ENC-141`). That one omission is the whole
+        // difference between the two lists, and asserting it that way means adding a column to one
+        // statement and not the other still fails here rather than at runtime with a value in the
+        // wrong column.
+        let expected_update: Vec<&str> =
+            expected.iter().copied().filter(|column| *column != "inherit_permissions").collect();
         let assignments: Vec<String> = UPDATE_LIBRARY
             .split_once("SET ")
             .expect("the update's assignments")
@@ -506,7 +566,38 @@ mod tests {
                 assignment.trim().split_once(" =").expect("an assignment").0.to_owned()
             })
             .collect();
-        assert_eq!(assignments, expected);
+        assert_eq!(assignments, expected_update);
+        assert_eq!(
+            assignments.len() + 1,
+            expected.len(),
+            "the update writes a different number of settings than the insert, so one of them has \
+             a column the other does not"
+        );
+    }
+
+    #[test]
+    fn the_update_cannot_write_inherit_permissions() {
+        // The `ENC-141` control, asserted on the statement itself rather than only through a
+        // database round trip: breaking inheritance must copy the effective ACL down in the same
+        // transaction, and a settings replacement has no way to do that. If this column ever
+        // returns to the `SET` list, a single `PATCH` silently drops every ancestor `DENY`.
+        let assignments = UPDATE_LIBRARY
+            .split_once("SET ")
+            .expect("the update's assignments")
+            .1
+            .split_once(" WHERE ")
+            .expect("the assignments end at the WHERE")
+            .0;
+        assert!(
+            !assignments.contains("inherit_permissions"),
+            "UPDATE_LIBRARY assigns inherit_permissions: {assignments}"
+        );
+        // Still returned, because `update` compares it to what the caller asked for and refuses
+        // rather than silently ignoring them.
+        assert!(UPDATE_LIBRARY.contains(
+            "RETURNING id, tenant_id, workspace_id, name, slug, \
+     inherit_permissions"
+        ));
     }
 
     #[test]

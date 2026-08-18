@@ -11,6 +11,12 @@
 //! what that means — see `LIBRARY_CHAIN_SQL` there. This crate stores the boolean faithfully and
 //! draws no conclusion from it. A second interpretation would be a second answer to "who can read
 //! this", and the two would eventually disagree.
+//!
+//! Storing it faithfully does not mean storing it on request. `LibrarySettings` carries the flag
+//! because it is a replacement of the whole record, but only `create` writes it: at creation there
+//! is no prior effective ACL to preserve, so starting out detached escalates nothing, whereas
+//! *changing* it later does unless the effective set is copied down in the same transaction
+//! (`ENC-141`).
 
 use core::fmt;
 

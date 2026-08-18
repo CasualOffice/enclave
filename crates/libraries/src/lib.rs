@@ -22,6 +22,13 @@
 //! persists the boolean faithfully and draws no conclusion from it — not even "a library that does
 //! not inherit is private". See [`model`].
 //!
+//! It is the one setting [`LibraryRepository::update`] will not write. Flipping it to `FALSE`
+//! without first copying the effective ACL onto the library drops every ancestor `DENY`, which is
+//! the `ENC-141` privilege escalation; the two halves belong in one transaction, and that
+//! transaction is `enclave_authorization::break_library_inheritance`. A settings replacement that
+//! would change the flag is refused rather than quietly ignored, so a caller never believes a break
+//! happened that did not.
+//!
 //! # What this crate is not
 //!
 //! **It makes no authorization decision.** The policy chain is called from the handler, before a

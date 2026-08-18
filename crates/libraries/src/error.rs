@@ -50,6 +50,15 @@ pub enum LibraryError {
         current_revision: i64,
     },
 
+    /// The settings would change `inherit_permissions`, which this operation may not do.
+    ///
+    /// Breaking inheritance must copy the effective ACL onto the library in the same transaction as
+    /// the flag flip, or every ancestor `DENY` stops applying the moment the resolver's walk is
+    /// truncated (`ENC-141`). A settings replacement cannot do that, so it refuses rather than
+    /// performing half of an operation whose halves are a privilege escalation apart.
+    #[error("inherit_permissions cannot be changed through a settings update")]
+    InheritanceNotSettableHere,
+
     /// The workspace a library was to be created in does not exist in this tenant.
     ///
     /// Raised by the composite foreign key `(tenant_id, workspace_id)`, which is what makes a
@@ -70,6 +79,7 @@ impl LibraryError {
             Self::MalformedRow { .. }
             | Self::InvalidCursor
             | Self::RevisionConflict { .. }
+            | Self::InheritanceNotSettableHere
             | Self::NoSuchWorkspace => false,
         }
     }
@@ -94,6 +104,12 @@ impl From<LibraryError> for CoreError {
                 Self::Conflict { current_revision }
             }
             LibraryError::NoSuchWorkspace => Self::NotFound,
+            // The caller asked for something this endpoint does not do, and naming the field is
+            // what tells them where to go instead.
+            LibraryError::InheritanceNotSettableHere => Self::Validation(vec![FieldError::new(
+                "inherit_permissions",
+                ValidationCode::Immutable,
+            )]),
             // The column name stays in the source chain for the logs and never reaches the caller.
             other => Self::Internal(anyhow::Error::new(other)),
         }

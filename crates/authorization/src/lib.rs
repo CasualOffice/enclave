@@ -44,6 +44,7 @@
 
 pub mod cache;
 pub mod error;
+pub mod materialise;
 pub mod repo;
 pub mod resolve;
 pub mod self_service;
@@ -51,6 +52,9 @@ pub mod service;
 
 pub use cache::{cache_key, CACHE_KEY_PREFIX};
 pub use error::{AuthzError, Result};
+pub use materialise::{
+    break_file_inheritance, break_library_inheritance, MAX_MATERIALISED_ENTRIES,
+};
 pub use resolve::{
     AclEntry, AclResourceType, ChainNode, Effect, Effective, EffectiveIndex, InheritanceChain,
     Principal, PrincipalKind, PrincipalSet,

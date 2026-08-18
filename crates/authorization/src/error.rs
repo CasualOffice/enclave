@@ -8,7 +8,7 @@
 //! behind a plausible message — and, in the other direction, would let a resolver bug that throws
 //! on every row look like a strict-but-working policy.
 
-use enclave_core::{Dependency, Error as CoreError};
+use enclave_core::{Dependency, Error as CoreError, FieldError, ValidationCode};
 
 /// The result type used throughout this crate.
 pub type Result<T, E = AuthzError> = core::result::Result<T, E>;
@@ -42,6 +42,34 @@ pub enum AuthzError {
         reason: &'static str,
     },
 
+    /// The resource is not visible to this transaction.
+    ///
+    /// Another tenant's, soft-deleted, or never real. Deliberately one error for all three
+    /// (`CLAUDE.md` rule 7): distinguishing them would let a caller enumerate what exists in a
+    /// tenant they cannot read.
+    #[error("resource not found")]
+    UnknownResource,
+
+    /// Inheritance was already broken on this resource.
+    ///
+    /// An error rather than a no-op. The two callers who both think they are establishing the
+    /// resource's ACL should not both be told they succeeded — the second one's copy never
+    /// happened, and reporting success would leave them believing a set of entries is in place that
+    /// is not.
+    #[error("resource already has inheritance broken")]
+    NotInheriting,
+
+    /// The effective set was too large to materialise.
+    ///
+    /// Copying is bounded because a break is a synchronous write inside a request. Refusing is the
+    /// safe direction: the resource keeps inheriting, and inheriting is never the permissive
+    /// outcome.
+    #[error("effective permission set exceeds the materialisation limit of {limit}")]
+    TooManyEntries {
+        /// The configured limit that was exceeded.
+        limit: usize,
+    },
+
     /// The inheritance walk hit its depth limit before reaching a root.
     ///
     /// Deliberately an error rather than "resolve with what we have". A truncated chain is a chain
@@ -72,6 +100,21 @@ impl From<AuthzError> for CoreError {
                 Self::Upstream { dependency: Dependency::Postgres, retryable }
             }
             AuthzError::Database(error) => error.into(),
+            // A resource this transaction cannot see is a 404, never a 403 — a 403 would confirm
+            // that it exists (`CLAUDE.md` rule 7).
+            AuthzError::UnknownResource => Self::NotFound,
+            // The caller's request, not our defect: the resource is already in the state they asked
+            // for, so it renders as a conflict rather than as an internal error.
+            //
+            // `current_revision` is 0 because the caller does not need to retry with a fresh one:
+            // re-reading and re-sending will not make an already-broken resource breakable.
+            AuthzError::NotInheriting => Self::Conflict { current_revision: 0 },
+            // A limit on the *resource*, not on anything the caller typed, so it names the field
+            // that identified it and stops there — the size of a tenant's ACL is not something an
+            // error body should quantify for whoever asked.
+            AuthzError::TooManyEntries { .. } => {
+                Self::Validation(vec![FieldError::new("resource_id", ValidationCode::OutOfRange)])
+            }
             other => Self::Internal(anyhow::Error::new(other)),
         }
     }
