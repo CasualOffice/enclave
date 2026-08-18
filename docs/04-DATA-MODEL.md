@@ -590,6 +590,14 @@ CREATE INDEX idx_acl_principal ON acl_entries (tenant_id, principal_type, princi
 Breaking inheritance copies the effective entries down with `inherited_from` set, so the break is
 explicit and auditable rather than implicit.
 
+The copy and the flag flip are **one transaction**, in `enclave_authorization::materialise`
+(`break_file_inheritance`, `break_library_inheritance`). Flipping the flag alone truncates the walk
+at rule 1, which drops every ancestor `DENY` and turns an operation that narrows access into one
+that widens it — so the copy is not an implementation detail of the break, it *is* the break. It
+collapses the chain by rules 3 and 4 before writing, because `uq_acl_entry` holds one row per
+`(resource, principal, action)` and cannot store a `DENY` and an `ALLOW` side by side. Nothing else
+may write the column: `PATCH /libraries/{id}` refuses a settings body that would change it.
+
 ## 10. Metadata, lists, pages, views
 
 ```sql

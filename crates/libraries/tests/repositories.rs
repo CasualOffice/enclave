@@ -408,3 +408,71 @@ async fn a_trashed_library_leaves_every_ordinary_read_and_another_tenant_never_s
 fn the_ignore_reason_names_where_these_run() {
     assert!(NEEDS_DB.contains("--include-ignored"));
 }
+
+/// A settings replacement may not break inheritance (`ENC-141`).
+///
+/// Breaking inheritance has to copy the effective ACL onto the library in the same transaction as
+/// the flag flip, or every ancestor `DENY` stops applying the instant the resolver's walk is
+/// truncated. A settings replacement cannot do that half, so it must refuse the whole request
+/// rather than perform the dangerous half of an operation whose halves are a privilege escalation
+/// apart. The refusal is asserted three ways: the call fails, the flag is unchanged, and — the part
+/// that would otherwise be a silent partial write — the *other* settings in the same request are
+/// unchanged too.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL with migrations 0001–0006; CI runs it with --include-ignored"]
+async fn a_settings_update_cannot_break_inheritance() {
+    let (db, fixtures, pool) = start().await;
+    let alpha = fixtures.alpha.id;
+
+    // Created inheriting. `create` may set the flag either way — a library that has never existed
+    // has no effective ACL to preserve, so starting out detached escalates nothing. It is only
+    // *changing* the flag afterwards that has a before-state to drop.
+    let inheriting = LibrarySettings { inherit_permissions: true, ..settings("Specs") };
+    let mut tx = TenantScoped::begin(&pool, alpha).await.expect("begin");
+    let workspace = insert_workspace(&mut tx, alpha, fixtures.alpha.owner, "engineering").await;
+    let library = LibraryRepository::create(&mut tx, alpha, workspace, &inheriting, Utc::now())
+        .await
+        .expect("create library");
+    tx.commit().await.expect("commit");
+    assert!(library.settings.inherit_permissions, "the fixture must start out inheriting");
+
+    // The request carries a second, entirely legitimate change alongside the break, which is how
+    // this would arrive in practice — as one field of a settings form.
+    let broken = LibrarySettings {
+        inherit_permissions: false,
+        external_sharing: ExternalSharing::Disabled,
+        ..library.settings.clone()
+    };
+    let mut tx = TenantScoped::begin(&pool, alpha).await.expect("begin");
+    let refused = LibraryRepository::update(
+        &mut tx,
+        alpha,
+        library.id,
+        library.revision,
+        &broken,
+        Utc::now(),
+    )
+    .await;
+    assert!(
+        matches!(refused, Err(LibraryError::InheritanceNotSettableHere)),
+        "a settings update was allowed to break inheritance: {refused:?}"
+    );
+    // The error rolls the transaction back; committing here is what a caller who ignored it would
+    // do, and the point is that even then nothing was written.
+    drop(tx);
+
+    let mut tx = TenantScoped::begin(&pool, alpha).await.expect("begin");
+    let after = LibraryRepository::find_by_id(&mut tx, alpha, library.id)
+        .await
+        .expect("find")
+        .expect("the library still exists");
+    tx.commit().await.expect("commit");
+    assert!(after.settings.inherit_permissions, "inheritance was broken by a settings update");
+    assert_eq!(
+        after.settings.external_sharing, library.settings.external_sharing,
+        "the refused request wrote its other fields anyway, so it was a partial update"
+    );
+    assert_eq!(after.revision, library.revision, "a refused update still bumped the revision");
+
+    drop(db);
+}

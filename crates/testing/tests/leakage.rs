@@ -33,15 +33,15 @@
 //!   version here asserts the layers underneath so that a new handler inherits the property rather
 //!   than needing its own copy of the test.
 //!
-//! **A4 is not satisfied, and this file says so out loud.** The row reads *"breaking inheritance
-//! materializes the effective set with no privilege gain"*. Nothing in the product materialises
-//! anything: `inherit_permissions` is a column that repositories store and return
-//! (`crates/libraries/src/model.rs`, `crates/files/src/repo.rs`), the resolver stops its walk when
-//! it is `FALSE`, and there is no API that breaks inheritance and copies the effective entries
-//! down. Two tests below state exactly that — one records the privilege gain today's behaviour
-//! produces, and one proves the resolver composes correctly once the copy is performed, using the
-//! reference implementation in `enclave_testing::content::materialize_inherited`. When the real API
-//! lands, the first test must be deleted and A4 becomes a single row.
+//! **A4 is satisfied by `ENC-141`.** The row reads *"breaking inheritance materializes the
+//! effective set with no privilege gain"*, and until that fix nothing materialised anything:
+//! `inherit_permissions` was a column repositories stored and returned, the resolver stopped its
+//! walk when it was `FALSE`, and a `DENY` above the break simply stopped applying. The two tests
+//! below drive the real operations — `enclave_authorization::break_file_inheritance` and
+//! `break_library_inheritance`, one per resource that carries the flag — and each asserts the
+//! escalation case explicitly rather than only sweeping for neutrality. The third leg of the fix,
+//! that a library settings replacement cannot flip the flag at all, is asserted next to the
+//! repository it constrains, in `crates/libraries/tests/repositories.rs`.
 //!
 //! **Not assertable yet, with the reason.**
 //!
@@ -84,7 +84,10 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use chrono::{Duration, Utc};
 use enclave_audit::{ChainMode, PgAuditSink};
-use enclave_authorization::PgAclAuthorization;
+use enclave_authorization::{
+    break_file_inheritance, break_library_inheritance, AuthzError, PgAclAuthorization,
+    ResolverLimits,
+};
 use enclave_classification::UnconfiguredClassification;
 use enclave_conditional_access::UnconfiguredConditionalAccess;
 use enclave_core::{
@@ -103,9 +106,7 @@ use enclave_storage::{
     PublicAccessError, PublicAccessReport, Result as StorageResult, StoreCapabilities, Support,
     UploadRequest, UploadSession, UploadTarget,
 };
-use enclave_testing::content::{
-    grant, materialize_inherited, revoke_all, AclEffect, AclPrincipal, AclScope, Spine,
-};
+use enclave_testing::content::{grant, revoke_all, AclEffect, AclPrincipal, AclScope, Spine};
 use enclave_testing::schema::{role_standing, tenant_scoped_tables};
 use enclave_testing::{Fixtures, TestDb};
 use enclave_uploads::{NewUpload, UploadError, UploadIntent, UploadLimits, UploadService};
@@ -657,19 +658,27 @@ async fn a3_a_deny_overrides_an_inherited_allow_at_every_level() {
     );
 }
 
-/// **A4, first half** — today, breaking inheritance *does* gain privilege.
+/// **A4** — breaking inheritance materialises the effective set and gains no privilege.
 ///
-/// A4 says breaking inheritance materialises the effective set with no privilege gain. Nothing
-/// materialises anything yet, so setting `inherit_permissions = FALSE` simply truncates the walk —
-/// and a `DENY` that lived above the break stops applying. That is a privilege gain, and it is the
-/// exact defect the row exists to forbid.
+/// The operation is [`enclave_authorization::break_file_inheritance`]. Its whole job is to be
+/// *neutral*: immediately after a break every principal must resolve exactly as they did
+/// immediately before, because the entries that decided their access have been copied onto the
+/// resource. What changes afterwards is only that edits to an ancestor no longer reach it.
 ///
-/// It is recorded as a passing test rather than left as a comment for one reason: the day someone
-/// implements the break, this test fails, and the failure is the reminder to delete it and to keep
-/// the second half. A comment would not do that.
+/// Until `ENC-141` nothing performed the copy, so `inherit_permissions = FALSE` merely truncated
+/// the resolver's walk — and a `DENY` written above the break stopped applying. That is a privilege
+/// gain produced by an operation whose purpose is to narrow access, which is what this row forbids.
+/// The escalation case is asserted first and on its own, because it is the defect; the probe sweep
+/// after it is what proves the fix is neutral rather than merely denying.
+///
+/// The sweep asks a set rather than a single question, because a break can leak along three axes:
+/// the principal (someone who had nothing gains something), the action (a download grant becomes a
+/// print grant) and the node (the folder keeps rights the file never had). All three are in the
+/// set, and the set is checked to contain both an allow and a denial so it cannot pass by refusing
+/// everything.
 #[tokio::test]
 #[ignore = "requires a live PostgreSQL with migrations 0001–0006; CI runs it with --include-ignored"]
-async fn a4_breaking_inheritance_without_materialising_gains_privilege_today() {
+async fn a4_breaking_inheritance_materialises_and_gains_no_privilege() {
     let (db, fixtures, pool) = start().await;
     let alpha = fixtures.alpha.id;
     let member = fixtures.alpha.member;
@@ -677,6 +686,9 @@ async fn a4_breaking_inheritance_without_materialising_gains_privilege_today() {
 
     let mut admin = db.connect().await.expect("admin connection");
     spine.insert(&mut admin, fixtures.alpha.owner, Utc::now()).await.expect("spine");
+
+    // The escalation shape, exactly: allowed nearby, denied from above. Before `ENC-141` the break
+    // deleted the denial by walking past it.
     grant(
         &mut admin,
         alpha,
@@ -700,53 +712,8 @@ async fn a4_breaking_inheritance_without_materialising_gains_privilege_today() {
     .await
     .expect("deny at the workspace");
 
-    let engine = engine(&pool);
-    let caller = ctx(alpha, member);
-
-    assert!(
-        !allows(&engine, &caller, DOWNLOAD, &spine.file_ref()).await,
-        "the workspace DENY did not reach the file while inheritance was intact"
-    );
-
-    sqlx::query("UPDATE files SET inherit_permissions = FALSE WHERE tenant_id = $1 AND id = $2")
-        .bind(alpha.as_uuid())
-        .bind(spine.folder.as_uuid())
-        .execute(&mut admin)
-        .await
-        .expect("break inheritance");
-
-    assert!(
-        allows(&engine, &caller, DOWNLOAD, &spine.file_ref()).await,
-        "breaking inheritance no longer gains privilege — which is what A4 asks for. Delete this \
-         test, keep a4_a_materialised_break_changes_no_verdict, and mark A4 satisfied in \
-         docs/12-TESTING.md §4.2."
-    );
-}
-
-/// **A4, second half** — a break that materialises the effective set changes no verdict.
-///
-/// The copy is performed by `enclave_testing::content::materialize_inherited`, the harness's
-/// reference implementation of the operation the product owes: resolve the chain by deny-wins,
-/// write the result onto the node, then stop inheriting. This test is what an implementation has to
-/// satisfy, and it fails the moment one is written that resolves the collision the other way.
-///
-/// "No privilege gain" is asserted over a probe set rather than a single question, because a break
-/// can leak along three axes: the principal (someone who had nothing gains something), the action
-/// (a download grant becomes a print grant) and the node (the folder keeps rights the file never
-/// had). All three are in the set, and the set is checked to contain both an allow and a denial so
-/// it cannot pass by refusing everything.
-#[tokio::test]
-#[ignore = "requires a live PostgreSQL with migrations 0001–0006; CI runs it with --include-ignored"]
-async fn a4_a_materialised_break_changes_no_verdict() {
-    let (db, fixtures, pool) = start().await;
-    let alpha = fixtures.alpha.id;
-    let spine = Spine::new(alpha);
-
-    let mut admin = db.connect().await.expect("admin connection");
-    spine.insert(&mut admin, fixtures.alpha.owner, Utc::now()).await.expect("spine");
-
-    // A chain worth materialising: the library allows the whole of engineering, the workspace
-    // denies one person in it, and the viewer is named nowhere.
+    // A chain with more than the escalation in it, so the sweep has something to be neutral about:
+    // the library allows the whole of engineering, and the folder allows the owner directly.
     grant(
         &mut admin,
         alpha,
@@ -761,17 +728,6 @@ async fn a4_a_materialised_break_changes_no_verdict() {
     grant(
         &mut admin,
         alpha,
-        AclScope::Workspace(spine.workspace),
-        AclPrincipal::User(fixtures.alpha.member),
-        DOWNLOAD,
-        AclEffect::Deny,
-        None,
-    )
-    .await
-    .expect("user deny");
-    grant(
-        &mut admin,
-        alpha,
         AclScope::Folder(spine.folder),
         AclPrincipal::User(fixtures.alpha.owner),
         DOWNLOAD,
@@ -782,8 +738,15 @@ async fn a4_a_materialised_break_changes_no_verdict() {
     .expect("owner allow");
 
     let engine = engine(&pool);
+    let caller = ctx(alpha, member);
+    assert!(
+        !allows(&engine, &caller, DOWNLOAD, &spine.file_ref()).await,
+        "the workspace DENY did not reach the file while inheritance was intact, so the break \
+         cannot be shown to preserve it"
+    );
+
     let probes: Vec<(&str, RequestContext, Action, ResourceRef)> = vec![
-        ("member/download/file", ctx(alpha, fixtures.alpha.member), DOWNLOAD, spine.file_ref()),
+        ("member/download/file", ctx(alpha, member), DOWNLOAD, spine.file_ref()),
         ("owner/download/file", ctx(alpha, fixtures.alpha.owner), DOWNLOAD, spine.file_ref()),
         ("viewer/download/file", ctx(alpha, fixtures.alpha.viewer), DOWNLOAD, spine.file_ref()),
         ("owner/print/file", ctx(alpha, fixtures.alpha.owner), PRINT, spine.file_ref()),
@@ -796,32 +759,30 @@ async fn a4_a_materialised_break_changes_no_verdict() {
     }
     assert!(
         before.iter().any(|(_, allowed)| *allowed) && before.iter().any(|(_, a)| !*a),
-        "the probe set is all-allow or all-deny, so nothing it says after the break means anything: \
-         {before:?}"
+        "the probe set is all-allow or all-deny, so nothing it says after the break means \
+         anything: {before:?}"
     );
 
-    // Break at the folder, the way the operation is supposed to work.
-    let materialised = materialize_inherited(
+    // The real operation — copy and flag flip together, on the harness's connection so it runs as
+    // `enclave_app` under forced RLS like every other write here.
+    let copied = break_file_inheritance(
         &mut admin,
         alpha,
-        &[
-            AclScope::Folder(spine.folder),
-            AclScope::Library(spine.library),
-            AclScope::Workspace(spine.workspace),
-        ],
-        AclScope::Folder(spine.folder),
+        spine.folder.as_uuid(),
+        ResolverLimits::DEFAULT,
         Utc::now(),
     )
     .await
-    .expect("materialise the effective set");
-    assert!(materialised > 0, "the break copied nothing down");
+    .expect("break inheritance at the folder");
+    assert!(copied > 0, "the break copied nothing down");
 
-    sqlx::query("UPDATE files SET inherit_permissions = FALSE WHERE tenant_id = $1 AND id = $2")
-        .bind(alpha.as_uuid())
-        .bind(spine.folder.as_uuid())
-        .execute(&mut admin)
-        .await
-        .expect("break inheritance");
+    // The defect, asserted on its own so a regression names itself rather than appearing as one
+    // line of a diff over five probes.
+    assert!(
+        !allows(&engine, &caller, DOWNLOAD, &spine.file_ref()).await,
+        "breaking inheritance let the workspace DENY fall off the chain — the ENC-141 privilege \
+         escalation is back"
+    );
 
     for ((label, caller, action, resource), (_, was)) in probes.iter().zip(before.iter()) {
         let now = allows(&engine, caller, *action, resource).await;
@@ -830,6 +791,111 @@ async fn a4_a_materialised_break_changes_no_verdict() {
             "breaking inheritance changed the verdict for {label}: was {was}, now {now}"
         );
     }
+
+    // The break is a state change, not an idempotent request: asking twice must not report two
+    // successes, or two administrators can each believe they established this ACL.
+    let again = break_file_inheritance(
+        &mut admin,
+        alpha,
+        spine.folder.as_uuid(),
+        ResolverLimits::DEFAULT,
+        Utc::now(),
+    )
+    .await;
+    assert!(
+        matches!(again, Err(AuthzError::NotInheriting)),
+        "breaking an already-broken resource did not say so: {again:?}"
+    );
+
+    // And it is a break: the ancestors genuinely stop reaching it now. Removing the workspace DENY
+    // leaves the file denied, because the denial lives on the folder itself.
+    let removed = revoke_all(&mut admin, alpha, AclScope::Workspace(spine.workspace))
+        .await
+        .expect("revoke the workspace deny");
+    assert_eq!(removed, 1);
+    assert!(
+        !allows(&engine, &caller, DOWNLOAD, &spine.file_ref()).await,
+        "the denial vanished with its ancestor, so it was never copied down — the break truncated \
+         the walk instead of materialising it"
+    );
+}
+
+/// **A4, at the library** — the same operation on the other resource that carries the flag.
+///
+/// `libraries.inherit_permissions` is a second door onto the same escalation: the resolver stops
+/// its walk there exactly as it does on a file, so a library detached without a copy loses the
+/// workspace's `DENY` entries. Fixing files alone would have moved the bug rather than closed it.
+///
+/// Written as its own test because the chain is a different shape — library to workspace, with no
+/// recursion — and because a regression should name which of the two doors reopened.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL with migrations 0001–0006; CI runs it with --include-ignored"]
+async fn a4_breaking_library_inheritance_gains_no_privilege() {
+    let (db, fixtures, pool) = start().await;
+    let alpha = fixtures.alpha.id;
+    let member = fixtures.alpha.member;
+    let spine = Spine::new(alpha);
+
+    let mut admin = db.connect().await.expect("admin connection");
+    spine.insert(&mut admin, fixtures.alpha.owner, Utc::now()).await.expect("spine");
+
+    grant(
+        &mut admin,
+        alpha,
+        AclScope::Library(spine.library),
+        AclPrincipal::User(member),
+        DOWNLOAD,
+        AclEffect::Allow,
+        None,
+    )
+    .await
+    .expect("allow at the library");
+    grant(
+        &mut admin,
+        alpha,
+        AclScope::Workspace(spine.workspace),
+        AclPrincipal::User(member),
+        DOWNLOAD,
+        AclEffect::Deny,
+        None,
+    )
+    .await
+    .expect("deny at the workspace");
+
+    let engine = engine(&pool);
+    let caller = ctx(alpha, member);
+    assert!(
+        !allows(&engine, &caller, DOWNLOAD, &spine.file_ref()).await,
+        "the workspace DENY did not reach the file while the library inherited"
+    );
+
+    let copied = break_library_inheritance(&mut admin, alpha, spine.library.as_uuid(), Utc::now())
+        .await
+        .expect("break inheritance at the library");
+    assert!(copied > 0, "the break copied nothing down");
+
+    assert!(
+        !allows(&engine, &caller, DOWNLOAD, &spine.file_ref()).await,
+        "detaching the library let the workspace DENY fall off the chain — ENC-141 through the \
+         library door"
+    );
+
+    // Genuinely detached: the denial now lives on the library, not above it.
+    let removed = revoke_all(&mut admin, alpha, AclScope::Workspace(spine.workspace))
+        .await
+        .expect("revoke the workspace deny");
+    assert_eq!(removed, 1);
+    assert!(
+        !allows(&engine, &caller, DOWNLOAD, &spine.file_ref()).await,
+        "the denial vanished with its ancestor, so the library break truncated instead of copying"
+    );
+
+    let again =
+        break_library_inheritance(&mut admin, alpha, spine.library.as_uuid(), Utc::now()).await;
+    assert!(
+        matches!(again, Err(AuthzError::NotInheriting)),
+        "breaking an already-detached library did not say so: {again:?}"
+    );
 }
 
 /// **A7** — a version read respects the *current* file ACL, not the ACL at version creation.
