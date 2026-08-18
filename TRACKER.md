@@ -117,6 +117,8 @@ step: is this foundation sound enough to build on? See `ROADMAP.md §6`.
 
 **Plan for the current milestone:** [`plans/M0-FOUNDATIONS.md`](plans/M0-FOUNDATIONS.md)
 
+| ENC-139 | CI `test` job had no object storage, so the new BlobStore tests failed on `main` | P0 | DONE | Same shape as ENC-118: `--include-ignored` runs tests needing infrastructure the job does not provide |
+
 **Accepted risk, `ENC-138`:** `RUSTSEC-2026-0253` — unsoundness in `lru`, reached transitively
 through `aws-sdk-s3`. `LruCache::pop()` is not panic-safe. Accepted because there is nowhere to
 move to: `lru 0.16.4` is the latest release, the advisory names no patched version, and the SDK pins
