@@ -1,0 +1,783 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Workspace — Design System v2 (2026)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Inter+Tight:wght@500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* ===================== TOKENS ===================== */
+:root{
+  /* warm neutrals (Linear/Vercel-style) */
+  --g0:#fff;--g25:#FCFCFB;--g50:#F7F7F5;--g100:#F0F0ED;--g150:#E8E8E4;--g200:#DEDEDA;--g300:#C8C8C3;--g400:#A6A6A0;--g500:#7A7A74;--g600:#5B5B56;--g700:#3F3F3B;--g800:#2A2A27;--g900:#1A1A18;--ink:#141412;
+  --ok:#1D8A55;--warn:#B7791F;--danger:#C0392B;--info:#2F6FDB;
+  /* classification — locked */
+  --c-pub:#8A97A6;--c-int:#2F6FDB;--c-conf:#B7791F;--c-hconf:#D2591C;--c-restr:#C2273A;
+  /* brand (tenant editable) */
+  --accent:#4F46E5;--accent-soft:rgba(79,70,229,.10);--accent-ring:rgba(79,70,229,.35);--r-ctrl:6px;--r-surf:10px;--r-sheet:14px;
+  /* semantic */
+  --canvas:var(--g50);--sheet:var(--g0);--sunken:var(--g100);--hover:rgba(20,20,18,.045);--selected:rgba(20,20,18,.06);
+  --line:rgba(20,20,18,.07);--line-strong:rgba(20,20,18,.13);--hairline:0 0 0 1px var(--line);
+  --fg:var(--ink);--fg2:var(--g600);--fg3:var(--g500);--fg4:var(--g400);
+  --el1:0 0 0 1px rgba(20,20,18,.06),0 1px 2px rgba(20,20,18,.04);
+  --el2:0 0 0 1px rgba(20,20,18,.06),0 4px 12px -2px rgba(20,20,18,.10),0 12px 32px -8px rgba(20,20,18,.10);
+  --el3:0 0 0 1px rgba(20,20,18,.08),0 16px 48px -12px rgba(20,20,18,.24),0 32px 80px -24px rgba(20,20,18,.20);
+  --sans:'Inter',system-ui,-apple-system,sans-serif;--tight:'Inter Tight','Inter',system-ui,sans-serif;--mono:'JetBrains Mono',ui-monospace,SFMono-Regular,monospace;
+}
+[data-brand="northwind"]{--accent:#0F766E;--accent-soft:rgba(15,118,110,.10);--accent-ring:rgba(15,118,110,.35);--r-ctrl:8px;--r-surf:12px;--r-sheet:18px}
+[data-brand="meridian"]{--accent:#111827;--accent-soft:rgba(17,24,39,.08);--accent-ring:rgba(17,24,39,.30);--r-ctrl:4px;--r-surf:6px;--r-sheet:8px}
+[data-theme="dark"]{--canvas:#0F0F0E;--sheet:#161615;--sunken:#1D1D1B;--hover:rgba(255,255,255,.05);--selected:rgba(255,255,255,.07);--line:rgba(255,255,255,.08);--line-strong:rgba(255,255,255,.14);--fg:#F2F2EF;--fg2:#B5B5AF;--fg3:#8A8A84;--fg4:#5E5E59;--el1:0 0 0 1px rgba(255,255,255,.06),0 1px 2px rgba(0,0,0,.4);--el2:0 0 0 1px rgba(255,255,255,.07),0 8px 24px -4px rgba(0,0,0,.6);--el3:0 0 0 1px rgba(255,255,255,.08),0 24px 64px -12px rgba(0,0,0,.8);--g100:#1D1D1B;--g150:#232321;--g200:#2B2B28}
+[data-theme="dark"][data-brand="harbor"],[data-theme="dark"]{--accent:#8B85FF}
+[data-theme="dark"][data-brand="northwind"]{--accent:#2DD4BF}
+[data-theme="dark"][data-brand="meridian"]{--accent:#E5E7EB}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+
+*{box-sizing:border-box}
+html{font-size:16px}
+body{margin:0;background:var(--canvas);color:var(--fg);font-family:var(--sans);font-size:13px;line-height:1.45;letter-spacing:-.006em;-webkit-font-smoothing:antialiased;font-feature-settings:"cv11","ss01"}
+h1,h2,h3,h4{margin:0;font-weight:600;letter-spacing:-.02em}
+h1{font-family:var(--tight);font-size:40px;line-height:1.05;letter-spacing:-.03em}
+h2{font-family:var(--tight);font-size:26px;line-height:1.15}
+h3{font-size:15px}
+h4{font-size:11px;font-weight:500;color:var(--fg3);text-transform:uppercase;letter-spacing:.06em}
+p{margin:0}
+a{color:inherit}
+code,.mono{font-family:var(--mono);font-size:12px;letter-spacing:0}
+:focus-visible{outline:2px solid var(--accent-ring);outline-offset:1px;border-radius:var(--r-ctrl)}
+.fg2{color:var(--fg2)}.fg3{color:var(--fg3)}.fg4{color:var(--fg4)}
+.row{display:flex;align-items:center;gap:8px}.grow{flex:1}.wrap{flex-wrap:wrap}
+svg.i{width:14px;height:14px;flex:none;stroke-width:1.6}
+
+/* ===================== GUIDE CHROME ===================== */
+.gtop{position:sticky;top:0;z-index:60;backdrop-filter:blur(12px);background:color-mix(in srgb,var(--canvas) 80%,transparent);display:flex;align-items:center;gap:14px;padding:10px 20px;box-shadow:0 1px 0 var(--line)}
+.gtop .t{font-family:var(--tight);font-weight:600;font-size:14px}
+.gtop nav{display:flex;gap:2px}
+.gtop nav a{text-decoration:none;color:var(--fg2);padding:5px 9px;border-radius:999px;font-size:12px}
+.gtop nav a:hover{background:var(--hover);color:var(--fg)}
+.seg{display:inline-flex;gap:2px;background:var(--sunken);padding:2px;border-radius:999px}
+.seg button{border:0;background:transparent;font:inherit;font-size:12px;color:var(--fg2);padding:4px 10px;border-radius:999px;cursor:pointer}
+.seg button[aria-pressed="true"]{background:var(--sheet);color:var(--fg);box-shadow:var(--el1)}
+.wrapper{max-width:1400px;margin:0 auto;padding:48px 24px 120px}
+.hero{padding:24px 0 56px;display:grid;grid-template-columns:1.1fr .9fr;gap:56px;align-items:end}
+.hero .lede{font-size:15px;color:var(--fg2);max-width:58ch;margin-top:16px;line-height:1.55}
+.hero .lede b{color:var(--fg);font-weight:500}
+.rules{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--line);border-radius:var(--r-surf);overflow:hidden;box-shadow:var(--hairline)}
+.rules div{background:var(--sheet);padding:14px 16px}
+.rules b{display:block;font-weight:500;margin-bottom:3px}
+.rules span{color:var(--fg3);font-size:12px;line-height:1.45}
+.sec{margin:64px 0 0}
+.shead{display:flex;align-items:baseline;gap:14px;margin-bottom:20px}
+.shead .n{font-family:var(--mono);color:var(--fg4);font-size:11px}
+.shead p{margin-left:auto;color:var(--fg3);font-size:12px;max-width:52ch}
+.subh{display:flex;align-items:baseline;gap:10px;margin:36px 0 12px}
+.subh h3{font-size:14px}
+.subh span{color:var(--fg3);font-size:12px}
+.frame{border-radius:var(--r-sheet);box-shadow:var(--el3);overflow:hidden;background:var(--canvas)}
+.cap{display:flex;gap:18px;font-size:12px;color:var(--fg3);margin:12px 2px 0}
+.cap b{color:var(--fg2);font-weight:500}
+.card{background:var(--sheet);border-radius:var(--r-surf);box-shadow:var(--hairline);padding:18px}
+.grid{display:grid;gap:14px}.g2{grid-template-columns:1fr 1fr}.g3{grid-template-columns:repeat(3,1fr)}
+.sw{display:grid;grid-template-columns:repeat(auto-fill,minmax(84px,1fr));gap:8px}
+.sw div{border-radius:8px;box-shadow:var(--hairline);overflow:hidden}
+.sw i{display:block;height:36px}
+.sw span{display:block;padding:5px 7px;font-family:var(--mono);font-size:10px;color:var(--fg3);background:var(--sheet)}
+.tbl{width:100%;border-collapse:collapse;font-size:12px}
+.tbl th{text-align:left;font-weight:500;color:var(--fg3);padding:6px 8px;font-size:11px}
+.tbl td{padding:7px 8px;box-shadow:inset 0 1px 0 var(--line)}
+.tbl code{background:var(--sunken);padding:1px 5px;border-radius:4px}
+.before-after{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--line);border-radius:var(--r-surf);overflow:hidden;box-shadow:var(--hairline);font-size:12px}
+.before-after>div{background:var(--sheet);padding:12px 14px}
+.before-after b{display:block;font-weight:500;margin-bottom:2px}
+.before-after .x{color:var(--danger)}.before-after .y{color:var(--ok)}
+.pat{display:grid;grid-template-columns:260px 1fr;gap:20px;padding:20px 0;box-shadow:inset 0 1px 0 var(--line)}
+.pat:first-of-type{box-shadow:none}
+.pat h3{margin-bottom:5px}.pat p{color:var(--fg2);font-size:12.5px;line-height:1.5}
+.pat .demo{background:var(--sheet);border-radius:var(--r-surf);box-shadow:var(--hairline);padding:16px;position:relative;min-height:72px}
+
+/* ===================== PRIMITIVES ===================== */
+.btn{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:var(--r-ctrl);border:0;font:inherit;font-size:12.5px;font-weight:500;cursor:pointer;background:var(--sheet);color:var(--fg);box-shadow:var(--hairline);white-space:nowrap;letter-spacing:-.006em}
+.btn:hover{background:var(--sunken)}
+.btn.primary{background:var(--accent);color:#fff;box-shadow:none}
+.btn.primary:hover{filter:brightness(1.08)}
+.btn.ghost{box-shadow:none;background:transparent;color:var(--fg2)}.btn.ghost:hover{background:var(--hover);color:var(--fg)}
+.btn.soft{background:var(--accent-soft);color:var(--accent);box-shadow:none}
+.btn.danger{background:var(--danger);color:#fff;box-shadow:none}
+.btn.sm{height:24px;padding:0 8px;font-size:12px}.btn.lg{height:36px;padding:0 14px;font-size:13px;border-radius:calc(var(--r-ctrl) + 2px)}
+.btn:disabled,.btn[aria-disabled="true"]{opacity:.45;cursor:not-allowed}
+.btn .kbd{margin-left:2px}
+.ib{width:26px;height:26px;display:inline-flex;align-items:center;justify-content:center;border-radius:var(--r-ctrl);border:0;background:transparent;color:var(--fg3);cursor:pointer}
+.ib:hover{background:var(--hover);color:var(--fg)}
+.kbd{font-family:var(--mono);font-size:10px;padding:1px 4px;border-radius:4px;background:var(--sunken);color:var(--fg3);box-shadow:inset 0 -1px 0 var(--line-strong)}
+.pill{display:inline-flex;align-items:center;gap:5px;height:20px;padding:0 8px;border-radius:999px;font-size:11px;font-weight:500;white-space:nowrap;background:var(--sunken);color:var(--fg2);letter-spacing:0}
+.pill svg{width:11px;height:11px}
+.pill.info{background:color-mix(in srgb,var(--info) 12%,transparent);color:var(--info)}
+.pill.warn{background:color-mix(in srgb,var(--warn) 14%,transparent);color:var(--warn)}
+.pill.danger{background:color-mix(in srgb,var(--danger) 12%,transparent);color:var(--danger)}
+.pill.ok{background:color-mix(in srgb,var(--ok) 12%,transparent);color:var(--ok)}
+.pill.accent{background:var(--accent-soft);color:var(--accent)}
+.pill.outline{background:transparent;box-shadow:var(--hairline);color:var(--fg2)}
+/* classification: dot + label, tinted */
+.cls{display:inline-flex;align-items:center;gap:6px;height:20px;padding:0 8px 0 7px;border-radius:999px;font-size:11px;font-weight:500;letter-spacing:0;white-space:nowrap;background:color-mix(in srgb,var(--cc) 11%,transparent);color:color-mix(in srgb,var(--cc) 82%,var(--fg))}
+.cls::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--cc);flex:none}
+.cls.pub{--cc:var(--c-pub)}.cls.int{--cc:var(--c-int)}.cls.conf{--cc:var(--c-conf)}.cls.hconf{--cc:var(--c-hconf)}.cls.restr{--cc:var(--c-restr)}
+.cls.mini{padding:0;background:transparent;width:auto;gap:0}.cls.mini::before{width:7px;height:7px}
+.dot{width:6px;height:6px;border-radius:50%;display:inline-block;background:var(--cc,var(--fg4))}
+.av{width:20px;height:20px;border-radius:50%;background:var(--sunken);color:var(--fg2);display:inline-flex;align-items:center;justify-content:center;font-size:9.5px;font-weight:600;flex:none;letter-spacing:0}
+.av.lg{width:26px;height:26px;font-size:11px}
+.av.a{background:#E0E7FF;color:#3730A3}.av.b{background:#FDE7DE;color:#9A3412}.av.c{background:#DCFCE7;color:#166534}.av.d{background:#FEF3C7;color:#92400E}
+[data-theme="dark"] .av.a{background:#2E2B6B;color:#C7D2FE}[data-theme="dark"] .av.b{background:#5A2A1A;color:#FED7C3}[data-theme="dark"] .av.c{background:#14442A;color:#BBF7D0}[data-theme="dark"] .av.d{background:#4A3410;color:#FDE68A}
+.avs{display:inline-flex}.avs .av{margin-left:-6px;box-shadow:0 0 0 2px var(--sheet)}.avs .av:first-child{margin-left:0}
+.input{height:28px;padding:0 9px;border:0;border-radius:var(--r-ctrl);background:var(--sheet);box-shadow:var(--hairline);color:var(--fg);font:inherit;font-size:12.5px;width:100%}
+.input:focus{outline:0;box-shadow:0 0 0 1px var(--accent),0 0 0 4px var(--accent-ring)}
+textarea.input{height:auto;padding:8px 9px;min-height:60px;resize:vertical}
+.field{display:flex;flex-direction:column;gap:5px}.field label{font-size:12px;font-weight:500;color:var(--fg2)}.field .help{font-size:11.5px;color:var(--fg3)}
+.switch{width:30px;height:18px;border-radius:9px;background:var(--g300);position:relative;border:0;cursor:pointer;flex:none}
+.switch::after{content:"";position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.2);transition:left .15s}
+.switch[aria-checked="true"]{background:var(--accent)}.switch[aria-checked="true"]::after{left:14px}
+.chk{width:14px;height:14px;border-radius:4px;box-shadow:inset 0 0 0 1.5px var(--line-strong);display:inline-block;flex:none;background:var(--sheet)}
+.chk.on{background:var(--accent);box-shadow:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='3.2'><path d='m5 12 5 5L20 7'/></svg>");background-size:10px;background-position:center;background-repeat:no-repeat}
+.tabs{display:inline-flex;gap:2px}
+.tabs button{border:0;background:transparent;font:inherit;font-size:12.5px;color:var(--fg3);padding:4px 9px;border-radius:999px;cursor:pointer;display:inline-flex;align-items:center;gap:6px;font-weight:500}
+.tabs button:hover{background:var(--hover);color:var(--fg)}
+.tabs button[aria-selected="true"]{background:var(--sunken);color:var(--fg)}
+.tabs .cnt{font-size:10.5px;color:var(--fg4);font-family:var(--mono)}
+.notice{display:flex;gap:10px;padding:10px 12px;border-radius:var(--r-ctrl);font-size:12.5px;line-height:1.45;background:var(--sunken)}
+.notice svg{width:15px;height:15px;flex:none;margin-top:1px}
+.notice.warn{background:color-mix(in srgb,var(--warn) 9%,transparent)}.notice.warn svg{color:var(--warn)}
+.notice.danger{background:color-mix(in srgb,var(--danger) 8%,transparent)}.notice.danger svg{color:var(--danger)}
+.notice b{font-weight:500}
+.notice .acts{display:flex;gap:6px;margin-top:8px}
+.toast{display:inline-flex;align-items:center;gap:10px;background:var(--ink);color:#fff;padding:8px 8px 8px 12px;border-radius:10px;box-shadow:var(--el3);font-size:12.5px}
+[data-theme="dark"] .toast{background:#F2F2EF;color:#141412}
+.toast .btn{height:24px;background:rgba(255,255,255,.12);color:inherit;box-shadow:none;font-size:12px}
+[data-theme="dark"] .toast .btn{background:rgba(0,0,0,.08)}
+.steps{display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--fg3)}
+.steps span{display:inline-flex;align-items:center;gap:4px}
+.steps span::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--g300)}
+.steps span.done{color:var(--fg2)}.steps span.done::before{background:var(--ok)}
+.steps span.on{color:var(--fg);font-weight:500}.steps span.on::before{background:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.steps i{width:12px;height:1px;background:var(--line-strong)}
+.skel{background:linear-gradient(90deg,var(--sunken) 25%,var(--g150) 50%,var(--sunken) 75%);background-size:200% 100%;animation:sh 1.4s infinite;border-radius:4px;height:10px}
+@keyframes sh{0%{background-position:200% 0}100%{background-position:-200% 0}}
+.menu{background:var(--sheet);border-radius:var(--r-surf);box-shadow:var(--el2);padding:4px;min-width:220px;font-size:12.5px}
+.menu>div{padding:6px 8px;border-radius:calc(var(--r-ctrl));display:flex;align-items:center;gap:8px}
+.menu>div:hover{background:var(--hover)}
+.menu .k{margin-left:auto;display:flex;gap:3px}
+.menu .dis{color:var(--fg4)}
+.menu hr{border:0;height:1px;background:var(--line);margin:4px 6px}
+.menu .lbl{font-size:10.5px;color:var(--fg4);padding:6px 8px 2px;text-transform:uppercase;letter-spacing:.06em}
+.hovercard{background:var(--sheet);border-radius:var(--r-surf);box-shadow:var(--el2);padding:10px 12px;width:280px;font-size:12px}
+.hovercard .src{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+.hovercard blockquote{margin:0;padding:6px 8px;background:var(--sunken);border-radius:6px;color:var(--fg2);line-height:1.45;font-size:11.5px}
+
+/* ===================== APP SHELL v2 ===================== */
+.app{display:grid;grid-template-columns:232px 1fr;height:780px;background:var(--canvas);font-size:13px;position:relative}
+.side{padding:12px 8px 12px 10px;display:flex;flex-direction:column;gap:1px;color:var(--fg2);min-width:0}
+.side .wsw{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:var(--r-ctrl);cursor:pointer;margin-bottom:8px}
+.side .wsw:hover{background:var(--hover)}
+.side .wsw .mark{width:20px;height:20px;border-radius:6px;background:var(--accent);display:inline-flex;align-items:center;justify-content:center;color:#fff;font-size:10px;font-weight:600;font-family:var(--tight)}
+.side .wsw b{font-weight:500;color:var(--fg);font-size:13px}
+.side .wsw svg{margin-left:auto;color:var(--fg4)}
+.side a{display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:var(--r-ctrl);text-decoration:none;color:var(--fg2);font-size:12.5px;font-weight:450;min-height:26px}
+.side a svg{width:14px;height:14px;color:var(--fg3);stroke-width:1.6}
+.side a:hover{background:var(--hover);color:var(--fg)}
+.side a[aria-current]{background:var(--selected);color:var(--fg)}
+.side a[aria-current] svg{color:var(--fg)}
+.side a .kbd{margin-left:auto;opacity:0}
+.side a:hover .kbd{opacity:1}
+.side .n{margin-left:auto;font-size:11px;color:var(--fg4);font-family:var(--mono)}
+.side .grp{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--fg4);padding:14px 8px 4px;font-weight:500}
+.side .grp svg{width:10px;height:10px}
+.side .lib{padding-left:12px}
+.side .lib .dot{width:7px;height:7px;margin:0 3px 0 1px}
+.side .foot{margin-top:auto;padding-top:8px}
+.side .foot a{font-size:12px}
+.sheet{margin:8px 8px 8px 0;background:var(--sheet);border-radius:var(--r-sheet);box-shadow:var(--el1);display:flex;flex-direction:column;min-width:0;overflow:hidden;position:relative}
+.loc{display:flex;align-items:center;gap:6px;padding:10px 14px 0 16px;color:var(--fg3);font-size:12.5px;min-height:38px}
+.loc b{color:var(--fg);font-weight:500}
+.loc .sep{color:var(--fg4);margin:0 2px}
+.loc .r{margin-left:auto;display:flex;align-items:center;gap:4px}
+.title{display:flex;align-items:center;gap:10px;padding:8px 16px 4px}
+.title h2{font-size:20px;letter-spacing:-.022em}
+.viewbar{display:flex;align-items:center;gap:6px;padding:8px 12px 8px 14px;position:sticky;top:0;background:var(--sheet);z-index:3}
+.viewbar .r{margin-left:auto;display:flex;align-items:center;gap:4px}
+.viewbar .btn.ghost{height:26px;font-size:12px}
+.filters{display:flex;align-items:center;gap:6px;padding:0 16px 8px;flex-wrap:wrap}
+.fchip{display:inline-flex;align-items:center;height:24px;border-radius:var(--r-ctrl);box-shadow:var(--hairline);font-size:12px;overflow:hidden}
+.fchip span{padding:0 7px;color:var(--fg2)}
+.fchip span:first-child{color:var(--fg3);box-shadow:inset -1px 0 0 var(--line)}
+.fchip span.v{color:var(--fg);font-weight:500;box-shadow:inset -1px 0 0 var(--line)}
+.fchip span.x{color:var(--fg4);padding:0 6px;cursor:pointer}
+.fchip span.x:hover{background:var(--hover);color:var(--fg)}
+.body{display:grid;grid-template-columns:1fr;flex:1;min-height:0}
+.body.peek{grid-template-columns:1fr 372px}
+.list{overflow:auto;position:relative}
+.ghead{display:grid;grid-template-columns:32px minmax(0,1fr) 128px 116px 108px 64px 32px;align-items:center;height:30px;padding:0 6px 0 10px;font-size:11px;color:var(--fg4);font-weight:500;position:sticky;top:0;background:var(--sheet);z-index:2;gap:8px}
+.ghead span:hover{color:var(--fg2)}
+.grow-h{height:28px;display:flex;align-items:center;gap:8px;padding:0 16px;font-size:11.5px;color:var(--fg3);font-weight:500;background:var(--sheet)}
+.grow-h .cnt{font-family:var(--mono);color:var(--fg4);font-size:10.5px}
+.grow-h svg{width:10px;height:10px;color:var(--fg4)}
+.frow{display:grid;grid-template-columns:32px minmax(0,1fr) 128px 116px 108px 64px 32px;align-items:center;height:36px;padding:0 6px 0 10px;gap:8px;position:relative;cursor:default;font-size:13px}
+.frow:hover{background:var(--hover)}
+.frow.sel{background:var(--selected)}
+.frow.sel::before{content:"";position:absolute;left:0;top:6px;bottom:6px;width:2px;border-radius:2px;background:var(--accent)}
+.frow.dim>*{opacity:.5}
+.frow>*{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.frow .c0{display:flex;justify-content:center}
+.frow .chk{opacity:0}.frow:hover .chk,.frow.sel .chk,.frow .chk.on{opacity:1}
+.name{display:flex;align-items:center;gap:9px;font-weight:450;color:var(--fg)}
+.name .fi{width:16px;height:16px;flex:none;color:var(--fg3)}
+.name .fi.pdf{color:#D0453A}.name .fi.doc{color:#3B6FD4}.name .fi.xls{color:#2E8B57}.name .fi.ppt{color:#D2591C}.name .fi.folder{color:var(--fg3)}
+.name .t{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.name .sub{color:var(--fg4);font-weight:400;font-size:12px}
+.name .cls.mini{margin-left:2px}
+.frow .meta{color:var(--fg3);font-size:12.5px;display:flex;align-items:center;gap:6px}
+.frow .tags{display:flex;gap:4px}
+.frow .ib{opacity:0}.frow:hover .ib{opacity:1}
+/* floating selection bar (replaces static command bar) */
+.selbar{position:absolute;left:50%;bottom:22px;transform:translateX(-50%);display:flex;align-items:center;gap:2px;padding:6px 6px 6px 12px;background:var(--ink);color:#fff;border-radius:12px;box-shadow:var(--el3);font-size:12.5px;z-index:5;white-space:nowrap}
+[data-theme="dark"] .selbar{background:#F2F2EF;color:#141412}
+.selbar .cnt{font-weight:500;margin-right:8px;display:flex;align-items:center;gap:8px}
+.selbar .cnt i{width:1px;height:16px;background:rgba(255,255,255,.18);display:inline-block}
+[data-theme="dark"] .selbar .cnt i{background:rgba(0,0,0,.14)}
+.selbar button{border:0;background:transparent;color:inherit;font:inherit;font-size:12.5px;padding:0 9px;height:26px;border-radius:7px;display:inline-flex;align-items:center;gap:6px;cursor:pointer;opacity:.9}
+.selbar button:hover{background:rgba(255,255,255,.12)}
+[data-theme="dark"] .selbar button:hover{background:rgba(0,0,0,.08)}
+.selbar button[aria-disabled="true"]{opacity:.4}
+.selbar button .kbd{background:rgba(255,255,255,.14);color:inherit;box-shadow:none}
+[data-theme="dark"] .selbar button .kbd{background:rgba(0,0,0,.1)}
+.selbar .x{margin-left:4px;opacity:.6}
+.body.peek ~ .selbar{left:calc((100% - 372px)/2)}
+/* peek panel */
+.peekp{box-shadow:-1px 0 0 var(--line);display:flex;flex-direction:column;min-width:0;overflow:hidden;background:var(--sheet)}
+.peekp .ph{display:flex;align-items:center;gap:4px;padding:8px 8px 0 12px;color:var(--fg3)}
+.peekp .ph .r{margin-left:auto;display:flex}
+.peekp .pt{padding:8px 16px 0}
+.peekp .pt h3{font-size:14px;line-height:1.35;font-weight:500;letter-spacing:-.012em}
+.peekp .pt .m{color:var(--fg3);font-size:12px;margin-top:2px}
+.peekp .chips{display:flex;flex-wrap:wrap;gap:5px;padding:10px 16px 8px}
+.peekp .tabs{padding:0 12px 6px;box-shadow:inset 0 -1px 0 var(--line)}
+.peekp .pb{padding:12px 16px;overflow:auto;flex:1;display:flex;flex-direction:column;gap:14px}
+.prev{flex:none;height:170px;border-radius:var(--r-surf);background:var(--sunken);position:relative;overflow:hidden;display:flex;align-items:center;justify-content:center}
+.prev .pg{width:56%;height:82%;background:var(--sheet);box-shadow:var(--el2);padding:12px 10px;display:flex;flex-direction:column;gap:5px;border-radius:2px}
+.prev .pg i{height:2px;background:var(--g200);display:block;border-radius:1px}
+.prev .pg i:nth-child(1){width:50%;height:4px;background:var(--g300)}.prev .pg i:nth-child(5){width:70%}.prev .pg i:nth-child(9){width:40%}
+.prev .wm{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none;font-family:var(--mono);font-size:9px;color:rgba(194,39,58,.28);transform:rotate(-22deg);line-height:2.8;text-align:center;white-space:nowrap}
+.prev .exp{position:absolute;right:8px;bottom:8px}
+.kv{display:grid;grid-template-columns:100px 1fr;gap:7px 10px;font-size:12.5px;align-items:center}
+.kv dt{color:var(--fg3)}.kv dd{margin:0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:flex;align-items:center;gap:6px}
+.act{display:flex;flex-direction:column;gap:8px;font-size:12.5px}
+.act>div{display:flex;align-items:center;gap:8px}
+.act .who{font-weight:500}.act .when{margin-left:auto;color:var(--fg4);font-size:11px;font-family:var(--mono)}
+.ask{margin-top:auto;padding:10px 12px 12px;box-shadow:inset 0 1px 0 var(--line)}
+.ask .box{display:flex;flex-direction:column;gap:6px;border-radius:var(--r-surf);box-shadow:var(--hairline);padding:8px 8px 6px 10px;background:var(--sheet)}
+.ask .box:focus-within{box-shadow:0 0 0 1px var(--accent),0 0 0 4px var(--accent-ring)}
+.ask input{border:0;background:transparent;font:inherit;font-size:12.5px;color:var(--fg);outline:0;width:100%}
+.ask .r{display:flex;align-items:center;gap:4px}
+.ask .r .grow{flex:1}
+.ask .send{width:24px;height:24px;border-radius:7px;background:var(--accent);color:#fff;border:0;display:inline-flex;align-items:center;justify-content:center;cursor:pointer}
+/* AI answer */
+.ans{font-size:13px;line-height:1.55;color:var(--fg)}
+.ans .q{color:var(--fg3);font-size:12px;margin-bottom:6px;display:flex;align-items:center;gap:6px}
+.ans sup{display:inline-flex;align-items:center;justify-content:center;min-width:16px;height:16px;padding:0 4px;border-radius:5px;background:var(--sunken);color:var(--fg2);font-size:10px;font-weight:600;font-family:var(--mono);vertical-align:1px;margin-left:1px;cursor:pointer;box-shadow:var(--hairline)}
+.ans sup:hover{background:var(--accent-soft);color:var(--accent)}
+.ans .srcs{display:flex;flex-direction:column;gap:4px;margin-top:10px}
+.ans .srcs a{display:flex;align-items:center;gap:8px;text-decoration:none;font-size:12px;color:var(--fg2);padding:5px 8px;border-radius:var(--r-ctrl)}
+.ans .srcs a:hover{background:var(--hover)}
+.ans .srcs a .n{font-family:var(--mono);color:var(--fg4);font-size:10.5px}
+.ans .srcs a .loc2{margin-left:auto;color:var(--fg4);font-family:var(--mono);font-size:10.5px}
+.ans .foot{display:flex;align-items:center;gap:6px;margin-top:8px;color:var(--fg4);font-size:11px}
+/* command palette */
+.cmdk{width:620px;background:var(--sheet);border-radius:14px;box-shadow:var(--el3);overflow:hidden;font-size:13px}
+.cmdk .in{display:flex;align-items:center;gap:10px;padding:12px 14px;box-shadow:inset 0 -1px 0 var(--line)}
+.cmdk .in input{border:0;background:transparent;font:inherit;font-size:14px;color:var(--fg);outline:0;flex:1}
+.cmdk .in .pill{height:22px}
+.cmdk .grp{font-size:10.5px;color:var(--fg4);padding:8px 14px 4px;text-transform:uppercase;letter-spacing:.06em;font-weight:500}
+.cmdk .it{display:flex;align-items:center;gap:10px;padding:7px 14px;color:var(--fg2)}
+.cmdk .it:hover,.cmdk .it.on{background:var(--hover);color:var(--fg)}
+.cmdk .it svg{color:var(--fg3)}
+.cmdk .it .k{margin-left:auto;display:flex;gap:3px}
+.cmdk .ft{display:flex;align-items:center;gap:12px;padding:8px 14px;box-shadow:inset 0 1px 0 var(--line);color:var(--fg4);font-size:11.5px}
+/* display popover */
+.pop{background:var(--sheet);border-radius:var(--r-surf);box-shadow:var(--el2);padding:8px;width:260px;font-size:12.5px}
+.pop .r{display:flex;align-items:center;justify-content:space-between;padding:6px 6px;color:var(--fg2)}
+.pop .r b{color:var(--fg);font-weight:450}
+.pop .seg{padding:2px}.pop .seg button{padding:3px 8px;font-size:11.5px}
+.pop hr{border:0;height:1px;background:var(--line);margin:4px 0}
+/* admin */
+.set{display:grid;grid-template-columns:200px 1fr;height:100%;min-height:0}
+.set .snav{padding:14px 8px 14px 12px;color:var(--fg2);font-size:12.5px;overflow:auto}
+.set .snav .g{font-size:11px;color:var(--fg4);padding:12px 8px 4px;font-weight:500}
+.set .snav a{display:block;padding:5px 8px;border-radius:var(--r-ctrl);text-decoration:none;color:var(--fg2)}
+.set .snav a[aria-current]{background:var(--selected);color:var(--fg)}
+.set .smain{padding:20px 28px 28px;overflow:auto;min-width:0}
+.rulecard{border-radius:var(--r-surf);box-shadow:var(--hairline);overflow:hidden}
+.rulecard .h{display:flex;align-items:center;gap:8px;padding:10px 14px;font-size:11px;font-weight:500;color:var(--fg3);text-transform:uppercase;letter-spacing:.06em;background:var(--sunken)}
+.sent{display:flex;align-items:center;flex-wrap:wrap;gap:6px;padding:12px 14px;font-size:13px;line-height:1.5}
+.sent .w{color:var(--fg3)}
+.tok{display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 4px 0 9px;border-radius:7px;box-shadow:var(--hairline);background:var(--sheet);font-weight:500;cursor:pointer}
+.tok:hover{background:var(--sunken)}
+.tok svg{width:12px;height:12px;color:var(--fg4)}
+.tok .x{width:18px;height:18px;border-radius:5px;display:inline-flex;align-items:center;justify-content:center;color:var(--fg4)}
+.tok .x:hover{background:var(--hover);color:var(--fg)}
+.tok .cls{height:18px}
+.addc{display:inline-flex;align-items:center;gap:5px;height:26px;padding:0 9px;border-radius:7px;color:var(--fg3);font-size:12.5px;cursor:pointer;box-shadow:inset 0 0 0 1px transparent}
+.addc:hover{background:var(--hover);color:var(--fg)}
+.simp{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+.simp>div{border-radius:var(--r-surf);box-shadow:var(--hairline);padding:12px 14px}
+.simp b{display:block;font-family:var(--tight);font-size:22px;font-weight:600;letter-spacing:-.02em;line-height:1.1}
+.simp span{color:var(--fg3);font-size:11.5px}
+.bars{display:flex;flex-direction:column;gap:6px;font-size:12px}
+.bars>div{display:grid;grid-template-columns:110px 1fr 28px;align-items:center;gap:10px}
+.bars i{height:6px;border-radius:3px;background:var(--fg2);display:block;opacity:.7}
+.bars>div>span:last-child{text-align:right;color:var(--fg4);font-family:var(--mono);font-size:11px}
+/* login */
+.login{min-height:560px;display:flex;align-items:center;justify-content:center;background:var(--canvas);position:relative;overflow:hidden}
+.login::before{content:"";position:absolute;inset:0;background-image:radial-gradient(var(--line-strong) 1px,transparent 1px);background-size:22px 22px;mask-image:radial-gradient(ellipse at center,#000 30%,transparent 72%);opacity:.7}
+.login .card{position:relative;width:360px;padding:28px 28px 22px;border-radius:16px;box-shadow:var(--el2)}
+.login .logo-mark{width:36px;height:36px;border-radius:10px;background:var(--accent);color:#fff;display:flex;align-items:center;justify-content:center;font-family:var(--tight);font-weight:600;font-size:16px;margin-bottom:18px}
+.login h3{font-family:var(--tight);font-size:20px;letter-spacing:-.02em;margin-bottom:4px}
+.login .m{color:var(--fg3);font-size:12.5px;margin-bottom:18px}
+.login .stack{display:flex;flex-direction:column;gap:8px}
+.login .or{display:flex;align-items:center;gap:10px;color:var(--fg4);font-size:11px;margin:6px 0}
+.login .or i{flex:1;height:1px;background:var(--line)}
+.login .ft{display:flex;gap:12px;font-size:11px;color:var(--fg4);margin-top:16px}
+.login .ft a{text-decoration:none}
+/* mobile */
+.phone{width:300px;height:620px;border-radius:40px;background:var(--canvas);box-shadow:var(--el3),0 0 0 8px var(--g800);overflow:hidden;position:relative;display:flex;flex-direction:column;margin:0 auto}
+[data-theme="dark"] .phone{box-shadow:var(--el3),0 0 0 8px #2b2b28}
+.phone .top{padding:16px 16px 6px;display:flex;align-items:center;gap:8px}
+.phone .top h3{font-family:var(--tight);font-size:18px}
+.phone .srch{margin:4px 12px 8px;height:34px;border-radius:10px;background:var(--sheet);box-shadow:var(--hairline);display:flex;align-items:center;gap:8px;padding:0 10px;color:var(--fg4);font-size:13px}
+.phone .mlist{background:var(--sheet);margin:0 8px;border-radius:14px;box-shadow:var(--hairline);overflow:hidden;flex:1}
+.phone .mrow{display:flex;align-items:center;gap:10px;padding:10px 12px;box-shadow:inset 0 -1px 0 var(--line)}
+.phone .mrow:last-child{box-shadow:none}
+.phone .mrow .name{flex-direction:column;align-items:flex-start;gap:1px;flex:1;min-width:0}
+.phone .mrow .name span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:200px}
+.phone .mrow small{color:var(--fg4);font-size:11px;display:flex;align-items:center;gap:6px}
+.phone .fab{position:absolute;left:50%;bottom:16px;transform:translateX(-50%);display:flex;gap:2px;padding:5px;background:color-mix(in srgb,var(--sheet) 82%,transparent);backdrop-filter:blur(14px);border-radius:999px;box-shadow:var(--el2)}
+.phone .fab a{width:44px;height:38px;border-radius:999px;display:flex;align-items:center;justify-content:center;color:var(--fg3)}
+.phone .fab a[aria-current]{background:var(--sunken);color:var(--fg)}
+.phone .fab svg{width:18px;height:18px}
+.phone .sheet2{position:absolute;left:8px;right:8px;bottom:70px;background:var(--sheet);border-radius:18px;box-shadow:var(--el3);padding:12px 14px 14px}
+.phone .sheet2::before{content:"";display:block;width:32px;height:4px;border-radius:2px;background:var(--g300);margin:0 auto 12px}
+@media (max-width:1100px){.hero,.g3{grid-template-columns:1fr 1fr}.pat{grid-template-columns:1fr}.app{grid-template-columns:200px 1fr}}
+@media (max-width:820px){.hero,.g2,.g3,.rules,.before-after,.set{grid-template-columns:1fr}.app{grid-template-columns:1fr;height:auto}.side{display:none}.body.peek{grid-template-columns:1fr}.peekp{display:none}}
+</style>
+</head>
+<body data-brand="harbor">
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+ <symbol id="s" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></symbol>
+ <symbol id="plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></symbol>
+ <symbol id="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></symbol>
+ <symbol id="chevr" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></symbol>
+ <symbol id="updown" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m8 9 4-4 4 4M8 15l4 4 4-4"/></symbol>
+ <symbol id="inbox" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M3 13h5l2 3h4l2-3h5M5 5h14l2 8v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-6z"/></symbol>
+ <symbol id="home" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="m3 11 9-8 9 8v10a1 1 0 0 1-1 1h-5v-7h-6v7H4a1 1 0 0 1-1-1z"/></symbol>
+ <symbol id="folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
+ <symbol id="list" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></symbol>
+ <symbol id="page" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9zM14 3v6h6"/></symbol>
+ <symbol id="act" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></symbol>
+ <symbol id="star" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="m12 2 3.1 6.3 6.9 1-5 4.9 1.2 6.8L12 17.8 5.8 21l1.2-6.8-5-4.9 6.9-1z"/></symbol>
+ <symbol id="share" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.6 13.5 6.8 4M15.4 6.5l-6.8 4"/></symbol>
+ <symbol id="trash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/></symbol>
+ <symbol id="gear" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></symbol>
+ <symbol id="up" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></symbol>
+ <symbol id="down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></symbol>
+ <symbol id="move" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></symbol>
+ <symbol id="more" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></symbol>
+ <symbol id="lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></symbol>
+ <symbol id="shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M12 2 4 5v6c0 5 3.4 9.4 8 11 4.6-1.6 8-6 8-11V5z"/></symbol>
+ <symbol id="eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></symbol>
+ <symbol id="warn" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0zM12 9v4M12 17h.01"/></symbol>
+ <symbol id="info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></symbol>
+ <symbol id="block" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><path d="m5 5 14 14"/></symbol>
+ <symbol id="check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5L20 7"/></symbol>
+ <symbol id="x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+ <symbol id="grid" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></symbol>
+ <symbol id="rows" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="4" rx="1.5"/><rect x="3" y="10" width="18" height="4" rx="1.5"/><rect x="3" y="16" width="18" height="4" rx="1.5"/></symbol>
+ <symbol id="spark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8zM19 17l.7 2 2 .7-2 .7-.7 2-.7-2-2-.7 2-.7z"/></symbol>
+ <symbol id="user" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></symbol>
+ <symbol id="clock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></symbol>
+ <symbol id="globe" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15 15 0 0 1 0 20 15 15 0 0 1 0-20z"/></symbol>
+ <symbol id="filter" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5h18l-7 8v6l-4 2v-8z"/></symbol>
+ <symbol id="sliders" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></symbol>
+ <symbol id="file" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8zM14 3v5h5"/></symbol>
+ <symbol id="ext" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6M20 4l-9 9M19 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5"/></symbol>
+ <symbol id="side" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></symbol>
+ <symbol id="bot" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="4" y="8" width="16" height="12" rx="3"/><path d="M12 8V4M9 14h.01M15 14h.01"/></symbol>
+</svg>
+<header class="gtop">
+  <span class="t">Workspace · Design System v2</span>
+  <nav><a href="#why">Why v2</a><a href="#layouts">Layouts</a><a href="#patterns">Patterns</a><a href="#tokens">Tokens</a></nav>
+  <div class="row" style="margin-left:auto;gap:8px">
+    <div class="seg" role="group" aria-label="Tenant brand"><button data-b="harbor" aria-pressed="true">Default</button><button data-b="northwind" aria-pressed="false">Northwind</button><button data-b="meridian" aria-pressed="false">Meridian</button></div>
+    <div class="seg" role="group" aria-label="Theme"><button data-t="light" aria-pressed="true">Light</button><button data-t="dark" aria-pressed="false">Dark</button></div>
+  </div>
+</header>
+
+<main class="wrapper">
+<section class="hero" id="why">
+  <div>
+    <p class="mono fg4" style="font-size:11px">Enterprise Shared Workspace · v2 · August 2026</p>
+    <h1 style="margin-top:10px">Content leads. Chrome recedes.<br>Governance stays legible.</h1>
+    <p class="lede">v2 replaces the 2014-era shell (bordered top bar, bright sidebar, static toolbar strip, docked panel) with the layout grammar of the products people actually copy in 2026 — <b>Linear, Vercel/Geist, Attio, Notion</b> — plus an AI surface that sits beside the work instead of in another tab. Every screen below is built from the same tokens; switch brand and theme above.</p>
+  </div>
+  <div class="rules">
+    <div><b>Sidebar recedes</b><span>Sits on the canvas, no border, dimmer text, 14px icons. Content is a raised sheet with rounded corners.</span></div>
+    <div><b>Structure felt, not seen</b><span>Hairline 1px shadow-borders, no vertical dividers, separators only where they carry meaning.</span></div>
+    <div><b>Location bar ≠ view bar</b><span>Breadcrumb + share/actions on one line; tabs, filter, display controls on the next. Predictable places.</span></div>
+    <div><b>36px rows, keyboard-first</b><span>Dense but calm. ⌘K palette, single-key shortcuts, hover-revealed actions, no full-page reloads.</span></div>
+    <div><b>Floating, not docked</b><span>Selection toolbar floats over content; details open as a peek panel; controls sit above content, not in boxes.</span></div>
+    <div><b>AI beside the work</b><span>Ask panel with visible scope, inline citations with hover preview and deep-link to the passage. Agents are audited members.</span></div>
+  </div>
+</section>
+
+<section class="sec">
+  <div class="shead"><span class="n">00</span><h2>What changed from v1</h2><p>Every change maps to a specific 2026 reference, not taste. Sources in DESIGN_SYSTEM.md §1.</p></div>
+  <div class="before-after">
+    <div><b>Top bar spanning full width, bordered</b><span class="x">v1</span> → <span class="y">v2</span> Workspace switcher and search move into the sidebar; the sheet has a slim location bar instead. Fewer competing bars.</div>
+    <div><b>Bright sidebar with 16px icons and active fill</b><span class="x">v1</span> → <span class="y">v2</span> Canvas-coloured, borderless, muted text, 14px icons, hover-revealed shortcuts. Content takes precedence (Linear, Mar 2026).</div>
+    <div><b>Static command bar strip</b><span class="x">v1</span> → <span class="y">v2</span> Floating selection bar appears only when something is selected; shortcuts inline. Zero chrome when idle.</div>
+    <div><b>Docked 360px details panel</b><span class="x">v1</span> → <span class="y">v2</span> Peek panel slides in on Space/click, closable, with an <em>Ask about this file</em> box at the bottom. Panel width persists.</div>
+    <div><b>Solid borders, 40px rows, cool blue-grey</b><span class="x">v1</span> → <span class="y">v2</span> Warm greys, shadow-as-border, 36px rows, no vertical rules; hover states carry structure (Geist, Linear).</div>
+    <div><b>Split-hero login, three-column mobile</b><span class="x">v1</span> → <span class="y">v2</span> Single centred card, passkey first, one primary action; mobile uses a floating pill tab bar and bottom sheet.</div>
+  </div>
+</section>
+
+<!-- ======================= LAYOUTS ======================= -->
+<section class="sec" id="layouts">
+  <div class="shead"><span class="n">01</span><h2>Layouts</h2><p>Reference screens. All interactive states are shown at once for review; in the product they appear on demand.</p></div>
+
+  <div class="subh"><h3>1.1 Library — list view with peek panel and floating selection bar</h3><span>the default working screen</span></div>
+  <div class="frame">
+    <div class="app">
+      <aside class="side">
+        <div class="wsw"><span class="mark">N</span><b class="brand-name">Northwind</b><svg class="i"><use href="#updown"/></svg></div>
+        <a href="#"><svg><use href="#s"/></svg>Search <span class="kbd">⌘K</span></a>
+        <a href="#"><svg><use href="#inbox"/></svg>Inbox <span class="n">4</span></a>
+        <a href="#"><svg><use href="#home"/></svg>Home</a>
+        <a href="#"><svg><use href="#spark"/></svg>Ask <span class="kbd">⌘J</span></a>
+        <div class="grp"><svg><use href="#chev"/></svg>Finance</div>
+        <a href="#" aria-current="page"><svg><use href="#folder"/></svg>Files</a>
+        <a href="#" class="lib"><span class="dot" style="--cc:var(--c-conf)"></span>Contracts <span class="n">214</span></a>
+        <a href="#" class="lib"><span class="dot" style="--cc:var(--c-int)"></span>Invoices</a>
+        <a href="#" class="lib"><span class="dot" style="--cc:var(--c-hconf)"></span>Board pack</a>
+        <a href="#"><svg><use href="#list"/></svg>Lists</a>
+        <a href="#"><svg><use href="#page"/></svg>Pages</a>
+        <a href="#"><svg><use href="#act"/></svg>Activity</a>
+        <div class="grp"><svg><use href="#chev"/></svg>Personal</div>
+        <a href="#"><svg><use href="#star"/></svg>Favorites</a>
+        <a href="#"><svg><use href="#share"/></svg>Shared with me</a>
+        <a href="#"><svg><use href="#trash"/></svg>Trash</a>
+        <div class="foot"><a href="#"><svg><use href="#gear"/></svg>Admin</a><a href="#"><span class="av a">PN</span>Priya Nair <span class="n">Finance</span></a></div>
+      </aside>
+      <div class="sheet">
+        <div class="loc">Finance <span class="sep">/</span> Contracts <span class="sep">/</span> <b>2026</b>
+          <span class="cls conf" style="margin-left:6px">Confidential</span>
+          <div class="r"><span class="avs"><span class="av a">PN</span><span class="av b">AK</span><span class="av c">RS</span></span><button class="btn ghost sm">Share</button><button class="ib" aria-label="Toggle details"><svg class="i"><use href="#side"/></svg></button><button class="ib" aria-label="More"><svg class="i"><use href="#more"/></svg></button></div>
+        </div>
+        <div class="viewbar">
+          <div class="tabs"><button aria-selected="true">All <span class="cnt">214</span></button><button>Expiring <span class="cnt">12</span></button><button>Needs approval <span class="cnt">3</span></button><button>Restricted <span class="cnt">7</span></button><button class="fg4">+</button></div>
+          <div class="r">
+            <button class="btn ghost"><svg class="i"><use href="#filter"/></svg>Filter</button>
+            <button class="btn ghost"><svg class="i"><use href="#sliders"/></svg>Display</button>
+            <button class="btn ghost"><svg class="i"><use href="#up"/></svg>Upload</button>
+            <button class="btn primary sm"><svg class="i"><use href="#plus"/></svg>New</button>
+          </div>
+        </div>
+        <div class="filters">
+          <span class="fchip"><span>Type</span><span class="v">is PDF, Word</span><span class="x">×</span></span>
+          <span class="fchip"><span>Modified</span><span class="v">last 30 days</span><span class="x">×</span></span>
+          <span class="fg4" style="font-size:12px;margin-left:4px">Group by <b class="fg2" style="font-weight:500">Vendor</b> · Sort <b class="fg2" style="font-weight:500">Modified ↓</b></span>
+        </div>
+        <div class="body peek">
+          <div class="list">
+            <div class="ghead"><span></span><span>Name</span><span>Modified</span><span>Classification</span><span>Status</span><span style="text-align:right">Size</span><span></span></div>
+            <div class="grow-h"><svg><use href="#chev"/></svg>Helios Logistics <span class="cnt">4</span></div>
+            <div class="frow sel" aria-selected="true"><div class="c0"><span class="chk on"></span></div><div class="name"><svg class="fi pdf i"><use href="#file"/></svg><span class="t">Vendor master agreement — Helios Logistics<span class="sub">.pdf</span></span></div><div class="meta"><span class="av a">PN</span>2 h ago</div><div><span class="cls restr">Restricted</span></div><div class="tags"><span class="pill warn"><svg><use href="#block"/></svg>No download</span></div><div class="meta" style="justify-content:flex-end">4.2 MB</div><button class="ib"><svg class="i"><use href="#more"/></svg></button></div>
+            <div class="frow sel" aria-selected="true"><div class="c0"><span class="chk on"></span></div><div class="name"><svg class="fi doc i"><use href="#file"/></svg><span class="t">SOW #2026-031 Helios<span class="sub">.docx</span></span></div><div class="meta"><span class="av b">AK</span>Aug 9</div><div><span class="cls conf">Confidential</span></div><div class="tags"><span class="pill ok">Approved</span></div><div class="meta" style="justify-content:flex-end">210 KB</div><button class="ib"><svg class="i"><use href="#more"/></svg></button></div>
+            <div class="frow"><div class="c0"><span class="chk"></span></div><div class="name"><svg class="fi doc i"><use href="#file"/></svg><span class="t">Amendment 01 — Helios<span class="sub">.docx</span></span></div><div class="meta"><span class="av c">RS</span>Yesterday</div><div><span class="cls conf">Confidential</span></div><div class="tags"><span class="pill">Checked out · AK</span></div><div class="meta" style="justify-content:flex-end">96 KB</div><button class="ib"><svg class="i"><use href="#more"/></svg></button></div>
+            <div class="frow dim"><div class="c0"><span class="chk"></span></div><div class="name"><svg class="fi xls i"><use href="#file"/></svg><span class="t">Rate card FY27 draft<span class="sub">.xlsx</span></span></div><div class="meta">Just now · You</div><div><span class="pill outline">Unclassified</span></div><div><span class="steps"><span class="done">Up</span><i></i><span class="on">Scan</span><i></i><span>Index</span></span></div><div class="meta" style="justify-content:flex-end">1.1 MB</div><span></span></div>
+            <div class="grow-h"><svg><use href="#chev"/></svg>Orion Analytics <span class="cnt">2</span></div>
+            <div class="frow"><div class="c0"><span class="chk"></span></div><div class="name"><svg class="fi pdf i"><use href="#file"/></svg><span class="t">NDA — Orion Analytics (signed)<span class="sub">.pdf</span></span></div><div class="meta"><span class="av d">LB</span>Aug 11</div><div><span class="cls conf">Confidential</span></div><div class="tags"><span class="pill"><svg><use href="#clock"/></svg>Retain 7y</span></div><div class="meta" style="justify-content:flex-end">640 KB</div><button class="ib"><svg class="i"><use href="#more"/></svg></button></div>
+            <div class="frow"><div class="c0"><span class="chk"></span></div><div class="name"><svg class="fi ppt i"><use href="#file"/></svg><span class="t">Board pack — pricing strategy<span class="sub">.pptx</span></span></div><div class="meta"><span class="av c">RS</span>Fri</div><div><span class="cls hconf">Highly conf.</span></div><div class="tags"><span class="pill danger"><svg><use href="#lock"/></svg>Legal hold</span></div><div class="meta" style="justify-content:flex-end">9.8 MB</div><button class="ib"><svg class="i"><use href="#more"/></svg></button></div>
+            <div class="grow-h"><svg><use href="#chev"/></svg>Templates &amp; notes <span class="cnt">3</span></div>
+            <div class="frow"><div class="c0"><span class="chk"></span></div><div class="name"><svg class="fi doc i"><use href="#file"/></svg><span class="t">MSA template v7<span class="sub">.docx</span></span></div><div class="meta"><span class="av b">AK</span>Mon</div><div><span class="cls conf">Confidential</span></div><div class="tags"></div><div class="meta" style="justify-content:flex-end">312 KB</div><button class="ib"><svg class="i"><use href="#more"/></svg></button></div>
+            <div class="frow"><div class="c0"><span class="chk"></span></div><div class="name"><svg class="fi i"><use href="#file"/></svg><span class="t">Negotiation notes<span class="sub">.md</span></span></div><div class="meta"><span class="av a">PN</span>Thu</div><div><span class="cls int">Internal</span></div><div class="tags"></div><div class="meta" style="justify-content:flex-end">14 KB</div><button class="ib"><svg class="i"><use href="#more"/></svg></button></div>
+            <div class="frow"><div class="c0"><span class="chk"></span></div><div class="name"><svg class="fi pdf i"><use href="#file"/></svg><span class="t">Supplier code of conduct<span class="sub">.pdf</span></span></div><div class="meta">Jul 12 · Comms</div><div><span class="cls pub">Public</span></div><div class="tags"></div><div class="meta" style="justify-content:flex-end">1.9 MB</div><button class="ib"><svg class="i"><use href="#more"/></svg></button></div>
+            <div class="grow-h" style="color:var(--fg4);font-weight:400"><svg><use href="#chevr"/></svg>Archive <span class="cnt">96</span></div>
+          </div>
+          <aside class="peekp" aria-label="Details">
+            <div class="ph"><span class="kbd">Esc</span><span style="font-size:11.5px">to close</span><div class="r"><button class="ib"><svg class="i"><use href="#chev" style="transform:rotate(180deg)"/></svg></button><button class="ib"><svg class="i"><use href="#chev"/></svg></button><button class="ib"><svg class="i"><use href="#ext"/></svg></button><button class="ib"><svg class="i"><use href="#x"/></svg></button></div></div>
+            <div class="pt"><h3>Vendor master agreement — Helios Logistics.pdf</h3><div class="m">v3.2 · 4.2 MB · Priya Nair · 2 h ago</div></div>
+            <div class="chips"><span class="cls restr">Restricted</span><span class="pill warn"><svg><use href="#block"/></svg>No download</span><span class="pill"><svg><use href="#eye"/></svg>Watermarked</span><span class="pill"><svg><use href="#clock"/></svg>Retain 7y</span></div>
+            <div class="tabs"><button aria-selected="true">Preview</button><button>Details</button><button>Access</button><button>Versions <span class="cnt">3</span></button><button>Activity</button></div>
+            <div class="pb">
+              <div class="prev"><div class="pg"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div><div class="wm">priya.nair@northwind · 18 Aug 2026 14:07<br>RESTRICTED · f7c2…9a1e<br>priya.nair@northwind · 18 Aug 2026 14:07</div><button class="btn sm exp">Open preview</button></div>
+              <div class="notice warn"><svg><use href="#info"/></svg><div>Preview only off-network. <a href="#" class="fg2">Why?</a></div></div>
+              <dl class="kv"><dt>Vendor</dt><dd>Helios Logistics Pvt Ltd</dd><dt>Value</dt><dd>₹ 4.8 Cr</dd><dt>Expires</dt><dd>31 Mar 2027 <span class="pill warn">225 d</span></dd><dt>Owner</dt><dd><span class="av a">PN</span>Priya Nair</dd><dt>Indexed</dt><dd><span class="pill ok">Ready</span><span class="fg4 mono" style="font-size:10.5px">41 chunks</span></dd></dl>
+              <div class="act"><h4 style="margin-bottom:2px">Activity</h4>
+                <div><span class="av a">PN</span><span class="who">Priya</span> previewed <span class="when">2h</span></div>
+                <div><span class="av b">AK</span><span class="who">Anita</span> uploaded v3.2 <span class="when">2h</span></div>
+                <div><span class="av" style="background:color-mix(in srgb,var(--danger) 14%,transparent);color:var(--danger)">!</span><span class="who">Policy</span> blocked download · off-network <span class="when">3h</span></div>
+                <div><span class="av" style="background:var(--accent-soft);color:var(--accent)"><svg class="i" style="width:11px;height:11px"><use href="#bot"/></svg></span><span class="who">Claude</span> <span class="fg3">via MCP</span> read outline <span class="when">Mon</span></div>
+              </div>
+            </div>
+            <div class="ask"><div class="box"><input placeholder="Ask about this file…"><div class="r"><span class="pill outline"><svg><use href="#file"/></svg>This file</span><span class="grow"></span><span class="kbd">⏎</span><button class="send"><svg class="i" style="width:12px;height:12px"><use href="#move"/></svg></button></div></div></div>
+          </aside>
+        </div>
+        <div class="selbar" role="toolbar" aria-label="Selection actions">
+          <span class="cnt">2 selected <i></i></span>
+          <button><svg class="i"><use href="#share"/></svg>Share <span class="kbd">S</span></button>
+          <button aria-disabled="true" title="Downloading is restricted outside the corporate network"><svg class="i"><use href="#down"/></svg>Download</button>
+          <button><svg class="i"><use href="#move"/></svg>Move <span class="kbd">M</span></button>
+          <button>Label</button><button>Retention</button>
+          <button><svg class="i"><use href="#more"/></svg></button>
+          <button class="x" aria-label="Clear selection"><svg class="i"><use href="#x"/></svg></button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="cap"><b>Shell</b><span>Sidebar 232 on canvas · sheet inset 8px, radius 14 · location bar 38 · view bar 42 · rows 36</span><b>State</b><span>2 rows selected → floating bar; peek open on the first (Space / click)</span><b>Governance</b><span>label dot in the sidebar per library, tinted label pill per row, effect pills only where an effect applies</span></div>
+
+  <div class="subh"><h3>1.2 Command palette, Display popover, row menu</h3><span>keyboard-first surfaces; palette holds the same actions as the selection bar and menus</span></div>
+  <div class="frame" style="position:relative;height:620px;background:var(--canvas)">
+    <div class="app" style="height:620px;filter:saturate(.8);opacity:.55;pointer-events:none">
+      <aside class="side"><div class="wsw"><span class="mark">N</span><b class="brand-name">Northwind</b></div><a href="#"><svg><use href="#s"/></svg>Search</a><a href="#"><svg><use href="#inbox"/></svg>Inbox</a><a href="#"><svg><use href="#home"/></svg>Home</a><a href="#"><svg><use href="#spark"/></svg>Ask</a><div class="grp">Finance</div><a href="#" aria-current="page"><svg><use href="#folder"/></svg>Files</a><a href="#"><svg><use href="#list"/></svg>Lists</a><a href="#"><svg><use href="#page"/></svg>Pages</a></aside>
+      <div class="sheet"><div class="loc">Finance <span class="sep">/</span> Contracts <span class="sep">/</span> <b>2026</b></div><div class="viewbar"><div class="tabs"><button aria-selected="true">All</button><button>Expiring</button></div></div>
+        <div class="list"><div class="ghead"><span></span><span>Name</span><span>Modified</span><span>Classification</span><span>Status</span><span></span><span></span></div>
+        <div class="frow"><div></div><div class="name"><svg class="fi pdf i"><use href="#file"/></svg><span class="t">Vendor master agreement — Helios</span></div><div class="meta">2 h ago</div><div><span class="cls restr">Restricted</span></div><div></div><div></div><div></div></div>
+        <div class="frow"><div></div><div class="name"><svg class="fi doc i"><use href="#file"/></svg><span class="t">SOW #2026-031 Helios</span></div><div class="meta">Aug 9</div><div><span class="cls conf">Confidential</span></div><div></div><div></div><div></div></div>
+        <div class="frow"><div></div><div class="name"><svg class="fi doc i"><use href="#file"/></svg><span class="t">Amendment 01 — Helios</span></div><div class="meta">Yesterday</div><div><span class="cls conf">Confidential</span></div><div></div><div></div><div></div></div>
+        <div class="frow"><div></div><div class="name"><svg class="fi pdf i"><use href="#file"/></svg><span class="t">NDA — Orion Analytics</span></div><div class="meta">Aug 11</div><div><span class="cls conf">Confidential</span></div><div></div><div></div><div></div></div>
+        </div></div>
+    </div>
+    <div style="position:absolute;inset:0;background:rgba(20,20,18,.18)"></div>
+    <div class="cmdk" style="position:absolute;left:50%;top:64px;transform:translateX(-50%)">
+      <div class="in"><svg class="i fg3"><use href="#s"/></svg><input value="helios" placeholder="Search or type a command…"><span class="pill outline">in Contracts</span><span class="kbd">Esc</span></div>
+      <div class="grp">Files</div>
+      <div class="it on"><svg class="i"><use href="#file"/></svg>Vendor master agreement — Helios Logistics.pdf <span class="cls restr mini" title="Restricted"></span><span class="fg4" style="font-size:11.5px">Contracts / 2026</span><span class="k"><span class="kbd">⏎</span></span></div>
+      <div class="it"><svg class="i"><use href="#file"/></svg>SOW #2026-031 Helios.docx <span class="cls conf mini"></span><span class="fg4" style="font-size:11.5px">Contracts / 2026</span></div>
+      <div class="it"><svg class="i"><use href="#file"/></svg>Amendment 01 — Helios.docx <span class="cls conf mini"></span><span class="fg4" style="font-size:11.5px">Contracts / 2026 / Amendments</span></div>
+      <div class="grp">Actions on selection</div>
+      <div class="it"><svg class="i"><use href="#share"/></svg>Share… <span class="k"><span class="kbd">S</span></span></div>
+      <div class="it dis"><svg class="i"><use href="#down"/></svg>Download <span class="pill warn" style="height:18px">Blocked off-network</span></div>
+      <div class="it"><svg class="i"><use href="#move"/></svg>Move to… <span class="k"><span class="kbd">M</span></span></div>
+      <div class="grp">Ask</div>
+      <div class="it"><svg class="i"><use href="#spark"/></svg>Ask about "helios" in Contracts… <span class="k"><span class="kbd">⌘</span><span class="kbd">⏎</span></span></div>
+      <div class="ft"><span><span class="kbd">↑↓</span> navigate</span><span><span class="kbd">⏎</span> open</span><span><span class="kbd">Space</span> peek</span><span><span class="kbd">Tab</span> scope</span><span style="margin-left:auto">Results respect your access</span></div>
+    </div>
+    <div class="pop" style="position:absolute;right:18px;top:36px">
+      <div class="r"><b>Layout</b><div class="seg"><button aria-pressed="true">List</button><button>Board</button><button>Gallery</button></div></div>
+      <div class="r"><b>Row density</b><div class="seg"><button>Compact</button><button aria-pressed="true">Default</button></div></div>
+      <div class="r"><b>Group by</b><span class="fg2">Vendor <svg class="i" style="width:11px;height:11px;vertical-align:-1px"><use href="#chev"/></svg></span></div>
+      <div class="r"><b>Order</b><span class="fg2">Modified ↓</span></div>
+      <hr>
+      <div class="r"><b>Show label dots in sidebar</b><button class="switch" role="switch" aria-checked="true"></button></div>
+      <div class="r"><b>Show effect pills</b><button class="switch" role="switch" aria-checked="true"></button></div>
+      <div class="r"><b>Show file extensions</b><button class="switch" role="switch" aria-checked="true"></button></div>
+      <hr>
+      <div class="r fg3" style="font-size:11.5px">Applies to <b style="color:var(--fg2)">Personal view</b> · <span class="fg2">Save for library</span></div>
+    </div>
+    <div class="menu" style="position:absolute;left:24px;bottom:18px">
+      <div><svg class="i"><use href="#eye"/></svg>Peek <span class="k"><span class="kbd">Space</span></span></div>
+      <div><svg class="i"><use href="#ext"/></svg>Open <span class="k"><span class="kbd">⏎</span></span></div>
+      <div><svg class="i"><use href="#share"/></svg>Share… <span class="k"><span class="kbd">S</span></span></div>
+      <div class="dis"><svg class="i"><use href="#down"/></svg>Download <span class="pill warn" style="margin-left:auto;height:18px">Off-network</span></div>
+      <hr>
+      <div class="lbl">Label</div>
+      <div><span class="cls int mini"></span>Internal</div><div><span class="cls conf mini"></span>Confidential <span class="k"><svg class="i" style="width:11px;height:11px"><use href="#check"/></svg></span></div><div><span class="cls restr mini"></span>Restricted <span class="k"><span class="kbd">L</span><span class="kbd">R</span></span></div>
+      <hr>
+      <div><svg class="i"><use href="#move"/></svg>Move to… <span class="k"><span class="kbd">M</span></span></div>
+      <div><svg class="i"><use href="#clock"/></svg>Retention…</div>
+      <div style="color:var(--danger)"><svg class="i"><use href="#trash"/></svg>Move to trash <span class="k"><span class="kbd">⌫</span></span></div>
+    </div>
+  </div>
+  <div class="cap"><b>Palette</b><span>Files + actions + Ask in one surface, scope shown as a pill; results already filtered by access, denied actions shown with reason</span><b>Display</b><span>Linear-style popover replaces a "views" toolbar; personal vs library scope stated at the bottom</span></div>
+
+  <div class="subh"><h3>1.3 Ask — AI beside the work</h3><span>split with the library; scope visible; citations hover to a passage and deep-link into the peek panel</span></div>
+  <div class="frame">
+    <div class="app" style="height:600px;grid-template-columns:232px 1fr">
+      <aside class="side"><div class="wsw"><span class="mark">N</span><b class="brand-name">Northwind</b><svg class="i"><use href="#updown"/></svg></div><a href="#"><svg><use href="#s"/></svg>Search <span class="kbd">⌘K</span></a><a href="#"><svg><use href="#inbox"/></svg>Inbox <span class="n">4</span></a><a href="#"><svg><use href="#home"/></svg>Home</a><a href="#" aria-current="page"><svg><use href="#spark"/></svg>Ask <span class="kbd">⌘J</span></a><div class="grp"><svg><use href="#chev"/></svg>Finance</div><a href="#"><svg><use href="#folder"/></svg>Files</a><a href="#" class="lib"><span class="dot" style="--cc:var(--c-conf)"></span>Contracts</a><a href="#" class="lib"><span class="dot" style="--cc:var(--c-int)"></span>Invoices</a><a href="#"><svg><use href="#list"/></svg>Lists</a><a href="#"><svg><use href="#page"/></svg>Pages</a><a href="#"><svg><use href="#act"/></svg>Activity</a><div class="grp"><svg><use href="#chev"/></svg>Recent asks</div><a href="#" class="lib" aria-current="page">Helios termination terms</a><a href="#" class="lib">Which NDAs expire in Q4?</a><a href="#" class="lib">Rate card changes FY26→27</a></aside>
+      <div class="sheet" style="display:grid;grid-template-columns:1fr 440px;grid-template-rows:auto 1fr">
+        <div class="loc" style="grid-column:1/-1">Ask <span class="sep">/</span> <b>Helios termination terms</b><div class="r"><span class="pill outline"><svg><use href="#folder"/></svg>Scope: Contracts</span><button class="btn ghost sm">Share thread</button><button class="ib"><svg class="i"><use href="#more"/></svg></button></div></div>
+        <div style="padding:20px 28px 24px;overflow:auto;display:flex;flex-direction:column;gap:22px;min-width:0;box-shadow:1px 0 0 var(--line)">
+          <div class="ans"><div class="q"><span class="av a">PN</span>What are the termination terms with Helios, and did the amendment change them?</div></div>
+          <div class="ans" style="max-width:62ch">
+            <div class="q"><span class="av" style="background:var(--accent-soft);color:var(--accent)"><svg class="i" style="width:11px;height:11px"><use href="#spark"/></svg></span>Answer · from 2 documents you can open</div>
+            <p>Either party may terminate the master agreement for convenience with <b>90 days' written notice</b><sup>1</sup>. Amendment 01 shortens that to <b>60 days</b>, but only for the Warehousing Schedule<sup>2</sup>; all other schedules keep 90 days. Termination for material breach still requires a 30-day cure period after written notice<sup>1</sup>.</p>
+            <p style="margin-top:8px" class="fg2">Nothing in either document changes the notice <em>method</em> — written notice to the registered address remains required<sup>1</sup>.</p>
+            <div class="srcs">
+              <a href="#"><span class="n">1</span><svg class="fi pdf i" style="color:#D0453A"><use href="#file"/></svg>Vendor master agreement — Helios Logistics.pdf<span class="cls restr mini"></span><span class="loc2">p.14 · §18.2</span></a>
+              <a href="#"><span class="n">2</span><svg class="fi doc i" style="color:#3B6FD4"><use href="#file"/></svg>Amendment 01 — Helios Logistics.docx<span class="cls conf mini"></span><span class="loc2">§3</span></a>
+            </div>
+            <div class="foot"><svg class="i" style="width:12px;height:12px"><use href="#shield"/></svg>Answered inside your access · Restricted content stays preview-only · <a href="#" class="fg3">Audit entry</a></div>
+          </div>
+          <div style="position:relative;height:0"><div class="hovercard" style="position:absolute;left:34px;top:4px"><div class="src"><svg class="fi pdf i" style="color:#D0453A"><use href="#file"/></svg><b style="font-weight:500">Vendor master agreement</b><span class="fg4 mono" style="margin-left:auto;font-size:10.5px">p.14 §18.2</span></div><blockquote>"…either Party may terminate this Agreement for convenience upon <b>ninety (90) days'</b> prior written notice to the other Party…"</blockquote><div class="row" style="margin-top:8px;gap:6px"><button class="btn sm">Open at passage</button><span class="pill warn" style="margin-left:auto">Preview only</span></div></div></div>
+          <div class="ask" style="margin-top:auto;padding:0;box-shadow:none"><div class="box"><input placeholder="Ask a follow-up…"><div class="r"><span class="pill outline"><svg><use href="#folder"/></svg>Contracts</span><span class="pill outline">Last 12 months</span><span class="grow"></span><span class="fg4" style="font-size:11px">Hybrid retrieval · sources always shown</span><button class="send"><svg class="i" style="width:12px;height:12px"><use href="#move"/></svg></button></div></div></div>
+        </div>
+        <div style="display:flex;flex-direction:column;min-width:0;overflow:hidden">
+          <div class="ph row" style="padding:8px 8px 0 14px;color:var(--fg3);font-size:11.5px">Source 1 of 2<span class="grow"></span><button class="ib"><svg class="i"><use href="#ext"/></svg></button><button class="ib"><svg class="i"><use href="#x"/></svg></button></div>
+          <div class="pt" style="padding:6px 14px 0"><h3 style="font-size:13.5px;font-weight:500">Vendor master agreement — Helios Logistics.pdf</h3><div class="m fg3" style="font-size:12px">Page 14 · §18.2 Termination</div></div>
+          <div class="chips" style="padding:8px 14px"><span class="cls restr">Restricted</span><span class="pill warn"><svg><use href="#block"/></svg>No download</span><span class="pill"><svg><use href="#eye"/></svg>Watermarked</span></div>
+          <div style="margin:0 14px 14px;flex:1;border-radius:var(--r-surf);background:var(--sunken);position:relative;overflow:hidden;display:flex;align-items:flex-start;justify-content:center;padding-top:18px">
+            <div style="width:78%;background:var(--sheet);box-shadow:var(--el2);padding:22px 20px;display:flex;flex-direction:column;gap:7px;border-radius:2px;font-size:0">
+              <i style="height:4px;width:38%;background:var(--g300);display:block;border-radius:1px"></i><i style="height:2px;width:100%;background:var(--g200);display:block"></i><i style="height:2px;width:96%;background:var(--g200);display:block"></i><i style="height:2px;width:70%;background:var(--g200);display:block"></i>
+              <div style="margin:6px -6px;padding:6px;background:color-mix(in srgb,var(--accent) 12%,transparent);border-radius:4px;border-left:2px solid var(--accent);display:flex;flex-direction:column;gap:6px"><i style="height:2px;width:100%;background:var(--g300);display:block"></i><i style="height:2px;width:92%;background:var(--g300);display:block"></i><i style="height:2px;width:60%;background:var(--g300);display:block"></i></div>
+              <i style="height:2px;width:100%;background:var(--g200);display:block"></i><i style="height:2px;width:88%;background:var(--g200);display:block"></i><i style="height:2px;width:94%;background:var(--g200);display:block"></i><i style="height:2px;width:50%;background:var(--g200);display:block"></i>
+            </div>
+            <div class="wm" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:9px;color:rgba(194,39,58,.25);transform:rotate(-22deg);line-height:3;text-align:center;white-space:nowrap;pointer-events:none">priya.nair@northwind · RESTRICTED · f7c2…9a1e<br>priya.nair@northwind · RESTRICTED · f7c2…9a1e</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="cap"><b>Pattern</b><span>question → answer with numbered citations → source list → hover card with quoted passage → deep-link opens the sanitised preview at the passage</span><b>Trust</b><span>scope pill next to the prompt, "answered inside your access" line, MCP/agent activity visible in the file's activity</span></div>
+
+  <div class="subh"><h3>1.4 Admin — policy as a sentence</h3><span>settings-style layout; rule tokens read as language; simulation is the primary evidence, not a side panel</span></div>
+  <div class="frame">
+    <div class="app" style="height:700px">
+      <aside class="side"><div class="wsw"><span class="mark">N</span><b class="brand-name">Northwind</b><svg class="i"><use href="#updown"/></svg></div><a href="#"><svg><use href="#chev" style="transform:rotate(90deg)"/></svg>Back to workspace</a><div class="grp">Admin</div><a href="#"><svg><use href="#home"/></svg>Overview</a><a href="#"><svg><use href="#user"/></svg>People</a><a href="#"><svg><use href="#folder"/></svg>Workspaces</a><a href="#" aria-current="page"><svg><use href="#shield"/></svg>Security</a><a href="#"><svg><use href="#clock"/></svg>Compliance</a><a href="#"><svg><use href="#s"/></svg>Search &amp; AI</a><a href="#"><svg><use href="#globe"/></svg>Infrastructure</a><a href="#"><svg><use href="#spark"/></svg>Branding</a><a href="#"><svg><use href="#act"/></svg>Audit log</a><div class="foot"><a href="#"><span class="pill ok" style="height:18px"><svg><use href="#shield"/></svg>MFA verified · 4 min</span></a></div></aside>
+      <div class="sheet"><div class="set">
+        <nav class="snav"><div class="g">Security</div><a href="#" aria-current="page">Data loss prevention</a><a href="#">Conditional access</a><a href="#">Classification</a><a href="#">Information barriers</a><a href="#">Incidents <span class="n" style="float:right;font-family:var(--mono);color:var(--fg4)">3</span></a><div class="g">Detectors</div><a href="#">Built-in</a><a href="#">Custom</a></nav>
+        <div class="smain">
+          <div class="loc" style="padding:0 0 4px">Security <span class="sep">/</span> DLP <span class="sep">/</span> <b>New policy</b></div>
+          <div class="row" style="margin:6px 0 18px"><h2 style="font-size:20px">Block restricted external sharing</h2><span class="pill warn">Simulation</span><span class="grow"></span><button class="btn">Save draft</button><button class="btn primary">Enable · Enforce <span class="kbd" style="background:rgba(255,255,255,.2);color:#fff;box-shadow:none">⌘⏎</span></button></div>
+          <div class="rulecard">
+            <div class="h">When <span class="fg4" style="text-transform:none;letter-spacing:0;font-weight:400">all of these are true</span></div>
+            <div class="sent">
+              <span class="tok">Classification <svg><use href="#chev"/></svg></span><span class="w">is at least</span><span class="tok"><span class="cls restr">Restricted</span><span class="x">×</span></span>
+              <span class="w">and</span><span class="tok">Detected data <svg><use href="#chev"/></svg></span><span class="w">includes any of</span><span class="tok">Payment card<span class="x">×</span></span><span class="tok">Aadhaar<span class="x">×</span></span><span class="tok">API key<span class="x">×</span></span>
+              <span class="w">and</span><span class="tok">Action <svg><use href="#chev"/></svg></span><span class="w">is</span><span class="tok">Share externally<span class="x">×</span></span><span class="w">or</span><span class="tok">Create public link<span class="x">×</span></span>
+              <span class="addc"><svg class="i" style="width:12px;height:12px"><use href="#plus"/></svg>condition</span>
+            </div>
+            <div class="h">Then</div>
+            <div class="sent">
+              <span class="tok"><span class="pill danger" style="height:18px"><svg><use href="#block"/></svg>Block</span><svg><use href="#chev"/></svg></span><span class="w">and show</span><span class="tok" style="font-weight:400;color:var(--fg2)">"Sharing this file outside the organisation isn't permitted."<span class="x">✎</span></span>
+              <span class="w">, then</span><span class="tok">Notify security<span class="x">×</span></span><span class="tok">Open incident · Critical<span class="x">×</span></span><span class="addc"><svg class="i" style="width:12px;height:12px"><use href="#plus"/></svg>action</span>
+            </div>
+            <div class="h">Where</div>
+            <div class="sent"><span class="tok">Whole tenant <svg><use href="#chev"/></svg></span><span class="w">except</span><span class="tok">Legal / Deal room<span class="x">×</span></span><span class="addc"><svg class="i" style="width:12px;height:12px"><use href="#plus"/></svg>exception</span></div>
+          </div>
+          <div class="row" style="margin:20px 0 10px"><h4>Simulation · last 30 days</h4><span class="grow"></span><span class="fg4" style="font-size:11.5px">Re-run</span><span class="fg4" style="font-size:11.5px">Export</span></div>
+          <div class="simp"><div><b>1,284</b><span>events evaluated</span></div><div><b>37</b><span>would be blocked</span></div><div><b>0.6%</b><span>est. false positives</span></div><div><b>5</b><span>people affected</span></div></div>
+          <div class="grid g2" style="margin-top:12px">
+            <div class="card" style="padding:14px"><h4 style="margin-bottom:10px">Would block, by workspace</h4><div class="bars"><div><span>Finance</span><i style="width:100%"></i><span>22</span></div><div><span>Legal</span><i style="width:41%"></i><span>9</span></div><div><span>Sales</span><i style="width:23%"></i><span>5</span></div><div><span>People ops</span><i style="width:5%"></i><span>1</span></div></div></div>
+            <div class="card" style="padding:14px"><h4 style="margin-bottom:10px">Sample events</h4><div class="act"><div><span class="av a">PN</span><span class="who">Priya</span> public link · Helios MSA <span class="when">Aug 15</span></div><div><span class="av c">RS</span><span class="who">Rahul</span> external share · Board pack <span class="when">Aug 12</span></div><div><span class="av b">AK</span><span class="who">Anita</span> external share · Rate card <span class="when">Aug 9</span></div></div></div>
+          </div>
+          <p class="fg4" style="font-size:11.5px;margin-top:14px">Enabling in Enforce needs recent MFA and writes an audit entry. <a href="#" class="fg3">View as JSON</a> (read-only).</p>
+        </div>
+      </div></div>
+    </div>
+  </div>
+  <div class="cap"><b>Pattern</b><span>WHEN / THEN / WHERE as editable tokens in a sentence (Linear-filter grammar) · simulation stats directly under the rule · one primary action, MFA state visible in the sidebar</span></div>
+
+  <div class="subh"><h3>1.5 Sign-in and mobile</h3><span>one card, one primary action, passkey first · mobile: floating pill tab bar, bottom sheet</span></div>
+  <div class="grid" style="grid-template-columns:1.5fr 1fr;gap:20px;align-items:start">
+    <div class="frame login">
+      <div class="card">
+        <div class="logo-mark brand-mark">N</div>
+        <h3>Sign in to <span class="brand-name">Northwind</span></h3>
+        <p class="m">Use your work account. Passkeys are fastest.</p>
+        <div class="stack">
+          <button class="btn primary lg" style="justify-content:center"><svg class="i"><use href="#shield"/></svg>Continue with passkey</button>
+          <button class="btn lg" style="justify-content:center">Continue with SSO</button>
+          <div class="or"><i></i>or<i></i></div>
+          <input class="input" style="height:36px" placeholder="name@northwind.example">
+          <button class="btn lg" style="justify-content:center">Continue with email</button>
+        </div>
+        <div class="ft"><a href="#">Support</a><a href="#">Privacy</a><a href="#">Terms</a><span style="margin-left:auto" class="mono">v2.4.1</span></div>
+      </div>
+    </div>
+    <div>
+      <div class="phone">
+        <div class="top"><h3>Contracts</h3><span class="cls conf mini"></span><span class="grow"></span><button class="ib"><svg class="i"><use href="#sliders"/></svg></button><span class="av a">PN</span></div>
+        <div class="srch"><svg class="i"><use href="#s"/></svg>Search or ask…</div>
+        <div class="mlist">
+          <div class="mrow"><svg class="fi pdf i" style="color:#D0453A"><use href="#file"/></svg><div class="name"><span>Vendor master agreement — Helios.pdf</span><small><span class="cls restr mini"></span>Restricted · 2h · No download</small></div><svg class="i fg4"><use href="#chevr"/></svg></div>
+          <div class="mrow"><svg class="fi doc i" style="color:#3B6FD4"><use href="#file"/></svg><div class="name"><span>SOW #2026-031 Helios.docx</span><small><span class="cls conf mini"></span>Confidential · Aug 9 · Approved</small></div><svg class="i fg4"><use href="#chevr"/></svg></div>
+          <div class="mrow"><svg class="fi doc i" style="color:#3B6FD4"><use href="#file"/></svg><div class="name"><span>Amendment 01 — Helios.docx</span><small><span class="cls conf mini"></span>Confidential · Yesterday</small></div><svg class="i fg4"><use href="#chevr"/></svg></div>
+          <div class="mrow" style="opacity:.55"><svg class="fi xls i" style="color:#2E8B57"><use href="#file"/></svg><div class="name"><span>Rate card FY27 draft.xlsx</span><small>Scanning…</small></div></div>
+          <div class="mrow"><svg class="fi ppt i" style="color:#D2591C"><use href="#file"/></svg><div class="name"><span>Board pack — pricing.pptx</span><small><span class="cls hconf mini"></span>Highly conf. · Legal hold</small></div><svg class="i fg4"><use href="#chevr"/></svg></div>
+        </div>
+        <div class="sheet2">
+          <div class="row" style="align-items:flex-start"><svg class="fi pdf i" style="color:#D0453A;margin-top:2px"><use href="#file"/></svg><div style="flex:1;min-width:0"><div style="font-weight:500;font-size:13px;line-height:1.3">Vendor master agreement — Helios.pdf</div><div class="fg4" style="font-size:11px">4.2 MB · Priya · 2h</div></div></div>
+          <div class="row wrap" style="margin:10px 0;gap:5px"><span class="cls restr">Restricted</span><span class="pill warn"><svg><use href="#block"/></svg>No download</span></div>
+          <div class="grid" style="grid-template-columns:1fr 1fr;gap:6px"><button class="btn primary">Preview</button><button class="btn">Share</button><button class="btn">Approve</button><button class="btn" disabled>Download</button></div>
+        </div>
+        <div class="fab"><a href="#"><svg><use href="#home"/></svg></a><a href="#" aria-current="page"><svg><use href="#folder"/></svg></a><a href="#"><svg><use href="#s"/></svg></a><a href="#"><svg><use href="#spark"/></svg></a><a href="#"><svg><use href="#inbox"/></svg></a></div>
+      </div>
+    </div>
+  </div>
+  <div class="cap"><b>Sign-in</b><span>dot-grid canvas, 360px card, brand mark + name only; no marketing hero</span><b>Mobile</b><span>Ask lives in the tab bar; bottom sheet carries label, effects and 4 actions</span></div>
+</section>
+
+<!-- ======================= PATTERNS ======================= -->
+<section class="sec" id="patterns">
+  <div class="shead"><span class="n">02</span><h2>Interaction patterns</h2><p>Same job → same pattern in every view type and entry point. These replace v1's bordered notices and static bars.</p></div>
+
+  <div class="pat"><div><h3>Selection bar</h3><p>Appears only with a selection; floats over content at bottom-centre; shows count, 4–6 actions with single-key shortcuts, overflow, and clear. Denied actions stay visible, dimmed, with a reason on hover.</p></div>
+    <div class="demo" style="min-height:96px;display:flex;align-items:center;justify-content:center;background:var(--canvas)"><div class="selbar" style="position:static;transform:none"><span class="cnt">3 selected <i></i></span><button><svg class="i"><use href="#share"/></svg>Share <span class="kbd">S</span></button><button aria-disabled="true"><svg class="i"><use href="#down"/></svg>Download</button><button><svg class="i"><use href="#move"/></svg>Move <span class="kbd">M</span></button><button>Label</button><button><svg class="i"><use href="#more"/></svg></button><button class="x"><svg class="i"><use href="#x"/></svg></button></div></div></div>
+
+  <div class="pat"><div><h3>Peek before open</h3><p>Space or single-click opens the peek panel inside the sheet; Enter opens full. Peek carries preview, label + effect pills, tabs, and <em>Ask about this file</em>. Prev/next arrows walk the list without closing.</p></div>
+    <div class="demo row" style="gap:16px;align-items:flex-start"><div class="row" style="gap:6px"><span class="kbd">Space</span><span class="fg3">peek</span></div><div class="row" style="gap:6px"><span class="kbd">⏎</span><span class="fg3">open</span></div><div class="row" style="gap:6px"><span class="kbd">J</span><span class="kbd">K</span><span class="fg3">next / previous</span></div><div class="row" style="gap:6px"><span class="kbd">Esc</span><span class="fg3">close</span></div><div class="row" style="gap:6px"><span class="kbd">⌘</span><span class="kbd">\</span><span class="fg3">pin panel</span></div></div></div>
+
+  <div class="pat"><div><h3>Label & effect language</h3><p>Classification = tinted pill with a dot; the bare dot travels into dense places (sidebar, palette, mobile). Effects = neutral pills tinted only when they restrict. Never colour alone; hover explains source (explicit / inherited / auto) and scan state.</p></div>
+    <div class="demo"><div class="row wrap" style="gap:6px"><span class="cls pub">Public</span><span class="cls int">Internal</span><span class="cls conf">Confidential</span><span class="cls hconf">Highly confidential</span><span class="cls restr">Restricted</span><span class="fg4">·</span><span class="cls pub mini"></span><span class="cls int mini"></span><span class="cls conf mini"></span><span class="cls hconf mini"></span><span class="cls restr mini"></span></div>
+    <div class="row wrap" style="gap:6px;margin-top:10px"><span class="pill info"><svg><use href="#eye"/></svg>Preview only</span><span class="pill warn"><svg><use href="#block"/></svg>No download</span><span class="pill warn"><svg><use href="#shield"/></svg>MFA required</span><span class="pill danger"><svg><use href="#lock"/></svg>Legal hold</span><span class="pill"><svg><use href="#eye"/></svg>Watermarked</span><span class="pill"><svg><use href="#clock"/></svg>Retain 7y</span><span class="pill ok"><svg><use href="#check"/></svg>Scanned</span><span class="pill outline">Unclassified</span></div></div></div>
+
+  <div class="pat"><div><h3>Denied, explained inline</h3><p>No modal. A quiet notice with cause, one primary remedy, secondary "Request access", and the safe code for support. Never leaks rule names.</p></div>
+    <div class="demo"><div class="notice danger" style="max-width:520px"><svg><use href="#block"/></svg><div><b>Downloading is restricted outside the corporate network.</b><div class="fg2">You can still preview here. Connect to VPN, or ask the owner for an exception.</div><div class="acts"><button class="btn primary sm">Connect to VPN</button><button class="btn sm">Request access</button><span class="mono fg4" style="margin-left:auto;align-self:center;font-size:10.5px">DOWNLOAD_BLOCKED_BY_POLICY</span></div></div></div></div></div>
+
+  <div class="pat"><div><h3>DLP intercept</h3><p>Same banner in Warn / Enforce / Simulation. Lists matched <em>types</em>, never values. Justification is inline and audited; Simulation shows an admin-only note.</p></div>
+    <div class="demo" style="max-width:560px"><div class="notice warn"><svg><use href="#warn"/></svg><div><b>Contains 3 payment card numbers and 1 Aadhaar number.</b><div class="fg2">Sharing outside Northwind needs a business justification. It's recorded.</div></div></div><textarea class="input" style="margin-top:8px" placeholder="Why does the recipient need this file?"></textarea><div class="row" style="margin-top:8px"><button class="btn primary">Share with justification</button><button class="btn ghost">Cancel</button><span class="pill warn" style="margin-left:auto">Simulation · would have warned</span></div></div></div>
+
+  <div class="pat"><div><h3>Truthful progress</h3><p>Upload → Scan → Process → Index → Ready as a dot stepper inside the row; the row is dimmed and non-actionable until scanning ends. Failure replaces the stepper with a pill and remedy. Toasts confirm async work with Undo.</p></div>
+    <div class="demo" style="display:flex;flex-direction:column;gap:12px;align-items:flex-start"><span class="steps"><span class="done">Upload</span><i></i><span class="done">Scan</span><i></i><span class="on">Process</span><i></i><span>Index</span><i></i><span>Ready</span></span><div class="row"><span class="pill danger"><svg><use href="#warn"/></svg>Quarantined</span><span class="fg3" style="font-size:12px">Malware signature detected · Security notified</span></div><div class="toast"><svg class="i" style="color:#7DDBA3"><use href="#check"/></svg>Moved 3 files to <b style="font-weight:500">Contracts / Archive</b><button class="btn">Undo</button></div><div style="display:flex;flex-direction:column;gap:6px;width:60%"><div class="skel" style="width:70%"></div><div class="skel" style="width:45%"></div></div></div></div>
+</section>
+
+<!-- ======================= TOKENS ======================= -->
+<section class="sec" id="tokens">
+  <div class="shead"><span class="n">03</span><h2>Tokens</h2><p>Warm neutrals; shadow-as-border; one accent that tenants own; classification and status locked.</p></div>
+  <div class="grid g2" style="align-items:start">
+    <div class="card">
+      <h4 style="margin-bottom:10px">Neutrals · warm</h4>
+      <div class="sw"><div><i style="background:#FCFCFB"></i><span>g25</span></div><div><i style="background:#F7F7F5"></i><span>g50 canvas</span></div><div><i style="background:#F0F0ED"></i><span>g100</span></div><div><i style="background:#E8E8E4"></i><span>g150</span></div><div><i style="background:#DEDEDA"></i><span>g200</span></div><div><i style="background:#C8C8C3"></i><span>g300</span></div><div><i style="background:#A6A6A0"></i><span>g400</span></div><div><i style="background:#7A7A74"></i><span>g500</span></div><div><i style="background:#5B5B56"></i><span>g600</span></div><div><i style="background:#3F3F3B"></i><span>g700</span></div><div><i style="background:#2A2A27"></i><span>g800</span></div><div><i style="background:#141412"></i><span>ink</span></div></div>
+      <h4 style="margin:16px 0 10px">Accent (tenant) · status · classification (locked)</h4>
+      <div class="sw"><div><i style="background:var(--accent)"></i><span>accent</span></div><div><i style="background:var(--accent-soft)"></i><span>accent-soft</span></div><div><i style="background:#1D8A55"></i><span>ok</span></div><div><i style="background:#B7791F"></i><span>warn</span></div><div><i style="background:#C0392B"></i><span>danger</span></div><div><i style="background:#2F6FDB"></i><span>info</span></div><div><i style="background:#8A97A6"></i><span>c-public</span></div><div><i style="background:#2F6FDB"></i><span>c-internal</span></div><div><i style="background:#B7791F"></i><span>c-conf</span></div><div><i style="background:#D2591C"></i><span>c-hconf</span></div><div><i style="background:#C2273A"></i><span>c-restr</span></div></div>
+    </div>
+    <div class="card">
+      <table class="tbl"><tbody>
+        <tr><td>Type</td><td>Inter 400/500/600, 13px base, tracking −.006em · Inter Tight for titles (≤600) · JetBrains Mono for IDs, counts, shortcuts</td></tr>
+        <tr><td>Border</td><td><code>box-shadow: 0 0 0 1px rgba(20,20,18,.07)</code> — no CSS borders on surfaces</td></tr>
+        <tr><td>Elevation</td><td><code>el1</code> sheet · <code>el2</code> popover/hover-card · <code>el3</code> palette/dialog/selection bar</td></tr>
+        <tr><td>Radius</td><td>ctrl 6 · surface 10 · sheet 14 · pills 999 (tenant clamps: ctrl 4–8, sheet 8–18)</td></tr>
+        <tr><td>Density</td><td>rows 36 (compact 30) · controls 28 (sm 24, lg 36) · icons 14 @ 1.6 stroke · 8pt grid</td></tr>
+        <tr><td>Shell</td><td>sidebar 232 (canvas) · sheet inset 8 · location bar 38 · view bar 42 · peek 372 (min 320, max 520)</td></tr>
+        <tr><td>Motion</td><td>peek 180ms ease-out; palette 120ms; rows none; reduced-motion honoured</td></tr>
+        <tr><td>Dark</td><td>canvas #0F0F0E · sheet #161615 · same tokens, borders as white alpha, accent lifted 1 step</td></tr>
+        <tr><td>Brand contract</td><td>accent, radius, name, mark, login art, email header — nothing else. Contrast enforced server-side.</td></tr>
+      </tbody></table>
+    </div>
+  </div>
+</section>
+
+<footer class="fg4" style="margin-top:64px;padding-top:20px;box-shadow:inset 0 1px 0 var(--line);font-size:11.5px;display:flex;gap:20px"><span>Enterprise Shared Workspace · Design System v2</span><span>DESIGN_SYSTEM.md carries the research references and layout guidelines</span><span style="margin-left:auto">Illustrative data</span></footer>
+</main>
+<script>
+(function(){
+  const B={harbor:{n:'Workspace',m:'W'},northwind:{n:'Northwind',m:'N'},meridian:{n:'Meridian',m:'M'}};
+  document.querySelectorAll('[data-b]').forEach(b=>b.addEventListener('click',()=>{
+    const id=b.dataset.b;document.body.dataset.brand=id;
+    document.querySelectorAll('[data-b]').forEach(x=>x.setAttribute('aria-pressed',String(x===b)));
+    document.querySelectorAll('.brand-name').forEach(e=>e.textContent=B[id].n);
+    document.querySelectorAll('.wsw .mark,.brand-mark').forEach(e=>e.textContent=B[id].m);
+  }));
+  document.querySelectorAll('[data-t]').forEach(b=>b.addEventListener('click',()=>{
+    const t=b.dataset.t; if(t==='dark')document.documentElement.dataset.theme='dark'; else delete document.documentElement.dataset.theme;
+    document.querySelectorAll('[data-t]').forEach(x=>x.setAttribute('aria-pressed',String(x===b)));
+  }));
+})();
+</script>
+</body></html>

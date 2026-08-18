@@ -1,0 +1,48 @@
+/* Enclave design tokens.
+ *
+ * Extracted from `web/design-system/design-system-v2.html`, which is the visual reference and the
+ * source of truth for these values. Change them there first, then re-extract — a token edited only
+ * here drifts from the reference nobody re-reads afterwards.
+ *
+ * Three groups, with different rules:
+ *
+ *   Neutrals and elevation  — structural. Not tenant-editable.
+ *   Classification          — LOCKED. `--c-pub` through `--c-restr` are not brandable. A tenant
+ *                             recolouring "Restricted" to match its palette is a tenant whose
+ *                             users misread sensitivity at a glance, and colour is never the only
+ *                             carrier anyway (docs/09 §15: badges carry text too).
+ *   Brand accent and radii  — tenant-editable via the branding API (docs/09 §18), which is why
+ *                             they are the only values a `[data-brand]` block overrides.
+ *
+ * Every colour is validated for contrast in both themes at configuration time; a tenant cannot
+ * save a brand colour that fails AA against its own background (docs/09 §17).
+ */
+
+:root{
+  /* warm neutrals (Linear/Vercel-style) */
+  --g0:#fff;--g25:#FCFCFB;--g50:#F7F7F5;--g100:#F0F0ED;--g150:#E8E8E4;--g200:#DEDEDA;--g300:#C8C8C3;--g400:#A6A6A0;--g500:#7A7A74;--g600:#5B5B56;--g700:#3F3F3B;--g800:#2A2A27;--g900:#1A1A18;--ink:#141412;
+  --ok:#1D8A55;--warn:#B7791F;--danger:#C0392B;--info:#2F6FDB;
+  /* classification — locked */
+  --c-pub:#8A97A6;--c-int:#2F6FDB;--c-conf:#B7791F;--c-hconf:#D2591C;--c-restr:#C2273A;
+  /* brand (tenant editable) */
+  --accent:#4F46E5;--accent-soft:rgba(79,70,229,.10);--accent-ring:rgba(79,70,229,.35);--r-ctrl:6px;--r-surf:10px;--r-sheet:14px;
+  /* semantic */
+  --canvas:var(--g50);--sheet:var(--g0);--sunken:var(--g100);--hover:rgba(20,20,18,.045);--selected:rgba(20,20,18,.06);
+  --line:rgba(20,20,18,.07);--line-strong:rgba(20,20,18,.13);--hairline:0 0 0 1px var(--line);
+  --fg:var(--ink);--fg2:var(--g600);--fg3:var(--g500);--fg4:var(--g400);
+  --el1:0 0 0 1px rgba(20,20,18,.06),0 1px 2px rgba(20,20,18,.04);
+  --el2:0 0 0 1px rgba(20,20,18,.06),0 4px 12px -2px rgba(20,20,18,.10),0 12px 32px -8px rgba(20,20,18,.10);
+  --el3:0 0 0 1px rgba(20,20,18,.08),0 16px 48px -12px rgba(20,20,18,.24),0 32px 80px -24px rgba(20,20,18,.20);
+  --sans:'Inter',system-ui,-apple-system,sans-serif;--tight:'Inter Tight','Inter',system-ui,sans-serif;--mono:'JetBrains Mono',ui-monospace,SFMono-Regular,monospace;
+}
+
+/* Dark theme. Only the tokens whose role changes are redefined. */
+[data-theme="dark"]{--canvas:#0F0F0E;--sheet:#161615;--sunken:#1D1D1B;--hover:rgba(255,255,255,.05);--selected:rgba(255,255,255,.07);--line:rgba(255,255,255,.08);--line-strong:rgba(255,255,255,.14);--fg:#F2F2EF;--fg2:#B5B5AF;--fg3:#8A8A84;--fg4:#5E5E59;--el1:0 0 0 1px rgba(255,255,255,.06),0 1px 2px rgba(0,0,0,.4);--el2:0 0 0 1px rgba(255,255,255,.07),0 8px 24px -4px rgba(0,0,0,.6);--el3:0 0 0 1px rgba(255,255,255,.08),0 24px 64px -12px rgba(0,0,0,.8);--g100:#1D1D1B;--g150:#232321;--g200:#2B2B28}
+
+/* Brand accents, dark. */
+[data-theme="dark"][data-brand="northwind"]{--accent:#2DD4BF}
+[data-theme="dark"][data-brand="meridian"]{--accent:#E5E7EB}
+
+/* Brand accents, light. */
+[data-brand="northwind"]{--accent:#0F766E;--accent-soft:rgba(15,118,110,.10);--accent-ring:rgba(15,118,110,.35);--r-ctrl:8px;--r-surf:12px;--r-sheet:18px}
+[data-brand="meridian"]{--accent:#111827;--accent-soft:rgba(17,24,39,.08);--accent-ring:rgba(17,24,39,.30);--r-ctrl:4px;--r-surf:6px;--r-sheet:8px}
