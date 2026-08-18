@@ -12,13 +12,11 @@ authors.workspace      = true
 enclave-core = { workspace = true }
 # For `Sql`/`SqlId` (typed ids bind as `uuid`) and `DbError`'s retryability classification. The
 # repositories never take a pool from it — they take the `&mut PgConnection` a `TenantScoped`
-# transaction derefs to (plans/M1-CONTENT-CORE.md D10).
+# transaction derefs to (plans/M1-CONTENT-CORE.md D10). It also owns the pagination primitives
+# (`Cursor`, `PageSize`, `FilterFingerprint`) and `normalize_slug` this crate's listings use —
+# `ENC-137` moved them there from `enclave-identity`, which was a sideways edge between domain
+# crates.
 enclave-db = { workspace = true }
-# For the cursor primitive (`Cursor`, `PageSize`, `FilterFingerprint`) and `normalize_slug`. A
-# listing cursor binds a position to a tenant and a filter set; a second copy of that logic is a
-# second place for the binding to weaken. See the note in src/lib.rs — these types belong below
-# both crates, and moving them needs a change this task does not own.
-enclave-identity = { workspace = true }
 
 anyhow    = { workspace = true }
 chrono    = { workspace = true }

@@ -178,6 +178,43 @@ jobs:
           docker logs enclave-minio | tail -40
           exit 1
 
+      - name: Start ClamAV
+        # Third service in this job, added for the same reason as the first two and after the same
+        # mistake twice: `cargo test --workspace -- --include-ignored` below runs *every* ignored
+        # test, so an ignore is not insulation from CI. `crates/antivirus/tests/eicar.rs` is
+        # `docs/12-TESTING.md §4.8` G1 — an EICAR upload is quarantined and never becomes
+        # readable — and without a daemon here it fails the job rather than being skipped.
+        #
+        # A step rather than a service container because the readiness signal is a protocol
+        # round-trip, not an HTTP endpoint, and because `clamav/clamav` needs its database loaded
+        # before it binds the port — a `--health-cmd` on a service container would report healthy
+        # too early. The tests default to 127.0.0.1:3310, so no variable has to be threaded
+        # through this job's shared `env:` block.
+        #
+        # `1.4` rather than a digest, unlike MinIO above: the tag is the maintained patch series,
+        # and pinning a digest here would freeze the signature database baked into the image,
+        # which is precisely the thing that should keep moving. `CLAMAV_NO_FRESHCLAMD` stops the
+        # updater daemon — the image ships a database, and a background download is latency and
+        # network flakiness for no test value.
+        run: |
+          set -euo pipefail
+          docker run -d --name enclave-clamav \
+            -e CLAMAV_NO_FRESHCLAMD=true \
+            -e CLAMAV_NO_MILTERD=true \
+            -p 3310:3310 \
+            clamav/clamav:1.4
+          # `zPING` over the same protocol the client speaks: an open port is not readiness if the
+          # daemon is still parsing signatures, and a PONG is.
+          for _ in $(seq 1 90); do
+            if printf 'zPING\0' | timeout 5 nc -w 5 127.0.0.1 3310 2>/dev/null | grep -q PONG; then
+              echo "clamd is ready"; exit 0
+            fi
+            sleep 4
+          done
+          echo "::error title=clamd did not become ready::G1 (EICAR is quarantined) cannot run"
+          docker logs enclave-clamav | tail -40
+          exit 1
+
       - name: cargo test --workspace
         # `--skip` excludes the one test that cannot share a cluster: it drops the cluster-wide
         # roles to recreate the race it exists to prove, which would break every other binary

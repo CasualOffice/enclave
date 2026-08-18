@@ -1,6 +1,6 @@
 [package]
 name        = "enclave-versions"
-description = "Version lifecycle, restore, compare hooks"
+description = "Immutable file versions: the atomic commit, restore, and version history"
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true
@@ -10,6 +10,27 @@ authors.workspace      = true
 
 [dependencies]
 enclave-core = { workspace = true }
+# For `Sql`/`SqlId` (typed ids bind as `uuid`), `RowIdExt`, and `DbError`'s retryability
+# classification. No pool is taken from it: every function here takes the `&mut PgConnection` a
+# `TenantScoped` transaction derefs to (plans/M1-CONTENT-CORE.md D10).
+enclave-db = { workspace = true }
+# The commit is one transaction that ends in an audit row and an outbox row (docs/03-LLD.md §15).
+# Both crates exist precisely so that "written inside the caller's transaction" is a property of a
+# signature rather than of a comment: `record_in_tx` and `Outbox::publish` both take the connection.
+enclave-audit  = { workspace = true }
+enclave-events = { workspace = true }
+
+anyhow     = { workspace = true }
+chrono     = { workspace = true }
+serde      = { workspace = true }
+serde_json = { workspace = true }
+sqlx       = { workspace = true }
+thiserror  = { workspace = true }
+tracing    = { workspace = true }
+
+[dev-dependencies]
+enclave-testing = { workspace = true }
+tokio = { workspace = true }
 
 [lints]
 workspace = true

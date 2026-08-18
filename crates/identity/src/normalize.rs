@@ -14,6 +14,13 @@
 //! is a property of the database, so a restore into a differently-configured cluster would quietly
 //! change what matches what. Folding in the application makes the stored value and the lookup value
 //! come from the same code path on the same machine.
+//!
+//! # Slugs are not here
+//!
+//! [`enclave_db::normalize_slug`] folds a slug, and this module calls it rather than carrying a
+//! copy. A slug is not an identity value — workspaces and libraries have them too, and both used
+//! to reach into this crate for the fold. It moved below every domain crate in `ENC-137`; what is
+//! left here is what only identity looks a principal up by.
 
 /// Folds an email address into the form stored in `users.normalized_email`.
 ///
@@ -49,16 +56,6 @@ pub fn normalize_group_name(name: &str) -> String {
         out.push_str(word);
     }
     out.to_lowercase()
-}
-
-/// Folds a tenant slug for lookup.
-///
-/// `tenants.slug` has a plain `UNIQUE` constraint and no separate normalized column, so this is a
-/// lookup-side fold only: it makes `/t/Acme` and `/t/acme` resolve to the same tenant without
-/// claiming the stored value was written through here.
-#[must_use]
-pub fn normalize_slug(slug: &str) -> String {
-    slug.trim().to_lowercase()
 }
 
 /// Folds a hostname for a custom-domain lookup.
@@ -138,10 +135,5 @@ mod tests {
         // custom-domain lookup to the wrong answer rather than to no answer.
         assert_eq!(normalize_domain("[::1]"), "[::1]");
         assert_eq!(normalize_domain("[::1]:8443"), "[::1]:8443");
-    }
-
-    #[test]
-    fn slugs_fold_case_and_whitespace() {
-        assert_eq!(normalize_slug(" Tenant-Alpha "), "tenant-alpha");
     }
 }

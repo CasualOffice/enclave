@@ -26,12 +26,12 @@
 //! will read it.
 
 use enclave_core::TenantId;
-use enclave_db::sql;
+use enclave_db::{normalize_slug, sql};
 use sqlx::PgConnection;
 
 use crate::error::Result;
 use crate::model::Tenant;
-use crate::normalize::{normalize_domain, normalize_slug};
+use crate::normalize::normalize_domain;
 use crate::row::tenant_from_row;
 
 /// Reads the tenant registry.
@@ -55,7 +55,7 @@ impl TenantRepository {
         row.as_ref().map(tenant_from_row).transpose()
     }
 
-    /// Finds a tenant by slug, folding case (see [`normalize_slug`]).
+    /// Finds a tenant by slug, folding case (see [`enclave_db::normalize_slug`]).
     ///
     /// # Errors
     ///

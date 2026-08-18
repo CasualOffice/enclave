@@ -11,7 +11,7 @@
 //! # The rules, and where they come from
 //!
 //! The DDL comment fixes two of them — *casefolded + NFC* — and `crates/identity/src/normalize.rs`
-//! supplies the other two, because the problem is the same problem. [`enclave_identity::normalize_group_name`] trims
+//! supplies the other two, because the problem is the same problem. `enclave_identity::normalize_group_name` trims
 //! and collapses internal whitespace runs before folding case, on the grounds that
 //! `"Finance  Leads"` and `"Finance Leads"` naming two different groups is a model nobody can
 //! reason about. A folder holding both `Q1  Report.pdf` and `Q1 Report.pdf` is that same

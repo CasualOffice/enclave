@@ -1,5 +1,15 @@
 //! Opaque pagination cursors, bound to a tenant and to a filter set.
 //!
+//! # Why this lives in `enclave-db` and not in a domain crate
+//!
+//! A cursor is signed and bound to a tenant and a filter set, which makes it a *persistence and
+//! security* primitive rather than anything to do with users, workspaces or files. It started life
+//! in `enclave-identity` because that is where the first listing needed it, and every later listing
+//! then reached sideways into a domain crate to get it — an edge that inverts the dependency rule
+//! in `plans/M0-FOUNDATIONS.md` D1. It sits here now because `enclave-db` is below every domain
+//! crate, so no crate has to depend on a peer to page through its own rows. Nothing about the
+//! bindings changed in the move (`ENC-137`).
+//!
 //! # What a cursor has to prevent
 //!
 //! `docs/03-LLD.md §17` fixes the shape: a cursor encodes `(sort_key, tie_break_id, filter_hash,
@@ -38,13 +48,16 @@ use core::fmt;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 use enclave_core::TenantId;
-use enclave_db::SqlId;
 use sha2::{Digest, Sha256};
 
-use crate::error::{IdentityError, Result};
+use crate::ids::SqlId;
 
 /// Domain separator, so a fingerprint of a filter can never collide with a hash computed for some
 /// other purpose over the same bytes.
+///
+/// The string still says `identity` because it is a wire constant, not a name: cursors issued by
+/// the previous release are in flight and in clients' hands, and changing the separator would
+/// reject every one of them. `ENC-137` moved the code, not the encoding.
 const FINGERPRINT_DOMAIN: &[u8] = b"enclave.identity.cursor.filter.v1";
 
 /// Bytes of the digest retained in the cursor.
@@ -60,6 +73,21 @@ const CURSOR_VERSION: u8 = 1;
 
 /// `version | tenant (16) | key (16) | fingerprint (8)`.
 const CURSOR_LEN: usize = 1 + 16 + 16 + FINGERPRINT_LEN;
+
+/// The single answer every cursor rejection produces.
+///
+/// One variant with no detail, deliberately: wrong tenant, wrong filter, wrong length, wrong
+/// version and forged all collapse to the same value, so a cursor cannot be used to probe
+/// (`CLAUDE.md` rule 7). Callers map it onto their own crate's error — `IdentityError::InvalidCursor`
+/// and its siblings — which is where the decision to render it as a `cursor` field validation
+/// failure is made.
+///
+/// Its own type rather than a [`crate::DbError`] variant because nothing about it is a database
+/// failure: no statement ran, nothing is retryable, and a caller matching on `DbError` should not
+/// have to consider it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("the pagination cursor is not valid for this request")]
+pub struct InvalidCursor;
 
 /// A digest of the filter set a page was produced under.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,23 +154,27 @@ impl<T: SqlId> Cursor<T> {
     ///
     /// # Errors
     ///
-    /// [`IdentityError::InvalidCursor`] for every rejection — wrong length, wrong version, wrong
-    /// tenant, wrong filter, not base64. One answer for all of them, so the cursor cannot be used
-    /// to learn anything (`CLAUDE.md` rule 7).
-    pub fn decode(text: &str, tenant: TenantId, filter: FilterFingerprint) -> Result<T> {
-        let bytes = URL_SAFE_NO_PAD.decode(text).map_err(|_| IdentityError::InvalidCursor)?;
+    /// [`InvalidCursor`] for every rejection — wrong length, wrong version, wrong tenant, wrong
+    /// filter, not base64. One answer for all of them, so the cursor cannot be used to learn
+    /// anything (`CLAUDE.md` rule 7).
+    pub fn decode(
+        text: &str,
+        tenant: TenantId,
+        filter: FilterFingerprint,
+    ) -> Result<T, InvalidCursor> {
+        let bytes = URL_SAFE_NO_PAD.decode(text).map_err(|_| InvalidCursor)?;
         if bytes.len() != CURSOR_LEN || bytes[0] != CURSOR_VERSION {
-            return Err(IdentityError::InvalidCursor);
+            return Err(InvalidCursor);
         }
 
         let mut raw = [0u8; 16];
         raw.copy_from_slice(&bytes[1..17]);
         if TenantId::from_uuid(uuid::Uuid::from_bytes(raw)) != tenant {
-            return Err(IdentityError::InvalidCursor);
+            return Err(InvalidCursor);
         }
 
         if bytes[33..] != filter.0 {
-            return Err(IdentityError::InvalidCursor);
+            return Err(InvalidCursor);
         }
 
         raw.copy_from_slice(&bytes[17..33]);
@@ -244,7 +276,7 @@ mod tests {
         let encoded = Cursor::new(issuer, UserId::new_v7(), filter_a()).encode();
         assert!(matches!(
             Cursor::<UserId>::decode(&encoded, other, filter_a()),
-            Err(IdentityError::InvalidCursor)
+            Err(InvalidCursor)
         ));
     }
 
@@ -256,7 +288,7 @@ mod tests {
         let encoded = Cursor::new(tenant, UserId::new_v7(), filter_a()).encode();
         assert!(matches!(
             Cursor::<UserId>::decode(&encoded, tenant, filter_b()),
-            Err(IdentityError::InvalidCursor)
+            Err(InvalidCursor)
         ));
     }
 
@@ -272,10 +304,7 @@ mod tests {
             URL_SAFE_NO_PAD.encode([0u8; CURSOR_LEN + 1]),
         ] {
             assert!(
-                matches!(
-                    Cursor::<UserId>::decode(&bad, tenant, filter_a()),
-                    Err(IdentityError::InvalidCursor)
-                ),
+                matches!(Cursor::<UserId>::decode(&bad, tenant, filter_a()), Err(InvalidCursor)),
                 "accepted {bad:?}"
             );
         }
@@ -286,7 +315,7 @@ mod tests {
         let versioned = URL_SAFE_NO_PAD.encode(&bytes);
         assert!(matches!(
             Cursor::<UserId>::decode(&versioned, tenant, filter_a()),
-            Err(IdentityError::InvalidCursor)
+            Err(InvalidCursor)
         ));
     }
 
