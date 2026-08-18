@@ -117,8 +117,14 @@ step: is this foundation sound enough to build on? See `ROADMAP.md §6`.
 
 **Plan for the current milestone:** [`plans/M0-FOUNDATIONS.md`](plans/M0-FOUNDATIONS.md)
 
-**Next:** `ENC-127` workspaces and libraries over the new schema, then `ENC-128` `BlobStore`.
-`ENC-135` (self-host fonts) is open and should land before the SPA does.
+**Next:** `ENC-129` upload state machine and multipart, then `ENC-131` immutable versions and
+`ENC-132` antivirus — the three that together let content actually enter the system.
+
+**Follow-up worth doing first (`ENC-137`):** `Cursor`, `PageSize`, `FilterFingerprint` and
+`normalize_slug` live in `enclave-identity` and are now used by four crates. They are a security
+primitive — a cursor is signed and bound to a tenant and filter set — and they belong below the
+domain layer, not inside one domain crate that others reach sideways into. Flagged by the
+implementing session rather than found in review.
 
 **M0 is now fully closed.** Exit criterion 1 — one request traversing login → JWT → `enforce` →
 tenant-scoped query → audit row — is demonstrated by `crates/api/tests/me.rs`, not asserted.
@@ -148,6 +154,18 @@ tenant-scoped query → audit row — is demonstrated by `crates/api/tests/me.rs
 > credentials come from — or (c) accept it, since production role provisioning is a deployment
 > concern anyway. My recommendation is (b): migrations arguably should not be creating cluster-wide
 > roles at all. Not decided unilaterally, because it touches a control.
+
+> **Branch protection is unavailable on this plan — closed, not deferred.** Both
+> `repos/CasualOffice/enclave/branches/main/protection` and `/rulesets` return
+> `403 Upgrade to GitHub Pro or make this repository public`. The repository is private under an
+> organization account, so required status checks cannot be enforced server-side without either
+> paying for Pro or making the code public. Neither is mine to decide.
+>
+> This matters because it was the mitigation proposed twice after `main` went red: PR #10 and PR #12
+> were both merged while their checks were still running, and both landed a known failure. Until the
+> plan changes, that remains a process control rather than a technical one — **wait for green before
+> merging**. Every gate is wired to block *in CI* (`structural-gates-status` requires all eleven);
+> what is missing is GitHub refusing the merge button, not the signal.
 
 > **Deviation from §2.1, recorded deliberately.** The repo owner directed parallel execution of the
 > M0 foundation crates on 2026-08-18. Seven items are in flight at once rather than one. This is
@@ -244,13 +262,13 @@ Exit criterion: a tenant can store, find, share and govern content, with the lea
 |---|---|---|---|---|
 | ENC-125 | Tenancy, users, groups, membership | P1 | DONE | ENC-124 |
 | ENC-127a | Grant-coverage gate — every tenant-scoped table must be reachable by `enclave_app` | P1 | DONE | Found by ENC-124. The RLS gate structurally cannot see this: it checks policies, not whether the role they apply to can reach the table |
-| ENC-135 | Self-host Inter and JetBrains Mono; the design reference loads them from `fonts.googleapis.com` | P1 | TODO | Leaks every user's IP to a third party, breaks air-gapped installs, undercuts `docs/08 §18` residency |
+| ENC-135 | Self-host Inter and JetBrains Mono | P1 | DONE | Leaks every user's IP to a third party, breaks air-gapped installs, undercuts `docs/08 §18` residency |
 | ENC-136 | Migrations 0004 and 0005 — workspaces, libraries, `acl_entries`, roles, `files` | P1 | DONE | DDL from `docs/04 §7` and `§9` |
 | ENC-126 | Real `AuthorizationService` — ACL resolution, inheritance, group closure, deny-wins | P1 | DONE | ENC-125 |
-| ENC-127 | Workspaces and libraries | P1 | TODO | ENC-126 |
-| ENC-128 | `BlobStore` — S3-compatible, public-access self-check | P1 | TODO | ENC-124 |
+| ENC-127 | Workspaces and libraries | P1 | DONE | ENC-126 |
+| ENC-128 | `BlobStore` — S3-compatible, public-access self-check | P1 | DONE | ENC-124 |
 | ENC-129 | Upload state machine, multipart, signed URLs | P1 | TODO | ENC-128 |
-| ENC-130 | Files and folders, trash, move/copy | P1 | TODO | ENC-127 |
+| ENC-130 | Files and folders, trash, move/copy | P1 | DONE | ENC-127 |
 | ENC-131 | Immutable versions, atomic commit, restore | P1 | TODO | ENC-129, ENC-130 |
 | ENC-132 | `AntivirusScanner` + ClamAV; nothing `AVAILABLE` before clean | P0 | TODO | ENC-131 |
 | ENC-133 | Read paths: metadata, listing, cursor pagination | P1 | TODO | ENC-132 |
@@ -324,6 +342,9 @@ priority changes; a stale rollup is worse than none.
 | 2026-08-18 | **Phase D closed.** Phase 0 open. Gate G0 applies at the end of M0. |
 | 2026-08-18 | `ENC-100` workspace scaffolded: 43 crates, check/clippy/fmt clean. |
 | 2026-08-18 | PR #1 merged. Two structural gates failed on it and were right to: the audit sink read on a raw pool (would have reported "chain valid, 0 events" under RLS), and a test literal tripped the secrets gate. Both fixed; the no-raw-pool gate was rewritten to check execution rather than type names. |
+| 2026-08-19 | M1 storage and content batch (four parallel sessions): workspaces and libraries repositories, `BlobStore` over S3/MinIO with a public-bucket self-check, the files and folders tree, and self-hosted fonts. 689 tests pass, up from 512, with MinIO and PostgreSQL both live. |
+| 2026-08-19 | Disk filled at 99% mid-integration and took the Docker daemon with it. Cause was mine: every parallel agent got its own `CARGO_TARGET_DIR` to avoid cargo lock contention, and ten batches of those were never cleaned up — ~24 GB of scratch plus a 13.8 GB workspace target. Reclaimed 38 GB. Worth a cleanup step in the batch pattern rather than remembering. |
+| 2026-08-19 | Branch protection closed as **unavailable**, not deferred: both the protection and rulesets APIs return `403 Upgrade to GitHub Pro` for a private org repo. Remains a process control — wait for green before merging. |
 | 2026-08-19 | M1 foundations batch (four parallel sessions, one cumulative PR): identity repositories, real ACL resolution with inheritance and deny-wins, the grant-coverage gate, migrations 0004/0005, and the v2 design system. 512 tests pass, up from 409. Integration found one real coupling the parallel split could not: the ACL resolver's inheritance walk is a recursive CTE over `files`, which was scheduled for ENC-130 — so `files` moved forward into migration 0005 rather than shipping a resolver that fails on its only real use case. |
 | 2026-08-19 | `ENC-124` closed M0's last exit criterion — and found a cross-tenant read. The first real end-to-end request with a beta-tenant token for an alpha-tenant subject returned **200 with alpha's row**. Cause: the harness connects as the cluster superuser, and superusers bypass RLS unconditionally, so every test that believed it demonstrated tenant isolation ran with isolation switched off. Compounded by migration 0002 never granting `enclave_app` on any table but `audit_events`, so nothing had ever run as the application role. Fixed by migration 0003 (grants) and the harness taking `SET ROLE enclave_app`. The policies in 0002 were correct throughout; nothing had exercised them. 409 tests pass. |
 | 2026-08-18 | All five dependency majors landed (`ENC-119`–`ENC-123`). Two were more than version bumps: `jsonwebtoken` 11 compiled cleanly and then panicked at runtime on every verification because 11 made the crypto backend pluggable — chose `rust_crypto`, reasoning recorded in the manifest. `rand` 0.10 made OS entropy fallible, so key generation and refresh minting now propagate `EntropyUnavailable` rather than unwrapping. 403 tests green throughout. |

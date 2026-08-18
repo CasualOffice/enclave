@@ -42,14 +42,41 @@ signal.
 only values a `[data-brand]` block overrides, and a brand colour that fails AA contrast against its
 own background cannot be saved (`docs/09 §17`).
 
-## One thing that must change before this ships
+## The fonts are self-hosted (`ENC-135`)
 
-The reference loads Inter and JetBrains Mono from `fonts.googleapis.com`.
+The reference used to load Inter, Inter Tight and JetBrains Mono from Google's font CDN. That was
+fine for a
+design artefact and not fine for the product: it sent every user's IP address to a third party on
+page load, it broke air-gapped installs outright, and it quietly contradicted the data-residency
+promise in `docs/08-BYO-INFRA.md §18` — which lists exactly the derived surfaces that must stay in
+region and would be embarrassing to undermine with a webfont.
 
-That is fine for a design artefact and not fine for the product. It sends every user's IP address to
-a third party on page load, it breaks air-gapped installs outright, and it quietly contradicts the
-data-residency promise in `docs/08-BYO-INFRA.md §18` — which lists exactly the derived surfaces that
-must stay in region and would be embarrassing to undermine with a webfont.
+So the files now live in [`web/public/fonts/`](../public/fonts/) and the HTML declares them with
+`@font-face` instead of a `<link>`. **The reference makes no third-party request at all** — the only
+external string left in the file is the SVG namespace URI, which is an identifier and not a fetch.
 
-**Self-host the fonts** when the SPA is built (`ENC-135`). The token file names the families and
-does not fetch them, so nothing here depends on the CDN; only the reference HTML does.
+Three things about how it is done are worth knowing before you change it:
+
+- **They are variable fonts.** One file carries the whole weight range (Inter 400–600, Inter Tight
+  500–600, JetBrains Mono 400–500), so adding a weight inside those ranges costs no new download.
+  Going outside one does — that is a deliberate speed bump.
+- **They are split by Unicode range, and each `@font-face` carries the matching `unicode-range`.**
+  Twenty files are vendored, but a browser fetches only the ranges it actually renders: loading the
+  reference pulls four of them, 205 KB (three Latin faces plus Latin Extended, which some glyph on
+  the page reaches into); an English page with no extended characters pulls three, 122 KB. Sixteen
+  of the twenty are never requested. The non-Latin ranges are there so the first locale that
+  lands does not regress against `docs/14-I18N-L10N.md`; until then they cost nothing. Keep the
+  `unicode-range` on any face you add, or that property stops holding.
+- **`font-display: swap` on every face**, so text is readable before the font arrives rather than
+  invisible — the same truthfulness rule the progress states follow.
+
+All three families are SIL Open Font License 1.1, verified against upstream rather than assumed;
+none declares a Reserved Font Name. [`web/public/fonts/LICENSE`](../public/fonts/LICENSE) carries
+the licence text, the authors, the exact upstream versions and a SHA-256 per file, which is what
+lets a future reader confirm these binaries are unmodified.
+
+The files are upstream's own subsets, taken as-is. Cutting them further by glyph coverage needs
+`pyftsubset` or equivalent, which means a build step — that belongs with the SPA build, not here.
+
+`tokens.css` names the families and does not fetch them, so it needed no change; the SPA will point
+its own `@font-face` at the same directory.
