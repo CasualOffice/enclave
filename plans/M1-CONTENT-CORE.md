@@ -134,7 +134,13 @@ single-use where the provider supports it — so a URL cannot outlive the decisi
 - [ ] Leakage matrix sections 4.1 and 4.2 complete and green.
 - [ ] The policy-routing lint reports a non-zero handler count, all passing.
 - [ ] No test `#[ignore]`d without a written reason naming where it does run.
-- [ ] Gate **G1** held: ship the MVP?
+- [ ] `plans/M2-ACCESS-DELIVERY.md` written, per the one-plan-ahead rule.
+
+**No gate is held here.** An earlier revision of this section listed *"Gate G1 held: ship the
+MVP?"*, which contradicts [`ROADMAP.md §6`](../ROADMAP.md): G1 sits at the end of **M5**, after M2,
+M3 and M4. The roadmap is authoritative for gate placement ([`plans/README.md`](README.md): a plan
+may not reshape a roadmap commitment), and the error had propagated into `TRACKER.md §3`, where it
+would have had the milestone assessed against the MVP's ship criteria four milestones early.
 
 ---
 
