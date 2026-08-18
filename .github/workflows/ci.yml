@@ -112,10 +112,14 @@ jobs:
           --health-timeout 5s
           --health-retries 10
 
+
     env:
       # The harness creates a throwaway database per test binary from this one, so it must point at
       # a database whose role may CREATE DATABASE.
       DATABASE_URL: postgres://enclave:enclave@localhost:5432/enclave
+      ENCLAVE_TEST_S3_ENDPOINT: http://localhost:9000
+      ENCLAVE_TEST_S3_ACCESS_KEY_ID: enclave
+      ENCLAVE_TEST_S3_SECRET_ACCESS_KEY: enclave-dev-secret
 
     steps:
       - uses: actions/checkout@v7
@@ -149,6 +153,31 @@ jobs:
       # Tests that need live infrastructure are #[ignore]d until ENC-112 lands the
       # testcontainers harness; they are then run by their own job, not by removing
       # the ignore. CLAUDE.md: a security test is never skipped to get a build green.
+      - name: Start MinIO
+        # A step rather than a service container: MinIO's entrypoint needs `server /data`, and
+        # service containers cannot specify a command.
+        #
+        # Object storage is here for the same reason PostgreSQL is. The BlobStore tests assert
+        # things only a real S3 implementation can answer — that a pre-signed URL expires, that a
+        # multipart upload reassembles, that a public bucket is refused. A mock would assert that
+        # our mock behaves the way we assumed S3 does, which is the belief under test.
+        run: |
+          set -euo pipefail
+          docker run -d --name enclave-minio \
+            -e MINIO_ROOT_USER=enclave \
+            -e MINIO_ROOT_PASSWORD=enclave-dev-secret \
+            -p 9000:9000 \
+            quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z server /data
+          for _ in $(seq 1 60); do
+            if curl -sf http://localhost:9000/minio/health/live >/dev/null; then
+              echo "MinIO is ready"; exit 0
+            fi
+            sleep 2
+          done
+          echo "::error title=MinIO did not become ready::the storage tests cannot run"
+          docker logs enclave-minio | tail -40
+          exit 1
+
       - name: cargo test --workspace
         # `--skip` excludes the one test that cannot share a cluster: it drops the cluster-wide
         # roles to recreate the race it exists to prove, which would break every other binary
