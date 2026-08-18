@@ -1,0 +1,31 @@
+# cargo-audit configuration.
+#
+# Suppressions live here rather than as `--ignore` flags in a CI shell line, because an advisory
+# waived without a written reason is indistinguishable from one nobody noticed. Every entry below
+# says what was accepted, why, and what would end the acceptance.
+#
+# Reviewed whenever this file is touched and at every phase gate (ROADMAP.md §6).
+
+[advisories]
+ignore = [
+    # RUSTSEC-2026-0253 — unsoundness (not a vulnerability) in `lru`: `LruCache::pop()` is not
+    # panic-safe, so a `Drop` impl that panics mid-pop can leave a dangling reference.
+    #
+    # Reached only transitively: aws-sdk-s3 → lru. We neither depend on `lru` directly nor place
+    # our own types in it; the cache holds the SDK's internal endpoint and credential entries.
+    #
+    # Accepted because there is nowhere to move to. lru 0.16.4 is the latest release, the advisory
+    # names no patched version, and aws-sdk-s3 pins it. The alternatives were to drop the AWS SDK,
+    # which is disproportionate to an unsoundness requiring a panicking Drop, or to vendor a patched
+    # lru, which trades a known advisory for an unmaintained fork.
+    #
+    # This is an acceptance, not a resolution. It ends when aws-sdk-s3 bumps past the fix, and
+    # `cargo audit` will say so on the first build after that — tracked as ENC-138.
+    "RUSTSEC-2026-0253",
+]
+
+# RUSTSEC-2023-0071 (Marvin, `rsa`) was suppressed inline until now. It is deliberately NOT listed:
+# PR #21 removed the crate entirely by choosing jsonwebtoken's aws_lc_rs backend over rust_crypto,
+# and `cargo tree -i rsa` now finds no such package. Keeping the suppression would mean the advisory
+# stayed silent if a future dependency reintroduced `rsa` — a stale waiver is how a fixed problem
+# comes back unannounced.

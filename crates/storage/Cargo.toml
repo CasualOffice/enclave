@@ -9,7 +9,62 @@ repository.workspace   = true
 authors.workspace      = true
 
 [dependencies]
-enclave-core = { workspace = true }
+enclave-core   = { workspace = true }
+enclave-config = { workspace = true }
+
+async-trait = { workspace = true }
+chrono      = { workspace = true }
+futures     = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+thiserror   = { workspace = true }
+tokio       = { workspace = true }
+tracing     = { workspace = true }
+url         = { workspace = true }
+
+# `anyhow` appears here for the same single reason it does in `enclave-db`:
+# `enclave_core::Error::Internal` *holds* an `anyhow::Error`, so mapping this crate's error into
+# the canonical type requires constructing one. It is never this crate's own error type.
+anyhow = { workspace = true }
+
+# ---------------------------------------------------------------------------
+# Pinned here rather than in [workspace.dependencies] — none of these are in the workspace table
+# yet. They should move there when `preview`'s `RenditionStore` needs the same client, so the two
+# crates cannot disagree on a version. Flagged to the integrator.
+# ---------------------------------------------------------------------------
+#
+# `default-features = false`, and that omission is load-bearing rather than tidiness.
+#
+# The default set includes `rustls`, which resolves to `aws-smithy-runtime/tls-rustls` ->
+# `aws-smithy-http-client/legacy-rustls-ring`: the deprecated hyper-0.14 + rustls-0.21 + ring
+# stack. It carries RUSTSEC-2026-0104 — a panic reachable in `rustls-webpki` 0.101 while parsing a
+# CRL, *before* that CRL's signature is verified — and `cargo deny check advisories` fails the
+# build on it. `default-https-client` alone gives the modern hyper-1 + rustls + aws-lc-rs client,
+# which is also the crypto backend the workspace already pins for `jsonwebtoken`.
+#
+# Note what is *absent* as well: `aws-config` is not a dependency, so there is no
+# credential-provider chain, no IMDS lookup and no `~/.aws/credentials` parsing. Credentials arrive
+# from `enclave_config::SecretRegistry` and from nowhere else, which is what makes
+# `docs/08-BYO-INFRA.md §4`'s "credential_reference, never a literal" enforceable rather than
+# aspirational: there is no ambient identity for this process to fall back to.
+aws-sdk-s3 = { version = "1.142", default-features = false, features = [
+    "sigv4a",
+    "http-1x",
+    "default-https-client",
+    "rt-tokio",
+] }
+
+# The unauthenticated half of the public-access self-check. Reusing smithy's client rather than
+# adding a second HTTP stack keeps one TLS implementation (rustls over aws-lc-rs, matching the
+# workspace's `jsonwebtoken` backend) and adds no new licence to the cargo-deny allowlist.
+aws-smithy-http-client = { version = "1.3", features = ["rustls-aws-lc"] }
+aws-smithy-runtime-api = { version = "1.14", features = ["client", "http-1x"] }
+aws-smithy-types       = "1.6"
+
+bytes = "1"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
 [lints]
 workspace = true

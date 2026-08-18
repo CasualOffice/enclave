@@ -10,6 +10,25 @@ authors.workspace      = true
 
 [dependencies]
 enclave-core = { workspace = true }
+# For `Sql`/`SqlId` (typed ids bind as `uuid`) and `DbError`'s retryability classification. The
+# repositories never take a pool from it — they take the `&mut PgConnection` a `TenantScoped`
+# transaction derefs to (plans/M1-CONTENT-CORE.md D10).
+enclave-db = { workspace = true }
+# For the cursor primitive (`Cursor`, `PageSize`, `FilterFingerprint`) and `normalize_slug`. A
+# listing cursor binds a position to a tenant and a filter set; a second copy of that logic is a
+# second place for the binding to weaken. See the note in src/lib.rs — these types belong below
+# both crates, and moving them needs a change this task does not own.
+enclave-identity = { workspace = true }
+
+anyhow    = { workspace = true }
+chrono    = { workspace = true }
+sqlx      = { workspace = true }
+thiserror = { workspace = true }
+tracing   = { workspace = true }
+
+[dev-dependencies]
+enclave-testing = { workspace = true }
+tokio = { workspace = true }
 
 [lints]
 workspace = true

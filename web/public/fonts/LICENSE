@@ -1,0 +1,189 @@
+Fonts vendored into Enclave
+===========================
+
+Every font file in this directory is licensed under the SIL Open Font License,
+Version 1.1. The full licence text is reproduced at the bottom of this file; it
+is identical for all three families, so it is included once.
+
+Fonts
+-----
+
+Inter                  -- Copyright (c) 2016 The Inter Project Authors
+                          https://github.com/rsms/inter
+                          Principal author: Rasmus Andersson
+                          SIL Open Font License 1.1
+
+Inter Tight            -- Copyright 2022 The Inter Project Authors
+                          https://github.com/rsms/inter-tight
+                          Principal author: Rasmus Andersson
+                          SIL Open Font License 1.1
+
+JetBrains Mono         -- Copyright 2020 The JetBrains Mono Project Authors
+                          https://github.com/JetBrains/JetBrainsMono
+                          Authors: Philipp Nurullin, Konstantin Bulenkov
+                          (JetBrains s.r.o.)
+                          SIL Open Font License 1.1
+
+None of the three declares a Reserved Font Name, so the OFL's renaming clause
+does not bite. The files here are verbatim upstream binaries -- nothing was
+re-encoded, re-hinted or otherwise modified -- so we are a redistributor under
+OFL section 2, and this notice plus the licence text is what that requires.
+
+Why these files are in the repository at all
+--------------------------------------------
+
+Enclave must not fetch anything from a third-party CDN at page load. Doing so
+leaks every user's IP address to that CDN, breaks air-gapped installs outright,
+and contradicts the data-residency commitment in docs/08-BYO-INFRA.md section 18.
+Serving the fonts from our own origin is the only arrangement that holds in all
+three cases. See ENC-135.
+
+Provenance
+----------
+
+Fetched from the Google Fonts CSS2 API on 2026-08-19, which serves each family
+as a variable font already split by Unicode range:
+
+  https://fonts.googleapis.com/css2
+      ?family=Inter:wght@400..600
+      &family=Inter+Tight:wght@500..600
+      &family=JetBrains+Mono:wght@400..500
+      &display=swap
+
+requested with a Chrome user agent so the API returned woff2. Binaries were then
+downloaded from fonts.gstatic.com:
+
+  Inter          v20
+  Inter Tight    v9
+  JetBrains Mono v24
+
+Each file is a variable font carrying the whole weight range the design system
+uses, so one file replaces what would otherwise be three static weights. Files
+are named <family>-<unicode-range>.woff2 and the @font-face rules that reference
+them carry the matching unicode-range, so a browser downloads only the ranges a
+page actually renders -- an English page pulls the three latin files (about
+122 KB) and nothing else.
+
+The non-Latin ranges are vendored even though the design reference is written in
+English, because they cost nothing until they are needed and their absence would
+be an i18n regression against docs/14-I18N-L10N.md the first time a locale lands.
+
+No further subsetting was applied. Cutting these down by glyph coverage needs
+pyftsubset or an equivalent, which means a build step; that is deliberately out
+of scope here and belongs with the SPA build.
+
+SHA-256
+-------
+
+fccca918fea40089dacadc7045861314d1a6bc91f1f323cc1eeb22ebcdb321b5  inter-cyrillic-ext.woff2  (25.2 KB)
+aebf2ab4a4ce6810d73c1ac7be7cafb4e5ec4cee2d6db5fb3e09691747ec4bd6  inter-cyrillic.woff2  (18.3 KB)
+a2e2c783ca6f9c20486e81e72a279203e86730bbf8f01ff6a5ee9dbd09e1c271  inter-greek-ext.woff2  (11.0 KB)
+46dd4cdca58c26ae87cc6927657bf83b2e8abfc39ffd0ab176e301a8d28d22bf  inter-greek.woff2  (18.6 KB)
+a28eb6d3ccb534ae0c94ca999371df024aab60b08c3c8a5720ee9e32fa0faaa2  inter-latin-ext.woff2  (83.3 KB)
+c940764593d0fe5d596be327ca7558855e018039fb78509aa21921fd3644c3e4  inter-latin.woff2  (47.3 KB)
+4a89b86d992e34430a1674dd4d300520b6bdbc60d12f3eadcb0075e3baa78be9  inter-tight-cyrillic-ext.woff2  (26.0 KB)
+04e865409d6fd36dd9be4bb45a72c437f31f5904158a5609cce9721da0d9a615  inter-tight-cyrillic.woff2  (16.7 KB)
+0c930dc2267b2e8b7341715b8548be46cd61125570b4291cd152f60c61758130  inter-tight-greek-ext.woff2  (11.5 KB)
+67b5c3cea0f66a940a37e39e5c4ce62ecd1491fbd735d6625f2dfa1545faa674  inter-tight-greek.woff2  (21.7 KB)
+3c299662298bcf2cbf119996f900acce3782695a35e584bc22a566c5d6ea8b48  inter-tight-latin-ext.woff2  (87.7 KB)
+83d548cd73ef2e039167db3adb5ea9d7a7870466ffc8a162c9820bc348938aaf  inter-tight-latin.woff2  (43.9 KB)
+c753c7f9f2dc179be947a2d677c2db39da161449d2f3702c711774a9521e493a  inter-tight-vietnamese.woff2  (10.3 KB)
+8db00ff46c67b22cda8bed865acf7077651cac8d2841d5b40980556b48961931  inter-vietnamese.woff2  (10.0 KB)
+9343de2ca5d9549f792e7962375af8efb0f320c7643bfd36c884b5a30e5c396f  jetbrains-mono-cyrillic-ext.woff2  (1.6 KB)
+4995a9a43ac659ec32fcd8b463755cd6a07b31a6e6b3894a6a153b661cf490e2  jetbrains-mono-cyrillic.woff2  (8.7 KB)
+49c3da6c9a2b279b0f1f860f5cfb1f5dc38d88a5c7be9c9b1837bbc4e3db6111  jetbrains-mono-greek.woff2  (6.6 KB)
+9c38cb2d0d2d93c1ee6e21fa78db76f13ea7e15e15cc64214c7ca89b6aaa35c4  jetbrains-mono-latin-ext.woff2  (11.3 KB)
+2c32b9b3ee358c119e210f6f5195f9bd34894d78a785ff2e95d60e718e400af4  jetbrains-mono-latin.woff2  (30.6 KB)
+d44eb1936043a56038eb02dd70b243f379bef65783f94ec12f277550720411f1  jetbrains-mono-vietnamese.woff2  (5.7 KB)
+
+Total on disk: 496 KB across 20 files.
+
+
+-----------------------------------------------------------
+LICENCE TEXT (applies to all files in this directory)
+-----------------------------------------------------------
+SIL OPEN FONT LICENSE Version 1.1 - 26 February 2007
+-----------------------------------------------------------
+
+PREAMBLE
+The goals of the Open Font License (OFL) are to stimulate worldwide
+development of collaborative font projects, to support the font creation
+efforts of academic and linguistic communities, and to provide a free and
+open framework in which fonts may be shared and improved in partnership
+with others.
+
+The OFL allows the licensed fonts to be used, studied, modified and
+redistributed freely as long as they are not sold by themselves. The
+fonts, including any derivative works, can be bundled, embedded,
+redistributed and/or sold with any software provided that any reserved
+names are not used by derivative works. The fonts and derivatives,
+however, cannot be released under any other type of license. The
+requirement for fonts to remain under this license does not apply
+to any document created using the fonts or their derivatives.
+
+DEFINITIONS
+"Font Software" refers to the set of files released by the Copyright
+Holder(s) under this license and clearly marked as such. This may
+include source files, build scripts and documentation.
+
+"Reserved Font Name" refers to any names specified as such after the
+copyright statement(s).
+
+"Original Version" refers to the collection of Font Software components as
+distributed by the Copyright Holder(s).
+
+"Modified Version" refers to any derivative made by adding to, deleting,
+or substituting -- in part or in whole -- any of the components of the
+Original Version, by changing formats or by porting the Font Software to a
+new environment.
+
+"Author" refers to any designer, engineer, programmer, technical
+writer or other person who contributed to the Font Software.
+
+PERMISSION AND CONDITIONS
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of the Font Software, to use, study, copy, merge, embed, modify,
+redistribute, and sell modified and unmodified copies of the Font
+Software, subject to the following conditions:
+
+1) Neither the Font Software nor any of its individual components,
+in Original or Modified Versions, may be sold by itself.
+
+2) Original or Modified Versions of the Font Software may be bundled,
+redistributed and/or sold with any software, provided that each copy
+contains the above copyright notice and this license. These can be
+included either as stand-alone text files, human-readable headers or
+in the appropriate machine-readable metadata fields within text or
+binary files as long as those fields can be easily viewed by the user.
+
+3) No Modified Version of the Font Software may use the Reserved Font
+Name(s) unless explicit written permission is granted by the corresponding
+Copyright Holder. This restriction only applies to the primary font name as
+presented to the users.
+
+4) The name(s) of the Copyright Holder(s) or the Author(s) of the Font
+Software shall not be used to promote, endorse or advertise any
+Modified Version, except to acknowledge the contribution(s) of the
+Copyright Holder(s) and the Author(s) or with their explicit written
+permission.
+
+5) The Font Software, modified or unmodified, in part or in whole,
+must be distributed entirely under this license, and must not be
+distributed under any other license. The requirement for fonts to
+remain under this license does not apply to any document created
+using the Font Software.
+
+TERMINATION
+This license becomes null and void if any of the above conditions are
+not met.
+
+DISCLAIMER
+THE FONT SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO ANY WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT
+OF COPYRIGHT, PATENT, TRADEMARK, OR OTHER RIGHT. IN NO EVENT SHALL THE
+COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+INCLUDING ANY GENERAL, SPECIAL, INDIRECT, INCIDENTAL, OR CONSEQUENTIAL
+DAMAGES, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
+OTHER DEALINGS IN THE FONT SOFTWARE.
