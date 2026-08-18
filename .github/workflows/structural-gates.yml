@@ -641,6 +641,11 @@ jobs:
     if: always()
     needs:
       - rls-coverage
+      # Beside rls-coverage deliberately: the two are halves of one property. RLS says which rows a
+      # role may see; grants say whether it can reach the table at all. PR #22 is what a schema
+      # looks like with the first and not the second — fully green, and quietly bypassed because
+      # nothing could run as the application role.
+      - grant-coverage
       - composite-fks
       - policy-routing
       - no-raw-pool
