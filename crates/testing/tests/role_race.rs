@@ -21,7 +21,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use enclave_db::{run_migrations_on, DbError};
-use sqlx::{Connection, Executor, PgConnection};
+use sqlx::{Connection, PgConnection};
 use uuid::Uuid;
 
 fn admin_url() -> Option<String> {
@@ -72,20 +72,21 @@ async fn a_lost_role_creation_race_reports_what_to_do_about_it() {
         .await
         .expect("list leftovers");
         for name in leftovers {
-            let _ignored = admin
-                .execute(
-                    format!(
-                        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '{name}'"
-                    )
-                    .as_str(),
-                )
-                .await;
+            let _ignored = enclave_testing::exec(
+                &mut admin,
+                format!(
+                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '{name}'"
+                ),
+            )
+            .await;
             let _ignored =
-                admin.execute(format!(r#"DROP DATABASE IF EXISTS "{name}""#).as_str()).await;
+                enclave_testing::exec(&mut admin, format!(r#"DROP DATABASE IF EXISTS "{name}""#))
+                    .await;
         }
 
         for role in ["enclave_app", "enclave_migrator", "enclave_platform"] {
-            let _ignored = admin.execute(format!("DROP ROLE IF EXISTS {role}").as_str()).await;
+            let _ignored =
+                enclave_testing::exec(&mut admin, format!("DROP ROLE IF EXISTS {role}")).await;
         }
 
         let still_there: i64 = sqlx::query_scalar(
@@ -102,7 +103,9 @@ async fn a_lost_role_creation_race_reports_what_to_do_about_it() {
         let mut names = Vec::new();
         for i in 0..RACERS {
             let name = format!("enc_race_{}_{i}", &Uuid::new_v4().simple().to_string()[..8]);
-            admin.execute(format!(r#"CREATE DATABASE "{name}""#).as_str()).await.expect("create");
+            enclave_testing::exec(&mut admin, format!(r#"CREATE DATABASE "{name}""#))
+                .await
+                .expect("create");
             names.push(name);
         }
         let _ignored = admin.close().await;
@@ -141,16 +144,16 @@ async fn a_lost_role_creation_race_reports_what_to_do_about_it() {
         // Clean up whether or not the race fired.
         let mut admin = PgConnection::connect(&admin_url).await.expect("admin");
         for name in &names {
-            let _ignored = admin
-                .execute(
-                    format!(
-                        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '{name}'"
-                    )
-                    .as_str(),
-                )
-                .await;
+            let _ignored = enclave_testing::exec(
+                &mut admin,
+                format!(
+                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '{name}'"
+                ),
+            )
+            .await;
             let _ignored =
-                admin.execute(format!(r#"DROP DATABASE IF EXISTS "{name}""#).as_str()).await;
+                enclave_testing::exec(&mut admin, format!(r#"DROP DATABASE IF EXISTS "{name}""#))
+                    .await;
         }
         let _ignored = admin.close().await;
 

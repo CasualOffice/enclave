@@ -117,7 +117,7 @@ tower-http   = { version = "0.6", features = ["trace", "cors", "limit", "timeout
 hyper        = "1"
 
 # data
-sqlx         = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json", "macros", "migrate"] }
+sqlx         = { version = "0.9", features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json", "macros", "migrate"] }
 uuid         = { version = "1", features = ["v4", "v5", "v7", "serde"] }
 chrono       = { version = "0.4", features = ["serde"] }
 
@@ -134,10 +134,25 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 # crypto and auth
 argon2       = "0.5"
-ed25519-dalek = { version = "2", features = ["rand_core", "pkcs8"] }
-jsonwebtoken = "9"
+ed25519-dalek = { version = "3", features = ["rand_core", "pkcs8", "alloc"] }
+# 11 made the crypto backend pluggable and requires exactly one provider.
+#
+# aws_lc_rs, not rust_crypto. The first choice here WAS rust_crypto — pure Rust, no C toolchain,
+# simple cross-compilation — and cargo-deny rejected it: `rust_crypto` pulls `rsa` unconditionally,
+# and `rsa` carries RUSTSEC-2023-0071, the Marvin timing sidechannel, with no fixed release.
+#
+# We pin EdDSA and never construct an RSA key, so the vulnerable path is unreachable. That argument
+# is available and was not taken: "unreachable" is a claim about today's call graph, checked by
+# nobody, and it is the same reasoning this codebase rejects when a gate is inconvenient. Not
+# shipping the code is stronger than reasoning about whether it runs.
+#
+# aws_lc_rs removes `rsa` from the tree entirely and clears the advisory. The costs are real — a C
+# toolchain in the build and more care when cross-compiling — and are accepted deliberately. FIPS
+# capability comes along as a side effect rather than a goal; key custody still belongs to the
+# KMS/HSM path in docs/08-BYO-INFRA.md §7.
+jsonwebtoken = { version = "11", default-features = false, features = ["aws_lc_rs"] }
 sha2         = "0.11"
-rand         = "0.8"
+rand         = "0.10"
 base64       = "0.23"
 subtle       = "2"
 zeroize      = { version = "1", features = ["derive"] }
@@ -145,7 +160,9 @@ zeroize      = { version = "1", features = ["derive"] }
 # misc
 async-trait  = "0.1"
 futures      = "0.3"
-ipnetwork    = "0.20"
+# 0.21 made serde opt-in; 0.20 enabled it by default. TrustedProxy.cidr is deserialised
+# straight from configuration, so the feature is load-bearing rather than convenience.
+ipnetwork    = { version = "0.21", features = ["serde"] }
 url          = "2"
 
 # dev

@@ -30,6 +30,8 @@ use base64::Engine as _;
 use chrono::{DateTime, Utc};
 use ed25519_dalek::pkcs8::{DecodePrivateKey, EncodePrivateKey};
 use ed25519_dalek::SigningKey;
+use rand::rand_core::TryRng as _;
+use rand::rngs::SysRng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
@@ -189,7 +191,20 @@ impl PrivateSigningKey {
     /// practice cannot happen and is reported rather than panicked on because this crate forbids
     /// panicking paths in production code.
     pub fn generate(now: DateTime<Utc>) -> Result<Self, KeyProviderError> {
-        let signing = SigningKey::generate(&mut rand::rngs::OsRng);
+        // rand 0.10 replaced the infallible `OsRng` with the fallible `SysRng`, and
+        // `SigningKey::generate` wants an infallible `CryptoRng`. The obvious bridge is
+        // `UnwrapErr(SysRng)`, which panics when the OS declines to provide entropy — in a crate
+        // that forbids panicking paths in production code, and on the one operation that produces
+        // the key every access token is signed with.
+        //
+        // Filling the seed explicitly keeps the failure a `Result`. An exhausted or unavailable
+        // entropy source is then something the caller handles, not something that aborts the
+        // process.
+        let mut seed = Zeroizing::new([0_u8; 32]);
+        SysRng
+            .try_fill_bytes(seed.as_mut_slice())
+            .map_err(|_| KeyProviderError::EntropyUnavailable)?;
+        let signing = SigningKey::from_bytes(&seed);
         Self::from_signing_key(&signing, KeyStatus::Active, now, None)
     }
 

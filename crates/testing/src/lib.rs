@@ -44,7 +44,7 @@ use std::fmt;
 
 use chrono::{DateTime, TimeZone, Utc};
 use enclave_core::{GroupId, TenantId, UserId};
-use sqlx::{Connection, Executor, PgConnection};
+use sqlx::{Connection, PgConnection};
 use uuid::Uuid;
 
 /// Anything that can go wrong setting a test database up.
@@ -81,6 +81,31 @@ pub enum HarnessError {
 /// Arbitrary but fixed, and namespaced high enough not to collide with the application's own
 /// advisory locks (the audit chain uses per-tenant keys derived from tenant ids).
 const SETUP_LOCK: i64 = 0x0e11_c1a1_7e57_0001_u64 as i64;
+
+/// Runs one ad-hoc DDL statement.
+///
+/// Public because the integration tests need the same escape hatch the harness does.
+///
+/// # Errors
+///
+/// Whatever the statement fails with.
+///
+/// sqlx 0.9 requires `'q: 'e` — the query must outlive the future executing it — and for
+/// `impl<'c> Executor<'c> for &'c mut PgConnection` that cannot be satisfied by a `String` local
+/// to an `async fn`: the local is dropped at the end of the body the future spans. A reborrow does
+/// not help, and neither does binding earlier.
+///
+/// So the statement is promoted to `&'static str`. That is a leak, and worth being explicit about
+/// rather than hiding: it is bounded by the number of DDL statements the *test harness* issues in a
+/// process — creating and dropping test databases, a few dozen at most, tens of bytes each. It is
+/// not on any request path and never runs in the product.
+///
+/// The alternative shapes were worse: owning the connection would restructure every caller, and
+/// `Box::leak` at each call site would spread the same cost without the explanation.
+pub async fn exec(conn: &mut PgConnection, sql: String) -> Result<(), sqlx::Error> {
+    let sql: &'static str = Box::leak(sql.into_boxed_str());
+    sqlx::raw_sql(sql).execute(&mut *conn).await.map(|_| ())
+}
 
 /// A disposable database, dropped when this handle is.
 pub struct TestDb {
@@ -151,7 +176,7 @@ impl TestDb {
     ) -> Result<String, HarnessError> {
         // The name is generated from a UUID, never from caller input, so interpolating it is safe —
         // and CREATE DATABASE cannot take a bind parameter anyway.
-        admin.execute(format!(r#"CREATE DATABASE "{name}""#).as_str()).await?;
+        exec(admin, format!(r#"CREATE DATABASE "{name}""#)).await?;
 
         let url = swap_database(admin_url, name);
         let mut conn = connect(&url).await?;
@@ -229,8 +254,8 @@ impl TestDb {
             "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '{}'",
             self.name
         );
-        let _ignored = admin.execute(terminate.as_str()).await;
-        admin.execute(format!(r#"DROP DATABASE IF EXISTS "{}""#, self.name).as_str()).await?;
+        let _ignored = exec(&mut admin, terminate).await;
+        exec(&mut admin, format!(r#"DROP DATABASE IF EXISTS "{}""#, self.name)).await?;
         let _ignored = admin.close().await;
         Ok(())
     }
@@ -253,9 +278,9 @@ impl Drop for TestDb {
                     let terminate = format!(
                         "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '{name}'"
                     );
-                    let _ignored = admin.execute(terminate.as_str()).await;
+                    let _ignored = exec(&mut admin, terminate).await;
                     let _ignored =
-                        admin.execute(format!(r#"DROP DATABASE IF EXISTS "{name}""#).as_str()).await;
+                        exec(&mut admin, format!(r#"DROP DATABASE IF EXISTS "{name}""#)).await;
                     let _ignored = admin.close().await;
                 }
             });

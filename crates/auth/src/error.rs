@@ -45,6 +45,15 @@ pub enum KeyProviderError {
     #[error("no signing key is currently active")]
     NoActiveKey,
 
+    /// The operating system declined to provide randomness.
+    ///
+    /// Fallible since rand 0.10 replaced the infallible `OsRng` with `SysRng`. Reported rather than
+    /// unwrapped because this crate forbids panicking paths in production code, and because a key
+    /// generated from a degraded entropy source is worse than no key: the failure is recoverable,
+    /// the weak key is not.
+    #[error("the operating system could not provide randomness")]
+    EntropyUnavailable,
+
     /// Key material could not be read or written.
     #[error("signing key storage failed")]
     Storage(#[source] std::io::Error),
@@ -67,6 +76,14 @@ pub enum AuthError {
     /// user-enumeration oracle.
     #[error("credentials are not valid")]
     InvalidCredentials,
+
+    /// The operating system declined to provide randomness while minting a token.
+    ///
+    /// See `KeyProviderError::EntropyUnavailable`. A refresh token minted from a degraded source is
+    /// worse than a failed request, because the request can be retried and the token cannot be
+    /// un-issued.
+    #[error("the operating system could not provide randomness")]
+    EntropyUnavailable,
 
     /// A password was rejected before it was ever hashed (`docs/01-PRD.md §189`).
     #[error("password does not satisfy the configured policy")]
@@ -227,9 +244,12 @@ impl AuthError {
             | Self::EpochStale
             | Self::RefreshRejected
             | Self::RevocationUnavailable(_) => Some(ReasonCode::AccessDenied),
+            // Internal failures. `EntropyUnavailable` in particular tells the caller nothing
+            // useful and would tell an attacker that the host's entropy source is degraded.
             Self::PasswordPolicy { .. }
             | Self::PasswordHashing(_)
             | Self::KeyUnavailable(_)
+            | Self::EntropyUnavailable
             | Self::Encoding(_)
             | Self::Configuration(_) => None,
         }

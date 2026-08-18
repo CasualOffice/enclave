@@ -29,7 +29,8 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 use chrono::{DateTime, Utc};
 use enclave_core::{Actor, ClientType, DeviceId, SessionId, TenantId};
-use rand::RngCore as _;
+use rand::rand_core::TryRng as _;
+use rand::rngs::SysRng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq as _;
@@ -99,11 +100,17 @@ impl fmt::Debug for RefreshToken {
 
 impl RefreshToken {
     /// Mints 256 bits from the operating system CSPRNG.
-    #[must_use]
-    pub fn generate() -> Self {
+    ///
+    /// # Errors
+    ///
+    /// [`AuthError::EntropyUnavailable`] if the OS declines to provide randomness. rand 0.10 made
+    /// this fallible, and propagating it is right: a refresh token minted from a degraded entropy
+    /// source is worse than no token at all, and the alternative — unwrapping — would abort the
+    /// process on a condition a caller can report and retry.
+    pub fn generate() -> Result<Self, AuthError> {
         let mut bytes = Zeroizing::new([0_u8; REFRESH_TOKEN_BYTES]);
-        rand::rngs::OsRng.fill_bytes(bytes.as_mut_slice());
-        Self(Zeroizing::new(URL_SAFE_NO_PAD.encode(bytes.as_slice())))
+        SysRng.try_fill_bytes(bytes.as_mut_slice()).map_err(|_| AuthError::EntropyUnavailable)?;
+        Ok(Self(Zeroizing::new(URL_SAFE_NO_PAD.encode(bytes.as_slice()))))
     }
 
     /// Accepts a token presented by a client.
@@ -471,8 +478,8 @@ mod tests {
 
     #[test]
     fn a_generated_token_carries_256_bits_and_is_unpredictable() {
-        let a = RefreshToken::generate();
-        let b = RefreshToken::generate();
+        let a = RefreshToken::generate().expect("entropy");
+        let b = RefreshToken::generate().expect("entropy");
         assert_ne!(a.expose(), b.expose());
         assert_eq!(URL_SAFE_NO_PAD.decode(a.expose()).expect("base64").len(), REFRESH_TOKEN_BYTES);
         // Round-trips through the parser a client's value takes.
@@ -481,7 +488,7 @@ mod tests {
 
     #[test]
     fn plaintext_never_appears_in_debug_output() {
-        let token = RefreshToken::generate();
+        let token = RefreshToken::generate().expect("entropy");
         let rendered = format!("{token:?}");
         assert_eq!(rendered, "RefreshToken(<redacted>)");
         assert!(!rendered.contains(token.expose()));
@@ -499,7 +506,7 @@ mod tests {
 
     #[test]
     fn the_digest_is_sha256_of_the_token_text() {
-        let token = RefreshToken::generate();
+        let token = RefreshToken::generate().expect("entropy");
         let expected: [u8; 32] = Sha256::digest(token.expose().as_bytes()).into();
         assert_eq!(token.digest().as_bytes(), &expected);
         assert_eq!(token.digest().to_hex().len(), 64);
@@ -508,7 +515,7 @@ mod tests {
     #[test]
     fn classification_puts_replay_ahead_of_expiry() {
         let now = Utc::now();
-        let token = RefreshToken::generate();
+        let token = RefreshToken::generate().expect("entropy");
 
         let live = record(now, &token);
         assert!(matches!(classify(Some(live), now), RefreshOutcome::Usable(_)));
@@ -532,7 +539,7 @@ mod tests {
     #[test]
     fn the_absolute_expiry_outranks_the_sliding_one() {
         let now = Utc::now();
-        let token = RefreshToken::generate();
+        let token = RefreshToken::generate().expect("entropy");
         let mut row = record(now, &token);
         // A family that has been refreshed right up to its ninetieth day: the sliding window says
         // yes, the absolute ceiling says no.
@@ -545,11 +552,11 @@ mod tests {
     async fn k3_rotation_consumes_the_presented_token() {
         let now = Utc::now();
         let store = InMemoryRefreshStore::new();
-        let first = RefreshToken::generate();
+        let first = RefreshToken::generate().expect("entropy");
         let original = record(now, &first);
         store.insert(original.clone()).await.expect("insert");
 
-        let second = RefreshToken::generate();
+        let second = RefreshToken::generate().expect("entropy");
         let mut successor = record(now, &second);
         successor.session_id = original.session_id;
         successor.parent_id = Some(original.id);
@@ -578,15 +585,15 @@ mod tests {
     async fn k3_a_consumed_token_cannot_be_rotated_a_second_time() {
         let now = Utc::now();
         let store = InMemoryRefreshStore::new();
-        let first = RefreshToken::generate();
+        let first = RefreshToken::generate().expect("entropy");
         let original = record(now, &first);
         store.insert(original.clone()).await.expect("insert");
 
-        let successor = record(now, &RefreshToken::generate());
+        let successor = record(now, &RefreshToken::generate().expect("entropy"));
         store.rotate(original.id, successor, now).await.expect("first rotation");
 
         // The store itself is the serialisation point; a racing second rotation must lose.
-        let racer = record(now, &RefreshToken::generate());
+        let racer = record(now, &RefreshToken::generate().expect("entropy"));
         assert!(matches!(
             store.rotate(original.id, racer, now).await,
             Err(AuthError::RefreshRejected)
@@ -597,11 +604,11 @@ mod tests {
     async fn k4_revoking_a_family_leaves_no_usable_token_in_it() {
         let now = Utc::now();
         let store = InMemoryRefreshStore::new();
-        let first = RefreshToken::generate();
+        let first = RefreshToken::generate().expect("entropy");
         let original = record(now, &first);
         store.insert(original.clone()).await.expect("insert");
 
-        let second = RefreshToken::generate();
+        let second = RefreshToken::generate().expect("entropy");
         let mut successor = record(now, &second);
         successor.session_id = original.session_id;
         store.rotate(original.id, successor, now).await.expect("rotate");
