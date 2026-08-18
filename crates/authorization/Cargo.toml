@@ -10,10 +10,18 @@ authors.workspace      = true
 
 [dependencies]
 enclave-core = { workspace = true }
-async-trait  = { workspace = true }
-uuid         = { workspace = true }
+enclave-db   = { workspace = true }
+
+anyhow      = { workspace = true }
+async-trait = { workspace = true }
+chrono      = { workspace = true }
+sqlx        = { workspace = true }
+thiserror   = { workspace = true }
+uuid        = { workspace = true }
 
 [dev-dependencies]
+enclave-testing = { workspace = true }
+
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
 [lints]

@@ -691,8 +691,14 @@ dependencies = [
 name = "enclave-authorization"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-trait",
+ "chrono",
  "enclave-core",
+ "enclave-db",
+ "enclave-testing",
+ "sqlx",
+ "thiserror",
  "tokio",
  "uuid",
 ]
@@ -824,7 +830,19 @@ dependencies = [
 name = "enclave-identity"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.23.1",
+ "chrono",
  "enclave-core",
+ "enclave-db",
+ "enclave-testing",
+ "sha2 0.11.0",
+ "sqlx",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
