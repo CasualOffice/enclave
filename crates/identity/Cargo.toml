@@ -13,13 +13,13 @@ enclave-core = { workspace = true }
 # For `Sql`/`SqlId` (typed ids bind as `uuid`) and `DbError`'s retryability classification. The
 # repositories never take a pool from it — they take the `&mut PgConnection` a `TenantScoped`
 # transaction derefs to (plans/M1-CONTENT-CORE.md D10).
+# It also owns the pagination primitives (`Cursor`, `PageSize`, `FilterFingerprint`) and
+# `normalize_slug`, which lived here until `ENC-137` moved them below the domain layer.
 enclave-db = { workspace = true }
 
 anyhow      = { workspace = true }
 async-trait = { workspace = true }
-base64      = { workspace = true }
 chrono      = { workspace = true }
-sha2        = { workspace = true }
 sqlx        = { workspace = true }
 thiserror   = { workspace = true }
 tracing     = { workspace = true }

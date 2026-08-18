@@ -44,21 +44,40 @@
 //!   This crate owns *how* a connection is obtained, never *what* is asked of it.
 //! * **No policy checks.** Authorization is `PolicyEngine::enforce`'s job (`docs/03-LLD.md §12`).
 //!   A guard that also made access decisions would be a second, quieter policy chain.
+//! * **No cursor signature.** [`cursor`] binds a listing position to a tenant and a filter set and
+//!   checks both on the way back in, but it does not sign. `docs/03-LLD.md §17` says cursors are
+//!   signed; signing needs a key, and the key belongs to the deployment's key provider at the API
+//!   edge, not to a crate that has no key material of its own. **The note for the API layer:** what
+//!   signing adds here is integrity against a *tampered* cursor, and a tampered cursor can only
+//!   move the position within the same tenant and the same filter — a page the caller was already
+//!   entitled to request. Close the remaining gap where the key lives.
+//!
+//! # Primitives that sit here because everything above needs them
+//!
+//! [`Cursor`], [`PageSize`], [`FilterFingerprint`] and [`normalize_slug`] are pagination and
+//! lookup-key primitives, not domain types. They were in `enclave-identity` until `ENC-137`, which
+//! made every crate with a listing depend sideways on a peer domain crate — the edge
+//! `plans/M0-FOUNDATIONS.md` D1 forbids. A cursor is a *security* primitive besides: it is bound to
+//! a tenant and a filter set, so a second copy is a second place for that binding to weaken.
 //!
 //! See `plans/M0-FOUNDATIONS.md` D3 for the decision record behind [`TenantScoped`], and
 //! `docs/02-HLD.md §4` for where this crate sits.
 
 pub mod config;
+pub mod cursor;
 pub mod error;
 pub mod ids;
 pub mod migrate;
+pub mod normalize;
 pub mod pool;
 pub mod tenant;
 
 pub use config::{ConnectionUrl, DbConfig};
+pub use cursor::{Cursor, FilterFingerprint, InvalidCursor, PageSize};
 pub use error::DbError;
 pub use ids::{sql, RowIdExt, Sql, SqlId};
 pub use migrate::{run_migrations, run_migrations_on, MIGRATIONS};
+pub use normalize::normalize_slug;
 pub use pool::{DbPool, PlatformConnection};
 pub use tenant::TenantScoped;
 

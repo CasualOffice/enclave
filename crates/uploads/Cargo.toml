@@ -10,6 +10,34 @@ authors.workspace      = true
 
 [dependencies]
 enclave-core = { workspace = true }
+# For `Sql`/`SqlId` (typed ids bind as `uuid`), `RowIdExt` and `DbError`'s retryability
+# classification. The repository never takes a pool from it — it takes the `&mut PgConnection` a
+# `TenantScoped` transaction derefs to (plans/M1-CONTENT-CORE.md D10).
+enclave-db = { workspace = true }
+# `LibrarySettings` is where `allowed_extensions`, `blocked_extensions` and `max_file_size_bytes`
+# live. `UploadLimits` is built from that type rather than from three loose arguments, so a caller
+# cannot transpose two of them and quietly widen what a library accepts.
+enclave-libraries = { workspace = true }
+# `BlobStore`, `ObjectKey` and the upload vocabulary. This crate never speaks to a cloud SDK.
+enclave-storage = { workspace = true }
+
+anyhow    = { workspace = true }
+# The provider reports SHA-256 in base64; the platform records it in lowercase hex. One decoder,
+# at the one place the two conventions meet.
+base64    = { workspace = true }
+chrono    = { workspace = true }
+sqlx      = { workspace = true }
+thiserror = { workspace = true }
+tracing   = { workspace = true }
+# `PartTarget::url` is a `url::Url`; the completion path has to build one.
+url       = { workspace = true }
+
+[dev-dependencies]
+enclave-testing = { workspace = true }
+# The integration tests stand a recording `BlobStore` up in place of MinIO; the trait is
+# `#[async_trait]`, so implementing it needs the same attribute.
+async-trait = { workspace = true }
+tokio = { workspace = true }
 
 [lints]
 workspace = true

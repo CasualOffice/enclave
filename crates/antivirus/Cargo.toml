@@ -9,7 +9,63 @@ repository.workspace   = true
 authors.workspace      = true
 
 [dependencies]
-enclave-core = { workspace = true }
+enclave-core   = { workspace = true }
+enclave-config = { workspace = true }
+# For `ByteStream`. `docs/06-SECURITY-DLP-ACCESS.md §6.1` gives the trait as
+# `scan(&self, stream: ByteStream, …)`, and the workspace already has exactly one `ByteStream` —
+# the one `BlobStore::read_range` returns, which that trait's own documentation describes as "the
+# path preview and antivirus use". A second, structurally identical stream type in this crate
+# would mean every caller adapting one into the other, and adapters are where cancellation and
+# backpressure semantics quietly diverge.
+enclave-storage = { workspace = true }
+
+async-trait = { workspace = true }
+futures     = { workspace = true }
+serde       = { workspace = true }
+thiserror   = { workspace = true }
+tokio       = { workspace = true, features = ["net", "io-util", "time"] }
+tracing     = { workspace = true }
+
+# Same single reason as in `enclave-db` and `enclave-storage`: `enclave_core::Error::Internal`
+# *holds* an `anyhow::Error`, so mapping this crate's error into the canonical type has to build
+# one. It is never this crate's own error type.
+anyhow = { workspace = true }
+
+# ---------------------------------------------------------------------------
+# NOT a dependency, deliberately: a clamd client crate.
+#
+# `clamav-client` and its neighbours exist and work. They were not taken, for three reasons that
+# are specific rather than general suspicion of dependencies:
+#
+# 1. INSTREAM is ~40 lines of protocol — `zINSTREAM\0`, then length-prefixed chunks, then a zero
+#    length, then one NUL-terminated reply line. `clamav/instream.rs` is shorter than the
+#    dependency's own README, and every byte of it is reviewable here.
+# 2. The stream we scan is a `ByteStream` whose chunks arrive from object storage and must never
+#    be buffered whole (a 5 GB version would be 5 GB of RSS). Every crate surveyed takes either
+#    `&[u8]` or a `Read`/`AsyncRead`, so using one would mean an adapter around the exact property
+#    that matters, and would put the memory bound in code we do not own.
+# 3. Verdict *interpretation* is policy, not protocol: `Heuristics.Encrypted.*` and
+#    `Heuristics.Limits.Exceeded.*` have to become `Unsupported` rather than `Infected`
+#    (`docs/06-SECURITY-DLP-ACCESS.md §6.2`), and no client crate makes that distinction. We would
+#    be post-processing its output anyway.
+#
+# The cost of the choice is that clamd protocol drift is ours to notice. `tests/fake_clamd.rs`
+# pins the wire format we assume, and `tests/eicar.rs` checks it against a real clamd in CI.
+# ---------------------------------------------------------------------------
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time"] }
+
+# Test-only, and deliberately not a normal dependency: nothing in this crate *constructs* a
+# `ByteStream`, it only consumes one, and consuming needs no name for the chunk type. Tests do
+# construct them. The major is pinned to match `enclave-storage`, which holds the same pin as a
+# normal dependency; both should move into `[workspace.dependencies]` together — flagged to the
+# integrator.
+bytes = "1"
+
+# One test asserts that what the uploader receives cannot carry a signature, and asserting that
+# about the *serialized* form is the version of the claim that matters — a client sees JSON.
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

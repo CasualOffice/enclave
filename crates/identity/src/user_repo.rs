@@ -10,10 +10,9 @@
 
 use chrono::{DateTime, Utc};
 use enclave_core::{TenantId, UserId};
-use enclave_db::sql;
+use enclave_db::{sql, Cursor, FilterFingerprint, PageSize};
 use sqlx::{PgConnection, Row as _};
 
-use crate::cursor::{Cursor, FilterFingerprint, PageSize};
 use crate::error::Result;
 use crate::model::{User, UserStatus};
 use crate::normalize::normalize_email;
@@ -22,7 +21,7 @@ use crate::row::user_from_row;
 /// Which users a listing should return.
 ///
 /// The fingerprint of this value is bound into the cursor, so a caller cannot page through with one
-/// filter and resume with another — see [`crate::cursor`] for why that is a correctness problem and
+/// filter and resume with another — see [`enclave_db::cursor`] for why that is a correctness problem and
 /// not a nicety.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct UserFilter {

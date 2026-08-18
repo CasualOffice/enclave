@@ -41,8 +41,7 @@
 
 use chrono::{DateTime, Utc};
 use enclave_core::{TenantId, UserId, WorkspaceId};
-use enclave_db::sql;
-use enclave_identity::{Cursor, FilterFingerprint, PageSize};
+use enclave_db::{sql, Cursor, FilterFingerprint, PageSize};
 use sqlx::{PgConnection, Row as _};
 
 use crate::error::{Result, WorkspaceError};
@@ -54,7 +53,7 @@ use crate::violation::is_unique_violation;
 /// Which workspaces a listing should return.
 ///
 /// The fingerprint of this value is bound into the cursor, so a caller cannot page through with one
-/// filter and resume with another — see `enclave_identity::cursor` for why that is a correctness
+/// filter and resume with another — see `enclave_db::cursor` for why that is a correctness
 /// problem and not a nicety.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct WorkspaceFilter {

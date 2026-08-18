@@ -17,7 +17,6 @@ enclave-db = { workspace = true }
 # Only for `Cursor`, `PageSize` and `FilterFingerprint`. Nothing about principals is read here.
 # Pagination is not an identity concern and this dependency is an accident of where the cursor was
 # first needed (`ENC-125`); see the crate documentation for the note handed to the integrator.
-enclave-identity = { workspace = true }
 
 anyhow    = { workspace = true }
 chrono    = { workspace = true }

@@ -16,7 +16,7 @@
 //! workspace; a second opinion in this crate is a second place for them to disagree.
 
 use enclave_core::{Error as CoreError, FieldError, ValidationCode};
-use enclave_db::DbError;
+use enclave_db::{DbError, InvalidCursor};
 
 /// Everything the identity repositories can fail with.
 ///
@@ -45,7 +45,8 @@ pub enum IdentityError {
     /// The pagination cursor was malformed, or bound to a different tenant or filter set.
     ///
     /// Deliberately one variant for all of those. A cursor is opaque; telling a caller *which*
-    /// check failed turns it into an oracle (`CLAUDE.md` rule 7).
+    /// check failed turns it into an oracle (`CLAUDE.md` rule 7). Raised by
+    /// [`enclave_db::Cursor::decode`] and adopted here through `From<InvalidCursor>`.
     #[error("the pagination cursor is not valid for this request")]
     InvalidCursor,
 }
@@ -58,6 +59,19 @@ impl IdentityError {
             Self::Database(source) => source.is_retryable(),
             Self::MalformedRow { .. } | Self::InvalidCursor => false,
         }
+    }
+}
+
+impl From<InvalidCursor> for IdentityError {
+    /// Adopts the cursor rejection [`enclave_db::Cursor::decode`] produces.
+    ///
+    /// The primitive lives in `enclave-db` (`ENC-137`) and rejects with a single detail-free
+    /// value; this crate's variant is that same answer under this crate's name, so `?` on a decode
+    /// inside a repository keeps producing [`IdentityError::InvalidCursor`] and the caller's match
+    /// is unchanged. Nothing is added on the way through — a reason attached here would be the
+    /// oracle the single answer exists to prevent.
+    fn from(_: InvalidCursor) -> Self {
+        Self::InvalidCursor
     }
 }
 

@@ -60,14 +60,14 @@
 //! later statement on that connection fails with `25P02` until it is rolled back. The error is a
 //! well-formed domain answer but it is not recoverable in place.
 //!
-//! # Borrowed from `enclave-identity`, and why
+//! # Borrowed from `enclave-db`, and why
 //!
 //! [`Cursor`], [`PageSize`], [`FilterFingerprint`] and [`normalize_slug`] are re-exported from
-//! `enclave-identity` rather than reimplemented. The cursor is a security primitive — it binds a
-//! listing position to a tenant and a filter set — and two copies of a security primitive drift.
-//! The dependency edge is the wrong shape and is deliberate: these types belong in a crate below
-//! both, which is a move this task does not own. Recorded for the integrator rather than worked
-//! around by copying the code.
+//! `enclave-db` rather than reimplemented. The cursor is a security primitive — it binds a listing
+//! position to a tenant and a filter set — and two copies of a security primitive drift. They were
+//! borrowed from `enclave-identity` until `ENC-137`, which was the wrong shape: a domain crate
+//! reaching sideways into a peer domain crate inverts `plans/M0-FOUNDATIONS.md` D1. `enclave-db`
+//! sits below every domain crate, so the edge now points down.
 
 pub mod error;
 pub mod library_repo;
@@ -79,5 +79,5 @@ pub use error::{LibraryError, Result};
 pub use library_repo::{LibraryFilter, LibraryPage, LibraryRepository};
 pub use model::{ExternalSharing, Library, LibrarySettings, VersioningMode};
 
-/// Pagination primitives, shared with `enclave-identity` — see the note in the crate documentation.
-pub use enclave_identity::{normalize_slug, Cursor, FilterFingerprint, PageSize};
+/// Pagination primitives, shared with every other listing — see the note in the crate documentation.
+pub use enclave_db::{normalize_slug, Cursor, FilterFingerprint, PageSize};

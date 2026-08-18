@@ -45,7 +45,7 @@
 use chrono::{DateTime, Utc};
 use enclave_core::{FileId, LibraryId, TenantId, UserId};
 use enclave_db::sql;
-use enclave_identity::{Cursor, FilterFingerprint, PageSize};
+use enclave_db::{Cursor, FilterFingerprint, PageSize};
 use sqlx::error::ErrorKind;
 use sqlx::PgConnection;
 

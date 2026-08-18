@@ -29,8 +29,7 @@
 
 use chrono::{DateTime, Utc};
 use enclave_core::{TenantId, WorkspaceId};
-use enclave_db::sql;
-use enclave_identity::{Cursor, FilterFingerprint, PageSize};
+use enclave_db::{sql, Cursor, FilterFingerprint, PageSize};
 use sqlx::PgConnection;
 
 use crate::error::{Result, WorkspaceError};

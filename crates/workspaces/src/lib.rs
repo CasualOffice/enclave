@@ -57,14 +57,14 @@
 //! `UPDATE`'s `WHERE` clause, never in Rust between a read and a write, and a mismatch returns
 //! [`WorkspaceError::RevisionConflict`] carrying the current revision — never a silent overwrite.
 //!
-//! # Borrowed from `enclave-identity`, and why
+//! # Borrowed from `enclave-db`, and why
 //!
 //! [`Cursor`], [`PageSize`], [`FilterFingerprint`] and [`normalize_slug`] are re-exported from
-//! `enclave-identity` rather than reimplemented. The cursor is a security primitive — it binds a
-//! listing position to a tenant and a filter set — and two copies of a security primitive drift.
-//! The dependency edge is the wrong shape and is deliberate: these types belong in a crate below
-//! both, and moving them is a change to `enclave-db` (or a new crate) that this task does not own.
-//! It is recorded for the integrator rather than worked around by copying the code.
+//! `enclave-db` rather than reimplemented. The cursor is a security primitive — it binds a listing
+//! position to a tenant and a filter set — and two copies of a security primitive drift. They were
+//! borrowed from `enclave-identity` until `ENC-137`, which was the wrong shape: a domain crate
+//! reaching sideways into a peer domain crate inverts `plans/M0-FOUNDATIONS.md` D1. `enclave-db`
+//! sits below every domain crate, so the edge now points down.
 
 pub mod error;
 pub mod member_repo;
@@ -82,5 +82,5 @@ pub use model::{
 };
 pub use workspace_repo::{WorkspaceFilter, WorkspacePage, WorkspaceRepository};
 
-/// Pagination primitives, shared with `enclave-identity` — see the note in the crate documentation.
-pub use enclave_identity::{normalize_slug, Cursor, FilterFingerprint, PageSize};
+/// Pagination primitives, shared with every other listing — see the note in the crate documentation.
+pub use enclave_db::{normalize_slug, Cursor, FilterFingerprint, PageSize};

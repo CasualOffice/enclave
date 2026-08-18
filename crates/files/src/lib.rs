@@ -46,12 +46,11 @@
 //!
 //! # Two notes handed to the integrator
 //!
-//! **Pagination is borrowed from `enclave-identity`.** [`Cursor`], [`PageSize`] and
-//! [`FilterFingerprint`] live in that crate because that is where the first listing needed them,
-//! and nothing about them is about principals. This crate depends on `enclave-identity` for those
-//! three types and for nothing else. They belong in a crate both can depend on — `enclave-db`
-//! alongside `TenantScoped`, or `enclave-core` — and moving them is a mechanical change that
-//! touches two crates this task was not allowed to edit.
+//! **Pagination comes from `enclave-db`.** [`Cursor`], [`PageSize`] and [`FilterFingerprint`] sit
+//! below the domain layer (`ENC-137`), not in a peer crate. A cursor is signed and bound to a
+//! tenant and a filter set, which makes it a persistence and security primitive rather than an
+//! identity one — and every crate with a listing was otherwise depending sideways on
+//! `enclave-identity` for it.
 //!
 //! **Three columns of `files` are not read here.** `classification_id`, `classification_source`
 //! and `content_type_id` are owned by crates that do not exist yet, and `enclave_core::id` has no
@@ -78,4 +77,4 @@ pub use repo::{
 
 // Re-exported so a caller does not have to depend on `enclave-identity` to page through a folder.
 // See the note above: this is the seam that moves when pagination finds a better home.
-pub use enclave_identity::{Cursor, FilterFingerprint, PageSize};
+pub use enclave_db::{Cursor, FilterFingerprint, PageSize};

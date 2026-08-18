@@ -26,10 +26,9 @@
 
 use chrono::Utc;
 use enclave_core::{GroupId, TenantId, UserId};
-use enclave_db::{sql, DbPool, TenantScoped};
+use enclave_db::{sql, DbPool, PageSize, TenantScoped};
 use enclave_identity::{
-    GroupRepository, IdentityError, NestingLimit, PageSize, TenantRepository, UserFilter,
-    UserRepository,
+    GroupRepository, IdentityError, NestingLimit, TenantRepository, UserFilter, UserRepository,
 };
 use enclave_testing::{Fixtures, TestDb};
 use sqlx::PgConnection;

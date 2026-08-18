@@ -54,7 +54,6 @@
 //! [`enclave_db::PlatformConnection`]. On an application connection it returns no rows — an
 //! unresolvable domain rather than an error. See [`tenant_repo`] for the full table.
 
-pub mod cursor;
 pub mod error;
 pub mod group_repo;
 pub mod model;
@@ -64,12 +63,11 @@ pub mod user_repo;
 
 mod row;
 
-pub use cursor::{Cursor, FilterFingerprint, PageSize};
 pub use error::{IdentityError, Result};
 pub use group_repo::{GroupClosure, GroupRepository, NestingLimit};
 pub use model::{
     Group, GroupSource, MemberType, Tenant, TenantStatus, User, UserSource, UserStatus,
 };
-pub use normalize::{normalize_domain, normalize_email, normalize_group_name, normalize_slug};
+pub use normalize::{normalize_domain, normalize_email, normalize_group_name};
 pub use tenant_repo::TenantRepository;
 pub use user_repo::{UserFilter, UserPage, UserRepository};

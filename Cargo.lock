@@ -1075,7 +1075,18 @@ dependencies = [
 name = "enclave-antivirus"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "async-trait",
+ "bytes",
+ "enclave-config",
  "enclave-core",
+ "enclave-storage",
+ "futures",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -1244,8 +1255,10 @@ name = "enclave-db"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.23.1",
  "enclave-config",
  "enclave-core",
+ "sha2 0.11.0",
  "sqlx",
  "thiserror",
  "tokio",
@@ -1293,7 +1306,6 @@ dependencies = [
  "chrono",
  "enclave-core",
  "enclave-db",
- "enclave-identity",
  "enclave-testing",
  "sqlx",
  "thiserror",
@@ -1308,12 +1320,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "base64 0.23.1",
  "chrono",
  "enclave-core",
  "enclave-db",
  "enclave-testing",
- "sha2 0.11.0",
  "sqlx",
  "thiserror",
  "tokio",
@@ -1358,7 +1368,6 @@ dependencies = [
  "chrono",
  "enclave-core",
  "enclave-db",
- "enclave-identity",
  "enclave-testing",
  "serde_json",
  "sqlx",
@@ -1530,14 +1539,39 @@ dependencies = [
 name = "enclave-uploads"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.23.1",
+ "chrono",
  "enclave-core",
+ "enclave-db",
+ "enclave-libraries",
+ "enclave-storage",
+ "enclave-testing",
+ "sqlx",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "url",
 ]
 
 [[package]]
 name = "enclave-versions"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "chrono",
+ "enclave-audit",
  "enclave-core",
+ "enclave-db",
+ "enclave-events",
+ "enclave-testing",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "thiserror",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -1566,7 +1600,6 @@ dependencies = [
  "chrono",
  "enclave-core",
  "enclave-db",
- "enclave-identity",
  "enclave-testing",
  "sqlx",
  "thiserror",

@@ -17,6 +17,11 @@ enclave-config = { workspace = true }
 # `anyhow::Error`, so any crate that maps its own error into the canonical type must be able to
 # construct one. It is never used as this crate's own error type.
 anyhow    = { workspace = true }
+# `base64` and `sha2` are the cursor primitive's, and only the cursor primitive's: base64url for the
+# opaque form that survives a query string, SHA-256 for the filter fingerprint bound into it. See
+# src/cursor.rs.
+base64    = { workspace = true }
+sha2      = { workspace = true }
 sqlx      = { workspace = true }
 uuid      = { workspace = true }
 thiserror = { workspace = true }
