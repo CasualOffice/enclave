@@ -1,139 +1,59 @@
-//! `enclave-authorization` — RBAC, ACL resolution, inheritance, effective permissions
+//! `enclave-authorization` — ACL resolution: inheritance, group closure, deny-wins.
 //!
-//! Security and governance — a policy service in the canonical chain.
+//! The authorization stage of the policy chain (`docs/02-HLD.md §4`, `docs/03-LLD.md §12`). It
+//! answers one question — *may this principal perform this action on this resource?* — by the four
+//! rules of `docs/04-DATA-MODEL.md §9`, and nothing else. It applies no barrier, no classification
+//! ceiling and no DLP rule; those are separate stages for the reason the chain has stages at all.
 //!
-//! See `docs/02-HLD.md §4` for where this crate sits in the architecture.
+//! ```text
+//! 1. chain      resource → parents → library → workspace, stopping where inheritance is broken
+//! 2. principals the caller, its transitive group closure, EVERYONE
+//! 3. verdict    any matching DENY wins; otherwise any matching ALLOW grants; otherwise refuse
+//! 4. expiry     entries past `expires_at` are not entries
+//! ```
+//!
+//! # How it is laid out, and why
+//!
+//! * [`resolve`] holds the rules as pure functions over rows. They are the definition.
+//! * [`repo`] holds the SQL that fetches those rows in three round trips per batch, whatever the
+//!   batch size. Its `WHERE` clauses duplicate rules 2 and 4 as a prefilter; [`resolve`] re-applies
+//!   them, so a query that fetches too much is slow rather than wrong.
+//! * [`service`] classifies references, refuses what has no ACL model, and implements
+//!   [`enclave_core::AuthorizationService`].
+//! * [`cache`] defines the key of rule 5. There is no cache behind it yet, deliberately — see the
+//!   module documentation for the trap that key hides.
+//!
+//! # Deny-by-default in three places
+//!
+//! A resource that does not exist, one in another tenant, one whose kind has no ACL model, an actor
+//! that no ACL entry can name, and a chain that could not be walked to its root all produce the same
+//! refusal. The single most valuable property of this crate is that every path that is not an
+//! explicit grant ends at a denial, and the tests are arranged around proving that rather than
+//! around proving that grants work.
+//!
+//! # What is deliberately not here
+//!
+//! * **Roles.** `role_definitions` and `workspace_members` grant permissions too
+//!   (`docs/04-DATA-MODEL.md §7`, `§9`). This resolver reads `acl_entries` only; RBAC composes with
+//!   it and is a separate item.
+//! * **Action implication.** An `ALLOW` on `file.download` does not imply `file.metadata_read`.
+//!   Every implication is a policy decision, and inferring them here would silently widen every
+//!   grant a tenant has already written.
+//! * **Caching.** Only the key. A cache whose invalidation is not designed is a stale-grant
+//!   machine, and stale grants outlive the revocation that was supposed to end them.
 
-use async_trait::async_trait;
-use enclave_core::{
-    Action, AuthorizationService, ContainerAction, ReasonCode, RequestContext, ResourceKind,
-    ResourceRef, Result, StageDecision,
+pub mod cache;
+pub mod error;
+pub mod repo;
+pub mod resolve;
+pub mod self_service;
+pub mod service;
+
+pub use cache::{cache_key, CACHE_KEY_PREFIX};
+pub use error::{AuthzError, Result};
+pub use resolve::{
+    AclEntry, AclResourceType, ChainNode, Effect, Effective, EffectiveIndex, InheritanceChain,
+    Principal, PrincipalKind, PrincipalSet,
 };
-
-/// Authorization before any ACL storage exists: a principal may read **itself**, and nothing else.
-///
-/// This is not a stub that returns allow. It is the smallest decision that is actually correct, and
-/// it denies by default — the shape the real resolver will keep. `ENC-126` replaces it with ACL
-/// resolution over `acl_entries`: inheritance up the workspace chain, transitive group closure and
-/// deny-wins (`docs/04-DATA-MODEL.md §9`).
-///
-/// Deliberately *not* named `AllowSelf`. Every rule it enforces is a denial except one.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct SelfServiceAuthorization;
-
-impl SelfServiceAuthorization {
-    /// Whether this is a principal reading its own user record.
-    fn is_self_read(ctx: &RequestContext, action: Action, resource: &ResourceRef) -> bool {
-        let reading = matches!(action, Action::Container(ContainerAction::Read));
-        let own_user = resource.kind == ResourceKind::User
-            && ctx.actor.subject_id().is_some_and(|id| id == resource.id);
-        reading && own_user
-    }
-}
-
-#[async_trait]
-impl AuthorizationService for SelfServiceAuthorization {
-    async fn authorize(
-        &self,
-        ctx: &RequestContext,
-        action: Action,
-        resource: &ResourceRef,
-    ) -> Result<StageDecision> {
-        if Self::is_self_read(ctx, action, resource) {
-            Ok(StageDecision::allow())
-        } else {
-            Ok(StageDecision::deny(ReasonCode::AccessDenied))
-        }
-    }
-
-    async fn authorize_many(
-        &self,
-        ctx: &RequestContext,
-        action: Action,
-        resources: &[ResourceRef],
-    ) -> Result<Vec<StageDecision>> {
-        Ok(resources
-            .iter()
-            .map(|resource| {
-                if Self::is_self_read(ctx, action, resource) {
-                    StageDecision::allow()
-                } else {
-                    StageDecision::deny(ReasonCode::AccessDenied)
-                }
-            })
-            .collect())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
-
-    use enclave_core::{FileAction, TenantId, UserId};
-
-    use super::*;
-
-    fn ctx_for(tenant: TenantId, user: UserId) -> RequestContext {
-        let mut ctx = RequestContext::system(tenant);
-        ctx.actor = enclave_core::Actor::User(user);
-        ctx
-    }
-
-    #[tokio::test]
-    async fn a_user_may_read_its_own_record() {
-        let tenant = TenantId::new_v7();
-        let user = UserId::new_v7();
-        let decision = SelfServiceAuthorization
-            .authorize(
-                &ctx_for(tenant, user),
-                Action::Container(ContainerAction::Read),
-                &ResourceRef::user(tenant, user),
-            )
-            .await
-            .expect("evaluate");
-        assert!(decision.is_allowed());
-    }
-
-    #[tokio::test]
-    async fn a_user_may_not_read_another_users_record() {
-        let tenant = TenantId::new_v7();
-        let decision = SelfServiceAuthorization
-            .authorize(
-                &ctx_for(tenant, UserId::new_v7()),
-                Action::Container(ContainerAction::Read),
-                &ResourceRef::user(tenant, UserId::new_v7()),
-            )
-            .await
-            .expect("evaluate");
-        assert!(!decision.is_allowed(), "self-read must not generalise to any user");
-    }
-
-    #[tokio::test]
-    async fn everything_that_is_not_a_self_read_is_denied() {
-        let tenant = TenantId::new_v7();
-        let user = UserId::new_v7();
-        let ctx = ctx_for(tenant, user);
-
-        // Same resource, a mutating action.
-        let update = SelfServiceAuthorization
-            .authorize(
-                &ctx,
-                Action::Container(ContainerAction::Update),
-                &ResourceRef::user(tenant, user),
-            )
-            .await
-            .expect("evaluate");
-        assert!(!update.is_allowed(), "reading yourself does not imply writing yourself");
-
-        // A file, which this resolver knows nothing about.
-        let file = SelfServiceAuthorization
-            .authorize(
-                &ctx,
-                Action::File(FileAction::MetadataRead),
-                &ResourceRef::new(tenant, ResourceKind::File, uuid::Uuid::nil()),
-            )
-            .await
-            .expect("evaluate");
-        assert!(!file.is_allowed(), "content is not readable until ENC-126 lands");
-    }
-}
+pub use self_service::SelfServiceAuthorization;
+pub use service::{AclResolver, PgAclAuthorization, ResolverLimits};

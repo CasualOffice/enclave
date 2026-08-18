@@ -192,6 +192,7 @@ Assertions about the codebase itself, not its behavior:
 | Gate | Rule |
 |---|---|
 | RLS coverage | Every table with a `tenant_id` column has RLS enabled **and** forced, with a policy |
+| Grant coverage | `enclave_app` can reach every tenant-scoped table, still cannot `UPDATE`/`DELETE` `audit_events` or its partitions, and holds neither `SUPERUSER` nor `BYPASSRLS`. The RLS gate cannot see any of this: it checks the policy, not whether the role it applies to can use the table — the gap that let a cross-tenant read return `200` in PR #22 |
 | Composite FKs | Every FK between tenant-scoped tables includes `tenant_id` |
 | Policy routing | Every Axum route handler reaches `PolicyEngine::enforce` (verified by a call-graph lint) |
 | No raw pool | No `sqlx::query*` outside the `db` crate bypasses `TenantScoped` |

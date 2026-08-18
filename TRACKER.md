@@ -117,7 +117,8 @@ step: is this foundation sound enough to build on? See `ROADMAP.md §6`.
 
 **Plan for the current milestone:** [`plans/M0-FOUNDATIONS.md`](plans/M0-FOUNDATIONS.md)
 
-**Next:** `ENC-125` — tenancy, users, groups and membership, then `ENC-126` (real ACL resolution).
+**Next:** `ENC-127` workspaces and libraries over the new schema, then `ENC-128` `BlobStore`.
+`ENC-135` (self-host fonts) is open and should land before the SPA does.
 
 **M0 is now fully closed.** Exit criterion 1 — one request traversing login → JWT → `enforce` →
 tenant-scoped query → audit row — is demonstrated by `crates/api/tests/me.rs`, not asserted.
@@ -241,9 +242,11 @@ Exit criterion: a tenant can store, find, share and govern content, with the lea
 
 | ID | Item | Pri | Status | Depends on |
 |---|---|---|---|---|
-| ENC-125 | Tenancy, users, groups, membership | P1 | TODO | ENC-124 |
-| ENC-127a | Grant `enclave_app` on tables added after migration 0003 — the grant loop is not automatic for future tables | P1 | TODO | Found by ENC-124 |
-| ENC-126 | Real `AuthorizationService` — ACL resolution, inheritance, group closure, deny-wins | P1 | TODO | ENC-125 |
+| ENC-125 | Tenancy, users, groups, membership | P1 | DONE | ENC-124 |
+| ENC-127a | Grant-coverage gate — every tenant-scoped table must be reachable by `enclave_app` | P1 | DONE | Found by ENC-124. The RLS gate structurally cannot see this: it checks policies, not whether the role they apply to can reach the table |
+| ENC-135 | Self-host Inter and JetBrains Mono; the design reference loads them from `fonts.googleapis.com` | P1 | TODO | Leaks every user's IP to a third party, breaks air-gapped installs, undercuts `docs/08 §18` residency |
+| ENC-136 | Migrations 0004 and 0005 — workspaces, libraries, `acl_entries`, roles, `files` | P1 | DONE | DDL from `docs/04 §7` and `§9` |
+| ENC-126 | Real `AuthorizationService` — ACL resolution, inheritance, group closure, deny-wins | P1 | DONE | ENC-125 |
 | ENC-127 | Workspaces and libraries | P1 | TODO | ENC-126 |
 | ENC-128 | `BlobStore` — S3-compatible, public-access self-check | P1 | TODO | ENC-124 |
 | ENC-129 | Upload state machine, multipart, signed URLs | P1 | TODO | ENC-128 |
@@ -321,6 +324,7 @@ priority changes; a stale rollup is worse than none.
 | 2026-08-18 | **Phase D closed.** Phase 0 open. Gate G0 applies at the end of M0. |
 | 2026-08-18 | `ENC-100` workspace scaffolded: 43 crates, check/clippy/fmt clean. |
 | 2026-08-18 | PR #1 merged. Two structural gates failed on it and were right to: the audit sink read on a raw pool (would have reported "chain valid, 0 events" under RLS), and a test literal tripped the secrets gate. Both fixed; the no-raw-pool gate was rewritten to check execution rather than type names. |
+| 2026-08-19 | M1 foundations batch (four parallel sessions, one cumulative PR): identity repositories, real ACL resolution with inheritance and deny-wins, the grant-coverage gate, migrations 0004/0005, and the v2 design system. 512 tests pass, up from 409. Integration found one real coupling the parallel split could not: the ACL resolver's inheritance walk is a recursive CTE over `files`, which was scheduled for ENC-130 — so `files` moved forward into migration 0005 rather than shipping a resolver that fails on its only real use case. |
 | 2026-08-19 | `ENC-124` closed M0's last exit criterion — and found a cross-tenant read. The first real end-to-end request with a beta-tenant token for an alpha-tenant subject returned **200 with alpha's row**. Cause: the harness connects as the cluster superuser, and superusers bypass RLS unconditionally, so every test that believed it demonstrated tenant isolation ran with isolation switched off. Compounded by migration 0002 never granting `enclave_app` on any table but `audit_events`, so nothing had ever run as the application role. Fixed by migration 0003 (grants) and the harness taking `SET ROLE enclave_app`. The policies in 0002 were correct throughout; nothing had exercised them. 409 tests pass. |
 | 2026-08-18 | All five dependency majors landed (`ENC-119`–`ENC-123`). Two were more than version bumps: `jsonwebtoken` 11 compiled cleanly and then panicked at runtime on every verification because 11 made the crypto backend pluggable — chose `rust_crypto`, reasoning recorded in the manifest. `rand` 0.10 made OS entropy fallible, so key generation and refresh minting now propagate `EntropyUnavailable` rather than unwrapping. 403 tests green throughout. |
 | 2026-08-18 | **Gate G0 held: PASS**, with two conditions carried into M1. The controls were each verified by deliberate violation, and six defects were caught by automation that review had missed. Recorded in `plans/G0-GATE.md`; M1 planned in `plans/M1-CONTENT-CORE.md`. |

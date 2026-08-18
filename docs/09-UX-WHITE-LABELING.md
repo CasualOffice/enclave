@@ -2,7 +2,9 @@
 
 > **Status:** Draft · **Version:** 2.0 · **Owner:** Design + Frontend · **Last updated:** 2026-08-18
 > **Authoritative for:** application UX standards, view types, admin UX, branding, accessibility.
-> Localization mechanics live in `14-I18N-L10N.md`.
+> Localization mechanics live in `14-I18N-L10N.md`. **Token values** live in
+> `web/design-system/design-system-v2.html`, the visual reference, and are extracted to
+> `web/src/styles/tokens.css` — this document governs behaviour, that one governs appearance.
 
 ## 1. UX objective
 
@@ -222,6 +224,28 @@ mobile admin surface says so rather than rendering an unusable table.
 
 Breakpoints collapse the navigation rail to a drawer, the details panel to a bottom sheet, and the
 grid to a card list with the columns from the active view as fields.
+
+## 16a. The design system
+
+`web/design-system/design-system-v2.html` is the rendered reference: layouts, interaction patterns
+and the complete token set. It is authoritative for values; this document stays authoritative for
+behaviour.
+
+Its interaction patterns are the visual form of commitments made elsewhere in this pack, which is
+what makes them testable rather than decorative — *denied, explained inline* is `06 §24`, *truthful
+progress* is `§8` above, *DLP intercept* is `§9`.
+
+Tokens fall into three groups with different rules, and the middle one is a control rather than a
+preference:
+
+| Group | Rule |
+|---|---|
+| Neutrals, surfaces, elevation | Structural. Not tenant-editable. |
+| **Classification** (`--c-pub` … `--c-restr`) | **Locked.** A tenant recolouring "Restricted" to match its palette is a tenant whose users misread sensitivity at a glance. |
+| Brand accent, radii | Tenant-editable through the branding API (`§18`), subject to the contrast validation in `§17`. |
+
+Locking classification colour does not make colour load-bearing: badges carry text as well (`§15`),
+so the palette reinforces a label that is already readable without it.
 
 ## 17. Theming and dark mode
 
