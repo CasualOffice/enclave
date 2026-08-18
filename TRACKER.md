@@ -108,14 +108,17 @@ phase, not worked out of band.
 
 **In progress:** *(none)*
 
+**Gate G0: PASSED** — see [`plans/G0-GATE.md`](plans/G0-GATE.md). Two conditions carried into M1:
+nothing composes end to end yet (`ENC-124`), and five dependency majors are outstanding
+(`ENC-119`–`ENC-123`).
+
 **Phase 0 is complete** — every other P1 and P2 is `DONE`. Gate **G0** is the next
 step: is this foundation sound enough to build on? See `ROADMAP.md §6`.
 
 **Plan for the current milestone:** [`plans/M0-FOUNDATIONS.md`](plans/M0-FOUNDATIONS.md)
 
-**Next:** decide `ENC-116` (migration role race), hold gate **G0**, then open M1 with
-`plans/M1-CONTENT-CORE.md`. The 8 Dependabot PRs also need triage — four are clean, four fail CI
-and need code changes.
+**Next three, in order:** `ENC-119` (ipnetwork), `ENC-120` (rand), `ENC-121` (ed25519-dalek).
+Then `ENC-122`, `ENC-123`, and `ENC-124` — the endpoint that closes M0's last exit criterion.
 
 > **ENC-116 — decided 2026-08-18 by the repo owner: option (c), accept.** The racy `CREATE ROLE`
 > stays in migration 0001. It is not amended, so the forward-only rule and the gate that enforces it
@@ -218,38 +221,34 @@ real database, with CI enforcing the structural gates.
 
 ### Phase 1 — MVP
 
-Per `docs/01-PRD.md §37`. Exit criterion: a tenant can store, find, share and govern content, with
-the leakage matrix green.
+Per `docs/01-PRD.md §37`. Plan: [`plans/M1-CONTENT-CORE.md`](plans/M1-CONTENT-CORE.md).
+Exit criterion: a tenant can store, find, share and govern content, with the leakage matrix green.
+
+**Carried from gate G0 — these land before any content work:**
 
 | ID | Item | Pri | Status | Depends on |
 |---|---|---|---|---|
-| ENC-200 | Tenancy, users, groups, memberships | P1 | TODO | Phase 0 |
-| ENC-201 | Local auth + OIDC + LDAP bind | P1 | TODO | ENC-111 |
-| ENC-202 | Workspaces and libraries | P1 | TODO | ENC-200 |
-| ENC-203 | Files, folders, trash, move/copy | P1 | TODO | ENC-202 |
-| ENC-204 | `storage` crate — S3-compatible `BlobStore` | P1 | TODO | ENC-102 |
-| ENC-205 | Upload state machine + multipart + signed URLs | P1 | TODO | ENC-204 |
-| ENC-206 | Immutable versions + restore | P1 | TODO | ENC-203 |
-| ENC-207 | `antivirus` crate + ClamAV; nothing `AVAILABLE` before clean | P0 | TODO | ENC-205 |
-| ENC-208 | ACL resolution: inheritance, group closure, deny-wins | P1 | TODO | ENC-200 |
-| ENC-209 | Preview/download split + rendition pipeline | P1 | TODO | ENC-206, ENC-208 |
-| ENC-210 | Share links: hashing, password, expiry, download budget | P1 | TODO | ENC-208 |
-| ENC-211 | Metadata fields, values, content types | P1 | TODO | ENC-202 |
-| ENC-212 | Library views (list, grid, details, tree) + cursor pagination | P1 | TODO | ENC-211 |
-| ENC-213 | Extraction + chunking pipeline | P1 | TODO | ENC-207 |
-| ENC-214 | Milvus `VectorStore` + hybrid retrieval | P1 | TODO | ENC-213 |
-| ENC-215 | **Authoritative search post-filter** (`docs/07 §6.2`) | P0 | TODO | ENC-214, ENC-208 |
-| ENC-216 | Retrieval denylist + invalidation worker | P1 | TODO | ENC-215 |
-| ENC-217 | Basic DLP: detectors, security facts, monitor/enforce | P1 | TODO | ENC-213 |
-| ENC-218 | Geo/IP conditional access + trusted proxy handling | P1 | TODO | ENC-109 |
-| ENC-219 | Quotas: enforcement at write, nightly reconciliation | P1 | TODO | ENC-205 |
-| ENC-220 | Audit coverage for every enforcement point | P1 | TODO | ENC-107 |
-| ENC-221 | Web shell: nav, command bar, details panel | P1 | TODO | ENC-202 |
-| ENC-222 | Web: virtualized file views + upload UX with true states | P1 | TODO | ENC-221 |
-| ENC-223 | i18n scaffolding + `en-US` catalog + pseudo-locales | P1 | TODO | ENC-221 |
-| ENC-224 | Security leakage matrix §4.1–4.6 implemented and green | P0 | TODO | ENC-215, ENC-210 |
-| ENC-225 | Docker deployment profile `community` | P1 | TODO | ENC-113 |
-| ENC-226 | Accessibility pass: axe gate + keyboard flows | P2 | TODO | ENC-222 |
+| ENC-119 | Bump `ipnetwork` 0.20 → 0.21 | P1 | TODO | — |
+| ENC-120 | Bump `rand` 0.8 → 0.10 | P1 | TODO | — |
+| ENC-121 | Bump `ed25519-dalek` 2 → 3 | P1 | TODO | ENC-120 |
+| ENC-122 | Bump `jsonwebtoken` 9 → 11 | P1 | TODO | ENC-121 |
+| ENC-123 | Bump `sqlx` 0.8 → 0.9 — touches every query, so it lands alone and early | P1 | TODO | ENC-119 |
+| ENC-124 | `GET /api/v1/me` end to end — closes M0 exit criterion 1 | P0 | TODO | ENC-123 |
+
+**Content:**
+
+| ID | Item | Pri | Status | Depends on |
+|---|---|---|---|---|
+| ENC-125 | Tenancy, users, groups, membership | P1 | TODO | ENC-124 |
+| ENC-126 | Real `AuthorizationService` — ACL resolution, inheritance, group closure, deny-wins | P1 | TODO | ENC-125 |
+| ENC-127 | Workspaces and libraries | P1 | TODO | ENC-126 |
+| ENC-128 | `BlobStore` — S3-compatible, public-access self-check | P1 | TODO | ENC-124 |
+| ENC-129 | Upload state machine, multipart, signed URLs | P1 | TODO | ENC-128 |
+| ENC-130 | Files and folders, trash, move/copy | P1 | TODO | ENC-127 |
+| ENC-131 | Immutable versions, atomic commit, restore | P1 | TODO | ENC-129, ENC-130 |
+| ENC-132 | `AntivirusScanner` + ClamAV; nothing `AVAILABLE` before clean | P0 | TODO | ENC-131 |
+| ENC-133 | Read paths: metadata, listing, cursor pagination | P1 | TODO | ENC-132 |
+| ENC-134 | Leakage matrix §4.1 and §4.2 — landed per surface, not batched | P0 | TODO | ENC-133 |
 
 ### Phase 2 — Enterprise V1
 
@@ -319,6 +318,7 @@ priority changes; a stale rollup is worse than none.
 | 2026-08-18 | **Phase D closed.** Phase 0 open. Gate G0 applies at the end of M0. |
 | 2026-08-18 | `ENC-100` workspace scaffolded: 43 crates, check/clippy/fmt clean. |
 | 2026-08-18 | PR #1 merged. Two structural gates failed on it and were right to: the audit sink read on a raw pool (would have reported "chain valid, 0 events" under RLS), and a test literal tripped the secrets gate. Both fixed; the no-raw-pool gate was rewritten to check execution rather than type names. |
+| 2026-08-18 | **Gate G0 held: PASS**, with two conditions carried into M1. The controls were each verified by deliberate violation, and six defects were caught by automation that review had missed. Recorded in `plans/G0-GATE.md`; M1 planned in `plans/M1-CONTENT-CORE.md`. |
 | 2026-08-18 | `ENC-118`: the CI `test` job had no database, so 24 of 27 tests ran nowhere — including the D3 pool-exhaustion proof this milestone was sequenced around. Wiring one in surfaced five self-deadlocking tests (`pool.close()` awaited while a handle was still held — they would have hung CI indefinitely, not failed), a split between `DATABASE_URL` and `ENCLAVE_TEST_DATABASE_URL` that made a whole crate's tests unreachable, two tests interfering through the deliberately cross-tenant outbox publisher, and three prose blocks fenced as ```ignore doc-tests. Now 403 passing, 0 ignored. |
 | 2026-08-18 | Phase 0 batch two landed: `ENC-110` policy-routing lint now enforcing (was warning "not enforced yet"), `ENC-113` dev Compose stack, `ENC-114` observability with structural secret redaction, `ENC-115` CLI seed/migrate/doctor. 380 tests pass. Verified independently: the routing lint flags a deliberately unprotected handler and exits 1. |
 | 2026-08-18 | `ENC-112` harness landed and immediately earned itself: it exposed a race in migration 0001. Concurrent `CREATE ROLE` across databases in one cluster failed 10/10 runs — the `IF NOT EXISTS` guard is check-then-act, and losing the race raises `unique_violation` (23505) from `pg_authid_rolname_index`, not `duplicate_object` (42710). First attempt amended 0001; the forward-only migrations gate correctly rejected that. Reverted, worked around with an advisory lock in the harness (0/10 failures), and logged the real defect as `ENC-116` for a decision. |
