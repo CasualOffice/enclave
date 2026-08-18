@@ -135,7 +135,13 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 # crypto and auth
 argon2       = "0.5"
 ed25519-dalek = { version = "3", features = ["rand_core", "pkcs8", "alloc"] }
-jsonwebtoken = "9"
+# 11 made the crypto backend pluggable and requires exactly one provider to be selected.
+# rust_crypto over aws_lc_rs: pure Rust matches ed25519-dalek already in this tree, keeps a C
+# toolchain out of every container build, and leaves cross-compilation simple. There is no FIPS
+# requirement in docs/, and where one would come from is the KMS/HSM key custody path in
+# docs/08-BYO-INFRA.md §7 rather than the JWT library — if an enterprise ever needs it, this is a
+# feature flip, not a redesign.
+jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto"] }
 sha2         = "0.11"
 rand         = "0.10"
 base64       = "0.23"
