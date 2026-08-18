@@ -75,13 +75,13 @@ pub(crate) struct Exemption {
 /// chain's auth stage presupposes. Anything else belongs in the chain.
 pub(crate) const ALLOWLIST: &[Exemption] = &[
     Exemption {
-        handler: "health_live",
+        handler: "live",
         reason:
             "Liveness probe. No tenant, no actor, no resource — it answers whether the process \
                  is running and returns no tenant data.",
     },
     Exemption {
-        handler: "health_ready",
+        handler: "ready",
         reason: "Readiness probe. Reports dependency reachability only; it must never include a \
                  detail that identifies a tenant or a resource.",
     },
@@ -737,15 +737,15 @@ mod tests {
         let report = analyze_src(
             r#"
             fn router() -> Router {
-                Router::new().route("/healthz", get(health_live))
+                Router::new().route("/healthz", get(live))
             }
 
-            async fn health_live() -> &'static str { "ok" }
+            async fn live() -> &'static str { "ok" }
             "#,
         );
 
         assert!(report.violations.is_empty(), "{:?}", report.violations);
-        assert!(report.exempted.contains("health_live"));
+        assert!(report.exempted.contains("live"));
     }
 
     #[test]

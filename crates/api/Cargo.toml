@@ -14,9 +14,38 @@ enclave-config = { workspace = true }
 enclave-db = { workspace = true }
 enclave-events = { workspace = true }
 enclave-audit = { workspace = true }
+enclave-auth = { workspace = true }
+enclave-authorization = { workspace = true }
+enclave-conditional_access = { workspace = true }
+enclave-information_barriers = { workspace = true }
+enclave-classification = { workspace = true }
+enclave-dlp = { workspace = true }
+enclave-retention = { workspace = true }
+enclave-observability = { workspace = true }
+
+anyhow       = { workspace = true }
+async-trait  = { workspace = true }
+axum         = { workspace = true }
+chrono       = { workspace = true }
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+sqlx         = { workspace = true }
+tokio        = { workspace = true }
+tower-http   = { workspace = true }
+tracing      = { workspace = true }
+uuid         = { workspace = true }
+
+[dev-dependencies]
+enclave-testing = { workspace = true }
+tower = { workspace = true }
+serde_json = { workspace = true }
 
 [lints]
 workspace = true
+
+[lib]
+name = "enclave_api"
+path = "src/lib.rs"
 
 [[bin]]
 name = "enclave-api"

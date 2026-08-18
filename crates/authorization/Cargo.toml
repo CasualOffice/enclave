@@ -10,6 +10,11 @@ authors.workspace      = true
 
 [dependencies]
 enclave-core = { workspace = true }
+async-trait  = { workspace = true }
+uuid         = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
 [lints]
 workspace = true

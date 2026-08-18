@@ -212,8 +212,14 @@ impl TestDb {
         // `with_max_connections(2)` exists in the db crate for exactly this: the D3 proof runs on a
         // contended pool, and a pool large enough to hand every task its own connection would stop
         // testing the thing it is there to test.
+        // `SET ROLE enclave_app` matters more than it looks. `DATABASE_URL` points at the cluster
+        // superuser — that is what lets the harness create databases — and **superusers bypass
+        // row-level security entirely**. A pool that stayed superuser would run every test with the
+        // isolation switched off while appearing to prove it, which is exactly what happened until
+        // ENC-124 sent a real cross-tenant request and got 200.
         let config = enclave_db::DbConfig::new(enclave_db::ConnectionUrl::new(self.url.clone()))
-            .with_max_connections(2);
+            .with_max_connections(2)
+            .with_application_role("enclave_app");
         Ok(enclave_db::DbPool::connect(&config).await?)
     }
 
