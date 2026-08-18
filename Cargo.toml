@@ -117,7 +117,7 @@ tower-http   = { version = "0.6", features = ["trace", "cors", "limit", "timeout
 hyper        = "1"
 
 # data
-sqlx         = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json", "macros", "migrate"] }
+sqlx         = { version = "0.9", features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json", "macros", "migrate"] }
 uuid         = { version = "1", features = ["v4", "v5", "v7", "serde"] }
 chrono       = { version = "0.4", features = ["serde"] }
 

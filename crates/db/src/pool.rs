@@ -6,8 +6,6 @@
 //! name a tenant or name itself as one of the three cross-tenant callers, and both of those are
 //! reviewable.
 
-use std::sync::Arc;
-
 use enclave_core::id::TenantId;
 use sqlx::pool::PoolConnection;
 use sqlx::postgres::{PgConnection, PgPool, PgPoolOptions};
@@ -176,7 +174,12 @@ async fn build_pool(
     session_setup: Option<String>,
 ) -> Result<PgPool, DbError> {
     let options = options.application_name(&config.application_name);
-    let setup: Option<Arc<str>> = session_setup.map(Arc::from);
+    // sqlx 0.9 tightened `Execute<'q>` so the query must outlive the connection future, which an
+    // `Arc<str>` cloned into the closure cannot do. The setup batch is fixed for the life of the
+    // pool and is a few hundred bytes, so it is promoted to `&'static` once here rather than
+    // reallocated per connection. Bounded by the number of pools a process builds — a handful in
+    // production, one per test database under the harness — not by connection count or query rate.
+    let setup: Option<&'static str> = session_setup.map(|sql| &*Box::leak(sql.into_boxed_str()));
 
     let mut builder = PgPoolOptions::new()
         .max_connections(max_connections)
@@ -187,9 +190,8 @@ async fn build_pool(
 
     if let Some(setup) = setup {
         builder = builder.after_connect(move |conn, _meta| {
-            let setup = Arc::clone(&setup);
             Box::pin(async move {
-                conn.execute(&*setup).await?;
+                conn.execute(setup).await?;
                 Ok(())
             })
         });

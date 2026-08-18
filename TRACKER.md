@@ -117,8 +117,8 @@ step: is this foundation sound enough to build on? See `ROADMAP.md §6`.
 
 **Plan for the current milestone:** [`plans/M0-FOUNDATIONS.md`](plans/M0-FOUNDATIONS.md)
 
-**Next three, in order:** `ENC-119` (ipnetwork), `ENC-120` (rand), `ENC-121` (ed25519-dalek).
-Then `ENC-122`, `ENC-123`, and `ENC-124` — the endpoint that closes M0's last exit criterion.
+**Next:** `ENC-124` — `GET /api/v1/me` end to end, which closes M0's last exit criterion and gives
+the policy-routing lint its first real handler to check.
 
 > **ENC-116 — decided 2026-08-18 by the repo owner: option (c), accept.** The racy `CREATE ROLE`
 > stays in migration 0001. It is not amended, so the forward-only rule and the gate that enforces it
@@ -228,11 +228,11 @@ Exit criterion: a tenant can store, find, share and govern content, with the lea
 
 | ID | Item | Pri | Status | Depends on |
 |---|---|---|---|---|
-| ENC-119 | Bump `ipnetwork` 0.20 → 0.21 | P1 | TODO | — |
-| ENC-120 | Bump `rand` 0.8 → 0.10 | P1 | TODO | — |
-| ENC-121 | Bump `ed25519-dalek` 2 → 3 | P1 | TODO | ENC-120 |
-| ENC-122 | Bump `jsonwebtoken` 9 → 11 | P1 | TODO | ENC-121 |
-| ENC-123 | Bump `sqlx` 0.8 → 0.9 — touches every query, so it lands alone and early | P1 | TODO | ENC-119 |
+| ENC-119 | Bump `ipnetwork` 0.20 → 0.21 | P1 | DONE | — |
+| ENC-120 | Bump `rand` 0.8 → 0.10 | P1 | DONE | — |
+| ENC-121 | Bump `ed25519-dalek` 2 → 3 | P1 | DONE | ENC-120 |
+| ENC-122 | Bump `jsonwebtoken` 9 → 11 | P1 | DONE | ENC-121 |
+| ENC-123 | Bump `sqlx` 0.8 → 0.9 — touches every query, so it lands alone and early | P1 | DONE | ENC-119 |
 | ENC-124 | `GET /api/v1/me` end to end — closes M0 exit criterion 1 | P0 | TODO | ENC-123 |
 
 **Content:**
@@ -318,6 +318,7 @@ priority changes; a stale rollup is worse than none.
 | 2026-08-18 | **Phase D closed.** Phase 0 open. Gate G0 applies at the end of M0. |
 | 2026-08-18 | `ENC-100` workspace scaffolded: 43 crates, check/clippy/fmt clean. |
 | 2026-08-18 | PR #1 merged. Two structural gates failed on it and were right to: the audit sink read on a raw pool (would have reported "chain valid, 0 events" under RLS), and a test literal tripped the secrets gate. Both fixed; the no-raw-pool gate was rewritten to check execution rather than type names. |
+| 2026-08-18 | All five dependency majors landed (`ENC-119`–`ENC-123`). Two were more than version bumps: `jsonwebtoken` 11 compiled cleanly and then panicked at runtime on every verification because 11 made the crypto backend pluggable — chose `rust_crypto`, reasoning recorded in the manifest. `rand` 0.10 made OS entropy fallible, so key generation and refresh minting now propagate `EntropyUnavailable` rather than unwrapping. 403 tests green throughout. |
 | 2026-08-18 | **Gate G0 held: PASS**, with two conditions carried into M1. The controls were each verified by deliberate violation, and six defects were caught by automation that review had missed. Recorded in `plans/G0-GATE.md`; M1 planned in `plans/M1-CONTENT-CORE.md`. |
 | 2026-08-18 | `ENC-118`: the CI `test` job had no database, so 24 of 27 tests ran nowhere — including the D3 pool-exhaustion proof this milestone was sequenced around. Wiring one in surfaced five self-deadlocking tests (`pool.close()` awaited while a handle was still held — they would have hung CI indefinitely, not failed), a split between `DATABASE_URL` and `ENCLAVE_TEST_DATABASE_URL` that made a whole crate's tests unreachable, two tests interfering through the deliberately cross-tenant outbox publisher, and three prose blocks fenced as ```ignore doc-tests. Now 403 passing, 0 ignored. |
 | 2026-08-18 | Phase 0 batch two landed: `ENC-110` policy-routing lint now enforcing (was warning "not enforced yet"), `ENC-113` dev Compose stack, `ENC-114` observability with structural secret redaction, `ENC-115` CLI seed/migrate/doctor. 380 tests pass. Verified independently: the routing lint flags a deliberately unprotected handler and exits 1. |
