@@ -145,7 +145,9 @@ zeroize      = { version = "1", features = ["derive"] }
 # misc
 async-trait  = "0.1"
 futures      = "0.3"
-ipnetwork    = "0.20"
+# 0.21 made serde opt-in; 0.20 enabled it by default. TrustedProxy.cidr is deserialised
+# straight from configuration, so the feature is load-bearing rather than convenience.
+ipnetwork    = { version = "0.21", features = ["serde"] }
 url          = "2"
 
 # dev
