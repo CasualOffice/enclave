@@ -124,7 +124,7 @@ mod tests {
         let config = RefreshCookieConfig::default();
         config.validate().expect("the documented default must be valid");
 
-        let token = RefreshToken::generate();
+        let token = RefreshToken::generate().expect("entropy");
         let header = config.set_cookie_header(&token, Duration::days(14));
 
         assert!(header.starts_with("enclave_rt="), "{header}");
@@ -153,7 +153,8 @@ mod tests {
         let config =
             RefreshCookieConfig { name: "custom_rt".to_owned(), path: "/x/auth".to_owned() };
         config.validate().expect("valid");
-        let header = config.set_cookie_header(&RefreshToken::generate(), Duration::minutes(1));
+        let header = config
+            .set_cookie_header(&RefreshToken::generate().expect("entropy"), Duration::minutes(1));
         for required in ["HttpOnly", "Secure", "SameSite=Strict"] {
             assert!(header.contains(required), "{required} missing from {header}");
         }
@@ -174,7 +175,8 @@ mod tests {
     #[test]
     fn a_negative_max_age_never_becomes_a_negative_header() {
         let config = RefreshCookieConfig::default();
-        let header = config.set_cookie_header(&RefreshToken::generate(), Duration::seconds(-5));
+        let header = config
+            .set_cookie_header(&RefreshToken::generate().expect("entropy"), Duration::seconds(-5));
         assert!(header.contains("; Max-Age=0"), "{header}");
     }
 }

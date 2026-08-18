@@ -134,10 +134,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 # crypto and auth
 argon2       = "0.5"
-ed25519-dalek = { version = "2", features = ["rand_core", "pkcs8"] }
+ed25519-dalek = { version = "3", features = ["rand_core", "pkcs8", "alloc"] }
 jsonwebtoken = "9"
 sha2         = "0.11"
-rand         = "0.8"
+rand         = "0.10"
 base64       = "0.23"
 subtle       = "2"
 zeroize      = { version = "1", features = ["derive"] }

@@ -448,7 +448,7 @@ where
             .await?;
 
         let refresh_token = if Self::issues_refresh_token(ctx.actor) {
-            let token = RefreshToken::generate();
+            let token = RefreshToken::generate()?;
             self.refresh_store
                 .insert(RefreshRecord {
                     id: Uuid::new_v4(),
@@ -507,7 +507,7 @@ where
         self.guard.allow_refresh(&record, network).await?;
 
         // K3: consume the presented token and insert its successor atomically.
-        let successor_token = RefreshToken::generate();
+        let successor_token = RefreshToken::generate()?;
         let successor = RefreshRecord {
             id: Uuid::new_v4(),
             tenant_id: record.tenant_id,
@@ -1041,7 +1041,8 @@ mod tests {
         let now = Utc::now();
         let svc = service(now);
         assert!(matches!(
-            svc.refresh(&RefreshToken::generate(), &NetworkContext::internal()).await,
+            svc.refresh(&RefreshToken::generate().expect("entropy"), &NetworkContext::internal())
+                .await,
             Err(AuthError::RefreshRejected)
         ));
     }
