@@ -21,7 +21,12 @@ enclave-information_barriers = { workspace = true }
 enclave-classification = { workspace = true }
 enclave-dlp = { workspace = true }
 enclave-retention = { workspace = true }
+enclave-files = { workspace = true }
+enclave-versions = { workspace = true }
 enclave-observability = { workspace = true }
+# The delivery paths: `download` mints a signed URL through `BlobStore`; `preview` deliberately
+# does not depend on it at the module level (crates/api/src/preview.rs).
+enclave-storage = { workspace = true }
 
 anyhow       = { workspace = true }
 async-trait  = { workspace = true }
@@ -39,6 +44,8 @@ uuid         = { workspace = true }
 enclave-testing = { workspace = true }
 tower = { workspace = true }
 serde_json = { workspace = true }
+# `tests/delivery.rs` implements a `BlobStore` that counts the URLs it is asked to mint.
+url = { workspace = true }
 
 [lints]
 workspace = true

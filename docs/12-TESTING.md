@@ -74,7 +74,7 @@ T5 is the important one: it is run with a deliberately broken query builder, and
 | A1 | `preview=ALLOW, download=DENY` yields a rendition and **no** signed original URL |
 | A2 | Export, print and copy are each independently deniable |
 | A3 | A `DENY` entry overrides an inherited `ALLOW` at every level |
-| A4 | Breaking inheritance materializes the effective set with no privilege gain |
+| A4 | Breaking inheritance materializes the effective set with no privilege gain — **NOT SATISFIED TODAY, see `ENC-141`.** Nothing materializes anything yet, so `inherit_permissions = FALSE` truncates the walk and a `DENY` above the break stops applying. `crates/testing/tests/leakage.rs` characterises the current behaviour so the day someone implements materialization, that test fails and says so |
 | A5 | Direct object-key access without a signed URL fails at the storage layer |
 | A6 | A signed URL cannot be replayed after expiry, or after single use where supported |
 | A7 | Version-level reads respect the current file ACL, not the ACL at version creation |
