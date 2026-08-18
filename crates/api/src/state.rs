@@ -1,0 +1,64 @@
+//! What every handler is given, and what the process refuses to start without.
+
+use std::sync::Arc;
+
+use enclave_auth::{AccessTokenVerifier, KeySet};
+use enclave_core::PolicyEngine;
+use enclave_db::DbPool;
+
+/// Shared, cheaply cloneable application state.
+#[derive(Clone)]
+pub struct ApiState {
+    /// The policy chain. Handlers call this; nothing else evaluates policy.
+    pub policy: Arc<PolicyEngine>,
+    /// Tenant-scoped database access.
+    pub db: Arc<DbPool>,
+    /// Verifies bearer tokens. Holds the public half only.
+    pub tokens: Arc<AccessTokenVerifier>,
+}
+
+impl std::fmt::Debug for ApiState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // No key material, no connection string.
+        f.debug_struct("ApiState").finish_non_exhaustive()
+    }
+}
+
+impl ApiState {
+    /// Assembles the state.
+    #[must_use]
+    pub fn new(
+        policy: PolicyEngine,
+        db: DbPool,
+        issuer: &str,
+        audience: &str,
+        keys: KeySet,
+    ) -> Self {
+        Self {
+            policy: Arc::new(policy),
+            db: Arc::new(db),
+            tokens: Arc::new(AccessTokenVerifier::new(issuer, audience, keys)),
+        }
+    }
+}
+
+/// The policy stages that are running in their "nothing configured" form.
+///
+/// Returned as data rather than logged from deep inside the wiring, so that both the start-up
+/// banner and the `enterprise` profile's refusal can be driven from one list — and so a stage that
+/// becomes real cannot be forgotten here.
+///
+/// The point is that an operator can see, in one line at boot, exactly which controls are not yet
+/// deciding anything. A system that silently allows everything looks identical to one that is
+/// carefully permitting each request.
+#[must_use]
+pub fn unconfigured_stages() -> &'static [&'static str] {
+    &[
+        "conditional_access (no policies — every network and device permitted)",
+        "information_barriers (no segments — no mandatory separation)",
+        "classification (no ceilings — no label restricts any action)",
+        "dlp (DISABLED — no content inspection on any enforcement point)",
+        "retention (no policies — nothing blocks deletion)",
+        "authorization (self-read only — ENC-126 brings ACL resolution)",
+    ]
+}

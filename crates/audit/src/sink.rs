@@ -644,3 +644,52 @@ mod tests {
         // `verify_tenant(tenant, 1_000)` must return `Valid`.
     }
 }
+
+/// Bridges a sink to the policy engine's audit port.
+///
+/// The engine cannot depend on this crate — `audit` depends on `core`, and the reverse would be a
+/// cycle — so `core` declares a deliberately narrow `PolicyAuditSink`: record an allow, record a
+/// deny, nothing else. This is the other half of that arrangement (`plans/M0-FOUNDATIONS.md` D9).
+///
+/// A macro rather than a blanket `impl<T: AuditSink>`, which the orphan rule forbids: both the
+/// trait and `T` would be foreign. The record format, canonical serialization and hash chain all
+/// stay here, where they belong.
+macro_rules! policy_audit_sink {
+    ($sink:ty) => {
+        #[async_trait]
+        impl enclave_core::PolicyAuditSink for $sink {
+            async fn record_allow(
+                &self,
+                ctx: &enclave_core::RequestContext,
+                action: Action,
+                resource: &ResourceRef,
+                obligations: &enclave_core::Obligations,
+            ) -> enclave_core::Result<()> {
+                let decision = PolicyDecision::allow(obligations.clone());
+                let event = AuditEvent::allowed(ctx, action, resource, &decision);
+                let _recorded = AuditSink::record(self, event).await?;
+                Ok(())
+            }
+
+            async fn record_deny(
+                &self,
+                ctx: &enclave_core::RequestContext,
+                action: Action,
+                resource: &ResourceRef,
+                stage: enclave_core::Stage,
+                code: ReasonCode,
+            ) -> enclave_core::Result<()> {
+                // The stage goes in `policy_refs`, which is inside the hashed payload — so which
+                // control refused is tamper-evident along with the fact of the refusal. "Denied"
+                // without "by which control" is not something an investigator can work from.
+                let mut event = AuditEvent::denied(ctx, action, resource, code);
+                event.policy_refs.push(PolicyRef::builtin(stage.as_str()));
+                let _recorded = AuditSink::record(self, event).await?;
+                Ok(())
+            }
+        }
+    };
+}
+
+policy_audit_sink!(PgAuditSink);
+policy_audit_sink!(MemoryAuditSink);
