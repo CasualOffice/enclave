@@ -135,13 +135,22 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 # crypto and auth
 argon2       = "0.5"
 ed25519-dalek = { version = "3", features = ["rand_core", "pkcs8", "alloc"] }
-# 11 made the crypto backend pluggable and requires exactly one provider to be selected.
-# rust_crypto over aws_lc_rs: pure Rust matches ed25519-dalek already in this tree, keeps a C
-# toolchain out of every container build, and leaves cross-compilation simple. There is no FIPS
-# requirement in docs/, and where one would come from is the KMS/HSM key custody path in
-# docs/08-BYO-INFRA.md §7 rather than the JWT library — if an enterprise ever needs it, this is a
-# feature flip, not a redesign.
-jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto"] }
+# 11 made the crypto backend pluggable and requires exactly one provider.
+#
+# aws_lc_rs, not rust_crypto. The first choice here WAS rust_crypto — pure Rust, no C toolchain,
+# simple cross-compilation — and cargo-deny rejected it: `rust_crypto` pulls `rsa` unconditionally,
+# and `rsa` carries RUSTSEC-2023-0071, the Marvin timing sidechannel, with no fixed release.
+#
+# We pin EdDSA and never construct an RSA key, so the vulnerable path is unreachable. That argument
+# is available and was not taken: "unreachable" is a claim about today's call graph, checked by
+# nobody, and it is the same reasoning this codebase rejects when a gate is inconvenient. Not
+# shipping the code is stronger than reasoning about whether it runs.
+#
+# aws_lc_rs removes `rsa` from the tree entirely and clears the advisory. The costs are real — a C
+# toolchain in the build and more care when cross-compiling — and are accepted deliberately. FIPS
+# capability comes along as a side effect rather than a goal; key custody still belongs to the
+# KMS/HSM path in docs/08-BYO-INFRA.md §7.
+jsonwebtoken = { version = "11", default-features = false, features = ["aws_lc_rs"] }
 sha2         = "0.11"
 rand         = "0.10"
 base64       = "0.23"
