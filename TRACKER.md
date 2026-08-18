@@ -108,14 +108,13 @@ phase, not worked out of band.
 
 **In progress:** *(none)*
 
-**Gate G0: PASSED** — see [`plans/G0-GATE.md`](plans/G0-GATE.md). Two conditions carried into M1:
-nothing composes end to end yet (`ENC-124`), and five dependency majors are outstanding
-(`ENC-119`–`ENC-123`).
+**Gate G0: PASSED** — see [`plans/G0-GATE.md`](plans/G0-GATE.md). Both conditions carried into M1 are closed: the five dependency majors landed (`ENC-119`–`ENC-123`) and `GET /api/v1/me` made criterion 1 fully met (`ENC-124`).
 
-**Phase 0 is complete** — every other P1 and P2 is `DONE`. Gate **G0** is the next
-step: is this foundation sound enough to build on? See `ROADMAP.md §6`.
+**Gate G1 is not due here.** `ROADMAP.md §6` places it at the end of **M5** — see the correction under `ENC-142` below.
 
-**Plan for the current milestone:** [`plans/M0-FOUNDATIONS.md`](plans/M0-FOUNDATIONS.md)
+**Phase 0 is complete.** Phase 1 is in progress: M0 and M1 are delivered, M2 is open.
+
+**Plan for the current milestone:** [`plans/M2-ACCESS-DELIVERY.md`](plans/M2-ACCESS-DELIVERY.md)
 
 | ENC-139 | CI `test` job had no object storage, so the new BlobStore tests failed on `main` | P0 | DONE | Same shape as ENC-118: `--include-ignored` runs tests needing infrastructure the job does not provide |
 
@@ -123,6 +122,19 @@ step: is this foundation sound enough to build on? See `ROADMAP.md §6`.
 | ENC-140 | ClamAV has no non-Docker-Hub mirror, so the dev stack's `security` profile needs `docker login` | P3 | TODO | Documented in `deploy/README.md`. Nothing else in the stack is affected |
 
 | ENC-141 | **Breaking inheritance gains privilege.** `inherit_permissions = FALSE` truncated the ACL walk instead of materialising the effective set, so a `DENY` above the break stopped applying | P1 | DONE | Found by ENC-134 while writing matrix row A4. Break-inheritance is a documented feature (`docs/01 §17`), so this was privilege escalation through a supported operation, not an unreachable edge. Fixed in three parts: `enclave_authorization::break_file_inheritance` and `break_library_inheritance` collapse the whole chain — the resource's own entries included — by deny-wins and write the result onto the resource in the same transaction as the flag flip; and `enclave-libraries` no longer lets a settings update touch the column, since fixing one door and leaving the other open moves a bug rather than closing it. The harness's parallel reference implementation is deleted — a second copy of this operation is the divergence that would quietly restore the bug. Both new tests verified by neutering the copy and watching them name the escalation. A4 is one row again in `docs/12 §4.2` |
+| ENC-142 | **Gate G1 recorded at the wrong milestone.** `plans/M1-CONTENT-CORE.md §5` and `TRACKER.md §3` both placed G1 at the end of M1; `ROADMAP.md §6` places it at the end of M5 | P2 | DONE | A documentation defect with a scheduling consequence: it would have had the MVP ship decision taken four milestones early, against criteria that assume M2–M4 exist. Found while acting on the tracker's own "Next". Both documents now defer to the roadmap rather than restate it |
+| ENC-143 | M2 implementation plan — access & delivery | P1 | DONE | `plans/M2-ACCESS-DELIVERY.md`. Five design decisions locked (D15–D19); opens with the rendition pipeline because it is the milestone's only genuine unknown and the exit criterion the product is sold on depends on it |
+| ENC-144 | M1 exit criterion 1 — 5 GB resumable upload with flat API memory — is argued, not demonstrated | P2 | TODO | The other four criteria have tests that have been watched to fail. This one is structurally true (the API never touches the bytes: uploads stage direct to object storage via signed URLs, `crates/uploads/src/staged.rs`) and that is a stronger guarantee than an RSS assertion — but nothing exercises a multi-gigabyte upload end to end, so a regression that reintroduced buffering would not be caught. Not a blocker for M2; it blocks calling Phase 1 done |
+| ENC-145 | Benchmark `authorize_many` at 200 candidates | P1 | TODO | Implemented in M1 (`crates/authorization/src/service.rs:333`) and never measured. M3's search post-filter is designed against this number, so it is measured in M2 rather than discovered in M3 |
+| ENC-146 | `crates/preview` — sandboxed rendition generation and the base-rendition cache | P1 | TODO | M2 opens here: the milestone's only genuine unknown, and A1 depends on it. D15/D17 |
+| ENC-147 | Watermark composed per request, never cached | P1 | TODO | D16. The cache key must be structurally incapable of carrying an identity, not merely written without one | 
+| ENC-148 | Replace the preview `501` with the rendition response | P1 | TODO | The policy code above it does not change — that is the test. Streaming originals "temporarily" is the one shortcut M2 may not take |
+| ENC-149 | `crates/sharing` — share links, token hashing, password/OTP, expiry | P1 | TODO | D19: the token is never stored, only `hash(token)` with a per-tenant pepper |
+| ENC-150 | Atomic download budget — `max_downloads` under 50 concurrent redemptions | P1 | TODO | H3. Split from ENC-149 deliberately: read-modify-write passes every single-threaded test and is wrong. D18 |
+| ENC-151 | `crates/metadata` — fields, values, validation, content types | P1 | TODO | Needed by views here and by search in M3 |
+| ENC-152 | Views, and `capabilities` on every file response | P1 | TODO | Closes the listing gap: `capabilities` is on `FileMetadata` today but deliberately absent from listings |
+| ENC-153 | Leakage matrix rows A1, A5, A6, H1–H3 | P0 | TODO | Same PR as each surface, not batched at the end — the M1 practice that worked |
+| ENC-154 | Planned tracker IDs `ENC-200`–`ENC-2xx` were never instantiated as rows | P3 | TODO | `§4` Phase 2 rows declare dependencies on `ENC-200` and `ENC-208`, neither of which exists as a row; the work was actually done under `ENC-125` and `ENC-126`/`ENC-141`. Harmless today because nothing reads the dependency column mechanically, but a dependency pointing at nothing is a dependency nobody can check |
 
 **Accepted risk, `ENC-138`:** `RUSTSEC-2026-0253` — unsoundness in `lru`, reached transitively
 through `aws-sdk-s3`. `LruCache::pop()` is not panic-safe. Accepted because there is nowhere to
@@ -134,8 +146,15 @@ acceptance, not a resolution.
 **Phase 1 (MVP) is feature-complete.** Content enters through a scanned, versioned, immutable path
 and leaves through a policy-gated one. 922 tests, 8 routes, every handler proven to reach the chain.
 
-**Next:** gate **G1** — ship the MVP? `ROADMAP.md §6`. `ENC-141` was the one finding that had to be
-weighed at that gate; it is fixed instead, so G1 is held on a clean board rather than on a caveat.
+**Next:** **M2 — Access & delivery**, plan at [`plans/M2-ACCESS-DELIVERY.md`](plans/M2-ACCESS-DELIVERY.md).
+
+**Correction (`ENC-142`).** This line previously read *"Next: gate G1 — ship the MVP?"*, and
+`plans/M1-CONTENT-CORE.md §5` said the same. Both were wrong: `ROADMAP.md §6` places **G1 at the end
+of M5**, with M2, M3 and M4 in between. The error originated in the M1 plan and was copied here, which
+is exactly the failure mode `plans/README.md` warns about — a plan restating a roadmap commitment
+instead of referring to it. Had it stood, M1 would have been assessed against the MVP's ship criteria
+four milestones early, and the four milestones of work those criteria assume would have been read as
+missing rather than as not yet due. Both documents now point at the roadmap.
 
 **Follow-up worth doing first (`ENC-137`):** `Cursor`, `PageSize`, `FilterFingerprint` and
 `normalize_slug` live in `enclave-identity` and are now used by four crates. They are a security
@@ -334,14 +353,20 @@ Exit criterion: a tenant can store, find, share and govern content, with the lea
 | Phase | P0 | P1 | P2 | P3 | Done | Open |
 |---|---|---|---|---|---|---|
 | D — Specification | 2 | 17 | 4 | 0 | 20 | 3 |
-| 0 — Foundations | 1 | 12 | 3 | 0 | 0 | 16 |
-| 1 — MVP | 3 | 22 | 2 | 0 | 0 | 27 |
-| 2 — Enterprise V1 | 1 | 16 | 3 | 0 | 0 | 20 |
+| 0 — Foundations | 2 | 13 | 4 | 0 | 19 | 0 |
+| 1 — MVP | 5 | 27 | 2 | 2 | 24 | 12 |
+| 2 — Enterprise V1 | 1 | 17 | 2 | 0 | 0 | 20 |
 | 3 — Beyond V1 | 0 | 0 | 1 | 5 | 0 | 6 |
-| **Total** | **7** | **67** | **13** | **5** | **20** | **72** |
+| **Total** | **10** | **74** | **13** | **7** | **63** | **41** |
 
 Counts include completed items in their priority column. Update this table whenever a row's status or
-priority changes; a stale rollup is worse than none.
+priority changes; a stale rollup is worse than none — this one read "Phase 1: 0 done" while
+twenty-four of its rows were merged, which is how it was noticed.
+
+Derived from the rows themselves, not maintained by hand: every `ENC-` row in `§3` and `§4`,
+deduplicated by ID with `§3` winning on status because it is the fresher of the two. A row that
+appears only in `§3` is attributed to Phase 1 from `ENC-119` upward and Phase 0 below it, which is
+where the two blocks actually divide — see `ENC-154` for why that is not what `§2.3` says.
 
 ---
 
@@ -365,6 +390,7 @@ priority changes; a stale rollup is worse than none.
 | 2026-08-19 | M1 foundations batch (four parallel sessions, one cumulative PR): identity repositories, real ACL resolution with inheritance and deny-wins, the grant-coverage gate, migrations 0004/0005, and the v2 design system. 512 tests pass, up from 409. Integration found one real coupling the parallel split could not: the ACL resolver's inheritance walk is a recursive CTE over `files`, which was scheduled for ENC-130 — so `files` moved forward into migration 0005 rather than shipping a resolver that fails on its only real use case. |
 | 2026-08-19 | `ENC-124` closed M0's last exit criterion — and found a cross-tenant read. The first real end-to-end request with a beta-tenant token for an alpha-tenant subject returned **200 with alpha's row**. Cause: the harness connects as the cluster superuser, and superusers bypass RLS unconditionally, so every test that believed it demonstrated tenant isolation ran with isolation switched off. Compounded by migration 0002 never granting `enclave_app` on any table but `audit_events`, so nothing had ever run as the application role. Fixed by migration 0003 (grants) and the harness taking `SET ROLE enclave_app`. The policies in 0002 were correct throughout; nothing had exercised them. 409 tests pass. |
 | 2026-08-19 | `ENC-141` fixed: breaking ACL inheritance no longer gains privilege. The flag flip alone truncated the resolver's walk, so a `DENY` written above the break stopped applying — an operation whose purpose is to narrow access was widening it. `enclave_authorization::materialise` now collapses the whole chain by deny-wins and writes it onto the resource in the same transaction as the flip, for files and libraries both, and `enclave-libraries` refuses a settings update that would touch the column. Three details were load-bearing and none were obvious: the resource's *own* entries have to be in the collapse, or an ancestor `DENY` loses to a direct `ALLOW` that `uq_acl_entry` cannot store beside it; the walk is borrowed from the resolver rather than rewritten, because a second walk that drifts copies a different set from the one being enforced; and the harness's parallel reference implementation is deleted for the same reason. Both new tests verified by neutering the copy and watching them name the escalation. 922 tests. |
+| 2026-08-19 | M1 closed and M2 planned. Acting on the tracker's own "Next" surfaced that it was wrong: both it and `plans/M1-CONTENT-CORE.md §5` placed gate **G1** at the end of M1, while `ROADMAP.md §6` places it at the end of **M5**. The MVP ship decision would have been taken four milestones early, against criteria that assume M2–M4 exist — and the work those criteria describe would have read as missing rather than as not yet due. The error started in the plan and was copied into the tracker, which is precisely what `plans/README.md` warns about. Both now defer to the roadmap (`ENC-142`). M1's five exit criteria: four demonstrated by tests that have been watched to fail; the fifth — 5 GB upload with flat API memory — is structurally true but never exercised end to end, logged honestly as `ENC-144` rather than ticked. `plans/M2-ACCESS-DELIVERY.md` published (`ENC-143`): D15–D19 locked, opening with the rendition pipeline because it is the milestone's only genuine unknown and the criterion the product is sold on (A1) depends on it. Two M2 steps were already delivered early by M1 — ACL resolution and break-inheritance — so A3 and T3 are re-run, not built. |
 | 2026-08-18 | All five dependency majors landed (`ENC-119`–`ENC-123`). Two were more than version bumps: `jsonwebtoken` 11 compiled cleanly and then panicked at runtime on every verification because 11 made the crypto backend pluggable — chose `rust_crypto`, reasoning recorded in the manifest. `rand` 0.10 made OS entropy fallible, so key generation and refresh minting now propagate `EntropyUnavailable` rather than unwrapping. 403 tests green throughout. |
 | 2026-08-18 | **Gate G0 held: PASS**, with two conditions carried into M1. The controls were each verified by deliberate violation, and six defects were caught by automation that review had missed. Recorded in `plans/G0-GATE.md`; M1 planned in `plans/M1-CONTENT-CORE.md`. |
 | 2026-08-18 | `ENC-118`: the CI `test` job had no database, so 24 of 27 tests ran nowhere — including the D3 pool-exhaustion proof this milestone was sequenced around. Wiring one in surfaced five self-deadlocking tests (`pool.close()` awaited while a handle was still held — they would have hung CI indefinitely, not failed), a split between `DATABASE_URL` and `ENCLAVE_TEST_DATABASE_URL` that made a whole crate's tests unreachable, two tests interfering through the deliberately cross-tenant outbox publisher, and three prose blocks fenced as ```ignore doc-tests. Now 403 passing, 0 ignored. |
