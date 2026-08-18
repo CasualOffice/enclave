@@ -1107,10 +1107,13 @@ dependencies = [
  "enclave-db",
  "enclave-dlp",
  "enclave-events",
+ "enclave-files",
  "enclave-information_barriers",
  "enclave-observability",
  "enclave-retention",
+ "enclave-storage",
  "enclave-testing",
+ "enclave-versions",
  "serde",
  "serde_json",
  "sqlx",
@@ -1118,6 +1121,7 @@ dependencies = [
  "tower",
  "tower-http",
  "tracing",
+ "url",
  "uuid",
 ]
 
@@ -1526,12 +1530,27 @@ dependencies = [
 name = "enclave-testing"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "chrono",
+ "enclave-audit",
+ "enclave-authorization",
+ "enclave-classification",
+ "enclave-conditional_access",
  "enclave-core",
  "enclave-db",
+ "enclave-dlp",
+ "enclave-files",
+ "enclave-identity",
+ "enclave-information_barriers",
+ "enclave-libraries",
+ "enclave-retention",
+ "enclave-storage",
+ "enclave-uploads",
+ "enclave-versions",
  "sqlx",
  "thiserror",
  "tokio",
+ "url",
  "uuid",
 ]
 

@@ -38,7 +38,17 @@
 //! runtime as a library dependency would duplicate them and put an image pull on the critical path
 //! of every local test run.
 
+//! # What else is here
+//!
+//! [`content`] builds the workspace → library → folder → file spine and the ACL entries over it, so
+//! the four suites that need one stop writing the same `INSERT` four times. [`schema`] asks
+//! PostgreSQL what is tenant-scoped and whether the current role is actually subject to row-level
+//! security — the question PR #22 turned out to hinge on.
+
 #![allow(clippy::expect_used, clippy::unwrap_used)]
+
+pub mod content;
+pub mod schema;
 
 use std::fmt;
 

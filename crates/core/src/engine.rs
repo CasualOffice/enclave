@@ -342,6 +342,27 @@ impl PolicyEngine {
         Self { conditional_access, authorization, barriers, classification, dlp, retention, audit }
     }
 
+    /// The authorization stage this engine will actually consult.
+    ///
+    /// Exposed for exactly one purpose: computing the `capabilities` object of `docs/05-API.md §7`.
+    /// That object promises the caller that the actions it offers are the ones the server will
+    /// permit, and the only way to keep that promise is to ask *this* engine's resolver rather than
+    /// a second one constructed alongside it — two resolvers over the same rows are a parallel
+    /// implementation, and a parallel implementation is a UI that eventually disagrees with the
+    /// server about what a user may do.
+    ///
+    /// It is a read-only handle to one stage, not a way around the chain: it cannot allow anything,
+    /// it writes no audit row, and a handler that used it *instead of* [`PolicyEngine::enforce`]
+    /// fails the ENC-110 policy-routing lint. A capabilities probe is a hint; the enforcement is
+    /// still the chain, run when the action is actually attempted.
+    ///
+    /// The batch form ([`AuthorizationService::authorize_many`]) is what callers should use — a
+    /// listing resolves every child in one query rather than one per row.
+    #[must_use]
+    pub fn authorization(&self) -> &std::sync::Arc<dyn AuthorizationService> {
+        &self.authorization
+    }
+
     /// Runs the canonical chain for one action on one resource.
     ///
     /// Stages run in the order in [`Stage::ORDER`] and short-circuit on the first denial. Every

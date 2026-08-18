@@ -44,6 +44,10 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let request_id = self.request_id.to_string();
 
+        // `details` is empty for every error except a validation failure, which is the one shape
+        // `docs/05-API.md §5` says must populate it.
+        let mut details: Vec<serde_json::Value> = Vec::new();
+
         let (status, code, message, remediation) = match &self.error {
             // Deliberately identical to a genuine absence. A 403 here would confirm that the
             // resource exists in another tenant, or behind a barrier (docs/06 §24, test T1).
@@ -65,6 +69,20 @@ impl IntoResponse for ApiError {
                 format!("This resource has changed; its current revision is {current_revision}."),
                 "Re-read the resource and retry with the current revision.".to_owned(),
             ),
+            // A `400` with the offending fields named, per `docs/05-API.md §5`. Without this arm a
+            // rejected pagination cursor or a malformed field fell through to `500`, which tells a
+            // client to retry something that will never succeed. `FieldError` carries a field path
+            // and a closed [`enclave_core::ValidationCode`] and nothing else — never the value that
+            // was rejected, which for a cursor is opaque state and for a name is user content.
+            Error::Validation(fields) => {
+                details.extend(fields.iter().filter_map(|field| serde_json::to_value(field).ok()));
+                (
+                    StatusCode::BAD_REQUEST,
+                    "VALIDATION_FAILED".to_owned(),
+                    "The request could not be accepted as sent.".to_owned(),
+                    "Correct the fields listed in `details` and retry.".to_owned(),
+                )
+            }
             // Everything else is internal. The variant is logged; the caller is told nothing that
             // would describe our topology or our failure modes back to them.
             other => {
@@ -78,9 +96,8 @@ impl IntoResponse for ApiError {
             }
         };
 
-        let body = ErrorBody {
-            error: ErrorDetail { code, message, remediation, request_id, details: Vec::new() },
-        };
+        let body =
+            ErrorBody { error: ErrorDetail { code, message, remediation, request_id, details } };
         (status, Json(body)).into_response()
     }
 }

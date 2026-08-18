@@ -18,5 +18,34 @@ thiserror    = { workspace = true }
 tokio        = { workspace = true }
 uuid         = { workspace = true }
 
+# The leakage matrix (`tests/leakage.rs`) asserts `docs/12-TESTING.md §4` against the real
+# implementations, so it needs them. Every one is a **dev**-dependency: the library half of this
+# crate depends only on `core` and `db`, and must keep doing so — it sits below every domain crate,
+# and each of them takes this one as a dev-dependency in turn. Cargo permits that cycle precisely
+# because it runs through dev edges; a normal dependency here would break the workspace.
+[dev-dependencies]
+# The policy chain, assembled as `crates/api` assembles it. The matrix tests the chain rather than
+# an endpoint (`docs/12-TESTING.md §1`), so it builds the real engine with the real stages.
+enclave-audit                = { workspace = true }
+enclave-authorization        = { workspace = true }
+enclave-classification       = { workspace = true }
+enclave-conditional_access   = { workspace = true }
+enclave-dlp                  = { workspace = true }
+enclave-information_barriers = { workspace = true }
+enclave-retention            = { workspace = true }
+# The surfaces the rows are about: T1 (files), T3 (the user listing's cursor), A7 (versions),
+# G5 (uploads, its library limits and the object store it must not contact).
+enclave-files                = { workspace = true }
+enclave-identity             = { workspace = true }
+enclave-libraries            = { workspace = true }
+enclave-storage              = { workspace = true }
+enclave-uploads              = { workspace = true }
+enclave-versions             = { workspace = true }
+
+# `BlobStore` is `#[async_trait]`; G5's two stand-in stores implement it.
+async-trait = { workspace = true }
+# `UploadTarget::Single` carries a `url::Url`.
+url         = { workspace = true }
+
 [lints]
 workspace = true

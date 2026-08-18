@@ -122,6 +122,8 @@ step: is this foundation sound enough to build on? See `ROADMAP.md §6`.
 | ENC-137 | Promote `Cursor`/`PageSize`/`FilterFingerprint`/`normalize_slug` below the domain layer | P1 | DONE | Finished in integration: `crates/files` repointed and the compatibility shim deleted, so no crate reaches sideways for pagination |
 | ENC-140 | ClamAV has no non-Docker-Hub mirror, so the dev stack's `security` profile needs `docker login` | P3 | TODO | Documented in `deploy/README.md`. Nothing else in the stack is affected |
 
+| ENC-141 | **Breaking inheritance gains privilege.** `inherit_permissions = FALSE` truncates the ACL walk instead of materialising the effective set, so a `DENY` above the break stops applying | P1 | TODO | Found by ENC-134 while writing matrix row A4. Break-inheritance is a documented feature (`docs/01 §17`), so this is privilege escalation through a supported operation, not an unreachable edge. Not exploitable without permission to break inheritance — which is itself a granted permission — so P1 rather than P0. `docs/12 §4.2` now marks A4 unsatisfied; a characterisation test in `crates/testing/tests/leakage.rs` fails the day it is fixed |
+
 **Accepted risk, `ENC-138`:** `RUSTSEC-2026-0253` — unsoundness in `lru`, reached transitively
 through `aws-sdk-s3`. `LruCache::pop()` is not panic-safe. Accepted because there is nowhere to
 move to: `lru 0.16.4` is the latest release, the advisory names no patched version, and the SDK pins
@@ -129,8 +131,11 @@ it. Suppressed in `.cargo/audit.toml` with its reason and its expiry condition �
 `aws-sdk-s3` bumps past the fix, and `cargo audit` will say so on the first build after that. An
 acceptance, not a resolution.
 
-**Next:** `ENC-129` upload state machine and multipart, then `ENC-131` immutable versions and
-`ENC-132` antivirus — the three that together let content actually enter the system.
+**Phase 1 (MVP) is feature-complete.** Content enters through a scanned, versioned, immutable path
+and leaves through a policy-gated one. 930 tests, 8 routes, every handler proven to reach the chain.
+
+**Next:** gate **G1** — ship the MVP? `ROADMAP.md §6`. `ENC-141` is the one finding that should be
+weighed at that gate rather than after it.
 
 **Follow-up worth doing first (`ENC-137`):** `Cursor`, `PageSize`, `FilterFingerprint` and
 `normalize_slug` live in `enclave-identity` and are now used by four crates. They are a security
@@ -283,8 +288,8 @@ Exit criterion: a tenant can store, find, share and govern content, with the lea
 | ENC-130 | Files and folders, trash, move/copy | P1 | DONE | ENC-127 |
 | ENC-131 | Immutable versions, atomic commit, restore | P1 | DONE | ENC-129, ENC-130 |
 | ENC-132 | `AntivirusScanner` + ClamAV; nothing `AVAILABLE` before clean | P0 | DONE | ENC-131 |
-| ENC-133 | Read paths: metadata, listing, cursor pagination | P1 | TODO | ENC-132 |
-| ENC-134 | Leakage matrix §4.1 and §4.2 — landed per surface, not batched | P0 | TODO | ENC-133 |
+| ENC-133 | Read paths: metadata, listing, cursor pagination | P1 | DONE | ENC-132 |
+| ENC-134 | Leakage matrix §4.1, §4.2, §4.8 | P0 | DONE | ENC-133 |
 
 ### Phase 2 — Enterprise V1
 
