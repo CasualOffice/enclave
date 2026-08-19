@@ -1,7 +1,7 @@
 # TRACKER
 
 > **The single source of truth for what is being worked on, in what order.**
-> Enclave · Casual Office · Last updated: 2026-08-18
+> Enclave · Casual Office · Last updated: 2026-08-20
 > Roadmap and exit criteria: [`ROADMAP.md`](ROADMAP.md)
 
 Every piece of work — feature, bug, doc, chore, and every new request from anyone — exists as a row
@@ -69,17 +69,35 @@ only request that changes what happens *right now* is an explicit "do this inste
 
 ### 2.3 ID scheme
 
-IDs are `ENC-nnn`, blocked by phase so a number tells you where the work belongs:
+IDs are `ENC-nnn`, drawn from one sequence and never reused — including after a row is dropped.
+**A number does not tell you the phase**; the section the row sits in does. New rows take the next
+free number at or above `ENC-500`.
 
-| Block | Phase |
-|---|---|
-| `ENC-001`–`ENC-099` | D — Specification |
-| `ENC-100`–`ENC-199` | 0 — Foundations |
-| `ENC-200`–`ENC-299` | 1 — MVP |
-| `ENC-300`–`ENC-399` | 2 — Enterprise V1 |
-| `ENC-400`–`ENC-499` | 3 — Beyond V1 |
+Numbers were originally blocked by phase, and the blocking did not survive contact with the work.
+Phase 1 ran straight on from Phase 0 at `ENC-119` instead of restarting at `ENC-200`, because the
+two were continuous and nobody stopped to re-block; by the time it was noticed (`ENC-154`) some
+sixty rows carried those numbers into branch names, commit messages and merged PR titles. The
+`ENC-200`–`ENC-299` block was never instantiated at all. Renumbering to restore the scheme would
+have rewritten references that live outside this file, and it would have renumbered completed work,
+to recover a property nothing was actually reading — so the scheme was dropped instead of the
+history. What already exists is left exactly where it is:
 
-Numbers are never reused, including after a row is dropped.
+| Range | Phase | Note |
+|---|---|---|
+| `ENC-001`–`ENC-023` | D — Specification | — |
+| `ENC-100`–`ENC-118` | 0 — Foundations | — |
+| `ENC-119`–`ENC-176` | 1 — MVP | Continued in the 100 block; `ENC-127a` is a suffixed insert |
+| `ENC-200`–`ENC-299` | — | Reserved by the old scheme, never allocated |
+| `ENC-300`–`ENC-319` | 2 — Enterprise V1 | — |
+| `ENC-400`–`ENC-405` | 3 — Beyond V1 | — |
+| `ENC-500`+ | Any | Every new row, whatever phase it belongs to |
+
+New IDs start at `ENC-500` rather than at `ENC-406`, which is the next free number, so that a new
+row cannot be read as one of the Phase 3 items it would otherwise sit among. Gaps in a sequence cost
+nothing; a number that quietly implies the wrong phase costs the reader's trust in the whole column.
+
+A **`Depends on`** entry names either an ID that exists in this file or a milestone in
+`ROADMAP.md` — never a number reserved for work nobody has logged, which is what `ENC-154` found.
 
 ### 2.4 Status values
 
@@ -119,7 +137,7 @@ phase, not worked out of band.
 | ENC-139 | CI `test` job had no object storage, so the new BlobStore tests failed on `main` | P0 | DONE | Same shape as ENC-118: `--include-ignored` runs tests needing infrastructure the job does not provide |
 
 | ENC-137 | Promote `Cursor`/`PageSize`/`FilterFingerprint`/`normalize_slug` below the domain layer | P1 | DONE | Finished in integration: `crates/files` repointed and the compatibility shim deleted, so no crate reaches sideways for pagination |
-| ENC-140 | ClamAV has no non-Docker-Hub mirror, so the dev stack's `security` profile needs `docker login` | P3 | TODO | Documented in `deploy/README.md`. Nothing else in the stack is affected |
+| ENC-140 | ClamAV has no non-Docker-Hub mirror, so the dev stack's `av` profile needs `docker login` | P3 | DONE | Re-probed 2026-08-20 and half of it is no longer true: an **anonymous** Docker Hub token for `clamav/clamav` is issued and `1.4_base` resolves, with the budget stated in the token itself (100 pulls / 6 h / source IP), so no `docker login` is required for `av` or `search`. The mirror is still absent — `quay.io/clamav/clamav`, `ghcr.io/clamav/clamav` and `ghcr.io/cisco-talos/clamav` all 401 (no public repository), `public.ecr.aws` 404s because ClamAV is not a Docker official image — and the same probe resolved `quay.io/coreos/etcd`, `ghcr.io/astral-sh/uv` and `public.ecr.aws/docker/library/postgres`, so those are absences and not a broken check. The row also named the wrong profile: it is `av`, not `security`. Closed as a standing constraint rather than an open task, recorded in `deploy/README.md` where a contributor meets it — including the part nobody had written down, that **CI** pulls this image anonymously in the `test` job and a Hub refusal would surface as leakage row G1 failing rather than as a registry problem |
 
 | ENC-141 | **Breaking inheritance gains privilege.** `inherit_permissions = FALSE` truncated the ACL walk instead of materialising the effective set, so a `DENY` above the break stopped applying | P1 | DONE | Found by ENC-134 while writing matrix row A4. Break-inheritance is a documented feature (`docs/01 §17`), so this was privilege escalation through a supported operation, not an unreachable edge. Fixed in three parts: `enclave_authorization::break_file_inheritance` and `break_library_inheritance` collapse the whole chain — the resource's own entries included — by deny-wins and write the result onto the resource in the same transaction as the flag flip; and `enclave-libraries` no longer lets a settings update touch the column, since fixing one door and leaving the other open moves a bug rather than closing it. The harness's parallel reference implementation is deleted — a second copy of this operation is the divergence that would quietly restore the bug. Both new tests verified by neutering the copy and watching them name the escalation. A4 is one row again in `docs/12 §4.2` |
 | ENC-142 | **Gate G1 recorded at the wrong milestone.** `plans/M1-CONTENT-CORE.md §5` and `TRACKER.md §3` both placed G1 at the end of M1; `ROADMAP.md §6` places it at the end of M5 | P2 | DONE | A documentation defect with a scheduling consequence: it would have had the MVP ship decision taken four milestones early, against criteria that assume M2–M4 exist. Found while acting on the tracker's own "Next". Both documents now defer to the roadmap rather than restate it |
@@ -151,12 +169,13 @@ phase, not worked out of band.
 | ENC-164 | Dates must be stored in canonical form, or `value_text` sorts wrong | P2 | DONE | Found writing ENC-151's tests. `chrono` parses `2026-8-2` happily and it is an unambiguous date — but as *text* it sorts after `2026-12-01`, and `value_text` is what a library orders by. Same for timestamps, worse: `Z` and `+00:00` and `.000Z` are the same instant and three sort positions, so a column holding a mixture cannot be ordered at all. Both now require the canonical form, checked by round trip — parse it, format it, require equality — which refuses the non-canonical spelling without rewriting it |
 | ENC-165 | I recreated a table migration 0004 already had | P2 | DONE | `content_types` is listed in `docs/04 §10` beside the metadata tables, so 0009's first draft created it. `CREATE TABLE IF NOT EXISTS` silently did nothing and the `CREATE POLICY` after it failed — which is the *useful* shape of the mistake, because a policy is exactly what a silently-skipped duplicate would have been missing. Straight violation of `CLAUDE.md`'s "check before assuming: read the file rather than trusting a doc that describes an intention", by the session that quotes that rule at other people. Recorded rather than quietly fixed |
 | ENC-166 | `serde_json::Value`'s `Drop` is recursive; its parser caps at 128 levels | P3 | DONE | The JSON depth check has to run *before* the size check, because `serde_json`'s serializer recurses and measuring an over-deep value overflows the stack — the defence dying on the input it exists to reject. The first test of this crashed the binary while *constructing* its input, which is how the ordering got found. The parser's 128-level limit is now asserted in a test rather than assumed in a comment, because the ordering is only sufficient while that limit holds |
-| ENC-152 | `capabilities` on every file response | P1 | DONE | Batch-resolved: a 200-row page costs the same 10 `authorize_many` calls as a 1-row page — the per-row loop it replaces would have been 1,800. The contract that matters is that a listing row and `GET /files/{id}` are the *same object*, so the UI cannot change its mind about what a user may do purely because they clicked in; asserted directly, and mutation-checked by dropping one action from the batch path. `From<&FileNode>` was removed so a row can only be built by someone holding a resolved answer — a conversion from the node alone could only invent nine `false`s. Views (ENC-212) deliberately not included |
+| ENC-152 | `capabilities` on every file response | P1 | DONE | Batch-resolved: a 200-row page costs the same 10 `authorize_many` calls as a 1-row page — the per-row loop it replaces would have been 1,800. The contract that matters is that a listing row and `GET /files/{id}` are the *same object*, so the UI cannot change its mind about what a user may do purely because they clicked in; asserted directly, and mutation-checked by dropping one action from the batch path. `From<&FileNode>` was removed so a row can only be built by someone holding a resolved answer — a conversion from the node alone could only invent nine `false`s. Views (`ROADMAP.md` M2 step 7, no row yet) deliberately not included |
 | ENC-167 | `authorize_many`'s cost is ~80% fixed, which inverts an M3 design assumption | P1 | DONE | Resolution now batches **actions** as well as resources: `action = ANY($2)`, and the resolver keys answers by `(action, resource)` through an `EffectiveGrid` rather than nested vectors — the only interesting bug here is a transposition, and nested vectors leave the axis order as a convention in a doc comment. Measured: ten actions over 200 candidates in **one pass, p50 8.1 ms**, against **68.5 ms** for ten passes — 8.48× cheaper, 60 ms per listing page. Mutation-checked three ways (rows filed into every bucket, bucket shifted by one, resource axis reversed), each caught. The M3 consequence stands and is now cheaper to act on: one resolution answering both disclosure levels is a single call |
 | ENC-175 | The API cannot reach multi-action resolution yet | P1 | DONE | `AuthorizationService` gained a **defaulted** `authorize_many_actions` whose body loops the existing method — so every stub, test double and unconfigured stage keeps working and answers identically, only slower — overridden by `PgAclAuthorization` with the real one pass. Making it a required method would have turned a performance improvement into a breaking change for six deny-by-default stages with no use for it. `capabilities_for_many` now makes one call where it made nine, which is the 60 ms `ENC-167` measured. The unit test counting resolutions was corrected rather than left: it counts a stub that uses the default body, so it proves the count does not scale with the *page* and cannot prove it does not scale with the *actions* — that belongs to the override, and is measured where it can be |
 | ENC-153 | Leakage matrix rows A1, A5, A6, H1–H3 | P0 | DONE | A5 and A6 now assert against a real MinIO. A5 proves a stored object is unreachable unsigned — with the object provably present and the unsigned path asserted identical to the signed one, so the `403` is neither a missing object nor a mistyped bucket — and that a signature is bound to the key it names, so one leaked URL is not a key to the bucket. A6 pins expiry, and is explicit about what it **cannot** prove: single use does not exist on any S3 backend, so rather than fake it the test asserts the store *reports the capability absent*, leaving the short TTL visibly the only control on a captured URL |
 | ENC-176 | `ttf-parser` is unmaintained, reached through `ab_glyph` | P2 | TODO | Accepted with the reasoning rather than waved through. An unmaintained *parser* is normally a serious finding here — D17 exists because parsers are the widest attack surface in this product — and this one differs in the way that decides it: it never sees attacker-controlled input. The only font it parses is vendored in this repository and compiled in with `include_bytes!`; what a viewer controls is the text, which our own code bounds. Ends when `ab_glyph` moves to a maintained parser **or when the watermark needs a font we do not ship**, because that is when the argument stops holding. Revisit 2026-11-20. Recorded in **both** `deny.toml` and `.cargo/audit.toml` — the first attempt updated only one, and CI caught it: two advisory gates with separate configs is a trap worth knowing about |
-| ENC-154 | Planned tracker IDs `ENC-200`–`ENC-2xx` were never instantiated as rows | P3 | TODO | `§4` Phase 2 rows declare dependencies on `ENC-200` and `ENC-208`, neither of which exists as a row; the work was actually done under `ENC-125` and `ENC-126`/`ENC-141`. Harmless today because nothing reads the dependency column mechanically, but a dependency pointing at nothing is a dependency nobody can check |
+| ENC-154 | Planned tracker IDs `ENC-200`–`ENC-2xx` were never instantiated as rows | P3 | DONE | Twelve dangling `Depends on` entries in `§4` Phase 2, not the two the row named, plus one inside `ENC-152`'s note — all pointing into the empty `ENC-200` block. Fixed by dropping the phase-blocked ID scheme rather than by renumbering — `§2.3` now says a number carries no phase, records where each existing block came from, and starts new rows at `ENC-500`. Renumbering was the other option and was rejected on the rule the scheme itself states: numbers are never reused, and sixty completed rows have their IDs in branch names, commits and merged PRs, so restoring the blocks would have broken references outside this file to recover a property nothing reads. Each Phase 2 dependency now names either a row that exists or the `ROADMAP.md` milestone the prerequisite belongs to, because six of them were prerequisites nobody has logged yet and an ID would have been a guess. `ROADMAP.md` hands out the same phantom numbers in `§3` and `§5` and is out of scope here — logged as `ENC-500` |
+| ENC-500 | `ROADMAP.md` still allocates the `ENC-200`–`ENC-226` IDs that `ENC-154` retired | P3 | TODO | Raised 2026-08-20 by `ENC-154`, and scoped out of it rather than absorbed (`§2.1` rule 5): `ROADMAP.md §3` draws its critical path through `ENC-208`/`ENC-215`/`ENC-224` and every `§5` milestone opens with a **Tracker:** line naming a range of numbers no row ever used, so a reader who follows one from the roadmap into this file finds nothing and cannot tell whether the work is unlogged or already done under another number. Mostly transcription rather than investigation — M1's `ENC-200` is `ENC-125` and its `ENC-203` is `ENC-130`, M2's `ENC-208` is `ENC-126`, M3–M5's are prerequisites nobody has logged — but the mapping is not one-to-one and the roadmap's ordering is not this file's, so it wants reading line by line rather than substituting. First new ID under the `§2.3` scheme |
 
 **Accepted risk, `ENC-138`:** `RUSTSEC-2026-0253` — unsoundness in `lru`, reached transitively
 through `aws-sdk-s3`. `LruCache::pop()` is not panic-safe. Accepted because there is nowhere to
@@ -263,11 +282,11 @@ Design pack. Exit criterion: every subsystem specified, no contradictions betwee
 | ENC-014 | Repo files: README, CLAUDE, SKILLS, CONTRIBUTING, SECURITY, LICENSE | P1 | DONE | Apache-2.0 |
 | ENC-015 | Apply `casualoffice` org and `casualoffice.org` domain | P2 | DONE | Requested 2026-08-18 |
 | ENC-016 | This tracker + working rules | P1 | DONE | Requested 2026-08-18 |
-| ENC-017 | `security.txt` + PGP key published at casualoffice.org | P2 | TODO | `SECURITY.md` points at it; must exist before public release |
-| ENC-018 | Confirm legal entity name on the LICENSE copyright line | P2 | TODO | Currently "Casual Office" |
+| ENC-017 | `security.txt` + PGP key published at casualoffice.org | P2 | TODO | Drafted at [`.well-known/security.txt`](.well-known/security.txt) and deliberately left unparseable: `Expires` and `Encryption` are `<REPLACE_ME>`, so an RFC 9116 reader rejects the file outright rather than half-trusting it if it is ever deployed unfinished. Confirmed still open — `https://casualoffice.org/.well-known/security.txt` 404s today while `SECURITY.md` tells reporters to fetch a PGP key from it. **Needs from the repo owner:** (1) confirmation that `security@casualoffice.org` reaches a monitored mailbox — the domain has Cloudflare Email Routing MX records so mail reaches *something*, but routing is per-address and not visible from here, and the address was transcribed from `SECURITY.md`/`README.md`, not chosen; (2) a PGP key, generated and published at a stable URL — no key material belongs in this repository (rule 11), which is why the field takes a URL; (3) an `Expires` date and the person who renews it. The GitHub advisory URL is on the file already because it is the one contact that can be verified from here. Publication is a step on whatever serves the apex domain — it is not this repository |
+| ENC-018 | Confirm legal entity name on the LICENSE copyright line | P2 | TODO | Left untouched on purpose. A placeholder is the right answer in a draft `security.txt` and the wrong one in a copyright notice: "Copyright 2026 REPLACE_ME" is a defective grant, worse than the trade name already there, and Apache-2.0 §4 obliges downstream redistributors to carry whatever this line says. **Needs from the repo owner:** the registered entity name and its jurisdiction, or a decision that copyright is held personally. Two files carry the string and must move together — `LICENSE` line 189 and `README.md` §License |
 | ENC-019 | Development roadmap: milestones, gates, sequencing, risks | P1 | DONE | Requested 2026-08-18 · `ROADMAP.md` |
 | ENC-020 | Product rename Vault → Enclave; ID prefix `VLT-` → `ENC-` | P1 | DONE | Requested 2026-08-18. HashiCorp Vault references deliberately preserved |
-| ENC-021 | Rename the working directory `services/vault` → `services/enclave` | P2 | TODO | Filesystem-level; left to the repo owner to avoid breaking active paths |
+| ENC-021 | Rename the working directory `services/vault` → `services/enclave` | P2 | BLOCKED | Assessed 2026-08-20 and the caution in the original note is aimed at the wrong risk. **Nothing in the repository depends on the path:** `git grep services/vault` matches this row and nothing else, the directory being renamed *is* the repository root so git tracks no name for it, the remote is `git@github.com:CasualOffice/enclave.git` and is unaffected by what the checkout is called locally, and CI runs from `$GITHUB_WORKSPACE` and never names it. What a rename does break is untracked local state: the 29 GB `target/` tree, whose artefacts and `.d` files carry absolute paths, forcing a full rebuild, and the working directory of every editor, shell and agent session currently open on the old path — including, if an agent were to run it, its own. **Blocked on the repo owner**, because it cannot be done from inside the tree and must be done with nothing running: `mv services/vault services/enclave` from `melp/`, with no repository change of any kind |
 | ENC-022 | Initialize git repository, initial history, remote on `CasualOffice/enclave` | P1 | DONE | Requested 2026-08-18 · branch `main`, private |
 | ENC-023 | M0 implementation plan (`plans/M0-FOUNDATIONS.md`) | P1 | DONE | Requested 2026-08-18 · task-level breakdown for Phase 0 |
 
@@ -334,27 +353,32 @@ Exit criterion: a tenant can store, find, share and govern content, with the lea
 
 ### Phase 2 — Enterprise V1
 
+Every `Depends on` here pointed into the `ENC-200` block until `ENC-154`; twelve of the twenty named
+a number no row ever used. They now name a row in this file, or — where the prerequisite is real but
+nobody has logged it — the `ROADMAP.md` milestone that will. A milestone is a checkable answer; an ID
+for work that does not exist is not.
+
 | ID | Item | Pri | Status | Depends on |
 |---|---|---|---|---|
 | ENC-300 | SAML 2.0 (incl. XSW/XXE hardening) | P1 | TODO | Phase 1 |
-| ENC-301 | SCIM 2.0 service provider + mass-deactivation guard | P1 | TODO | ENC-200 |
+| ENC-301 | SCIM 2.0 service provider + mass-deactivation guard | P1 | TODO | ENC-125 |
 | ENC-302 | WebAuthn / passkeys + step-up | P1 | TODO | ENC-111 |
-| ENC-303 | Advanced DLP: full detector set, simulation, obligations | P1 | TODO | ENC-217 |
-| ENC-304 | Information barriers | P1 | TODO | ENC-208 |
-| ENC-305 | Retention, records, legal hold | P1 | TODO | ENC-203 |
-| ENC-306 | Incidents + SIEM forwarding | P1 | TODO | ENC-220 |
-| ENC-307 | MCP gateway: tools, scopes, classification ceilings | P1 | TODO | ENC-215 |
+| ENC-303 | Advanced DLP: full detector set, simulation, obligations | P1 | TODO | M4 — DLP detectors *(no row yet)* |
+| ENC-304 | Information barriers | P1 | TODO | ENC-126 |
+| ENC-305 | Retention, records, legal hold | P1 | TODO | ENC-131 |
+| ENC-306 | Incidents + SIEM forwarding | P1 | TODO | M4 — audit coverage sweep *(no row yet)* |
+| ENC-307 | MCP gateway: tools, scopes, classification ceilings | P1 | TODO | M3 — search post-filter *(no row yet)* |
 | ENC-308 | RAG answers with citations + BYO LLM routing | P1 | TODO | ENC-307 |
 | ENC-309 | BYO infra: storage profiles, Vault, KMS, SMTP, AV | P1 | TODO | ENC-102 |
-| ENC-310 | White-labeling + custom domains + certificate automation | P1 | TODO | ENC-221 |
-| ENC-311 | Sync: device registry, delta protocol, eligibility, wipe | P1 | TODO | ENC-208 |
-| ENC-312 | External editor session brokering | P1 | TODO | ENC-206 |
-| ENC-313 | Workflow engine: definitions, stages, approvals | P1 | TODO | ENC-203 |
+| ENC-310 | White-labeling + custom domains + certificate automation | P1 | TODO | M5 — web shell *(no row yet)* |
+| ENC-311 | Sync: device registry, delta protocol, eligibility, wipe | P1 | TODO | ENC-126 |
+| ENC-312 | External editor session brokering | P1 | TODO | ENC-131 |
+| ENC-313 | Workflow engine: definitions, stages, approvals | P1 | TODO | ENC-130 |
 | ENC-314 | Document signing: ceremony, PAdES, TSA, LTV, verification | P1 | TODO | ENC-313 |
 | ENC-315 | External signature providers (DocuSign, Adobe, eSign) | P2 | TODO | ENC-314 |
-| ENC-316 | Milvus HA + rebuild runbook exercised | P1 | TODO | ENC-214 |
+| ENC-316 | Milvus HA + rebuild runbook exercised | P1 | TODO | M3 — Milvus `VectorStore` *(no row yet)* |
 | ENC-317 | Leakage matrix §4.7–4.10 green | P0 | TODO | ENC-311, ENC-314 |
-| ENC-318 | Tier 1 + Tier 2 locales translated | P2 | TODO | ENC-223 |
+| ENC-318 | Tier 1 + Tier 2 locales translated | P2 | TODO | M5 — i18n scaffolding *(no row yet)* |
 | ENC-319 | HA deployment profile + DR drill executed | P1 | TODO | ENC-316 |
 
 ### Phase 3 — Beyond V1
@@ -376,19 +400,21 @@ Exit criterion: a tenant can store, find, share and govern content, with the lea
 |---|---|---|---|---|---|---|
 | D — Specification | 2 | 17 | 4 | 0 | 20 | 3 |
 | 0 — Foundations | 2 | 13 | 4 | 0 | 19 | 0 |
-| 1 — MVP | 5 | 32 | 10 | 3 | 39 | 11 |
+| 1 — MVP | 5 | 36 | 12 | 6 | 51 | 8 |
 | 2 — Enterprise V1 | 1 | 17 | 2 | 0 | 0 | 20 |
 | 3 — Beyond V1 | 0 | 0 | 1 | 5 | 0 | 6 |
-| **Total** | **10** | **79** | **21** | **8** | **78** | **40** |
+| **Total** | **10** | **83** | **23** | **11** | **90** | **37** |
 
 Counts include completed items in their priority column. Update this table whenever a row's status or
 priority changes; a stale rollup is worse than none — this one read "Phase 1: 0 done" while
-twenty-four of its rows were merged, which is how it was noticed.
+twenty-four of its rows were merged, which is how it was noticed. It had drifted again by 2026-08-20,
+nine rows behind, for the ordinary reason: the rows that get added in a hurry are the ones found
+mid-task, and the table is a second edit. Recounted from the rows.
 
 Derived from the rows themselves, not maintained by hand: every `ENC-` row in `§3` and `§4`,
 deduplicated by ID with `§3` winning on status because it is the fresher of the two. A row that
-appears only in `§3` is attributed to Phase 1 from `ENC-119` upward and Phase 0 below it, which is
-where the two blocks actually divide — see `ENC-154` for why that is not what `§2.3` says.
+appears only in `§3` belongs to the phase in flight when it was raised — Phase 0 below `ENC-119`,
+Phase 1 from there up, and that is where `§2.3`'s ranges come from rather than the other way round.
 
 ---
 
@@ -422,6 +448,7 @@ where the two blocks actually divide — see `ENC-154` for why that is not what 
 | 2026-08-20 | `ENC-170`: `router()` now takes the dependencies its routes need, so the missing-extension `500` becomes a compile error. Writing the regression test for it found something larger — **`ENC-171`, every `Error::Upstream` in the product rendering as `500` instead of `503`**, because `ApiError::into_response` re-derived the status and had no arm for it. `Error::status_code` exists precisely to stop that and the renderer was ignoring it. Both are now one value. Also worth recording: CI was red on PR #34 for a reason that was not the code at all — GitHub had stopped allocating runners over account billing, so fourteen jobs never started and reported as failures. Making the repository public restored it. |
 | 2026-08-20 | `ENC-155` closed — a build script on `enclave-db` now watches `migrations/`, so an edited `.sql` reaches the binary that embeds it. Worth recording why it lasted: CI builds from scratch and never saw it, so the one place it could bite was a person iterating locally *at the moment they were trusting a gate*. It was found by a deliberate violation failing to fail, and it then caught the session that logged it two tasks later. Verified by the original scenario, untouched: remove `FORCE ROW LEVEL SECURITY` from a migration, touch no Rust, and the RLS gate now fails naming the table. |
 | 2026-08-20 | Six items in parallel. `ENC-169` made the watermark real — burned into the pixels, because an overlay a client is asked to draw is one a client can decline to draw — and two defects fell out of building it, both found by tests rather than reading: a compositor that returned success having marked **nothing** on a small canvas, and one of my own tests passing for the wrong reason because its stub rendition was eight bytes. `ENC-167`/`ENC-175` collapsed a listing page's capability probe from nine resolutions to one — measured at **8.1 ms against 68.5 ms**, 60 ms a page — with the trait method defaulted so six deny-by-default stages were not broken by a performance change. `ENC-153` filled A5/A6 against a real MinIO and was explicit about the half of A6 that **cannot** be proven. `ENC-144` and `ENC-172` closed an M1 criterion and a papercut that had cost three verification attempts. One session stalled immediately before restoring a dependency it had commented out to iterate — caught at integration, which is the reason integration is not a formality. |
+| 2026-08-20 | Backlog sweep across five long-open items, batched on the repo owner's explicit instruction — the first of `§2.1`'s three exceptions, recorded rather than assumed. Two closed on evidence, three stay open with the missing input named. `ENC-140` was re-probed rather than re-read: anonymous Docker Hub pulls work again (the token states its own budget, 100 per six hours), so `docker login` is no longer needed, while the mirror is still absent from quay.io, ghcr.io under both plausible orgs, and public.ecr.aws — with controls run through the same code path so the absences are absences. It also surfaced the part nobody had written down: **CI** pulls that image anonymously and runs the `eicar` tests with `--include-ignored`, so a Hub refusal would arrive looking like leakage row G1 failing. `ENC-154` retired the phase-blocked ID scheme instead of renumbering — twelve of Phase 2's twenty dependencies pointed into a block that was never allocated, and sixty completed rows carry their numbers in branches, commits and merged PRs, so the blocks were the thing to give up. New IDs start at `ENC-500` so a new row cannot be misread as Phase 3 work. `ENC-017` is drafted but deliberately unparseable, `ENC-018` untouched because a placeholder in a copyright line is worse than the trade name already there, and `ENC-021` turns out to be blocked on nothing in the repository at all — `git grep` finds the path only in its own tracker row; what a rename breaks is 29 GB of `target/` and every open session's working directory. The rollup had drifted nine rows behind and was recounted. |
 | 2026-08-18 | All five dependency majors landed (`ENC-119`–`ENC-123`). Two were more than version bumps: `jsonwebtoken` 11 compiled cleanly and then panicked at runtime on every verification because 11 made the crypto backend pluggable — chose `rust_crypto`, reasoning recorded in the manifest. `rand` 0.10 made OS entropy fallible, so key generation and refresh minting now propagate `EntropyUnavailable` rather than unwrapping. 403 tests green throughout. |
 | 2026-08-18 | **Gate G0 held: PASS**, with two conditions carried into M1. The controls were each verified by deliberate violation, and six defects were caught by automation that review had missed. Recorded in `plans/G0-GATE.md`; M1 planned in `plans/M1-CONTENT-CORE.md`. |
 | 2026-08-18 | `ENC-118`: the CI `test` job had no database, so 24 of 27 tests ran nowhere — including the D3 pool-exhaustion proof this milestone was sequenced around. Wiring one in surfaced five self-deadlocking tests (`pool.close()` awaited while a handle was still held — they would have hung CI indefinitely, not failed), a split between `DATABASE_URL` and `ENCLAVE_TEST_DATABASE_URL` that made a whole crate's tests unreachable, two tests interfering through the deliberately cross-tenant outbox publisher, and three prose blocks fenced as ```ignore doc-tests. Now 403 passing, 0 ignored. |

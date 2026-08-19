@@ -24,9 +24,11 @@
 #   * `public.ecr.aws/docker/library/*` — AWS's mirror of the Docker official images;
 #   * `quay.io/minio/*`, `quay.io/coreos/*` — the upstream projects' own registries.
 #
-# ClamAV and Milvus publish to Docker Hub only. That is the second reason both sit behind profiles:
-# a registry outage or a rate limit on an image the default stack does not need must not be able to
-# break `docker compose up` for every contributor.
+# ClamAV and Milvus publish to Docker Hub only — ClamAV re-probed 2026-08-20 and still true; the
+# registries tried and the current state of anonymous pulls are in deploy/README.md (ENC-140).
+# That is the second reason both sit behind profiles: a registry outage or a rate limit on an image
+# the default stack does not need must not be able to break `docker compose up` for every
+# contributor.
 #
 # Every tag is pinned. `:latest` turns "works on my machine" into a function of when you last
 # pulled, and a database that silently majors-upgrades under a data volume is unrecoverable.
