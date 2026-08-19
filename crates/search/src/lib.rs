@@ -15,14 +15,26 @@
 //! [`postfilter`] confirms candidates and withholds excerpts. [`denylist`] is what makes a
 //! revocation take effect before the index hears about it.
 //!
-//! There is **no query planner, no ranking and no vector store client** yet. Those are candidate
-//! *generation*, and generation is the part that is allowed to be wrong — so it is built after the
-//! part that is not.
+//! [`lexical`] and [`degraded`] are the first candidate generation in the crate, and they arrive in
+//! the order the guarantee allows: a generator built *after* the post-filter, whose output is
+//! wrapped in a type only the post-filter can consume. `plans/M3-DISCOVERY.md` D25 — degraded mode
+//! is a worse recall guarantee, never a worse authorization guarantee — is enforced by that shape
+//! rather than by a review comment.
+//!
+//! There is still **no vector store client**. When it lands, its candidates go through
+//! [`SearchResults::confirm`], the sibling of the degraded path, and neither of them takes an
+//! argument that turns the post-filter off.
 
+pub mod degraded;
 pub mod denylist;
 pub mod error;
+pub mod lexical;
 pub mod postfilter;
 
+pub use degraded::{
+    Cause, DegradedReason, Retrieval, SearchResults, VectorStore, DEFAULT_DENYLIST_LIMIT,
+};
 pub use denylist::{lift_expired, suppress, suppressed};
 pub use error::SearchError;
+pub use lexical::LexicalCandidates;
 pub use postfilter::{Candidate, Confirmed, DropCounts, PostFilter};

@@ -1392,6 +1392,7 @@ dependencies = [
  "enclave-preview",
  "thiserror",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -1688,11 +1689,19 @@ dependencies = [
 name = "enclave-worker"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "enclave-audit",
  "enclave-config",
  "enclave-core",
  "enclave-db",
  "enclave-events",
+ "enclave-search",
+ "enclave-testing",
+ "sqlx",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

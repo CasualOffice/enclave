@@ -102,25 +102,30 @@ pub async fn suppress(
     Ok(())
 }
 
-/// Lifts suppressions whose `clears_at` has passed.
+/// Lifts suppressions whose `clears_at` has passed, judged by the database's clock.
 ///
 /// The worker's housekeeping. Returns how many were lifted, so a sweep that finds nothing is
 /// distinguishable in metrics from a sweep that did not run.
 ///
+/// # Why this takes no `now`
+///
+/// It used to, and that was a latent bug rather than a stylistic choice — found by the session that
+/// wrote the sweep on top of it. [`suppressed`] judges expiry against PostgreSQL's `now()`, because
+/// it runs inside the search's own transaction. If this compared against a timestamp the *caller*
+/// supplied, the two would be different clocks: a worker running a few seconds fast would delete
+/// rows the database still considers in force, and the file it was suppressing becomes findable
+/// early — briefly, on one node, for reasons nothing logs.
+///
+/// The parameter is therefore gone rather than documented, because the only thing a caller could
+/// usefully do with it is move the deadline forward. Both functions now ask the same clock the same
+/// question.
+///
 /// # Errors
 ///
 /// Storage failures.
-pub async fn lift_expired(
-    conn: &mut PgConnection,
-    tenant: TenantId,
-    now: DateTime<Utc>,
-) -> Result<u64, SearchError> {
-    let lifted = sqlx::query(LIFT_SQL)
-        .bind(tenant.as_uuid())
-        .bind(now)
-        .execute(&mut *conn)
-        .await?
-        .rows_affected();
+pub async fn lift_expired(conn: &mut PgConnection, tenant: TenantId) -> Result<u64, SearchError> {
+    let lifted =
+        sqlx::query(LIFT_SQL).bind(tenant.as_uuid()).execute(&mut *conn).await?.rows_affected();
     Ok(lifted)
 }
 
@@ -144,5 +149,5 @@ VALUES ($1, $2, $3, $4, $5)
 
 const LIFT_SQL: &str = "
 DELETE FROM retrieval_denylist
- WHERE tenant_id = $1 AND clears_at IS NOT NULL AND clears_at <= $2
+ WHERE tenant_id = $1 AND clears_at IS NOT NULL AND clears_at <= now()
 ";

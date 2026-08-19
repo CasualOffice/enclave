@@ -14,6 +14,21 @@ enclave-config = { workspace = true }
 enclave-db = { workspace = true }
 enclave-events = { workspace = true }
 enclave-audit = { workspace = true }
+# The sweep deletes `retrieval_denylist` rows through `enclave_search::lift_expired` rather than
+# spelling the DELETE again here. The predicate that decides whether a row is still suppressing
+# lives beside the one every search reads, and two copies of it are two chances for the sweep to
+# lift something the search still considers in force.
+enclave-search = { workspace = true }
+
+chrono    = { workspace = true }
+sqlx      = { workspace = true }
+thiserror = { workspace = true }
+tracing   = { workspace = true }
+uuid      = { workspace = true }
+
+[dev-dependencies]
+enclave-testing = { workspace = true }
+tokio           = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
 [lints]
 workspace = true
