@@ -78,6 +78,8 @@ T5 is the important one: it is run with a deliberately broken query builder, and
 | A5 | Direct object-key access without a signed URL fails at the storage layer |
 | A6 | A signed URL cannot be replayed after expiry, or after single use where supported |
 | A7 | Version-level reads respect the current file ACL, not the ACL at version creation |
+| A8 | A watermarked artifact is never written to the rendition cache, and two viewers of one page share a base object keyed by neither of them. Structural rather than asserted at the write site: `RenditionKey` has three fields — version, profile, generator — and no constructor accepting a principal, so there is no key a watermarked artifact could be stored under. `crates/preview/tests/watermark.rs` (`ENC-147`) |
+| A9 | No field interpolated into a watermark can become markup. The layer is SVG carrying a display name and an email — fields the viewer sets on their own profile — so an unescaped `<script>` is stored XSS delivered on the preview path to every viewer of the document. Every interpolated field is attacked, and the payload must survive *escaped* rather than be dropped: silently discarding a hostile name would let an attacker blank their own watermark by choosing one. `crates/preview/tests/watermark.rs` (`ENC-147`) |
 
 ### 4.3 Search and AI
 
@@ -155,7 +157,7 @@ the suite.
 | G1 | An EICAR upload is quarantined and never becomes readable, previewable or searchable. `crates/antivirus/tests/eicar.rs` asserts the verdict and the incident against a real clamd, with a `Clean` control so an `Infected` verdict is evidence of detection rather than of a broken client. The *previewable* clause is now enforced rather than inferred: rendering is a read path, and `enclave_preview::ReadableVersion` cannot be constructed except from a row matching `status = 'AVAILABLE' AND av_status = 'CLEAN'`, so a quarantined version cannot be handed to a parser — `crates/preview/tests/cache.rs` (`ENC-146`) |
 | G2 | A decompression bomb is rejected by depth/size caps. `RenderBudget` bounds input and output independently — an input cap alone does not catch a bomb, since being small going in is its whole design — and `enclave_preview::Bounded` enforces both from *outside* the renderer, so a renderer that ignores its budget still cannot exceed it. `crates/preview/tests/bounds.rs`, whose renderers are all deliberately badly behaved (`ENC-146`) |
 | G3 | A malformed document fails extraction without crashing the worker or leaking a temp file — **not assertable until a real renderer lands (`ENC-146a`)**. The pipeline's half is in place: a failure to render is a `Refusal` in the success channel, never a retry, and the wall clock is enforced around the renderer rather than by it |
-| G4 | An SVG/HTML upload cannot execute script in a preview |
+| G4 | An SVG/HTML upload cannot execute script in a preview — **blocked on `ENC-146a`**, which brings the sanitizer. Distinct from A9: that row covers markup injected through the *watermark's* fields, this one covers markup in the document being rendered, and the two have different sources and different defences |
 | G5 | A file exceeding the library size limit is rejected before bytes are transferred |
 | G6 | With the AV engine down and `HOLD` policy, the version stays in `SCANNING` and unreadable |
 

@@ -52,6 +52,7 @@ pub mod model;
 pub mod render;
 pub mod repo;
 pub mod service;
+pub mod watermark;
 
 pub use budget::{Refusal, RenderBudget};
 pub use error::{PreviewError, Result};
@@ -59,3 +60,4 @@ pub use model::{GeneratorVersion, Rendition, RenditionKey, RenditionProfile};
 pub use render::{Bounded, NoRenderer, RenderOutcome, RenderRequest, RenderedArtifact, Renderer};
 pub use repo::ReadableVersion;
 pub use service::{PreviewOutcome, RenditionService, SourceReader};
+pub use watermark::{compose, escape_text, WatermarkFacts, WatermarkStyle, Watermarked};
