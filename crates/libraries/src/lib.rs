@@ -79,6 +79,7 @@
 pub mod error;
 pub mod library_repo;
 pub mod model;
+pub mod views;
 
 mod row;
 
