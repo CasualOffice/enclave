@@ -11,8 +11,10 @@ and the order.
 | [`M0-FOUNDATIONS.md`](M0-FOUNDATIONS.md) | M0 — Foundations (Phase 0) | Complete |
 | [`G0-GATE.md`](G0-GATE.md) | Gate G0 — foundations assessment | Held, PASS |
 | [`M1-CONTENT-CORE.md`](M1-CONTENT-CORE.md) | M1 — Content core (Phase 1) | Complete |
-| [`M2-ACCESS-DELIVERY.md`](M2-ACCESS-DELIVERY.md) | M2 — Access & delivery (Phase 1) | Active |
-| — | M3 … M10 | Written at the start of each milestone |
+| [`M2-ACCESS-DELIVERY.md`](M2-ACCESS-DELIVERY.md) | M2 — Access & delivery (Phase 1) | Complete |
+| [`M2-CLOSEOUT.md`](M2-CLOSEOUT.md) | M2 — what it cost and what it taught | Written |
+| [`M3-DISCOVERY.md`](M3-DISCOVERY.md) | M3 — Discovery (Phase 1) | Active |
+| — | M4 … M10 | Written at the start of each milestone |
 
 ## Why plans are written one milestone ahead, not all at once
 
