@@ -297,7 +297,8 @@ async fn harness(db: &TestDb) -> Harness {
 
     let state =
         ApiState::new(policy, state_pool, ISSUER, AUDIENCE, KeySet::new([key.public().clone()]));
-    Harness { app: router(state), key, authz }
+    // Listings and metadata reach no delivery path.
+    Harness { app: router(state, enclave_api::Delivery::unconfigured()), key, authz }
 }
 
 /// Mints a real access token — signed, with the real claim set, verified by the real verifier.

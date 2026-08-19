@@ -37,7 +37,9 @@ async fn app(db: &TestDb) -> (axum::Router, PrivateSigningKey) {
     );
 
     let state = ApiState::new(policy, pool, ISSUER, AUDIENCE, KeySet::new([key.public().clone()]));
-    (router(state), key)
+    // `/me` touches no delivery path; the unconfigured delivery is what a deployment without
+    // storage would carry, and using it here keeps the test honest about that.
+    (router(state, enclave_api::Delivery::unconfigured()), key)
 }
 
 /// Mints a real access token — signed, with the real claim set, verified by the real verifier.

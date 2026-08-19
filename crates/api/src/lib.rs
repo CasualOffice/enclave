@@ -14,8 +14,12 @@ pub mod me;
 pub mod preview;
 pub mod state;
 
+use std::sync::Arc;
+
 use axum::routing::{get, post};
-use axum::Router;
+use axum::{Extension, Router};
+use enclave_preview::PreviewPipeline;
+use enclave_storage::BlobStore;
 
 pub use state::{unconfigured_stages, ApiState};
 
@@ -30,7 +34,72 @@ pub use state::{unconfigured_stages, ApiState};
 /// down both. Paths are written out in full rather than composed with `nest`, because `nest` moves
 /// half of each path away from the handler it belongs to and the policy-routing lint reads these
 /// registrations to find the handlers it must walk.
-pub fn router(state: ApiState) -> Router {
+/// What the delivery routes need, and cannot be registered without.
+///
+/// # Why this is a parameter and not two `.layer()` calls
+///
+/// `ENC-170`: `router` registered `POST /files/{id}/download` and `GET /files/{id}/preview`, both
+/// of which extract an axum `Extension`, and `main.rs` provided neither. Both returned `500` in the
+/// binary — while passing every integration test, because the tests build their own router with the
+/// extensions attached. Nothing in the workspace ran the binary against a real request, so it was
+/// invisible from PR #22 until M2.
+///
+/// Adding the two missing layers to `main.rs` would have fixed those two routes and left the shape
+/// that produced them. Taking the dependencies here means a route whose extension nobody supplies
+/// cannot be registered: the third one is a compile error rather than a `500` somebody finds in
+/// production.
+///
+/// Neither field is optional. A deployment without object storage or without a renderer passes
+/// [`UnconfiguredBlobStore`](enclave_storage::UnconfiguredBlobStore) and
+/// [`UnconfiguredPipeline`](enclave_preview::UnconfiguredPipeline), which refuse loudly and are
+/// warned about at start-up — the same treatment the policy stages already get, and for the same
+/// reason: a deployment missing a capability must look different from one that has it.
+#[derive(Clone)]
+pub struct Delivery {
+    /// Object storage. Reached by the download path, and by nothing on the preview path.
+    pub store: Arc<dyn BlobStore>,
+    /// The rendition pipeline. Holds no `BlobStore` handle that the preview handler can reach.
+    pub preview: Arc<dyn PreviewPipeline>,
+}
+
+impl std::fmt::Debug for Delivery {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Neither field is printable, and a store's Debug could carry an endpoint or a bucket.
+        f.debug_struct("Delivery").finish_non_exhaustive()
+    }
+}
+
+impl Delivery {
+    /// The delivery a deployment has when it has configured neither.
+    ///
+    /// Named rather than `Default` so that reaching for it is a decision at the call site, visible
+    /// in review, instead of what happens when somebody writes `..Default::default()`.
+    #[must_use]
+    pub fn unconfigured() -> Self {
+        Self {
+            store: Arc::new(enclave_storage::UnconfiguredBlobStore),
+            preview: Arc::new(enclave_preview::UnconfiguredPipeline),
+        }
+    }
+
+    /// Which delivery capabilities are absent, for the start-up warning.
+    ///
+    /// The counterpart to [`unconfigured_stages`]: `main.rs` warns about unconfigured policy
+    /// stages already, on the grounds that a deployment permitting everything looks identical from
+    /// outside to one deciding carefully. A deployment that cannot serve a byte deserves the same
+    /// sentence.
+    #[must_use]
+    pub fn unconfigured_capabilities(&self) -> Vec<&'static str> {
+        let mut absent = Vec::new();
+        if self.store.capabilities().backend == "unconfigured" {
+            absent.push("object storage — uploads, downloads and rendition reads will be refused");
+        }
+        absent
+    }
+}
+
+pub fn router(state: ApiState, delivery: Delivery) -> Router {
+    let Delivery { store, preview } = delivery;
     Router::new()
         // Identity (docs/05-API.md §3).
         .route("/api/v1/me", get(me::me))
@@ -47,5 +116,9 @@ pub fn router(state: ApiState) -> Router {
         // Operational probes. On the policy-routing allowlist: no tenant, no actor, no resource.
         .route("/health/live", get(health::live))
         .route("/health/ready", get(health::ready))
+        // Attached here rather than at each route: axum extensions are per-router, and a layer on
+        // one route would silently not apply to the other.
+        .layer(Extension(store))
+        .layer(Extension(preview))
         .with_state(state)
 }

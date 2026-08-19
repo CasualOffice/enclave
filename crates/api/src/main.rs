@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::Context as _;
-use enclave_api::{router, unconfigured_stages, ApiState};
+use enclave_api::{router, unconfigured_stages, ApiState, Delivery};
 use enclave_core::PolicyEngine;
 
 #[tokio::main]
@@ -70,11 +70,21 @@ async fn main() -> anyhow::Result<()> {
         keys,
     );
 
+    // Delivery, and the same treatment the policy stages get above. `ENC-170`: the router used to
+    // register download and preview without either dependency, so both answered `500` in the binary
+    // while every integration test passed. It now takes them, so the gap would be a compile error —
+    // and what a deployment without them gets is a documented refusal it was warned about, rather
+    // than an error nobody can explain.
+    let delivery = Delivery::unconfigured();
+    for capability in delivery.unconfigured_capabilities() {
+        tracing::warn!(capability, "delivery capability is not configured");
+    }
+
     let addr = SocketAddr::new(config.server.bind, config.server.port);
     let listener = tokio::net::TcpListener::bind(addr).await.context("bind")?;
     tracing::info!(%addr, "enclave-api listening");
 
-    axum::serve(listener, router(state))
+    axum::serve(listener, router(state, delivery))
         .with_graceful_shutdown(shutdown())
         .await
         .context("serve")?;

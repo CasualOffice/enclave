@@ -22,13 +22,15 @@ enclave-classification = { workspace = true }
 enclave-dlp = { workspace = true }
 enclave-retention = { workspace = true }
 enclave-files = { workspace = true }
-# The rendition pipeline, behind `PreviewPipeline`. Deliberately *not* `enclave-storage`:
-# `preview.rs` holds no `BlobStore`, and the trait is what preserves that.
+# The rendition pipeline, behind `PreviewPipeline`.
 enclave-preview = { workspace = true }
 enclave-versions = { workspace = true }
 enclave-observability = { workspace = true }
 # The delivery paths: `download` mints a signed URL through `BlobStore`; `preview` deliberately
 # does not depend on it at the module level (crates/api/src/preview.rs).
+# For the `Delivery` type the router takes, and the unconfigured store behind it. The *handler*
+# still holds no `BlobStore` — `preview.rs` takes a `PreviewPipeline`, which has no method that
+# could mint a URL — and that remains the property; this dependency is the router's, not its.
 enclave-storage = { workspace = true }
 
 anyhow       = { workspace = true }
