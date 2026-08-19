@@ -227,8 +227,31 @@ impl TestDb {
         // row-level security entirely**. A pool that stayed superuser would run every test with the
         // isolation switched off while appearing to prove it, which is exactly what happened until
         // ENC-124 sent a real cross-tenant request and got 200.
+        self.pool_with_connections(2).await
+    }
+
+    /// A pool sized for a test that needs genuine concurrency.
+    ///
+    /// [`TestDb::pool`] caps connections at two on purpose, and that cap is load-bearing for the D3
+    /// proof — a pool large enough to hand every task its own connection would stop testing
+    /// contention. But it is *wrong* for a test whose subject is a race between many callers: with
+    /// two connections only two transactions are ever in flight, so an implementation that reads a
+    /// counter and then acts on what it read is never made to fail.
+    ///
+    /// That is not hypothetical. `docs/12 §4.4` H3 was written against [`TestDb::pool`] and passed
+    /// with the deliberately naive implementation in place — fifty tasks, two at a time, no
+    /// over-issue. The test proved nothing until it was moved here. A concurrency test on a pool of
+    /// two is a sequential test wearing `tokio::spawn`.
+    ///
+    /// # Errors
+    ///
+    /// Connection failures.
+    pub async fn pool_with_connections(
+        &self,
+        max_connections: u32,
+    ) -> Result<enclave_db::DbPool, HarnessError> {
         let config = enclave_db::DbConfig::new(enclave_db::ConnectionUrl::new(self.url.clone()))
-            .with_max_connections(2)
+            .with_max_connections(max_connections)
             .with_application_role("enclave_app");
         Ok(enclave_db::DbPool::connect(&config).await?)
     }

@@ -10,6 +10,25 @@ authors.workspace      = true
 
 [dependencies]
 enclave-core = { workspace = true }
+enclave-db   = { workspace = true }
+
+anyhow      = { workspace = true }
+base64      = { workspace = true }
+chrono      = { workspace = true }
+# 256 bits from the OS CSPRNG. See `token.rs` for why a share token is not a UUID.
+rand        = { workspace = true }
+serde_json  = { workspace = true }
+sha2        = { workspace = true }
+sqlx        = { workspace = true }
+# Constant-time digest comparison — a short-circuiting one leaks how much of a guess was right.
+subtle      = { workspace = true }
+thiserror   = { workspace = true }
+uuid        = { workspace = true }
+zeroize     = { workspace = true }
+
+[dev-dependencies]
+enclave-testing = { workspace = true }
+tokio           = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
 [lints]
 workspace = true

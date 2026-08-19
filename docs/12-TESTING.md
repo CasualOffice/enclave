@@ -103,10 +103,10 @@ the suite.
 
 | # | Assertion |
 |---|---|
-| H1 | A share token is unguessable and stored only as a hash |
+| H1 | A share token is unguessable and stored only as a hash. 256 bits of OS entropy; the row holds SHA-256 and the assertion dumps *every* column looking for the plaintext, because a token that leaked into a label would be just as usable. `crates/sharing/tests/redemption.rs` (`ENC-149`) |
 | H2 | Password and OTP requirements are enforced server-side, not just prompted |
-| H3 | `max_downloads` holds under 50 concurrent redemptions (exactly N succeed) |
-| H4 | An expired or revoked link fails closed, including for an already-open session |
+| H3 | `max_downloads` holds under 50 concurrent redemptions (exactly N succeed). Two tests, deliberately: the fifty-task one is realistic, and on its own it **passed against a naive implementation** — the harness pool caps at two connections, so it ran two at a time. The second holds the read-to-write window open on a barrier until every contender is inside it, and fails 3/3 without the limit in the `WHERE` clause. `crates/sharing/tests/redemption.rs` (`ENC-150`) |
+| H4 | An expired or revoked link fails closed. The link is made *usable first* and revoked afterwards, because a link that was never usable proves nothing about revocation; liveness is re-checked inside the spending `UPDATE`, so a revocation lands on a redemption already in flight. The *already-open session* clause needs the preview path and stays open until `ENC-148`. `crates/sharing/tests/redemption.rs` (`ENC-149`) |
 | H5 | A guest cannot enumerate siblings, parents or other resources from a share context |
 | H6 | Domain-restricted links reject non-matching authenticated domains |
 
