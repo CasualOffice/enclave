@@ -843,3 +843,76 @@ async fn an_unauthenticated_request_reaches_neither_the_chain_nor_the_store() {
     // property `tests/me.rs` asserts for `/me`.
     assert_eq!(audited(&db, "file.download", "DENY").await, 0);
 }
+
+/// **`ENC-170`** — a deployment without delivery configured refuses, and says so, rather than `500`.
+///
+/// This is the defect's own test. `router()` used to register `POST /download` and
+/// `GET /preview` without either dependency, so the binary answered `500` on both while every
+/// integration test passed — because the tests, including the ones above, build their own router
+/// with the extensions attached. Nothing exercised the real `router()`, which is exactly why it
+/// went unnoticed from PR #22 until M2.
+///
+/// So this test uses `router()` itself, with `Delivery::unconfigured()` — what `main.rs` now
+/// constructs when nothing is configured. The assertion is not merely "not 500": it is that the
+/// caller is told this is the *service's* problem and a retryable one, rather than that their file
+/// is missing.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL with migrations 0001–0009; CI runs it with --include-ignored"]
+async fn an_unconfigured_deployment_refuses_delivery_instead_of_failing_opaquely() {
+    let db = TestDb::start().await.expect("start");
+    let fixtures = db.seed().await.expect("seed");
+    let pool = db.pool().await.expect("pool");
+    let key = PrivateSigningKey::generate(Utc::now()).expect("generate signing key");
+
+    let policy = PolicyEngine::new(
+        Arc::new(enclave_conditional_access::UnconfiguredConditionalAccess),
+        Arc::new(PgAclAuthorization::new(pool.clone())),
+        Arc::new(enclave_information_barriers::UnconfiguredBarriers),
+        Arc::new(enclave_classification::UnconfiguredClassification),
+        Arc::new(enclave_dlp::DisabledDlp),
+        Arc::new(enclave_retention::UnconfiguredRetention),
+        Arc::new(enclave_audit::PgAuditSink::new(pool.clone(), enclave_audit::ChainMode::Enabled)),
+    );
+    let state = ApiState::new(policy, pool, ISSUER, AUDIENCE, KeySet::new([key.public().clone()]));
+
+    // The real router, and the real "nothing is configured" delivery.
+    let app = enclave_api::router(state, enclave_api::Delivery::unconfigured());
+
+    let user = fixtures.alpha.member;
+    let content = Content::new(fixtures.alpha.id, fixtures.alpha.owner);
+    let mut admin = db.connect().await.expect("admin connection");
+    content.insert(&mut admin, "AVAILABLE", "CLEAN").await;
+    for action in [FileAction::MetadataRead, FileAction::Preview, FileAction::Download] {
+        grant(&mut admin, &content, user, action, "ALLOW").await;
+    }
+    let bearer = token(&key, fixtures.alpha.id, user);
+
+    // Fully permitted, so nothing below is a policy refusal — the only thing missing is the
+    // capability, which is the case this test exists for.
+    let preview = get_preview(&app, &bearer, content.file).await;
+    assert_ne!(
+        preview.status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "the preview route answered 500 — the missing dependency is back: {}",
+        preview.body
+    );
+    assert_eq!(
+        preview.status,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "an unconfigured deployment must say the service cannot do this yet, not that the file is \
+         missing: {}",
+        preview.body
+    );
+    preview.carries_no_original(&content);
+
+    let download = post_download(&app, &bearer, content.file).await;
+    assert_ne!(
+        download.status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "the download route answered 500: {}",
+        download.body
+    );
+    download.carries_no_original(&content);
+
+    drop(db);
+}

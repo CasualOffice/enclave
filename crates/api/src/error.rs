@@ -48,23 +48,32 @@ impl IntoResponse for ApiError {
         // `docs/05-API.md §5` says must populate it.
         let mut details: Vec<serde_json::Value> = Vec::new();
 
-        let (status, code, message, remediation) = match &self.error {
+        // **The status comes from `Error::status_code()`, never from the arms below.**
+        //
+        // `enclave_core::Error::status_code` documents itself as living there so that "two handlers
+        // [do not answer] the same failure with different statuses" — and this renderer used to
+        // re-derive it anyway, in a match with no arm for `Upstream` or `QuotaExceeded`. Both fell
+        // into the catch-all and rendered `500`, so every dependency outage in the product reported
+        // itself as our own defect rather than as a retryable upstream failure, and a quota refusal
+        // told the caller to retry something that would never succeed (`ENC-171`).
+        //
+        // The arms now choose only the *body*: the code, the sentence and the remediation. There is
+        // no longer a place for the two to disagree.
+        let status = StatusCode::from_u16(self.error.status_code())
+            .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+
+        let (code, message, remediation) = match &self.error {
             // Deliberately identical to a genuine absence. A 403 here would confirm that the
             // resource exists in another tenant, or behind a barrier (docs/06 §24, test T1).
             Error::NotFound => (
-                StatusCode::NOT_FOUND,
                 "NOT_FOUND".to_owned(),
                 "The requested resource does not exist.".to_owned(),
                 String::new(),
             ),
-            Error::PolicyDenied { code, remediation } => (
-                StatusCode::from_u16(code.status_code()).unwrap_or(StatusCode::FORBIDDEN),
-                code.as_str().to_owned(),
-                user_message(*code),
-                remediation.as_str().to_owned(),
-            ),
+            Error::PolicyDenied { code, remediation } => {
+                (code.as_str().to_owned(), user_message(*code), remediation.as_str().to_owned())
+            }
             Error::Conflict { current_revision } => (
-                StatusCode::CONFLICT,
                 "REVISION_CONFLICT".to_owned(),
                 format!("This resource has changed; its current revision is {current_revision}."),
                 "Re-read the resource and retry with the current revision.".to_owned(),
@@ -77,18 +86,49 @@ impl IntoResponse for ApiError {
             Error::Validation(fields) => {
                 details.extend(fields.iter().filter_map(|field| serde_json::to_value(field).ok()));
                 (
-                    StatusCode::BAD_REQUEST,
                     "VALIDATION_FAILED".to_owned(),
                     "The request could not be accepted as sent.".to_owned(),
                     "Correct the fields listed in `details` and retry.".to_owned(),
                 )
             }
+            // A dependency is unavailable. Named — but only by *class*, never by endpoint, host
+            // or version — because a client's correct response differs completely from the one to
+            // an internal defect: back off and retry, rather than report a bug. Rendering these as
+            // `500` also hid every outage inside our own error budget.
+            Error::Upstream { dependency, retryable } => {
+                // Which dependency goes to the log and not to the caller. An operator needs it to
+                // know what to look at; a caller told "Milvus is down" learns our topology, and
+                // `docs/05-API.md §5` keeps error bodies free of it.
+                tracing::warn!(%dependency, retryable, %request_id, "a dependency is unavailable");
+                (
+                    "DEPENDENCY_UNAVAILABLE".to_owned(),
+                    "A service this request depends on is unavailable.".to_owned(),
+                    if *retryable {
+                        "Retry shortly.".to_owned()
+                    } else {
+                        "Contact your administrator; this will not succeed on retry.".to_owned()
+                    },
+                )
+            }
+
+            // A quota refusal is the caller's to act on, and *which* quota decides whether acting
+            // means waiting or asking for more. `Error::status_code` already distinguishes them —
+            // 429 for a rate quota that refills, 403 for a capacity one that does not.
+            Error::QuotaExceeded { quota, .. } => (
+                "QUOTA_EXCEEDED".to_owned(),
+                "Your organisation has reached a usage limit.".to_owned(),
+                if quota.is_rate() {
+                    "Retry after a short delay.".to_owned()
+                } else {
+                    "Free space or ask your administrator to raise the limit.".to_owned()
+                },
+            ),
+
             // Everything else is internal. The variant is logged; the caller is told nothing that
             // would describe our topology or our failure modes back to them.
             other => {
                 tracing::error!(error = ?other, %request_id, "request failed");
                 (
-                    StatusCode::INTERNAL_SERVER_ERROR,
                     "INTERNAL".to_owned(),
                     "The request could not be completed.".to_owned(),
                     "Retry shortly. If it persists, quote the request id.".to_owned(),
@@ -137,4 +177,64 @@ fn user_message(code: ReasonCode) -> String {
         ReasonCode::SessionReplay => "Your session has ended for security reasons.",
     }
     .to_owned()
+}
+
+#[cfg(test)]
+mod status_tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+
+    use axum::response::IntoResponse as _;
+    use enclave_core::{
+        Dependency, Error, FieldError, QuotaKind, ReasonCode, RequestId, ValidationCode,
+    };
+
+    use super::ApiError;
+
+    /// Every variant renders the status `Error::status_code` says it should.
+    ///
+    /// This is the invariant `ENC-171` broke. The renderer had its own `match`, and it had no arm
+    /// for `Upstream` or `QuotaExceeded`, so both fell into the catch-all and rendered `500` —
+    /// every dependency outage in the product reported as our own defect, and every quota refusal
+    /// telling the caller to retry something that would never succeed.
+    ///
+    /// The fix was to render `Error::status_code()` directly rather than re-derive it, so this test
+    /// is really asserting that the second opinion is gone. A new variant added to `Error` with no
+    /// arm here now renders its correct status and a generic body, which is a far better failure
+    /// than a wrong status.
+    #[test]
+    fn the_rendered_status_is_always_the_one_the_error_declares() {
+        let cases = [
+            Error::NotFound,
+            Error::Conflict { current_revision: 7 },
+            Error::denied(ReasonCode::AccessDenied),
+            Error::denied(ReasonCode::StepUpRequired),
+            Error::Validation(vec![FieldError::new("name", ValidationCode::Required)]),
+            Error::Upstream { dependency: Dependency::Postgres, retryable: true },
+            Error::Upstream { dependency: Dependency::ObjectStorage, retryable: false },
+            // Both quota shapes: one refills and is a 429, one does not and is a 403. A renderer
+            // with a single quota arm would answer one of them wrongly.
+            Error::QuotaExceeded { quota: QuotaKind::ApiRpm, limit: 100 },
+            Error::QuotaExceeded { quota: QuotaKind::StorageBytes, limit: 1 },
+            Error::Internal(anyhow::anyhow!("boom")),
+        ];
+
+        for error in cases {
+            let declared = error.status_code();
+            let rendered = ApiError::new(error, RequestId::new_v7()).into_response().status();
+            assert_eq!(
+                rendered.as_u16(),
+                declared,
+                "the renderer and `Error::status_code` disagree, which is what put every \
+                 dependency outage into the 500 bucket"
+            );
+        }
+    }
+
+    /// A dependency outage is a `503` that names no topology.
+    #[test]
+    fn an_upstream_failure_is_retryable_and_describes_nothing_about_our_infrastructure() {
+        let error = Error::Upstream { dependency: Dependency::Postgres, retryable: true };
+        let response = ApiError::new(error, RequestId::new_v7()).into_response();
+        assert_eq!(response.status(), axum::http::StatusCode::SERVICE_UNAVAILABLE);
+    }
 }

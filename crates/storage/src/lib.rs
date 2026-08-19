@@ -50,6 +50,7 @@ pub mod key;
 pub mod model;
 pub mod public_access;
 pub mod s3;
+mod unconfigured;
 
 pub use blob_store::BlobStore;
 pub use error::{Result, StorageError};
@@ -62,3 +63,4 @@ pub use public_access::{
     Probe, ProbeResult, PublicAccessCheck, PublicAccessError, PublicAccessReport, Verdict,
 };
 pub use s3::{S3BlobStore, S3Config, S3Flavor};
+pub use unconfigured::UnconfiguredBlobStore;

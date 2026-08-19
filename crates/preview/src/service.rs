@@ -247,3 +247,37 @@ const fn media_type_for(profile: RenditionProfile) -> &'static str {
         RenditionProfile::HtmlSanitized => "text/html; charset=utf-8",
     }
 }
+
+/// The pipeline a deployment has when it has no rendering worker configured.
+///
+/// The counterpart to [`crate::NoRenderer`], one level up, and it exists for the reason `ENC-170`
+/// found: `crates/api`'s router registered a preview route whose dependency the binary never
+/// supplied, so it answered `500` while every integration test passed. The fix is not an `Option`
+/// somebody has to remember to check — it is a value with defined behaviour, in the shape
+/// `crates/core`'s policy stages already use.
+///
+/// # Why this errors rather than returning `Unavailable`
+///
+/// [`Delivery::Unavailable`] means *this document has no preview and re-asking will not change
+/// that* — the caller sees a `404`, and the answer is cached as final. "Nobody configured a
+/// renderer" is neither: it is an operator's problem, it is temporary, and reporting it as a
+/// property of the document would have the product tell every user that none of their files can be
+/// previewed. So it is [`PreviewError::Source`], which renders as a `503` naming object storage.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct UnconfiguredPipeline;
+
+#[async_trait::async_trait]
+impl PreviewPipeline for UnconfiguredPipeline {
+    async fn deliver(
+        &self,
+        _conn: &mut PgConnection,
+        _tenant: TenantId,
+        _version: &ReadableVersion,
+        _profile: RenditionProfile,
+        _now: DateTime<Utc>,
+    ) -> Result<Delivery> {
+        Err(PreviewError::Source(anyhow::anyhow!(
+            "no rendition pipeline is configured in this deployment"
+        )))
+    }
+}

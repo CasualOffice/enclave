@@ -17,6 +17,22 @@ pub type Result<T> = core::result::Result<T, StorageError>;
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum StorageError {
+    /// No object storage is configured in this deployment.
+    ///
+    /// Not a failure of a configured store — the absence of one. It exists so that a binary started
+    /// without storage **refuses** the paths that need it, loudly and with a reason, instead of
+    /// registering routes whose dependency is missing and answering `500`. That is what
+    /// `ENC-170` found: two routes did exactly that, and passed every integration test, because the
+    /// tests build their own router with the dependency attached.
+    ///
+    /// Renders as a `503` naming object storage, because it is an operator's problem and a
+    /// retryable one — once somebody configures a store.
+    #[error(
+        "no object storage is configured — set `storage` in enclave.yaml \
+         (docs/08-BYO-INFRA.md §5)"
+    )]
+    NotConfigured,
+
     /// The object is not there.
     #[error("object `{key}` does not exist")]
     NotFound {
