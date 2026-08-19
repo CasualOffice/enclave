@@ -22,6 +22,9 @@ enclave-classification = { workspace = true }
 enclave-dlp = { workspace = true }
 enclave-retention = { workspace = true }
 enclave-files = { workspace = true }
+# The rendition pipeline, behind `PreviewPipeline`. Deliberately *not* `enclave-storage`:
+# `preview.rs` holds no `BlobStore`, and the trait is what preserves that.
+enclave-preview = { workspace = true }
 enclave-versions = { workspace = true }
 enclave-observability = { workspace = true }
 # The delivery paths: `download` mints a signed URL through `BlobStore`; `preview` deliberately

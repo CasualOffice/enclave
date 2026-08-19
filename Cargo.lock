@@ -1128,6 +1128,7 @@ dependencies = [
  "enclave-files",
  "enclave-information_barriers",
  "enclave-observability",
+ "enclave-preview",
  "enclave-retention",
  "enclave-storage",
  "enclave-testing",
