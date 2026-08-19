@@ -58,7 +58,10 @@ use sqlx::{Connection, PgConnection};
 use uuid::Uuid;
 
 /// Anything that can go wrong setting a test database up.
-#[derive(Debug, thiserror::Error)]
+///
+/// `Debug` is implemented by hand, below, and that is load-bearing rather than stylistic — see the
+/// comment on the impl.
+#[derive(thiserror::Error)]
 pub enum HarnessError {
     /// `DATABASE_URL` is absent or empty.
     #[error(
@@ -84,6 +87,47 @@ pub enum HarnessError {
     /// Migrations did not apply.
     #[error("migrations failed to apply to the test database")]
     Migrate(#[from] enclave_db::DbError),
+}
+
+/// Renders as the `Display` message and the source chain beneath it, not as a derived field dump.
+///
+/// This exists because of where harness errors are actually read. Every suite in the workspace
+/// starts `TestDb::start().await.expect(…)`, and `expect` formats with `Debug` — so the derived
+/// impl printed `Migrate(MigrationModified { version: 10, source: VersionMismatch(10) })`: a
+/// variant name and an integer, which is the exact shape `ENC-172` was raised to remove. The
+/// sentence it wrote instead — which migration changed, and the two opposite remedies depending on
+/// whether it is merged — lives on `Display`, where nothing that panics ever looks. The message was
+/// fixed and stayed invisible, and it cost three more interruptions in one afternoon (`ENC-504`).
+/// The same is true of [`HarnessError::NoDatabaseUrl`], whose whole value is the compose command it
+/// names and which printed as the seven characters `NoDatabaseUrl`.
+///
+/// Nothing about the failure changes. The checksum comparison is untouched, the migration still
+/// does not run, and the forward-only gate (`ENC-116`) is exactly as strict as it was — fixing the
+/// *reading* of an error is the only kind of fix available here that does not weaken it.
+///
+/// The chain is walked explicitly because `expect` prints one value and never follows `source()`,
+/// so delegating to `Display` alone would swap a useless dump for a truncated explanation: the
+/// remedy for an edited migration is on `DbError`, one link down from `HarnessError::Migrate`.
+///
+/// Redaction is preserved: [`HarnessError::Connect`] carries an already-redacted summary and never
+/// a URL, so no password reaches this formatter to be printed (see `redact`).
+impl fmt::Debug for HarnessError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut rendered = self.to_string();
+        let mut source = std::error::Error::source(self);
+        while let Some(current) = source {
+            let text = current.to_string();
+            // `Connect` interpolates its own source into its message. Repeating it verbatim as a
+            // "caused by" line is the sort of noise people learn to skim, which is the failure mode
+            // this impl exists to fix rather than reproduce.
+            if !rendered.contains(&text) {
+                rendered.push_str("\n  caused by: ");
+                rendered.push_str(&text);
+            }
+            source = current.source();
+        }
+        f.write_str(&rendered)
+    }
 }
 
 /// Advisory-lock key serialising test-database setup across the cluster.
@@ -562,6 +606,56 @@ mod tests {
             swap_database("postgres://u:p@host:5432/enclave?sslmode=require", "t1"),
             "postgres://u:p@host:5432/t1?sslmode=require"
         );
+    }
+
+    #[test]
+    fn what_a_panicking_expect_prints_is_the_remedy_and_not_a_variant_name() {
+        // `ENC-504`. This is `{:?}` rather than `{}` on purpose: `.expect()` formats with `Debug`,
+        // so `Debug` is the only rendering a developer ever actually sees, and asserting `Display`
+        // here would pass while the visible half stayed broken — which is what `ENC-172` did.
+        let error = HarnessError::Migrate(enclave_db::DbError::MigrationModified {
+            version: 10,
+            source: sqlx::migrate::MigrateError::VersionMismatch(10),
+        });
+
+        let shown = format!("{error:?}");
+        assert!(shown.contains("10"), "the migration must be named: {shown}");
+        assert!(
+            shown.contains("_sqlx_migrations"),
+            "the remedy has to be the command, not a description of one: {shown}"
+        );
+        assert!(
+            shown.contains("forward-only") && shown.contains("add a new migration"),
+            "an edit to a *merged* migration must still be sent forward rather than reset, or the \
+             panic message becomes the documented way round the gate: {shown}"
+        );
+        assert!(
+            !shown.starts_with("Migrate(MigrationModified"),
+            "this is the derived dump the whole change exists to replace: {shown}"
+        );
+    }
+
+    #[test]
+    fn a_missing_database_url_says_how_to_get_one() {
+        // The same disease, one variant over: this message is entirely instructions, and `Debug`
+        // used to print the identifier `NoDatabaseUrl` instead of any of them.
+        let shown = format!("{:?}", HarnessError::NoDatabaseUrl);
+        assert!(shown.contains("docker compose"), "{shown}");
+        assert!(shown.contains("DATABASE_URL"), "{shown}");
+    }
+
+    #[test]
+    fn the_debug_impl_cannot_reintroduce_the_password_leak() {
+        // `Debug` now prints `Display`, so anything a message interpolates is printed by a
+        // panicking test. `Connect` therefore has to keep carrying the redacted summary and never
+        // the URL — this asserts the two halves stay consistent with each other.
+        let error = HarnessError::Connect {
+            url_summary: redact("postgres://user:hunter2@db.internal:5432/enclave"),
+            source: sqlx::Error::PoolClosed,
+        };
+        let shown = format!("{error:?}");
+        assert!(!shown.contains("hunter2"), "{shown}");
+        assert!(shown.contains("db.internal"), "{shown}");
     }
 
     #[test]

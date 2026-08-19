@@ -3,6 +3,24 @@
 # This runs on a schedule as well as on pull requests because a dependency becomes
 # vulnerable without anyone touching the repository — a repo that only checks on
 # PRs is unaudited for as long as it is quiet, which is exactly when it looks safe.
+#
+# ---------------------------------------------------------------------------
+# Fetching is retried; auditing is not.
+#
+# Every job here reaches crates.io twice for different reasons: once to install
+# its tool, once to resolve the dependency graph it is about to judge. Neither is
+# the judgement. On 2026-08-20 index.crates.io returned 503 and the failure
+# surfaced under a check named after a security rule; in this workflow the same
+# outage would read as "cargo audit — no known-vulnerable dependency" failing,
+# which is a sentence that means a vulnerability was found. It would not have
+# been. A red check that can mean either is one people stop believing, and the
+# one it costs is the true one.
+#
+# So each fetch is a step of its own, bounded-retried, and names the registry
+# when it gives up. The audit itself gets exactly ONE attempt, always: retrying
+# `cargo audit` or `cargo deny` until it passes is a way of not knowing about an
+# advisory. If either is genuinely flaky, that is a defect to fix, not to loop.
+# ---------------------------------------------------------------------------
 name: Security
 
 on:
@@ -50,9 +68,24 @@ jobs:
           path: ~/.cargo/bin/cargo-audit
           key: ${{ runner.os }}-cargo-audit-${{ env.TOOL_CACHE_EPOCH }}-${{ hashFiles('rust-toolchain.toml') }}
 
+      # Retried: installing the tool is a registry download, not a verdict.
       - name: Install cargo-audit
         if: steps.audit-cache.outputs.cache-hit != 'true'
-        run: cargo install --locked cargo-audit
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4; do
+            if cargo install --locked cargo-audit; then
+              echo "cargo-audit installed on attempt ${attempt}"
+              exit 0
+            fi
+            if [ "$attempt" -lt 4 ]; then
+              delay=$((attempt * attempt * 5))
+              echo "crates.io fetch failed (attempt ${attempt}/4); retrying in ${delay}s"
+              sleep "$delay"
+            fi
+          done
+          echo "::error title=Dependency registry unavailable — NOT an advisory::cargo could not install cargo-audit from index.crates.io after 4 attempts over ~70s. No audit ran: no advisory was found and none was ruled out. Check https://status.crates.io and re-run the job."
+          exit 1
 
       # The advisory database is deliberately NOT cached: a stale advisory DB is a
       # green build that means nothing.
@@ -95,9 +128,43 @@ jobs:
           path: ~/.cargo/bin/cargo-deny
           key: ${{ runner.os }}-cargo-deny-${{ env.TOOL_CACHE_EPOCH }}-${{ hashFiles('rust-toolchain.toml') }}
 
+      # Retried: installing the tool is a registry download, not a verdict.
       - name: Install cargo-deny
         if: steps.deny-cache.outputs.cache-hit != 'true'
-        run: cargo install --locked cargo-deny
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4; do
+            if cargo install --locked cargo-deny; then
+              echo "cargo-deny installed on attempt ${attempt}"
+              exit 0
+            fi
+            if [ "$attempt" -lt 4 ]; then
+              delay=$((attempt * attempt * 5))
+              echo "crates.io fetch failed (attempt ${attempt}/4); retrying in ${delay}s"
+              sleep "$delay"
+            fi
+          done
+          echo "::error title=Dependency registry unavailable — NOT a policy violation::cargo could not install cargo-deny from index.crates.io after 4 attempts over ~70s. No check ran: no advisory, licence or source was rejected, and none was cleared. Check https://status.crates.io and re-run the job."
+          exit 1
+
+      # The graph cargo-deny is about to judge, fetched separately so that a
+      # registry outage cannot be reported as a licence or advisory finding.
+      - name: Fetch dependencies (retried — registry only)
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4; do
+            if cargo fetch --locked; then
+              echo "dependencies fetched on attempt ${attempt}"
+              exit 0
+            fi
+            if [ "$attempt" -lt 4 ]; then
+              delay=$((attempt * attempt * 5))
+              echo "crates.io fetch failed (attempt ${attempt}/4); retrying in ${delay}s"
+              sleep "$delay"
+            fi
+          done
+          echo "::error title=Dependency registry unavailable — NOT a policy violation::cargo could not fetch from index.crates.io after 4 attempts over ~70s. No check ran: nothing was rejected and nothing was cleared. Check https://status.crates.io and re-run the job."
+          exit 1
 
       # Policy lives in deny.toml at the repository root, reviewed like code.
       # `bans` is warn-only for duplicate versions (see deny.toml) so it reports
@@ -126,9 +193,44 @@ jobs:
           path: ~/.cargo/bin/cargo-cyclonedx
           key: ${{ runner.os }}-cargo-cyclonedx-${{ env.TOOL_CACHE_EPOCH }}-${{ hashFiles('rust-toolchain.toml') }}
 
+      # Retried: installing the tool is a registry download, not a verdict.
       - name: Install cargo-cyclonedx
         if: steps.cyclonedx-cache.outputs.cache-hit != 'true'
-        run: cargo install --locked cargo-cyclonedx
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4; do
+            if cargo install --locked cargo-cyclonedx; then
+              echo "cargo-cyclonedx installed on attempt ${attempt}"
+              exit 0
+            fi
+            if [ "$attempt" -lt 4 ]; then
+              delay=$((attempt * attempt * 5))
+              echo "crates.io fetch failed (attempt ${attempt}/4); retrying in ${delay}s"
+              sleep "$delay"
+            fi
+          done
+          echo "::error title=Dependency registry unavailable — NOT an SBOM failure::cargo could not install cargo-cyclonedx from index.crates.io after 4 attempts over ~70s. No inventory was produced and none was found wanting. Check https://status.crates.io and re-run the job."
+          exit 1
+
+      # The graph the inventory describes, fetched separately: an SBOM job that
+      # dies on a 503 must not read as "the dependency graph could not be
+      # inventoried", which is a supply-chain sentence.
+      - name: Fetch dependencies (retried — registry only)
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4; do
+            if cargo fetch --locked; then
+              echo "dependencies fetched on attempt ${attempt}"
+              exit 0
+            fi
+            if [ "$attempt" -lt 4 ]; then
+              delay=$((attempt * attempt * 5))
+              echo "crates.io fetch failed (attempt ${attempt}/4); retrying in ${delay}s"
+              sleep "$delay"
+            fi
+          done
+          echo "::error title=Dependency registry unavailable — NOT an SBOM failure::cargo could not fetch from index.crates.io after 4 attempts over ~70s. No inventory was produced. Check https://status.crates.io and re-run the job."
+          exit 1
 
       # An SBOM is what lets an operator answer "are we affected?" on the day an
       # advisory lands, without rebuilding the tree. Enterprise buyers ask for it.
@@ -172,6 +274,8 @@ jobs:
           body="The weekly \`Security\` workflow failed with no code change: a dependency has become vulnerable, yanked, or licence-noncompliant.
 
           Run: $RUN_URL
+
+          **First, read which step failed.** If the failing job stopped in an \`Install …\` or \`Fetch dependencies\` step, its annotation says the registry was unavailable and nothing was audited — that is an infrastructure re-run, not an advisory, and this issue should be closed saying so. Anything else is a real finding.
 
           Per TRACKER.md §1 this is an automatic P0. Add a tracker row, triage the advisory, and either upgrade or record an explicit, dated exception in \`deny.toml\`."
           # The label may not exist yet in a fresh repository; never let labelling

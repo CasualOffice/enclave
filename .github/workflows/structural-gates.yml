@@ -10,6 +10,32 @@
 # their dependency lands. They never silently succeed: a pending gate emits a
 # warning annotation and a step-summary row, so "green" and "not yet enforced"
 # can be told apart at a glance.
+#
+# ---------------------------------------------------------------------------
+# Why every cargo job here fetches in its own step
+#
+# Each job in this file is named after a rule, which is the point — the check
+# name tells you what you broke before you open a log. That naming is also what
+# makes a registry outage actively harmful: on 2026-08-20 `index.crates.io`
+# returned 503, and the failure arrived as
+#
+#     RULE: every tenant_id table is granted to enclave_app, which cannot bypass RLS
+#
+# for a CDN having a bad minute. A gate whose red state can mean "infrastructure"
+# but says "security" is one people learn to re-run rather than read, and the run
+# that gets waved through as "probably flaky" is eventually the real finding.
+#
+# So the fetch is its own step, with a bounded retry, and it says "registry" when
+# it gives up. `cargo fetch --locked` is the only crates.io traffic in these jobs;
+# after it succeeds the assertion command resolves from Cargo.lock and the local
+# cache and touches no network. A registry outage therefore fails in a step that
+# names the registry, and the rule below it either runs properly or does not run.
+#
+# THE RETRY COVERS THE FETCH AND NOTHING ELSE. Retrying an assertion is how an
+# intermittent security failure becomes a green build: three attempts at "no FK
+# omits tenant_id" passes on the run where one did. Fetching has no verdict and
+# is idempotent; a gate has a verdict and gets exactly one attempt, always.
+# ---------------------------------------------------------------------------
 name: Structural gates
 
 on:
@@ -62,6 +88,24 @@ jobs:
           rustup toolchain install "$channel" --profile minimal --no-self-update
           rustup default "$channel"
           rustc --version
+
+      # Fetch only — never the gate below. See the header comment.
+      - name: Fetch dependencies (retried — registry only)
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4; do
+            if cargo fetch --locked; then
+              echo "dependencies fetched on attempt ${attempt}"
+              exit 0
+            fi
+            if [ "$attempt" -lt 4 ]; then
+              delay=$((attempt * attempt * 5))
+              echo "crates.io fetch failed (attempt ${attempt}/4); retrying in ${delay}s"
+              sleep "$delay"
+            fi
+          done
+          echo "::error title=Dependency registry unavailable — NOT a gate failure::cargo could not fetch from index.crates.io after 4 attempts over ~70s. The RLS coverage gate did not run: nothing was asserted and no rule was broken. Check https://status.crates.io and re-run the job."
+          exit 1
 
       # The gate is a Rust integration test (ENC-106) rather than a shell script
       # so the same command proves the same rule locally and in CI.
@@ -128,9 +172,29 @@ jobs:
           rustup default "$channel"
           rustc --version
 
+      # Fetch only — never the gate below. See the header comment: this job's name
+      # is the sentence that appeared on main for a crates.io 503.
+      - name: Fetch dependencies (retried — registry only)
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4; do
+            if cargo fetch --locked; then
+              echo "dependencies fetched on attempt ${attempt}"
+              exit 0
+            fi
+            if [ "$attempt" -lt 4 ]; then
+              delay=$((attempt * attempt * 5))
+              echo "crates.io fetch failed (attempt ${attempt}/4); retrying in ${delay}s"
+              sleep "$delay"
+            fi
+          done
+          echo "::error title=Dependency registry unavailable — NOT a gate failure::cargo could not fetch from index.crates.io after 4 attempts over ~70s. The grant coverage gate did not run: nothing was asserted and no rule was broken. Check https://status.crates.io and re-run the job."
+          exit 1
+
       # A Rust integration test rather than a shell script, for the same reason
       # as rls-coverage: one command proves the rule locally and in CI.
       - name: Assert the application role can reach what RLS protects
+        id: gate
         run: |
           set -euo pipefail
           RULE='Grant coverage — every table with a tenant_id column grants enclave_app at least SELECT; audit_events and its partitions grant SELECT and INSERT and not UPDATE/DELETE/TRUNCATE; enclave_app is neither SUPERUSER nor BYPASSRLS and may SET app.tenant_id (docs/12-TESTING.md §5, CLAUDE.md rule 4, ENC-124)'
@@ -142,8 +206,11 @@ jobs:
           echo "Enforcing: ${RULE}"
           cargo test -p enclave-db --locked --test grant_coverage -- --include-ignored --nocapture
 
+      # Conditioned on the gate step, not on the job: a failed dependency fetch
+      # must not print a page explaining which security rule was broken, because
+      # none was. That page is the thing a reader remembers.
       - name: Explain on failure
-        if: failure()
+        if: failure() && steps.gate.outcome == 'failure'
         run: |
           set -euo pipefail
           {
@@ -201,6 +268,27 @@ jobs:
           rustup default "$channel"
           rustc --version
 
+      # Fetch only — never the gate below. Skipped while the gate is PENDING: a
+      # registry outage failing a gate that is not enforced yet would be the same
+      # mis-attribution twice over.
+      - name: Fetch dependencies (retried — registry only)
+        if: hashFiles('crates/db/tests/composite_fk_coverage.rs') != ''
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4; do
+            if cargo fetch --locked; then
+              echo "dependencies fetched on attempt ${attempt}"
+              exit 0
+            fi
+            if [ "$attempt" -lt 4 ]; then
+              delay=$((attempt * attempt * 5))
+              echo "crates.io fetch failed (attempt ${attempt}/4); retrying in ${delay}s"
+              sleep "$delay"
+            fi
+          done
+          echo "::error title=Dependency registry unavailable — NOT a gate failure::cargo could not fetch from index.crates.io after 4 attempts over ~70s. The composite FK gate did not run: nothing was asserted and no rule was broken. Check https://status.crates.io and re-run the job."
+          exit 1
+
       # A single-column FK to a tenant-scoped parent lets a child row point at a
       # parent in another tenant. RLS does not catch it; the constraint must.
       - name: Assert composite foreign keys
@@ -239,17 +327,38 @@ jobs:
           rustup default "$channel"
           rustc --version
 
+      # Fetch only — never the lint below. See the header comment.
+      - name: Fetch dependencies (retried — registry only)
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4; do
+            if cargo fetch --locked; then
+              echo "dependencies fetched on attempt ${attempt}"
+              exit 0
+            fi
+            if [ "$attempt" -lt 4 ]; then
+              delay=$((attempt * attempt * 5))
+              echo "crates.io fetch failed (attempt ${attempt}/4); retrying in ${delay}s"
+              sleep "$delay"
+            fi
+          done
+          echo "::error title=Dependency registry unavailable — NOT a gate failure::cargo could not fetch from index.crates.io after 4 attempts over ~70s. The policy-routing lint did not run: no handler was checked and no rule was broken. Check https://status.crates.io and re-run the job."
+          exit 1
+
       # Enforced since ENC-110. The lint prints its allowlist on every run, so every exemption
       # from the policy chain appears in the log of every pull request rather than only in source.
       - name: Walk the api crate's route registrations
+        id: gate
         run: |
           set -euo pipefail
           RULE='Policy routing — every Axum route handler reaches PolicyEngine::enforce; exemptions live in an allowlist with a written reason (docs/12-TESTING.md §5, CLAUDE.md rule 1)'
           echo "Enforcing: ${RULE}"
           cargo run --locked -p xtask -- policy-routing
 
+      # Conditioned on the lint step, not the job: a failed fetch must not print a
+      # page about handlers that bypass the policy chain when none were examined.
       - name: Explain on failure
-        if: failure()
+        if: failure() && steps.gate.outcome == 'failure'
         run: |
           set -euo pipefail
           {
@@ -545,6 +654,26 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # Fetch only — never the diff below. Skipped while the gate is PENDING, for
+      # the same reason as composite-fks.
+      - name: Fetch dependencies (retried — registry only)
+        if: hashFiles('docs/api/openapi.yaml') != ''
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4; do
+            if cargo fetch --locked; then
+              echo "dependencies fetched on attempt ${attempt}"
+              exit 0
+            fi
+            if [ "$attempt" -lt 4 ]; then
+              delay=$((attempt * attempt * 5))
+              echo "crates.io fetch failed (attempt ${attempt}/4); retrying in ${delay}s"
+              sleep "$delay"
+            fi
+          done
+          echo "::error title=Dependency registry unavailable — NOT a gate failure::cargo could not fetch from index.crates.io after 4 attempts over ~70s. The API contract gate did not run: no spec was generated and no drift was found. Check https://status.crates.io and re-run the job."
+          exit 1
+
       - name: Regenerate the spec and diff it against the snapshot
         run: |
           set -euo pipefail
@@ -670,7 +799,7 @@ jobs:
             echo "start blocking the moment their dependency lands (ENC-105/106, ENC-110, M1, M6)."
           } >> "$GITHUB_STEP_SUMMARY"
           if echo "$NEEDS" | grep -qE '"result"[[:space:]]*:[[:space:]]*"(failure|cancelled|skipped)"'; then
-            echo "::error title=Structural gate failed::A structural rule was broken — the failing check's name is the rule."
+            echo "::error title=Structural gate failed::A structural rule was broken — the failing check's name is the rule. One exception, and it names itself: if the failing job stopped in its 'Fetch dependencies' step, the registry was unavailable and that job's rule was never evaluated. Its annotation says so explicitly; anything else is a real finding."
             exit 1
           fi
           echo "Every structural gate that is currently enforceable passed."

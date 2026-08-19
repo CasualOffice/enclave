@@ -173,6 +173,51 @@ jobs:
             ${{ runner.os }}-cargo-test-${{ hashFiles('rust-toolchain.toml') }}-
             ${{ runner.os }}-cargo-test-
 
+      # ----------------------------------------------------------------------
+      # Dependency fetch, retried. THE FETCH ONLY.
+      #
+      # main went red on 2026-08-20 with `failed to get successful HTTP response
+      # from https://index.crates.io/... got 503` — a CDN having a bad minute,
+      # reported under the name of whichever check happened to be running. That
+      # is the same disease as ENC-503: a gate whose red state can mean
+      # "infrastructure" but says "security" is a gate people learn to re-run
+      # rather than read.
+      #
+      # Pulling the fetch out into its own step is what fixes it. `cargo fetch
+      # --locked` is the only network I/O in this job that talks to crates.io;
+      # once it succeeds every dependency and index entry is on disk, and the
+      # `cargo test` below resolves entirely from Cargo.lock and the local cache.
+      # So a registry outage now fails HERE, in a step that says "registry", and
+      # the assertions below either run properly or do not run at all.
+      #
+      # DO NOT WIDEN THIS TO THE COMMANDS BELOW. A retry around an assertion is a
+      # machine for converting an intermittent security failure into a green
+      # build: three attempts at "is EICAR quarantined" passes on the run where
+      # the answer was no, once. Fetching is idempotent and has no verdict;
+      # asserting has a verdict and gets exactly one attempt, every time.
+      #
+      # Only this job and `role-race` carry it, because only they assert security
+      # properties. `fmt`, `clippy` and `build` are named after what they do, so a
+      # registry 503 there is already reported as "the build could not fetch" and
+      # misattributes to nothing.
+      # ----------------------------------------------------------------------
+      - name: Fetch dependencies (retried — registry only)
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4; do
+            if cargo fetch --locked; then
+              echo "dependencies fetched on attempt ${attempt}"
+              exit 0
+            fi
+            if [ "$attempt" -lt 4 ]; then
+              delay=$((attempt * attempt * 5))
+              echo "crates.io fetch failed (attempt ${attempt}/4); retrying in ${delay}s"
+              sleep "$delay"
+            fi
+          done
+          echo "::error title=Dependency registry unavailable — NOT a test failure::cargo could not fetch from index.crates.io after 4 attempts over ~70s. No test ran: nothing was asserted and nothing failed. Check https://status.crates.io and re-run the job."
+          exit 1
+
       # Tests that need live infrastructure are #[ignore]d until ENC-112 lands the
       # testcontainers harness; they are then run by their own job, not by removing
       # the ignore. CLAUDE.md: a security test is never skipped to get a build green.
@@ -201,6 +246,41 @@ jobs:
           docker logs enclave-minio | tail -40
           exit 1
 
+      - name: Pull the ClamAV image
+        # Split from "Start ClamAV" below on purpose (ENC-503). This step is a transaction with
+        # Docker Hub; the next one runs `docs/12-TESTING.md §4.8` G1 — an EICAR upload is
+        # quarantined and never becomes readable. They fail for entirely different reasons and
+        # must therefore fail in different steps, with different words. A red check that reads
+        # "G1 could not run" and actually means "Docker Hub said 429" teaches everyone here that
+        # the antivirus gate is flaky, and the next person to see it red waves through the run
+        # where EICAR really did come back readable.
+        #
+        # The pull is anonymous, because there is nothing to authenticate with: no mirror of
+        # `clamav/clamav` exists — quay, ghcr and ECR were all checked. Anonymous Hub pulls are
+        # budgeted at 100 per six hours per source IP (the figure is stated inside the token Hub
+        # issues), and hosted runners share egress addresses with every other repository on the
+        # same host, so exhausting a budget nobody in this repository spent is ordinary weather.
+        #
+        # Retried because a 5xx or a dropped TLS handshake clears in seconds. A 429 will not: the
+        # budget resets in hours, so it burns all three attempts and lands on the message below,
+        # which is the actual deliverable here. Only the *pull* is retried — see the assertion
+        # steps, which get exactly one attempt each, always.
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if docker pull clamav/clamav:1.4; then
+              echo "clamav/clamav:1.4 pulled on attempt ${attempt}"
+              exit 0
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              delay=$((attempt * 10))
+              echo "Docker Hub pull failed (attempt ${attempt}/3); retrying in ${delay}s"
+              sleep "$delay"
+            fi
+          done
+          echo "::error title=ClamAV image pull failed — REGISTRY, not a security failure::docker pull clamav/clamav:1.4 failed three times against Docker Hub. G1 (EICAR is quarantined, docs/12-TESTING.md §4.8) was NOT evaluated — nothing was asserted and nothing failed. Anonymous Hub pulls are limited to 100 per six hours per source IP and hosted runners share addresses, so a 429 here is a shared-budget exhaustion, not a defect in this change; it resets in hours. No mirror of clamav/clamav exists (quay, ghcr and ECR checked — ENC-503). Re-run the job."
+          exit 1
+
       - name: Start ClamAV
         # Third service in this job, added for the same reason as the first two and after the same
         # mistake twice: `cargo test --workspace -- --include-ignored` below runs *every* ignored
@@ -219,9 +299,13 @@ jobs:
         # which is precisely the thing that should keep moving. `CLAMAV_NO_FRESHCLAMD` stops the
         # updater daemon — the image ships a database, and a background download is latency and
         # network flakiness for no test value.
+        #
+        # `--pull never`: the image is already local, and this keeps the split above honest. If it
+        # somehow is not, this fails saying the image is missing rather than quietly issuing a
+        # second anonymous pull from inside the step that is supposed to be about the daemon.
         run: |
           set -euo pipefail
-          docker run -d --name enclave-clamav \
+          docker run -d --name enclave-clamav --pull never \
             -e CLAMAV_NO_FRESHCLAMD=true \
             -e CLAMAV_NO_MILTERD=true \
             -p 3310:3310 \
@@ -234,7 +318,7 @@ jobs:
             fi
             sleep 4
           done
-          echo "::error title=clamd did not become ready::G1 (EICAR is quarantined) cannot run"
+          echo "::error title=clamd did not become ready — INFRASTRUCTURE, not a security failure::the daemon never answered zPING with PONG, so G1 (EICAR is quarantined, docs/12-TESTING.md §4.8) was NOT evaluated. The container log below says why it did not start."
           docker logs enclave-clamav | tail -40
           exit 1
 
@@ -344,6 +428,25 @@ jobs:
           channel=$(grep -E '^[[:space:]]*channel' rust-toolchain.toml | head -1 | sed -E 's/.*"(.*)".*/\1/')
           rustup toolchain install "$channel" --profile minimal --no-self-update
           rustup default "$channel"
+
+      # The fetch, retried; the assertion below is not. See the long comment in
+      # the `test` job for why that distinction is the whole point.
+      - name: Fetch dependencies (retried — registry only)
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4; do
+            if cargo fetch --locked; then
+              echo "dependencies fetched on attempt ${attempt}"
+              exit 0
+            fi
+            if [ "$attempt" -lt 4 ]; then
+              delay=$((attempt * attempt * 5))
+              echo "crates.io fetch failed (attempt ${attempt}/4); retrying in ${delay}s"
+              sleep "$delay"
+            fi
+          done
+          echo "::error title=Dependency registry unavailable — NOT a test failure::cargo could not fetch from index.crates.io after 4 attempts over ~70s. The role-race test did not run: nothing was asserted and nothing failed. Check https://status.crates.io and re-run the job."
+          exit 1
 
       - name: Reproduce the role race and assert it is legible
         run: |
