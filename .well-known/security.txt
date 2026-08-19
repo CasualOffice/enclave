@@ -1,0 +1,47 @@
+# security.txt — RFC 9116. **DRAFT. NOT PUBLISHABLE AS IT STANDS** (tracker ENC-017).
+#
+# This file belongs at https://casualoffice.org/.well-known/security.txt, which today returns 404
+# while SECURITY.md tells reporters to fetch a PGP key from it. That site is not served from this
+# repository, so this copy is the staged text, not the published artefact — deploying it is a step
+# somebody has to take on the host that answers for the apex domain.
+#
+# Two values are `<REPLACE_ME …>` because nobody working in this repository knows them, and this is
+# the wrong file to guess in. It is machine-read: scanners, bug-bounty platforms and disclosure
+# tooling take Contact and Encryption from here without a human ever reading the page. A contact
+# that looks right and does not deliver is worse than no file at all — the reporter gets no bounce,
+# concludes the report landed, and sits on a finding while the clock in SECURITY.md's response table
+# runs against nobody. The placeholders are deliberately not parseable, so this text cannot be
+# published by accident: an RFC 9116 parser rejects it outright rather than half-trusting it.
+#
+# What is needed to finish this, exactly:
+#
+#   1. Confirmation that `security@casualoffice.org` delivers to a monitored mailbox. The domain has
+#      Cloudflare Email Routing MX records, so mail to the domain goes somewhere, but routing is
+#      per-address unless a catch-all is configured and no one here can see which. The address is
+#      transcribed from SECURITY.md and README.md, not chosen here — if it is wrong, it is already
+#      wrong in two published files.
+#   2. A PGP key: generate it, publish the armoured public key at a stable URL, and put that URL on
+#      the Encryption line. SECURITY.md already promises this key exists. No key material — public
+#      or otherwise — is committed to this repository (CLAUDE.md rule 11); the Encryption field
+#      takes a URL, which is what makes that possible.
+#   3. An Expires date. RFC 9116 makes it mandatory and recommends under a year out, because the
+#      field's purpose is to make an abandoned file *fail* rather than quietly go stale. Pick a date
+#      and a renewal owner together — an Expires nobody is responsible for renewing is the same
+#      abandonment with a timestamp on it.
+#
+# Once a key exists, sign this file with it and publish the detached signature alongside
+# (RFC 9116 §2.3). An unsigned security.txt is a redirect an attacker who controls the web host can
+# rewrite to their own address, turning the disclosure channel into their inbox.
+
+# The GitHub channel is listed first because it is the one that is verifiably live: the repository
+# is public and its private-vulnerability-reporting form is reachable without an account we control.
+Contact: https://github.com/CasualOffice/enclave/security/advisories/new
+Contact: mailto:security@casualoffice.org
+
+Expires: <REPLACE_ME: ISO 8601 UTC, e.g. 2027-01-01T00:00:00.000Z — see note 3 above>
+
+Encryption: <REPLACE_ME: URL of the armoured PGP public key — see note 2 above>
+
+Policy: https://github.com/CasualOffice/enclave/blob/main/SECURITY.md
+Canonical: https://casualoffice.org/.well-known/security.txt
+Preferred-Languages: en

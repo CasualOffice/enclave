@@ -61,9 +61,10 @@ docker compose -f deploy/compose/dev.yml --profile search up -d --wait
 docker compose -f deploy/compose/dev.yml --profile av     up -d --wait
 ```
 
-Both images are published to Docker Hub only. That is the second reason they are opt-in: a Docker
-Hub rate limit on an image the default stack does not need must not be able to stop every
-contributor from starting PostgreSQL.
+Both images are published to Docker Hub only — ClamAV re-probed 2026-08-20 (`ENC-140`, below), and
+Milvus is unchanged since. That is the second
+reason they are opt-in: a Docker Hub rate limit on an image the default stack does not need must not
+be able to stop every contributor from starting PostgreSQL.
 
 ### Why Redis forgets on restart
 
@@ -78,6 +79,24 @@ mirror of the Docker official images) and the upstream projects' own registries 
 Anonymous Docker Hub pulls are rate-limited per source IP and, while this file was being written,
 were returning `401 unauthorized` outright — a first-day contributor should not have to create a
 Docker Hub account to run `cargo test`.
+
+**Re-checked 2026-08-20 (`ENC-140`).** Anonymous Docker Hub pulls work again: an unauthenticated
+token for `clamav/clamav` is issued and `1.4_base` resolves, with the registry stating the budget it
+grants in the token itself — 100 pulls per six hours per source IP. So `docker login` is no longer
+needed for the `av` or `search` profiles. That is a fact about Docker Hub's posture this week, not a
+guarantee, which is why nothing here depends on it: both images stay behind profiles and neither is
+on the path a fresh clone must pull.
+
+ClamAV still has no second home. Probed and absent: `quay.io/clamav/clamav`, `ghcr.io/clamav/clamav`
+and `ghcr.io/cisco-talos/clamav` (401 — no public repository), `public.ecr.aws/clamav/clamav` and
+`public.ecr.aws/docker/library/clamav` (404 — it is not a Docker official image, so AWS does not
+mirror it). Controls on the same code path — `quay.io/coreos/etcd`, `ghcr.io/astral-sh/uv`,
+`public.ecr.aws/docker/library/postgres` — all resolved, so the absences are absences rather than a
+broken probe. Mirroring it into a registry we own is the only remaining option, and it is worth
+knowing who actually pays if Hub closes again: not this stack, where `--profile av` simply stays
+down and the `eicar` tests stay `#[ignore]`d, but **CI**, which pulls `clamav/clamav:1.4`
+anonymously in the `test` job and runs those tests with `--include-ignored`. A Hub refusal there
+fails leakage row G1 and reads as a security-test failure rather than as a registry one.
 
 Every tag is pinned to an exact version. `:latest` makes "works on my machine" a function of when
 you last pulled, and a database that silently major-upgrades underneath its data volume is not
