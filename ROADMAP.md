@@ -42,6 +42,7 @@ Phase 1 ──── M1 Content core ──── M2 Access & delivery ──┐
 Phase 2 ──── M6 Enterprise identity ──┐                       │
              M7 AI & BYO infra ───────┼── M10 Enterprise V1 GA
              M8 Delivery surfaces ────┤
+             M8b Content migration ───┤
              M9 Workflows & signing ──┘
 ```
 
@@ -56,13 +57,20 @@ Phase 2 ──── M6 Enterprise identity ──┐                       │
 | M6 | Enterprise identity & governance | 2 | 8 weeks | 35 w | 2027-05-08 |
 | M7 | AI & BYO infrastructure | 2 | 7 weeks | 40 w¹ | 2027-06-12 |
 | M8 | Delivery surfaces | 2 | 8 weeks | 46 w¹ | 2027-07-24 |
-| M9 | Workflows & signing | 2 | 7 weeks | 50 w¹ | 2027-08-21 |
-| M10 | **Enterprise V1 GA** | 2 | 5 weeks | 55 w | 2027-09-25 |
+| M8b | Content migration | 2 | 5 weeks | 48 w¹ | 2027-08-07 |
+| M9 | Workflows & signing | 2 | 7 weeks | 52 w¹ | 2027-09-04 |
+| M10 | **Enterprise V1 GA** | 2 | 5 weeks | 57 w | 2027-10-09 |
 
 ¹ Cumulative is less than the sum because M3 runs partly parallel to M2, and M7–M9 run partly
 parallel to M6. See `§4`.
 
-**Two dates matter to the business: MVP GA around 2027-03-13, Enterprise V1 GA around 2027-09-25.**
+**M8b moved Enterprise V1 GA by two weeks, from 2027-09-25 to 2027-10-09.** Stated here rather than
+absorbed, because `§8` requires promoted scope to carry its knock-on effect. Content migration
+partly parallelises with M9 — different people, different subsystems — so five weeks of work costs
+two weeks of schedule. It is not optional work: an enterprise does not replace a document system
+without a path off the old one, so the alternative to the two weeks is a product nobody can adopt.
+
+**Two dates matter to the business: MVP GA around 2027-03-13, Enterprise V1 GA around 2027-10-09.**
 Everything else is internal sequencing.
 
 ---
@@ -217,13 +225,18 @@ disable the chain; they default to deny.
 **Steps**
 
 1. Extraction (PDF, OOXML, text) in a sandboxed worker; structure parsing (ENC-213).
-2. Structure-aware chunking with deterministic chunk IDs (ENC-213).
-3. Embedding provider trait + local model; classification routing enforced in code (ENC-213).
-4. Milvus `VectorStore`; collection, indexes, hybrid query (ENC-214).
-5. **Authoritative post-filter with batch authorization and over-fetch** (ENC-215).
-6. Denylist written in the same transaction as the ACL change; invalidation worker; epoch
+2. **OCR for scanned pages** — engine, language coverage and cost decided rather than assumed
+   (ENC-161). Not a fallback bolted to the end of extraction: scanned PDFs are a large share
+   of what enterprises actually store, and a scanned document that indexes as empty is
+   invisible to search while appearing correctly filed, which is worse than one that failed
+   to ingest.
+3. Structure-aware chunking with deterministic chunk IDs (ENC-213).
+4. Embedding provider trait + local model; classification routing enforced in code (ENC-213).
+5. Milvus `VectorStore`; collection, indexes, hybrid query (ENC-214).
+6. **Authoritative post-filter with batch authorization and over-fetch** (ENC-215).
+7. Denylist written in the same transaction as the ACL change; invalidation worker; epoch
    reconciler (ENC-216).
-7. Degraded mode: Milvus down → lexical over PostgreSQL with `degraded: true` (ENC-214).
+8. Degraded mode: Milvus down → lexical over PostgreSQL with `degraded: true` (ENC-214).
 
 **Exit criteria**
 
@@ -232,6 +245,7 @@ disable the chain; they default to deny.
 - [ ] S5: deliberately over-permissive index candidates are dropped by the post-filter.
 - [ ] S8: `RESTRICTED` text never reaches a non-local embedding provider.
 - [ ] Post-filter drop ratio and denylist size exported as metrics with alerts wired.
+- [ ] A scanned, text-free PDF is searchable by its content (ENC-161).
 
 **Risks.** This milestone contains the highest-severity design risk in the product. It gets the most
 senior reviewer and a written threat walkthrough before merge, not just tests.
@@ -333,8 +347,15 @@ rebuild runbook.
 
 **Tracker:** ENC-310 … ENC-312
 
-White-labeling, custom domains with certificate automation, desktop/mobile sync, and external editor
-brokering.
+White-labeling, custom domains with certificate automation, desktop/mobile sync, external editor
+brokering, and the two document surfaces a DMS is expected to have:
+
+- **Annotations and markup** (ENC-160). Not a viewer feature bolted on: an annotation is user
+  content stored against an immutable version, it must respect `PREVIEW_ONLY`, and it is
+  discoverable — so it carries a classification and an ACL of its own.
+- **Version compare** (ENC-162). `docs/02` has listed "compare hooks" on the `versions` crate since
+  the beginning without any document saying what compare does. Immutable versions make it tractable,
+  and it is one of the two reasons anyone opens a version history.
 
 **Exit criteria**
 
@@ -343,6 +364,46 @@ brokering.
 - [ ] Y4: a conflicting upload produces a conflicted copy; nothing is discarded.
 - [ ] Y5/Y6: editor tokens are single-version; client-side editors refused for no-download content.
 - [ ] A custom domain is verified, issued a certificate and routed to the right tenant end to end.
+- [ ] An annotation on a `PREVIEW_ONLY` version is readable by its author and by nobody the
+      file's ACL excludes (ENC-160).
+
+---
+
+### M8b — Content migration · 5 weeks · Phase 2 · *overlaps M9*
+
+**Goal.** An enterprise can bring its existing document estate in, with its history intact.
+
+**Tracker:** ENC-159
+
+Added 2026-08-20 rather than planned from the start, and worth saying why: the spec pack described
+a product that stores documents beautifully and had no answer to *"we have four terabytes in
+SharePoint."* That is not a missing feature, it is a missing adoption path, and it was invisible
+because every document was written from the inside out.
+
+**Steps**
+
+1. A migration specification, before any code. The shape of the importer constrains the ingest API,
+   so getting it wrong is expensive in a way the other milestones' unknowns are not.
+2. Source connectors: SharePoint/OneDrive, NetDocuments, iManage, and a plain file share — the last
+   because it is what most of the long tail actually is.
+3. Fidelity: version history, metadata, and permissions. A migration that flattens history destroys
+   the record it was supposed to preserve, and one that drops permissions silently opens everything
+   it touches.
+4. Resumability and reconciliation. A four-terabyte migration will be interrupted; it must resume
+   without duplicating and must be able to prove what did and did not arrive.
+5. Dry-run mode with a per-item report, so a customer sees what will happen before it does.
+
+**Exit criteria**
+
+- [ ] A source item with ten versions arrives as ten versions, in order, with their timestamps and
+      authors — not as one file with the latest bytes.
+- [ ] Permissions map to `acl_entries` or the item is **refused**, never imported wide open. An
+      unmappable ACL is a failure with a reason, not a default.
+- [ ] An interrupted migration resumes without duplicating, and reconciliation reports the
+      difference between source and destination by count and by checksum.
+- [ ] Nothing imported is readable before antivirus completes — the same rule as any other ingest
+      path (`CLAUDE.md` rule 9), which is why this is a milestone and not a script.
+- [ ] Dry run produces a report a customer can read and a rollback that leaves nothing behind.
 
 ---
 
@@ -430,6 +491,19 @@ Automate/Power Apps equivalent.
 
 Anything here that becomes necessary is promoted through `TRACKER.md §2.2` like any other request —
 with its cost and its knock-on effect on the dates in `§2` stated at the time.
+
+**Promoted on 2026-08-20**, all four raised as one question — *"are we handling DMS?"* — against a
+spec pack that turned out to answer most of it and be silent on the rest:
+
+| Was | Now | Why it was not visible |
+|---|---|---|
+| Migration from an existing DMS — unmentioned | **M8b** (`ENC-159`) | Every document was written from the inside out. Nothing asked how content *gets here*. |
+| Annotations — unmentioned | M8 (`ENC-160`) | Reads as a viewer feature; is actually versioned, classified, ACL'd user content. |
+| OCR — one line in `docs/07`, as a fallback | M3 (`ENC-161`) | "Fallback when a page yields no text" quietly assumes scanned documents are the exception. |
+| Version compare — a crate-list entry | M8 (`ENC-162`) | `docs/02` has listed "compare hooks" since the start; no document ever said what compare does. |
+
+Check-in/check-out, content types, records management, legal hold, retention and templates were
+already specified — the gaps were the four above and no others.
 
 ---
 
