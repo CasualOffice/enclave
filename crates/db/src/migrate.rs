@@ -193,3 +193,30 @@ mod tests {
         run_migrations_on(&mut conn).await.expect("second apply must be a no-op");
     }
 }
+
+#[cfg(test)]
+mod rebuild_tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+
+    /// The build script still tells Cargo to watch `migrations/`.
+    ///
+    /// `ENC-155`: without that directive, editing a `.sql` rebuilds nothing, because the macro's
+    /// input is a directory no `.rs` file mentions. Every schema gate in the workspace applies
+    /// migrations through this crate and then inspects the result — so a stale build means those
+    /// gates report **green against a schema nobody is running**, which is how the defect was
+    /// found: a deliberate violation failed to fail.
+    ///
+    /// Asserted by reading the build script rather than by observing a rebuild, because a test
+    /// cannot watch Cargo decide. It is a guard against deletion, not a proof of the mechanism —
+    /// the mechanism was proven by removing `FORCE ROW LEVEL SECURITY` from a migration and
+    /// watching the RLS gate fail by name without anything being touched.
+    #[test]
+    fn the_build_script_watches_the_migrations_directory() {
+        let script = include_str!("../build.rs");
+        assert!(
+            script.contains("cargo:rerun-if-changed=../../migrations"),
+            "the migrations rerun-if-changed directive is gone; editing a .sql will silently not \
+             reach the binary, and every schema gate will pass against a stale schema (ENC-155)"
+        );
+    }
+}
