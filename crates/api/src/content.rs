@@ -69,6 +69,28 @@
 //! a version read respects the ACL the file has *now*, not the one it had when the version was
 //! written.
 //!
+//! # `capabilities` on every row
+//!
+//! A listing used to omit `capabilities` because nine ACL resolutions per row turns a five-hundred
+//! item folder into four and a half thousand of them, and a client was told to open an item before
+//! it could draw a button for it. That trade was wrong in the one direction that matters: a row
+//! with no capabilities leaves a UI two options, render every action and discover the refusal on
+//! click, or infer permission from whatever else the row carries — and the second is exactly the
+//! client-side re-derivation `CLAUDE.md` forbids, arrived at because the server declined to answer.
+//!
+//! The cost is now paid per *page* rather than per row. [`capabilities_for_many`] resolves one
+//! action across every surviving row in a single [`enclave_core::AuthorizationService::authorize_many`]
+//! call, so a page costs ten batch resolutions — the trim's `file.metadata_read`, then one per
+//! capability action — whether it holds one row or five hundred. What scales with the page is the
+//! size of the `id = ANY($1)` array, not the number of round trips.
+//!
+//! [`browse`] and [`file_metadata`] then render the object from *the same function*, over the same
+//! table of actions, against the same `Arc` the chain will consult when the action is attempted;
+//! [`capabilities_for_many`] records why that identity is structural rather than a coincidence two
+//! call sites currently share. It has to be: a listing whose capabilities disagreed with the file
+//! response for the same file and caller would make the UI change its mind about what a user may do
+//! purely because they clicked into the item.
+//!
 //! # What the wire deliberately omits
 //!
 //! `object_key`, `storage_profile_id` and `encryption_key_ref` never appear in a version listing.
@@ -84,9 +106,9 @@
 use axum::extract::{Path, Query, State};
 use axum::Json;
 use enclave_core::{
-    Action, ContainerAction, Error, FieldError, FileAction, FileId, LibraryId, Obligation,
-    Obligations, PolicyDecision, ReasonCode, RequestContext, RequestId, ResourceRef,
-    ValidationCode,
+    Action, AuthorizationService, ContainerAction, Error, FieldError, FileAction, FileId,
+    LibraryId, Obligation, Obligations, PolicyDecision, ReasonCode, RequestContext, RequestId,
+    ResourceRef, ValidationCode,
 };
 use enclave_files::{ChildFilter, FileNode, FileRepository, NodeType, PageSize, Parent};
 use enclave_versions::{FileVersion, PageLimit, VersionNumber, VersionRepository};
@@ -127,10 +149,12 @@ struct PageInfo {
 
 /// One row of a browse listing.
 ///
-/// Lighter than [`FileMetadata`]: a listing does not carry `capabilities`, because computing them
-/// costs one ACL resolution per action per row and a folder of five hundred items would pay it five
-/// hundred times over. A client renders row actions after opening the item, from
-/// [`file_metadata`].
+/// Lighter than [`FileMetadata`] — no `currentVersion`, no `aclRevision`, no `governance` — but not
+/// lighter in the one place a client renders from: `capabilities` and `obligations` are the same
+/// two types the file response carries, populated by the same function, so a row and a file
+/// response are interchangeable inputs to whatever draws the action menu. Sharing the *types*, not
+/// merely the field names, is what stops the two from drifting into a shape a client has to
+/// special-case.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Item {
@@ -145,12 +169,21 @@ pub struct Item {
     library_id: String,
     status: &'static str,
     revision: i64,
+    /// What this caller may attempt on this row, from the stage that will decide it.
+    capabilities: Capabilities,
+    obligations: WireObligations,
     created_at: chrono::DateTime<chrono::Utc>,
     modified_at: chrono::DateTime<chrono::Utc>,
 }
 
-impl From<&FileNode> for Item {
-    fn from(node: &FileNode) -> Self {
+impl Item {
+    /// Builds a row from a node and the capability answer resolved for it.
+    ///
+    /// There is deliberately no `From<&FileNode>` alongside this. A conversion that took the node
+    /// alone would have to invent a capabilities object, and the only value available to invent is
+    /// the default — nine `false`s, indistinguishable on the wire from a caller who may do nothing
+    /// with the file. A row can therefore only be built by someone holding a resolved answer.
+    fn new(node: &FileNode, capabilities: Capabilities, obligations: WireObligations) -> Self {
         Self {
             id: node.id.to_string(),
             node_type: node.node_type.as_str(),
@@ -161,6 +194,8 @@ impl From<&FileNode> for Item {
             library_id: node.library_id.to_string(),
             status: node.status.as_str(),
             revision: node.revision,
+            capabilities,
+            obligations,
             created_at: node.created_at,
             modified_at: node.modified_at,
         }
@@ -212,7 +247,8 @@ struct CurrentVersion {
 /// response shape that collapses them makes that UI the only possible one.
 ///
 /// Every field is the answer this deployment's authorization stage gives for that action on this
-/// resource — see [`capabilities_for`] for why it is that stage and not a second implementation.
+/// resource — see [`capabilities_for_many`] for why it is that stage and not a second
+/// implementation, and why a row of a listing and a file response cannot answer differently.
 #[derive(Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Capabilities {
@@ -419,16 +455,17 @@ pub async fn browse(
     .await
     .map_err(|error| ApiError::new(error.into(), request_id))?;
 
-    // Committed before the ACL batch below, deliberately. `authorize_many` opens its own
-    // tenant-scoped transaction, and a handler that held this one open while waiting for that one
+    // Committed before the ACL batches below, deliberately. Each `authorize_many` opens its own
+    // tenant-scoped transaction, and a handler that held this one open while waiting for those
     // needs two connections per request — which on a small pool is a deadlock waiting for load.
     tx.commit().await.map_err(|error| ApiError::new(error.into(), request_id))?;
 
-    let items = readable_children(&state, &ctx, &page.nodes).await.map_err(|error| {
-        // A failed resolution is not a denial (`crates/core/src/engine.rs`): a listing that could
-        // not be trimmed must not be served untrimmed.
-        ApiError::new(error, request_id)
-    })?;
+    // A failed resolution is not a denial (`crates/core/src/engine.rs`): a listing that could not
+    // be trimmed must not be served untrimmed, and one whose capabilities could not be resolved
+    // must not be served with the object a default would produce.
+    let items = readable_children(state.policy.authorization().as_ref(), &ctx, &page.nodes)
+        .await
+        .map_err(|error| ApiError::new(error, request_id))?;
 
     Ok(Json(Page {
         items,
@@ -488,9 +525,10 @@ pub async fn file_metadata(
     // and was refused by no grant. Same answer either way.
     let node = node.ok_or_else(|| ApiError::new(Error::NotFound, request_id))?;
 
-    let (capabilities, wire_obligations) = capabilities_for(&state, &ctx, &resource, &obligations)
-        .await
-        .map_err(|error| ApiError::new(error, request_id))?;
+    let (capabilities, wire_obligations) =
+        capabilities_for(state.policy.authorization().as_ref(), &ctx, &resource, &obligations)
+            .await
+            .map_err(|error| ApiError::new(error, request_id))?;
 
     Ok(Json(FileMetadata {
         id: node.id.to_string(),
@@ -665,7 +703,8 @@ fn history_cursor(
     Ok(Some(VersionNumber::new(major, minor)))
 }
 
-/// Trims a page of children to the ones this caller may see at all.
+/// Trims a page of children to the ones this caller may see at all, and answers what they may do
+/// with each.
 ///
 /// One [`enclave_core::AuthorizationService::authorize_many`] call for the whole page — never a loop calling
 /// `authorize` per row, which is what turns a 500-item folder into 500 ACL resolutions and what the
@@ -678,8 +717,18 @@ fn history_cursor(
 /// right kind — `crates/authorization` maps `File` and `Folder` to the same tree walk, so the kind
 /// does not change the verdict, but a reference that lied about it would be wrong the day something
 /// else reads it.
+///
+/// The trim's decision is not discarded once it has said yes. It *is* the decision that authorised
+/// this row's metadata read, so its obligations are what [`capabilities_for_many`] subtracts for
+/// that row — the same input `GET /files/{id}` hands it from its own `file.metadata_read` decision.
+/// Re-resolving `file.metadata_read` a second time to obtain them would be a second decision that
+/// could disagree with the one the row was admitted by.
+///
+/// Folders are not special-cased out of the capability pass. `GET /files/{id}` serves a folder and
+/// computes the same nine actions for it, and a row that answered differently from the endpoint it
+/// links to would be the exact disagreement this is built to make impossible.
 async fn readable_children(
-    state: &ApiState,
+    authorization: &dyn AuthorizationService,
     ctx: &RequestContext,
     nodes: &[FileNode],
 ) -> Result<Vec<Item>, Error> {
@@ -695,20 +744,31 @@ async fn readable_children(
         })
         .collect();
 
-    let decisions = state
-        .policy
-        .authorization()
-        .authorize_many(ctx, Action::File(FileAction::MetadataRead), &refs)
-        .await?;
+    let decisions =
+        authorization.authorize_many(ctx, Action::File(FileAction::MetadataRead), &refs).await?;
 
     // Index-aligned with `refs` by contract. If an implementation ever returned a shorter vector,
     // `zip` drops the tail — which trims *more* than necessary rather than less, and a listing that
     // is too short is a bug while a listing that is too long is a disclosure.
-    Ok(nodes
-        .iter()
-        .zip(decisions.iter())
-        .filter(|(_, decision)| decision.is_allowed())
-        .map(|(node, _)| Item::from(node))
+    let mut readable: Vec<&FileNode> = Vec::with_capacity(nodes.len());
+    let mut admitted: Vec<(ResourceRef, Obligations)> = Vec::with_capacity(nodes.len());
+    for ((node, resource), decision) in nodes.iter().zip(refs).zip(decisions) {
+        if !decision.is_allowed() {
+            continue;
+        }
+        // Allowed, so this cannot be an `Err`; taking the obligations rather than dropping the
+        // decision is what keeps a restriction attached to the read from evaporating between the
+        // trim and the row it produces.
+        admitted.push((resource, decision.ensure_allowed()?));
+        readable.push(node);
+    }
+
+    let computed = capabilities_for_many(authorization, ctx, &admitted).await?;
+
+    Ok(readable
+        .into_iter()
+        .zip(computed)
+        .map(|(node, (capabilities, obligations))| Item::new(node, capabilities, obligations))
         .collect())
 }
 
@@ -728,7 +788,56 @@ const CAPABILITY_ACTIONS: &[(&str, FileAction)] = &[
     ("sync", FileAction::Sync),
 ];
 
-/// Computes `capabilities` and `obligations` for one file.
+/// Computes `capabilities` and `obligations` for one file — the batch form, with one input.
+///
+/// The whole body is the delegation, on the same reasoning `PgAclAuthorization::authorize` gives
+/// for delegating to its own batch path: two implementations of one question are how the singular
+/// form ends up answering something the batch form does not. Here that would be a `GET /files/{id}`
+/// that offers an action the row for the same file in the same caller's listing does not — a UI
+/// that changes its mind about what a user may do because they clicked into the item.
+async fn capabilities_for(
+    authorization: &dyn AuthorizationService,
+    ctx: &RequestContext,
+    resource: &ResourceRef,
+    enforced: &Obligations,
+) -> Result<(Capabilities, WireObligations), Error> {
+    let batch = [(*resource, enforced.clone())];
+    let mut computed = capabilities_for_many(authorization, ctx, &batch).await?;
+    match computed.pop() {
+        Some(answer) => Ok(answer),
+        // Unreachable: one input, one answer — `capabilities_for_many` sizes its vector from the
+        // batch it was handed and never shortens it. If that ever stopped holding, the refusing
+        // object is the safe one: a capability wrongly withheld costs a button, and the action
+        // itself is enforced by the chain either way.
+        None => Ok((Capabilities::default(), WireObligations::default())),
+    }
+}
+
+/// Computes `capabilities` and `obligations` for a page of resources, one batch per action.
+///
+/// # The single-file endpoint and the listing cannot disagree
+///
+/// Both reach this function, and this function is the only place either one's object is built —
+/// [`capabilities_for`] is a one-element call to it, not a parallel path. That closes three of the
+/// four ways the two could have drifted: they read the same [`CAPABILITY_ACTIONS`] table, they call
+/// the same `state.policy.authorization()` handle, and they run the same suppression in
+/// [`apply_obligations`]. The fourth way is the inputs, and there are exactly two — the
+/// [`ResourceRef`], built identically from the caller's own tenant in both handlers, and the
+/// obligations of the decision that authorised *that resource's* `file.metadata_read`.
+///
+/// Those obligation sets are not merely both called "the enforced decision": the listing's comes
+/// from the trim decision that admitted the row, and `GET /files/{id}`'s from the chain decision
+/// that admitted the request, and `PolicyEngine::enforce` builds the latter by merging the former
+/// with what the stages after authorization attach. So the listing's set is a subset of the file
+/// endpoint's, and since [`apply_obligations`] only ever subtracts, a listing can never hide an
+/// action the file response would offer — it can only, if a post-authorization stage ever attaches
+/// an obligation to a metadata read, still offer one the file response has suppressed. That is the
+/// same direction of error the whole object already tolerates by design (see below): optimistic, so
+/// the failure is a refusal the user can be told about rather than an entitlement silently removed.
+/// With today's chain the two sets are identical — the ACL stage attaches no obligations
+/// (`crates/authorization/src/resolve.rs`) and every stage after it is unconfigured
+/// ([`crate::unconfigured_stages`]) — which is what
+/// `a_listings_capabilities_are_exactly_what_the_file_endpoint_returns` asserts over HTTP.
 ///
 /// # Why the engine's own authorization stage
 ///
@@ -738,6 +847,12 @@ const CAPABILITY_ACTIONS: &[(&str, FileAction)] = &[
 /// here as `state.policy.authorization()`: the very `Arc` the chain will consult when the caller
 /// actually clicks download. A `PgAclAuthorization` constructed alongside the engine would resolve
 /// the same rows today and be a second implementation to keep in step forever.
+///
+/// That stage handle is also *all* this is given — not [`ApiState`]. A probe that could reach the
+/// engine could call `enforce`, which is how a helper quietly becomes a second enforcement point
+/// the ENC-110 lint does not check; a probe that could reach the pool could answer from a query of
+/// its own. Narrowing the argument makes both impossible rather than merely discouraged, and it is
+/// what lets the unit tests below drive this with a scripted stage instead of a database.
 ///
 /// # What it is not
 ///
@@ -756,55 +871,79 @@ const CAPABILITY_ACTIONS: &[(&str, FileAction)] = &[
 /// suppresses the paths that yield original bytes, and [`Obligation::NoSync`] suppresses sync — and
 /// the suppression is applied *after* the ACL answer, so an obligation can only ever take a
 /// capability away.
-async fn capabilities_for(
-    state: &ApiState,
+///
+/// # The cost, and where it now falls
+///
+/// One resolution per action, because the trait batches *resources* and not actions: the ACL query
+/// filters on a single `action` column value. So a page of any size costs nine batch resolutions
+/// here — around three statements each, whatever the page holds — plus the trim's. Nine is still
+/// more than one, and the fix is an `action = ANY($1)` form of the batch query in
+/// `crates/authorization`; it is named rather than approximated here, because the approximation
+/// available — deriving `download` from `preview`, say — is exactly the parallel implementation the
+/// contract forbids.
+///
+/// Sequential rather than concurrent, deliberately. Each `authorize_many` opens its own
+/// tenant-scoped transaction, so nine in flight is nine connections held by one request; on the
+/// small pools this runs against that is how a listing under load starves the pool it is waiting
+/// for. The same reasoning closes [`browse`]'s own transaction before this is reached.
+async fn capabilities_for_many(
+    authorization: &dyn AuthorizationService,
     ctx: &RequestContext,
-    resource: &ResourceRef,
-    enforced: &Obligations,
-) -> Result<(Capabilities, WireObligations), Error> {
-    let mut capabilities = Capabilities { metadata_read: true, ..Capabilities::default() };
-    let mut wire = WireObligations {
-        watermark: enforced.contains(&Obligation::Watermark),
-        ..WireObligations::default()
-    };
-
-    // One resolution per action, because the trait batches *resources* and not actions: the ACL
-    // query filters on a single `action` column value. Nine short read-only transactions on a
-    // metadata read is a real cost and the fix is an `action = ANY($1)` form of the batch query in
-    // `crates/authorization`; it is named in the integrator note rather than approximated here,
-    // because the approximation available — deriving `download` from `preview`, say — is exactly
-    // the parallel implementation the contract forbids.
-    for (name, action) in CAPABILITY_ACTIONS {
-        let mut decisions = state
-            .policy
-            .authorization()
-            .authorize_many(ctx, Action::File(*action), core::slice::from_ref(resource))
-            .await?;
-
-        // Missing means the implementation returned nothing for an input it was given; the safe
-        // reading of an absent verdict is a refusal.
-        let Some(decision) = decisions.pop() else { continue };
-        if !decision.is_allowed() {
-            continue;
-        }
-        // The stage allowed, so this cannot be an `Err`; taking the obligations rather than
-        // discarding the decision is what keeps a `RequireJustification` from evaporating.
-        let attached = decision.ensure_allowed()?;
-        if attached.contains(&Obligation::RequireJustification) {
-            wire.justification_required.push(name);
-        }
-        if attached.contains(&Obligation::RequireApproval) {
-            wire.approval_required.push(name);
-        }
-        if attached.contains(&Obligation::Watermark) {
-            wire.watermark = true;
-        }
-
-        set_capability(&mut capabilities, *action);
+    admitted: &[(ResourceRef, Obligations)],
+) -> Result<Vec<(Capabilities, WireObligations)>, Error> {
+    if admitted.is_empty() {
+        return Ok(Vec::new());
     }
 
-    apply_obligations(&mut capabilities, enforced);
-    Ok((capabilities, wire))
+    // Paired in the argument rather than passed as two slices, so that a resource and the
+    // obligations of the decision that admitted it cannot be zipped out of step by an edit here.
+    let resources: Vec<ResourceRef> = admitted.iter().map(|(resource, _)| *resource).collect();
+
+    let mut computed: Vec<(Capabilities, WireObligations)> = admitted
+        .iter()
+        .map(|(_, enforced)| {
+            (
+                Capabilities { metadata_read: true, ..Capabilities::default() },
+                WireObligations {
+                    watermark: enforced.contains(&Obligation::Watermark),
+                    ..WireObligations::default()
+                },
+            )
+        })
+        .collect();
+
+    for (name, action) in CAPABILITY_ACTIONS {
+        let decisions =
+            authorization.authorize_many(ctx, Action::File(*action), &resources).await?;
+
+        // Index-aligned by the same contract the trim relies on. A short vector leaves the tail
+        // rows without this capability, which withholds a button rather than offering one that will
+        // be refused — the direction an absent verdict has to fail in.
+        for ((capabilities, wire), decision) in computed.iter_mut().zip(decisions) {
+            if !decision.is_allowed() {
+                continue;
+            }
+            // The stage allowed, so this cannot be an `Err`; taking the obligations rather than
+            // discarding the decision is what keeps a `RequireJustification` from evaporating.
+            let attached = decision.ensure_allowed()?;
+            if attached.contains(&Obligation::RequireJustification) {
+                wire.justification_required.push(name);
+            }
+            if attached.contains(&Obligation::RequireApproval) {
+                wire.approval_required.push(name);
+            }
+            if attached.contains(&Obligation::Watermark) {
+                wire.watermark = true;
+            }
+
+            set_capability(capabilities, *action);
+        }
+    }
+
+    for ((capabilities, _), (_, enforced)) in computed.iter_mut().zip(admitted) {
+        apply_obligations(capabilities, enforced);
+    }
+    Ok(computed)
 }
 
 /// Sets the field one action answers to.
@@ -877,12 +1016,219 @@ mod tests {
     // Assertions are the point of a test; the workspace warns on these in non-test code.
     #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
-    use enclave_core::{Remediation, TenantId};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use enclave_core::{Remediation, StageDecision, TenantId};
+    use uuid::Uuid;
 
     use super::*;
 
     fn request_id() -> RequestId {
         RequestId::new_v7()
+    }
+
+    /// An authorization stage that answers from a table, and counts how often it is asked.
+    ///
+    /// Two things need a stage that can be *told* what to say. One is a page whose rows differ: a
+    /// listing where every row resolves the same way passes whether the batch is keyed by resource
+    /// or ignores the resource entirely, so the interesting fixture is two rows with two answers.
+    /// The other is the call count — the reason this work was postponed was cost, and "one
+    /// resolution per action rather than per row" is a claim about the number of calls that no
+    /// assertion about the returned JSON can make.
+    #[derive(Debug)]
+    struct Scripted {
+        /// The `(resource, action)` pairs that are allowed. Everything absent is refused, which is
+        /// the same default the real resolver reaches when no grant is found.
+        allowed: Vec<(Uuid, FileAction)>,
+        /// Resolutions asked for, counted across every action.
+        calls: AtomicUsize,
+    }
+
+    impl Scripted {
+        fn new(allowed: Vec<(Uuid, FileAction)>) -> Self {
+            Self { allowed, calls: AtomicUsize::new(0) }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl AuthorizationService for Scripted {
+        async fn authorize(
+            &self,
+            ctx: &RequestContext,
+            action: Action,
+            resource: &ResourceRef,
+        ) -> Result<StageDecision, Error> {
+            let mut decisions =
+                self.authorize_many(ctx, action, core::slice::from_ref(resource)).await?;
+            Ok(decisions.pop().unwrap_or_else(|| StageDecision::deny(ReasonCode::AccessDenied)))
+        }
+
+        async fn authorize_many(
+            &self,
+            _ctx: &RequestContext,
+            action: Action,
+            resources: &[ResourceRef],
+        ) -> Result<Vec<StageDecision>, Error> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            let Action::File(action) = action else {
+                panic!("a capability probe asks only file actions, not {action}")
+            };
+            Ok(resources
+                .iter()
+                .map(|resource| {
+                    if self.allowed.contains(&(resource.id, action)) {
+                        StageDecision::allow()
+                    } else {
+                        StageDecision::deny(ReasonCode::AccessDenied)
+                    }
+                })
+                .collect())
+        }
+    }
+
+    fn probe_context() -> RequestContext {
+        RequestContext::system(TenantId::new_v7())
+    }
+
+    /// The capabilities object as it would reach the wire, so comparisons are of rendered JSON
+    /// rather than of a struct whose fields a future edit might add to unnoticed.
+    fn rendered(answer: &(Capabilities, WireObligations)) -> serde_json::Value {
+        serde_json::json!({ "capabilities": answer.0, "obligations": answer.1 })
+    }
+
+    #[tokio::test]
+    async fn rows_in_one_page_get_the_answers_their_own_grants_give() {
+        // The failure this catches is a batch that resolves once and copies the verdict across the
+        // page — cheap, plausible, and it hands every row the first row's permissions.
+        let ctx = probe_context();
+        let previewable = ResourceRef::file(ctx.tenant_id, FileId::new_v7());
+        let editable = ResourceRef::file(ctx.tenant_id, FileId::new_v7());
+        let neither = ResourceRef::file(ctx.tenant_id, FileId::new_v7());
+        let authorization = Scripted::new(vec![
+            (previewable.id, FileAction::Preview),
+            (editable.id, FileAction::Edit),
+            (editable.id, FileAction::Delete),
+        ]);
+
+        let admitted = [
+            (previewable, Obligations::none()),
+            (editable, Obligations::none()),
+            (neither, Obligations::none()),
+        ];
+        let computed = capabilities_for_many(&authorization, &ctx, &admitted).await.expect("probe");
+
+        assert_eq!(computed.len(), 3);
+        assert!(computed[0].0.preview && !computed[0].0.edit);
+        assert!(computed[1].0.edit && computed[1].0.delete && !computed[1].0.preview);
+        assert!(!computed[2].0.preview && !computed[2].0.edit && !computed[2].0.delete);
+        // Every row survived the trim to get here, so every row can read metadata — and that is the
+        // only field the three have in common.
+        assert!(computed.iter().all(|(capabilities, _)| capabilities.metadata_read));
+    }
+
+    #[tokio::test]
+    async fn a_row_answers_exactly_as_the_same_resource_asked_for_alone() {
+        // The property `GET /files/{id}` and `GET /libraries/{id}/items` are held to over HTTP by
+        // `a_listings_capabilities_are_exactly_what_the_file_endpoint_returns`, asserted here at the
+        // function both endpoints go through — including the middle of a page, where an off-by-one
+        // in the zip would show up as a neighbour's answer.
+        let ctx = probe_context();
+        let subject = ResourceRef::file(ctx.tenant_id, FileId::new_v7());
+        let before = ResourceRef::file(ctx.tenant_id, FileId::new_v7());
+        let after = ResourceRef::file(ctx.tenant_id, FileId::new_v7());
+        let authorization = Scripted::new(vec![
+            (subject.id, FileAction::Preview),
+            (subject.id, FileAction::Share),
+            (before.id, FileAction::Download),
+            (after.id, FileAction::Sync),
+        ]);
+
+        let alone = capabilities_for(&authorization, &ctx, &subject, &Obligations::none())
+            .await
+            .expect("one");
+        let page = capabilities_for_many(
+            &authorization,
+            &ctx,
+            &[
+                (before, Obligations::none()),
+                (subject, Obligations::none()),
+                (after, Obligations::none()),
+            ],
+        )
+        .await
+        .expect("page");
+
+        assert_eq!(rendered(&page[1]), rendered(&alone));
+        assert_ne!(rendered(&page[0]), rendered(&alone), "the fixture must not be uniform");
+    }
+
+    #[tokio::test]
+    async fn an_obligation_on_one_row_does_not_travel_to_its_neighbours() {
+        // Obligations arrive per row, from the decision that admitted that row. Applying them to
+        // the page would suppress a capability its caller holds; applying none would drop a
+        // restriction. Both are visible here as the difference between the two rows.
+        let ctx = probe_context();
+        let restricted = ResourceRef::file(ctx.tenant_id, FileId::new_v7());
+        let unrestricted = ResourceRef::file(ctx.tenant_id, FileId::new_v7());
+        let authorization = Scripted::new(vec![
+            (restricted.id, FileAction::Download),
+            (restricted.id, FileAction::Preview),
+            (unrestricted.id, FileAction::Download),
+            (unrestricted.id, FileAction::Preview),
+        ]);
+
+        let computed = capabilities_for_many(
+            &authorization,
+            &ctx,
+            &[
+                (
+                    restricted,
+                    Obligations::from_iter([Obligation::NoDownload, Obligation::Watermark]),
+                ),
+                (unrestricted, Obligations::none()),
+            ],
+        )
+        .await
+        .expect("probe");
+
+        assert!(!computed[0].0.download && computed[0].0.preview);
+        assert!(computed[0].1.watermark);
+        assert!(computed[1].0.download, "a neighbour's obligation took a capability away");
+        assert!(!computed[1].1.watermark);
+    }
+
+    #[tokio::test]
+    async fn a_page_costs_one_resolution_per_action_however_many_rows_it_holds() {
+        // The reason capabilities were left off a listing in the first place. Two hundred rows and
+        // one row cost the same nine resolutions; the per-row loop this replaces would have cost
+        // eighteen hundred.
+        let ctx = probe_context();
+        let page: Vec<(ResourceRef, Obligations)> = (0..200)
+            .map(|_| (ResourceRef::file(ctx.tenant_id, FileId::new_v7()), Obligations::none()))
+            .collect();
+
+        let authorization = Scripted::new(Vec::new());
+        let computed = capabilities_for_many(&authorization, &ctx, &page).await.expect("probe");
+        assert_eq!(computed.len(), 200);
+        assert_eq!(
+            authorization.calls.load(Ordering::Relaxed),
+            CAPABILITY_ACTIONS.len(),
+            "the page was resolved per row rather than per action"
+        );
+
+        let one = Scripted::new(Vec::new());
+        let _ = capabilities_for_many(&one, &ctx, &page[..1]).await.expect("probe");
+        assert_eq!(one.calls.load(Ordering::Relaxed), CAPABILITY_ACTIONS.len());
+    }
+
+    #[tokio::test]
+    async fn an_empty_page_asks_the_stage_nothing() {
+        // A folder whose every row was trimmed must not spend nine resolutions proving it.
+        let ctx = probe_context();
+        let authorization = Scripted::new(Vec::new());
+        let computed = capabilities_for_many(&authorization, &ctx, &[]).await.expect("probe");
+        assert!(computed.is_empty());
+        assert_eq!(authorization.calls.load(Ordering::Relaxed), 0);
     }
 
     #[test]

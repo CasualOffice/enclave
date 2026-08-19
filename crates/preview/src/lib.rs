@@ -32,23 +32,30 @@
 //! error it becomes a retry, and a retry against a document engineered to take forever is a
 //! denial-of-service primitive with a scheduler helping it along.
 //!
+//! # What renders today
+//!
+//! [`RasterRenderer`] — PNG, JPEG and WebP sources, producing the `thumb` and `page-png-1x`
+//! profiles. It runs in process on a blocking thread rather than in D17's sandboxed worker, which
+//! is why its scope stops where it does: a decoder that inspects a header before allocating can be
+//! bounded from here, and a document parser cannot. See [`raster`].
+//!
 //! # What is deliberately not here yet
 //!
-//! **No real renderer.** [`NoRenderer`] refuses everything, in the shape `crates/core`'s policy
-//! stages already use: a deployment with no rendering worker configured refuses every preview
-//! rather than falling through to something that serves originals. The codecs live in a separate
-//! sandboxed process (`plans/M2-ACCESS-DELIVERY.md` D17) and land in `ENC-146a`; this crate is the
-//! pipeline they plug into, and the bounds they will run inside.
+//! **No document formats.** PDF and OOXML need the out-of-process worker of
+//! `plans/M2-ACCESS-DELIVERY.md` D17, with the process limits that make a memory bound real, so
+//! `pdf-sanitized`, `html-sanitized` and `page-png-2x` are still answered by [`NoRenderer`]. That is
+//! the deny-by-default shape `crates/core`'s policy stages use: a deployment with no worker for a
+//! format refuses that preview rather than falling through to something that serves originals.
 //!
-//! **No watermark composition** (`ENC-147`) and **no API surface** (`ENC-148`).
-//! `crates/api/src/preview.rs` still returns `501`, and it should keep doing so until there is a
-//! rendition to serve — the shortcut of streaming originals in the meantime would collapse
-//! `preview` and `download` into one permission on exactly the path where the collapse is least
-//! visible.
+//! **No API surface** (`ENC-148`). `crates/api/src/preview.rs` still returns `501`, and it should
+//! keep doing so until it is wired to this pipeline — the shortcut of streaming originals in the
+//! meantime would collapse `preview` and `download` into one permission on exactly the path where
+//! the collapse is least visible.
 
 pub mod budget;
 pub mod error;
 pub mod model;
+pub mod raster;
 pub mod render;
 pub mod repo;
 pub mod service;
@@ -57,6 +64,7 @@ pub mod watermark;
 pub use budget::{Refusal, RenderBudget};
 pub use error::{PreviewError, Result};
 pub use model::{GeneratorVersion, Rendition, RenditionKey, RenditionProfile};
+pub use raster::RasterRenderer;
 pub use render::{Bounded, NoRenderer, RenderOutcome, RenderRequest, RenderedArtifact, Renderer};
 pub use repo::ReadableVersion;
 pub use service::{PreviewOutcome, RenditionService, SourceReader};

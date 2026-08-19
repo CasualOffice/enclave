@@ -157,6 +157,25 @@ base64       = "0.23"
 subtle       = "2"
 zeroize      = { version = "1", features = ["derive"] }
 
+# rendering
+#
+# `image` rather than the per-format decoder crates directly, for one property that decides this
+# task: `ImageReader::into_decoder` yields a decoder that already knows the image's dimensions and
+# its `total_bytes()` *before* a pixel buffer exists, and `Limits::max_alloc` is checked inside the
+# decoder before it allocates. A decoder whose only verb is "give me the pixels" makes the decode
+# bomb — a 70-byte file declaring 65535×65535 — unbounded by construction, and no wrapper outside it
+# can fix that. See `crates/preview/src/raster.rs`.
+#
+# `default-features = false`, then formats added one at a time. Every enabled format is a parser we
+# ship inside a customer's trust boundary, and the default set is fourteen of them including exr,
+# tga and dds — formats nobody uploads and nobody has fuzzed on our behalf. The three here are the
+# ones `raster.rs` allowlists; the two lists are asserted equal rather than assumed so.
+#
+# `rayon` stays off. Renders already run on `spawn_blocking` threads the runtime sizes, and a second
+# thread pool nested inside the parser is parallelism nobody is accounting for — including the
+# per-render CPU bound `docs/06 §5` asks for.
+image        = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+
 # misc
 async-trait  = "0.1"
 futures      = "0.3"

@@ -99,7 +99,12 @@ pub enum Refusal {
     Timeout,
     /// The source is larger than [`RenderBudget::max_input_bytes`].
     InputTooLarge,
-    /// The artefact exceeded [`RenderBudget::max_output_bytes`].
+    /// The artefact exceeded [`RenderBudget::max_output_bytes`] — or would have.
+    ///
+    /// Also the verdict on a source whose *decoded* form exceeds it, which
+    /// [`RasterRenderer`](crate::RasterRenderer) reaches from the header before allocating. A
+    /// decode bomb and a rendition bomb are the same attack measured at two points, and giving them
+    /// one code keeps them in one metric rather than splitting the signal in half.
     OutputTooLarge,
     /// A paginated profile exceeded [`RenderBudget::max_pages`].
     TooManyPages,

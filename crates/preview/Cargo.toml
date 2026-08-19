@@ -16,6 +16,9 @@ enclave-storage = { workspace = true }
 anyhow      = { workspace = true }
 async-trait = { workspace = true }
 chrono      = { workspace = true }
+# The raster decoder. Chosen for header-before-pixels inspection, and pinned to three formats — see
+# the note in the workspace manifest and the bound in `src/raster.rs`.
+image       = { workspace = true }
 sqlx        = { workspace = true }
 thiserror   = { workspace = true }
 # `Bounded` enforces the wall clock with `tokio::time::timeout`; see `render.rs` for why that bound
@@ -25,6 +28,10 @@ uuid        = { workspace = true }
 
 [dev-dependencies]
 enclave-testing = { workspace = true }
+# Used in `tests/raster.rs` to read a rendition's *pixels* back, for the one assertion that a
+# hand-parsed header cannot make: that the image is the source's and not a correctly-sized blank.
+# The header assertions deliberately do not go through it — see that file's module documentation.
+image           = { workspace = true }
 # `test-util` gives `#[tokio::test(start_paused = true)]`, which makes the wall-clock bound
 # testable deterministically instead of as a race against a real clock.
 tokio           = { workspace = true, features = ["rt-multi-thread", "macros", "time", "test-util"] }
