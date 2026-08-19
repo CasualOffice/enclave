@@ -304,7 +304,7 @@ async fn an_expired_suppression_stops_suppressing_before_anything_sweeps_it() {
 
     // And the sweep is housekeeping, not correctness: it removes the row that had already stopped
     // mattering.
-    let lifted = denylist::lift_expired(&mut tx, alpha, now).await.expect("sweep");
+    let lifted = denylist::lift_expired(&mut tx, alpha).await.expect("sweep");
     assert_eq!(lifted, 1);
     tx.commit().await.expect("commit");
 

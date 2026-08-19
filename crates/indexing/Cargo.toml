@@ -18,6 +18,8 @@ enclave-preview = { workspace = true }
 
 anyhow      = { workspace = true }
 async-trait = { workspace = true }
+#  gives the deterministic chunk ids docs/07 §2 specifies.
+uuid        = { workspace = true }
 thiserror   = { workspace = true }
 # `BoundedExtractor` enforces the wall clock with `tokio::time::timeout`, and every parser runs on
 # `spawn_blocking`; see `src/text.rs` for why that placement is the bound rather than a nicety.

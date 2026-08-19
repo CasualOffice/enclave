@@ -78,11 +78,13 @@
 //!
 //! [`Refusal::Timeout`]: enclave_preview::Refusal::Timeout
 
+pub mod chunk;
 pub mod error;
 pub mod extract;
 pub mod model;
 pub mod text;
 
+pub use chunk::{chunk_id, Chunk, ChunkBudget, Chunker, ChunkerVersion};
 pub use error::{IndexingError, Result};
 pub use extract::{
     BoundedExtractor, ExtractOutcome, ExtractRequest, Extractor, NoExtractor, TextlessSource,
