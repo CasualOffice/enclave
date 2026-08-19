@@ -67,5 +67,5 @@ pub use model::{GeneratorVersion, Rendition, RenditionKey, RenditionProfile};
 pub use raster::RasterRenderer;
 pub use render::{Bounded, NoRenderer, RenderOutcome, RenderRequest, RenderedArtifact, Renderer};
 pub use repo::ReadableVersion;
-pub use service::{PreviewOutcome, RenditionService, SourceReader};
+pub use service::{Delivery, PreviewOutcome, PreviewPipeline, RenditionService, SourceReader};
 pub use watermark::{compose, escape_text, WatermarkFacts, WatermarkStyle, Watermarked};

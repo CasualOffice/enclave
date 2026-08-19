@@ -49,6 +49,7 @@ use enclave_core::{
     PolicyEngine, RequestContext, ResourceRef, Result as CoreResult, StageDecision, TenantId,
     UserId, VersionId, WorkspaceId,
 };
+use enclave_preview::{Delivery, PreviewPipeline};
 use enclave_storage::{
     BlobStore, ByteRange, ByteStream, MultipartLimits, ObjectMeta, PublicAccessCheck,
     PublicAccessError, PublicAccessReport, Result as StorageResult, StorageError,
@@ -332,6 +333,43 @@ async fn grant(
 ///
 /// The routes are registered here rather than taken from `enclave_api::router`, because this suite
 /// is about two endpoints and should fail for reasons that belong to them.
+/// A rendition pipeline that returns bytes, without a renderer or an object store.
+///
+/// A1 is about what the *preview path* does, not about whether PNG encoding works — that is
+/// `crates/preview`'s own suite. What matters here is that the handler serves what the pipeline
+/// gives it and reaches `BlobStore::signed_download` zero times, which the `CountingStore` beside
+/// it is what proves.
+#[derive(Debug, Default)]
+struct StubPipeline {
+    /// Set to refuse, so the "no rendition for this version" path can be exercised too.
+    unavailable: bool,
+}
+
+/// The bytes the stub serves. A real PNG signature so the assertion is about *these* bytes rather
+/// than about a length.
+const STUB_RENDITION: &[u8] = &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+
+#[async_trait::async_trait]
+impl PreviewPipeline for StubPipeline {
+    async fn deliver(
+        &self,
+        _conn: &mut sqlx::PgConnection,
+        _tenant: enclave_core::TenantId,
+        _version: &enclave_preview::ReadableVersion,
+        _profile: enclave_preview::RenditionProfile,
+        _now: chrono::DateTime<Utc>,
+    ) -> enclave_preview::Result<Delivery> {
+        if self.unavailable {
+            return Ok(Delivery::Unavailable(enclave_preview::Refusal::UnsupportedFormat));
+        }
+        Ok(Delivery::Available {
+            bytes: STUB_RENDITION.to_vec(),
+            media_type: "image/png".to_owned(),
+            page_count: Some(1),
+        })
+    }
+}
+
 async fn app(
     db: &TestDb,
     dlp: Arc<dyn DlpService>,
@@ -354,10 +392,14 @@ async fn app(
     let state = ApiState::new(policy, pool, ISSUER, AUDIENCE, KeySet::new([key.public().clone()]));
 
     let blob: Arc<dyn BlobStore> = store.clone();
+    // Two extensions, and the asymmetry is the point: the download path holds a `BlobStore` and can
+    // mint a URL; the preview path holds a pipeline that has no method which could.
+    let pipeline: Arc<dyn PreviewPipeline> = Arc::new(StubPipeline::default());
     let router = Router::new()
         .route("/api/v1/files/{id}/download", post(download::download))
         .route("/api/v1/files/{id}/preview", get(preview::preview))
         .layer(Extension(blob))
+        .layer(Extension(pipeline))
         .with_state(state);
 
     (router, key, store)
@@ -390,6 +432,12 @@ fn token(key: &PrivateSigningKey, tenant: TenantId, user: UserId) -> String {
 struct Answer {
     status: StatusCode,
     cache_control: Option<String>,
+    content_type: Option<String>,
+    /// Every header, for the ones asserted by name rather than lifted into a field.
+    headers: axum::http::HeaderMap,
+    /// The raw body. A rendition is binary, so `body` — which is lossy UTF-8 — is not enough to
+    /// compare it against what the pipeline produced.
+    bytes: Vec<u8>,
     body: String,
 }
 
@@ -423,8 +471,20 @@ async fn send(app: &Router, request: Request<Body>) -> Answer {
         .headers()
         .get(axum::http::header::CACHE_CONTROL)
         .map(|value| value.to_str().expect("ascii").to_owned());
+    let content_type = response
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .map(|value| value.to_str().expect("ascii").to_owned());
+    let headers = response.headers().clone();
     let body = axum::body::to_bytes(response.into_body(), 64 * 1024).await.expect("body");
-    Answer { status, cache_control, body: String::from_utf8_lossy(&body).into_owned() }
+    Answer {
+        status,
+        cache_control,
+        content_type,
+        headers,
+        bytes: body.to_vec(),
+        body: String::from_utf8_lossy(&body).into_owned(),
+    }
 }
 
 async fn get_preview(app: &Router, bearer: &str, file: FileId) -> Answer {
@@ -481,27 +541,38 @@ async fn preview_allowed_and_download_denied_yields_a_rendition_path_and_no_sign
 
     let bearer = token(&key, fixtures.alpha.id, user);
 
-    // Preview: allowed by the chain, and answered without the pipeline that does not exist.
+    // Preview: allowed by the chain, and answered with a rendition. This is the half of A1 that
+    // was a `501` until `ENC-148` — the criterion says "produces a rendition", and a refusal, however
+    // honest, does not.
     let preview = get_preview(&app, &bearer, content.file).await;
     assert_eq!(
         preview.status,
-        StatusCode::NOT_IMPLEMENTED,
-        "a permitted preview must not fall back to the original: {}",
+        StatusCode::OK,
+        "a permitted preview must produce a rendition: {}",
         preview.body
     );
-    let body = preview.json();
-    assert_eq!(body["error"]["code"], "PREVIEW_NOT_IMPLEMENTED");
     assert_eq!(
-        body["error"]["details"][0]["servesOriginal"],
-        serde_json::Value::Bool(false),
-        "the refusal must state that the original is not the fallback"
+        preview.content_type.as_deref(),
+        Some("image/png"),
+        "the rendition's media type comes from the profile, not from the source"
     );
-    assert_eq!(body["error"]["details"][0]["renditionProfile"], "page-png-2x");
+    assert_eq!(
+        preview.bytes.as_slice(),
+        STUB_RENDITION,
+        "the response carried something other than the rendition the pipeline produced"
+    );
+    // The other half, and the one that makes the first half safe: nothing about the original is in
+    // this response — no key, no URL, no bytes.
     preview.carries_no_original(&content);
     assert_eq!(
         preview.cache_control.as_deref(),
         Some("private, no-store"),
         "a preview response must never be cached (docs/05-API.md §9)"
+    );
+    assert_eq!(
+        preview.headers.get("x-content-type-options").and_then(|v| v.to_str().ok()),
+        Some("nosniff"),
+        "a rendition a browser may reinterpret is a rendition served as something else"
     );
 
     // Download: denied, and the body carries no URL — the assertion a status-only test would miss.
@@ -562,10 +633,24 @@ async fn a_no_download_obligation_refuses_before_any_url_is_generated() {
     );
     download.carries_no_original(&content);
 
-    // The preview of the same file carries a `WATERMARK` obligation, which the rendition pipeline
-    // will satisfy. Nothing is rendered yet, so nothing is served unwatermarked.
+    // The preview of the same file carries a `WATERMARK` obligation. Until `ENC-148` this was a
+    // `501`, and the obligation was satisfied by the fact that nothing was rendered at all.
+    //
+    // Now something *is* rendered, and the stub pipeline beside this test would happily return
+    // bytes — so if the handler served them, it would serve an unmarked page under an obligation
+    // whose entire purpose is that the page identifies its viewer. `CLAUDE.md` rule 8: obligations
+    // are satisfied or the operation fails. It fails.
     let preview = get_preview(&app, &bearer, content.file).await;
-    assert_eq!(preview.status, StatusCode::NOT_IMPLEMENTED);
+    assert_eq!(
+        preview.status,
+        StatusCode::FORBIDDEN,
+        "a watermark obligation must refuse, not serve an unmarked rendition: {}",
+        preview.body
+    );
+    assert!(
+        preview.bytes != STUB_RENDITION,
+        "the rendition was served despite an unsatisfiable watermark obligation"
+    );
     preview.carries_no_original(&content);
 
     assert!(

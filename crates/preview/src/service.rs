@@ -24,7 +24,11 @@ use crate::model::{Rendition, RenditionKey, RenditionProfile};
 use crate::render::{Bounded, RenderOutcome, RenderRequest, Renderer};
 use crate::repo::{self, ReadableVersion};
 
-/// Where the source bytes come from.
+/// Where object bytes come from.
+///
+/// Named for its first use — fetching a source to render — but it is also how a stored rendition is
+/// read back for delivery. One port rather than two, because the two would be the same trait with
+/// different names, and a second one is a second place for a `BlobStore` to be threaded in.
 ///
 /// A port rather than a [`BlobStore`](enclave_storage::BlobStore) handle threaded through, so that
 /// [`RenditionService`] can be tested against a source that is a `Vec<u8>` and so that the renderer
@@ -151,3 +155,95 @@ impl<R: Renderer, S: SourceReader> RenditionService<R, S> {
 /// one. Multi-artefact profiles — a page-per-file pyramid — will name pages by index here, which
 /// is still not caller-controlled.
 const ARTIFACT_NAME: &str = "base";
+
+/// What the delivery path may ask of the pipeline.
+///
+/// # Why this is a trait and not the concrete service
+///
+/// `crates/api/src/preview.rs` holds no [`BlobStore`](enclave_storage::BlobStore) — deliberately,
+/// and the module says so at length: a handler that could reach object storage is one edit away
+/// from serving an original on the view-only path, which collapses `preview` and `download` into
+/// one permission (`CLAUDE.md` rule 6).
+///
+/// Serving a rendition needs *some* storage read, so the question is what shape to give it. This
+/// trait is the answer: one method, which takes a [`ReadableVersion`] and a profile and returns
+/// bytes. There is no way to name an object key, and no method that mints a URL. The handler cannot
+/// ask for the original because the vocabulary it is given cannot express the request — the same
+/// technique the handler already uses against `BlobStore`, applied one level in.
+#[async_trait::async_trait]
+pub trait PreviewPipeline: Send + Sync {
+    /// The bytes to serve for this version and profile.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures, a dead rendering worker, or a source that could not be fetched. Never for
+    /// a document that will not render — that is [`Delivery::Unavailable`].
+    async fn deliver(
+        &self,
+        conn: &mut PgConnection,
+        tenant: TenantId,
+        version: &ReadableVersion,
+        profile: RenditionProfile,
+        now: DateTime<Utc>,
+    ) -> Result<Delivery>;
+}
+
+/// What the delivery path got.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Delivery {
+    /// Bytes, ready to stream.
+    Available {
+        /// The base rendition. Identity-free — the watermark is composed over it at delivery, never
+        /// baked in here, or it would be cacheable (`docs/06 §5.1`).
+        bytes: Vec<u8>,
+        /// What the bytes are. Determined by the profile, never echoed from the source.
+        media_type: String,
+        /// Pages represented, for paginated profiles.
+        page_count: Option<i32>,
+    },
+    /// No preview for this version under this profile, and re-asking will not change that.
+    Unavailable(Refusal),
+}
+
+#[async_trait::async_trait]
+impl<R: Renderer, S: SourceReader> PreviewPipeline for RenditionService<R, S> {
+    async fn deliver(
+        &self,
+        conn: &mut PgConnection,
+        tenant: TenantId,
+        version: &ReadableVersion,
+        profile: RenditionProfile,
+        now: DateTime<Utc>,
+    ) -> Result<Delivery> {
+        match self.base_rendition(conn, tenant, version, profile, now).await? {
+            PreviewOutcome::Unavailable(refusal) => Ok(Delivery::Unavailable(refusal)),
+            PreviewOutcome::Available(rendition) => {
+                // The key comes from the row this call just produced, never from a caller. That is
+                // what keeps the trait's promise: the pipeline reads the object it decided on.
+                let bytes = self.source.read(&rendition.object_key).await?;
+                Ok(Delivery::Available {
+                    bytes,
+                    media_type: media_type_for(rendition.profile).to_owned(),
+                    page_count: rendition.page_count,
+                })
+            }
+        }
+    }
+}
+
+/// What a profile's artefact is, as a media type.
+///
+/// Derived from the profile rather than stored beside it: a media type recorded at generation time
+/// is one that can disagree with the bytes after a generator change, and the profile is what
+/// decides the format in the first place.
+const fn media_type_for(profile: RenditionProfile) -> &'static str {
+    match profile {
+        RenditionProfile::Thumb | RenditionProfile::PagePng1x | RenditionProfile::PagePng2x => {
+            "image/png"
+        }
+        RenditionProfile::PdfSanitized => "application/pdf",
+        // `charset` is not optional here. Without it a browser sniffs the encoding, and sniffing is
+        // how a document controls its own interpretation.
+        RenditionProfile::HtmlSanitized => "text/html; charset=utf-8",
+    }
+}

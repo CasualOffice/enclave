@@ -14,39 +14,45 @@
 //!    A future edit that wanted to serve the original from here would have to add the extractor,
 //!    which is a diff a reviewer notices.
 //!
-//! # Why this returns `501` instead of the file
+//! # What it serves, and what it structurally cannot
 //!
-//! `crates/preview` is a stub: there is no rendition pipeline, no sanitizer and no watermark
-//! compositor (`docs/06-SECURITY-DLP-ACCESS.md §5`). The tempting shortcut — stream the original
-//! bytes until renditions land — would silently collapse `preview` and `download` into one
-//! permission, which is precisely the failure the split exists to prevent, and it would do so on
-//! the path where the collapse is least visible: a caller with `preview=ALLOW, download=DENY`
-//! would receive exactly what the deny was about.
+//! A base rendition, produced by `crates/preview` and read back through
+//! [`PreviewPipeline`](enclave_preview::PreviewPipeline). That trait has one method, taking a
+//! version and a profile and returning bytes: no way to name an object key, no method that mints a
+//! URL. So the handler still cannot ask for the original — not because it declines to, but because
+//! the vocabulary it holds cannot express the request. Property 2 above, one level in.
 //!
-//! So the endpoint refuses, loudly and with a reason. A `501` is the honest status: the request is
-//! well-formed and the caller may be perfectly entitled to it — the server has not implemented the
-//! capability. `docs/12-TESTING.md §4.2` A1 is asserted against this behaviour in
-//! `tests/delivery.rs`: the response carries no signed URL, and the blob store is never asked for
-//! one.
+//! This endpoint returned `501` until `ENC-148`, and the reason is worth keeping: streaming
+//! originals "until renditions land" would have collapsed `preview` and `download` into one
+//! permission on the path where the collapse is least visible — a caller with
+//! `preview=ALLOW, download=DENY` receiving exactly what the deny was about.
 //!
-//! # What arrives with the pipeline
+//! # The obligation the `501` was hiding
 //!
-//! The obligations this handler already refuses to drop — [`Obligation::Watermark`] above all —
-//! become the rendition's composition step (`docs/06 §5.1`: identity-free base rendition, cached;
-//! watermark layer composed per request and never cached). The 501 is replaced by the rendition
-//! response; the policy code above it does not change.
-
+//! `satisfy` used to treat [`Obligation::Watermark`] as satisfied, on the honest grounds that
+//! nothing was rendered at all so nothing could be served unwatermarked. Removing the `501` turned
+//! that arm into a silent obligation drop — `CLAUDE.md` rule 8, and the one this module would have
+//! violated by succeeding.
+//!
+//! So a watermark obligation now **refuses** the preview. `crates/preview` composes the layer
+//! (`ENC-147`) but nothing rasterises SVG over a PNG server-side yet, and the alternative — send
+//! the base and an overlay and let the client combine them — is not a control: a client that
+//! simply does not draw the overlay gets an unmarked page. Refusing is the safe direction and the
+//! honest one; `ENC-169` is the compositor that lifts it.
+//!
 use core::str::FromStr as _;
 
-use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use std::sync::Arc;
+
+use axum::extract::{Extension, Path, Query, State};
+use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::Response;
 use enclave_core::{
     Action, Error, FileAction, FileId, Obligation, Obligations, ReasonCode, RequestContext,
     RequestId, ResourceRef,
 };
 use enclave_files::FileRepository;
-use enclave_versions::VersionRepository;
+use enclave_preview::{Delivery, PreviewPipeline, ReadableVersion, RenditionProfile};
 use serde::Deserialize;
 
 use crate::auth::Authenticated;
@@ -107,6 +113,9 @@ struct Rendition {
 /// deliberately indistinguishable (see [`conceal_if_not_visible`]).
 pub async fn preview(
     State(state): State<ApiState>,
+    // Not a `BlobStore`. See the module documentation: this is the whole of the storage vocabulary
+    // this handler is given, and it cannot express "the original".
+    Extension(pipeline): Extension<Arc<dyn PreviewPipeline>>,
     Authenticated { ctx }: Authenticated,
     Path(file): Path<String>,
     Query(query): Query<PreviewQuery>,
@@ -136,36 +145,108 @@ pub async fn preview(
     let obligations = decision.into_obligations();
     satisfy(&obligations).map_err(|error| ApiError::new(error, request_id))?;
 
-    // Rule 9, on the read path where it matters most: a preview of a file that antivirus has not
-    // cleared is still a parse of hostile bytes by our own renderer. Checked before the `501` so
-    // that the eventual pipeline inherits the order rather than the other way round.
-    ensure_readable(&state, &ctx, file, request_id).await?;
+    let profile = profile_for(&rendition.profile)
+        .ok_or_else(|| ApiError::new(Error::NotFound, request_id))?;
 
-    // Everything above this line is the real endpoint. What is missing is the renderer.
-    Ok(not_implemented(&rendition, request_id))
-}
-
-/// Confirms that a servable version exists behind this file, or reports absence.
-///
-/// The version is loaded and dropped: nothing is served from it. It is loaded anyway because the
-/// answer this endpoint gives must not depend on the pipeline being absent — a caller must get the
-/// same `404` for a quarantined file today as they will when renditions exist.
-async fn ensure_readable(
-    state: &ApiState,
-    ctx: &RequestContext,
-    file: FileId,
-    request_id: RequestId,
-) -> Result<(), ApiError> {
     let mut tx = state
         .db
         .begin(ctx.tenant_id)
         .await
         .map_err(|error| ApiError::new(error.into(), request_id))?;
 
+    // Rule 9, on the read path where it matters most: a preview of a file antivirus has not cleared
+    // is still a parse of hostile bytes by our own renderer. The witness this returns is the only
+    // way to reach the pipeline, so an unscanned version cannot be rendered even by mistake.
+    let version = readable_version(&mut tx, &ctx, file, request_id).await?;
+
+    let delivery = pipeline
+        .deliver(&mut tx, ctx.tenant_id, &version, profile, chrono::Utc::now())
+        .await
+        .map_err(|error| ApiError::new(error.into(), request_id))?;
+
+    tx.commit().await.map_err(|error| ApiError::new(error.into(), request_id))?;
+
+    match delivery {
+        // A document that will not render is a `404`, not a `415` or a `501`. The caller asked for
+        // the preview of a file, and there is none — telling them *why* would distinguish "this
+        // format has no preview" from "this file has none", which is a fact about content they may
+        // not be able to read.
+        Delivery::Unavailable(refusal) => {
+            tracing::debug!(refusal = refusal.as_str(), "no rendition for this version");
+            Err(ApiError::new(Error::NotFound, request_id))
+        }
+        Delivery::Available { bytes, media_type, .. } => {
+            Ok(rendition_response(bytes, &media_type, request_id))
+        }
+    }
+}
+
+/// Builds the response around a rendition's bytes.
+///
+/// Every header here is a control rather than a nicety:
+///
+/// * **`no-store`.** A rendition of `PREVIEW_ONLY` content in a shared cache is that content
+///   available without the policy chain. The same header the download path sets, for the same
+///   reason.
+/// * **`nosniff`.** The media type comes from the profile, and without this a browser is free to
+///   disagree with it — which is how a rendition gets interpreted as something it is not.
+/// * **`Content-Disposition: inline`.** Preview is viewing; an `attachment` would put a
+///   download-shaped affordance on the path whose entire purpose is that downloading is separable.
+/// * **`sandbox`.** `docs/05-API.md` requires it for HTML renditions; it is set for every profile
+///   because a header that is only correct for some responses is one somebody forgets to set on the
+///   next one.
+fn rendition_response(bytes: Vec<u8>, media_type: &str, request_id: RequestId) -> Response {
+    let mut response = Response::new(bytes.into());
+    let headers = response.headers_mut();
+
+    if let Ok(value) = HeaderValue::from_str(media_type) {
+        let _previous = headers.insert(header::CONTENT_TYPE, value);
+    }
+    let _previous = headers.insert(header::CACHE_CONTROL, NO_STORE);
+    let _previous = headers.insert("x-content-type-options", HeaderValue::from_static("nosniff"));
+    let _previous = headers.insert(header::CONTENT_DISPOSITION, HeaderValue::from_static("inline"));
+    let _previous = headers.insert(
+        "content-security-policy",
+        HeaderValue::from_static("sandbox; default-src 'none'; img-src 'self' data:"),
+    );
+    if let Ok(value) = HeaderValue::from_str(&request_id.to_string()) {
+        let _previous = headers.insert("x-request-id", value);
+    }
+    response
+}
+
+/// A rendition is never cached by anything between here and the viewer.
+const NO_STORE: HeaderValue = HeaderValue::from_static("private, no-store");
+
+/// Maps the wire profile name onto the pipeline's vocabulary.
+///
+/// `None` for a name no profile answers to. The caller gets the same `404` as for a file that does
+/// not exist: a distinct error would let an unauthenticated probe enumerate which profiles a
+/// deployment's renderer supports, which is a description of its attack surface.
+fn profile_for(name: &str) -> Option<RenditionProfile> {
+    name.parse::<RenditionProfile>().ok()
+}
+
+/// Obtains the witness that a servable version exists behind this file, or reports absence.
+///
+/// Returns `enclave_preview::ReadableVersion`, which has private fields and one constructor — a
+/// query filtering `status = 'AVAILABLE' AND av_status = 'CLEAN'`. That is what makes rule 9
+/// structural on this path rather than remembered: the pipeline takes the witness by reference, so
+/// a caller cannot express a request to render something quarantined.
+///
+/// The file row is still read first, and separately, because `files` is where "folder", "trashed"
+/// and "belongs to another tenant" live — three answers that must be the same `404` as "no readable
+/// version" and would otherwise have three different shapes.
+async fn readable_version(
+    tx: &mut enclave_db::TenantScoped,
+    ctx: &RequestContext,
+    file: FileId,
+    request_id: RequestId,
+) -> Result<ReadableVersion, ApiError> {
     // Row-level security is the second layer here, independent of the chain above: `TenantScoped`
     // has set `app.tenant_id`, so a file belonging to another tenant is not filtered out of this
     // query — it is invisible to the transaction (PR #22).
-    let node = FileRepository::find_by_id(&mut tx, ctx.tenant_id, file)
+    let node = FileRepository::find_by_id(tx, ctx.tenant_id, file)
         .await
         .map_err(|error| ApiError::new(error.into(), request_id))?
         .ok_or_else(|| ApiError::new(Error::NotFound, request_id))?;
@@ -177,18 +258,10 @@ async fn ensure_readable(
     let current =
         node.current_version_id.ok_or_else(|| ApiError::new(Error::NotFound, request_id))?;
 
-    // `find_readable`, never `find`: a `SCANNING`, `QUARANTINED` or failed version must be
-    // indistinguishable from one that does not exist (`CLAUDE.md` rule 9).
-    let version = VersionRepository::find_readable(&mut tx, ctx.tenant_id, file, current)
+    enclave_preview::repo::readable_version(tx, ctx.tenant_id, current)
         .await
-        .map_err(|error| ApiError::new(error.into(), request_id))?;
-
-    tx.commit().await.map_err(|error| ApiError::new(error.into(), request_id))?;
-
-    if version.is_none() {
-        return Err(ApiError::new(Error::NotFound, request_id));
-    }
-    Ok(())
+        .map_err(|error| ApiError::new(error.into(), request_id))?
+        .ok_or_else(|| ApiError::new(Error::NotFound, request_id))
 }
 
 /// Honours every obligation the chain attached to a preview, or turns it into a refusal.
@@ -207,10 +280,23 @@ fn satisfy(obligations: &Obligations) -> Result<(), Error> {
             // module (it holds no `BlobStore`), not a decision taken here.
             Obligation::NoDownload | Obligation::NoSync => {}
 
-            // Satisfied by the rendition pipeline's composition step when it lands
-            // (`docs/06 §5.1`). Until then nothing is rendered at all, so nothing is served
-            // unwatermarked — the `501` below is what keeps this arm honest.
-            Obligation::Watermark => {}
+            // **Refused, not satisfied.** This arm was a no-op while the endpoint returned `501`,
+            // on the honest grounds that nothing was rendered so nothing could be served
+            // unwatermarked. The moment a rendition is served, the same arm becomes a silent
+            // obligation drop — `CLAUDE.md` rule 8 — so it refuses instead.
+            //
+            // `crates/preview` composes the layer (`ENC-147`); what is missing is server-side
+            // rasterisation of it over a PNG. The tempting alternative — send the base rendition
+            // and the overlay separately and let the client combine them — is not a control at all:
+            // a client that simply does not draw the overlay receives an unmarked page, and the
+            // obligation exists precisely because that page identifies its viewer. `ENC-169`.
+            Obligation::Watermark => {
+                tracing::info!(
+                    "a watermark obligation reached the preview path, which cannot yet composite \
+                     one; refusing rather than serving an unmarked rendition"
+                );
+                return Err(Error::denied(ReasonCode::AccessDenied));
+            }
 
             // A preview mutates nothing, and the response carries no mutation affordance.
             Obligation::ReadOnly => {}
@@ -284,30 +370,6 @@ fn validate(query: &PreviewQuery) -> Result<Rendition, Envelope> {
     Ok(Rendition { profile, page })
 }
 
-/// The refusal itself.
-///
-/// Carries what the client needs to distinguish "you may not" from "we cannot yet": the code is
-/// stable, and `details` states in machine-readable form that the original bytes are not the
-/// fallback. A client that retries this endpoint after a deployment gets the rendition; a client
-/// that treats it as a download denial and calls `POST /download` instead is told the truth by
-/// *that* endpoint's own policy decision, not by this one.
-fn not_implemented(rendition: &Rendition, request_id: RequestId) -> Response {
-    Envelope::new(
-        StatusCode::NOT_IMPLEMENTED,
-        "PREVIEW_NOT_IMPLEMENTED",
-        "Previews are not available in this deployment yet.",
-        "Try again after the rendition service is enabled; the original file is not served here.",
-    )
-    .with_details(vec![serde_json::json!({
-        "renditionProfile": rendition.profile,
-        "page": rendition.page,
-        // Stated rather than implied: this endpoint has no fallback to the original bytes, in
-        // this release or any other (`CLAUDE.md` rule 6, `docs/02-HLD.md §16`).
-        "servesOriginal": false,
-    })])
-    .into_response(request_id)
-}
-
 #[cfg(test)]
 mod tests {
     // Assertions are the point of a test: the workspace warns on these constructs elsewhere.
@@ -326,9 +388,12 @@ mod tests {
         // `NoDownload` on a preview is the ordinary case — it is the policy this endpoint is for.
         // A handler that treated it as a denial would make "view but do not download" mean
         // "view nothing".
+        //
+        // `Watermark` used to be in this list and is deliberately no longer: it was satisfiable
+        // only while nothing was rendered. See
+        // `a_watermark_obligation_refuses_rather_than_serving_an_unmarked_rendition`.
         assert!(satisfy(&obligations([
             Obligation::NoDownload,
-            Obligation::Watermark,
             Obligation::NoSync,
             Obligation::ReadOnly,
         ]))
@@ -382,16 +447,55 @@ mod tests {
     }
 
     #[test]
-    fn the_refusal_says_not_implemented_and_promises_no_original() {
-        let rendition = Rendition { profile: DEFAULT_PROFILE.to_owned(), page: 1 };
-        let response = not_implemented(&rendition, RequestId::new_v7());
-        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
-        // The body is asserted end to end in `tests/delivery.rs`, where it can be read back; here
-        // the header is the part worth pinning, because a cached preview response is a preview
-        // served without a policy decision.
+    fn a_rendition_response_can_neither_be_cached_nor_reinterpreted() {
+        // Both headers are controls rather than niceties. A rendition of `PREVIEW_ONLY` content in
+        // a shared cache is that content available without the policy chain; and a media type a
+        // browser is free to disagree with is a rendition interpreted as something it is not.
+        let response =
+            rendition_response(vec![0x89, b'P', b'N', b'G'], "image/png", RequestId::new_v7());
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let headers = response.headers();
         assert_eq!(
-            response.headers().get(axum::http::header::CACHE_CONTROL).map(|v| v.to_str().unwrap()),
+            headers.get(axum::http::header::CACHE_CONTROL).and_then(|v| v.to_str().ok()),
             Some("private, no-store")
         );
+        assert_eq!(
+            headers.get("x-content-type-options").and_then(|v| v.to_str().ok()),
+            Some("nosniff")
+        );
+        assert_eq!(
+            headers.get(axum::http::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()),
+            Some("image/png")
+        );
+        // Viewing, not taking away. An `attachment` disposition would put a download-shaped
+        // affordance on the path whose entire purpose is that downloading is separable.
+        assert_eq!(
+            headers.get(axum::http::header::CONTENT_DISPOSITION).and_then(|v| v.to_str().ok()),
+            Some("inline")
+        );
+    }
+
+    #[test]
+    fn a_watermark_obligation_refuses_rather_than_serving_an_unmarked_rendition() {
+        // The arm that was a no-op while this endpoint returned `501`. It was honest then — nothing
+        // was rendered, so nothing could be served unwatermarked — and became an obligation drop
+        // the moment a rendition was served. `CLAUDE.md` rule 8.
+        let refusal = satisfy(&obligations([Obligation::Watermark]))
+            .expect_err("a watermark obligation must refuse until it can be composited");
+        assert!(matches!(refusal, Error::PolicyDenied { .. }), "{refusal:?}");
+    }
+
+    #[test]
+    fn every_wire_profile_name_maps_onto_the_pipeline_or_onto_nothing() {
+        // The default has to resolve, or the endpoint refuses every request that names no profile.
+        assert!(profile_for(DEFAULT_PROFILE).is_some());
+        for name in ["thumb", "page-png-1x", "page-png-2x", "pdf-sanitized", "html-sanitized"] {
+            assert!(profile_for(name).is_some(), "`{name}` names no profile");
+        }
+        // And an unknown name is `None` rather than a default, so a typo cannot silently serve a
+        // different profile than the caller asked for.
+        assert!(profile_for("page-png-3x").is_none());
+        assert!(profile_for("").is_none());
     }
 }
