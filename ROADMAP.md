@@ -247,6 +247,8 @@ disable the chain; they default to deny.
 - [ ] Post-filter drop ratio and denylist size exported as metrics with alerts wired.
 - [ ] A scanned, text-free PDF is searchable by its content (ENC-161).
 
+**Measured before this milestone starts (`ENC-145`).** `authorize_many` resolves 200 candidates in **p50 7.0 ms** (debug build), and one candidate in 1.4 ms — so the post-filter's cost is ~80% fixed: transaction setup plus three round trips, not candidate count. That inverts the obvious intuition twice over. Raising over-fetch is nearly free; adding a *second* resolution pass costs more than tripling the batch. Whether result disclosure and excerpt disclosure can be answered in one call is therefore a design decision to take before the search path sets, not after (`ENC-167`).
+
 **Risks.** This milestone contains the highest-severity design risk in the product. It gets the most
 senior reviewer and a written threat walkthrough before merge, not just tests.
 

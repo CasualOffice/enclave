@@ -827,6 +827,151 @@ async fn capabilities_are_the_answers_the_engine_itself_would_give() {
     assert_eq!(rows[0].1, "ALLOW");
 }
 
+/// Grants alpha's member a different set of file actions on each of the two visible files.
+///
+/// The point of the fixture is the *difference*. A listing whose rows all carry the same
+/// capabilities object passes whether the batch resolves per row or resolves once and copies the
+/// answer everywhere, so the only fixture that proves anything gives three rows three answers:
+/// `visible` may be previewed, `also_visible` may be edited and deleted, and `folder` inherits
+/// neither.
+async fn grant_divergent_file_actions(db: &TestDb, fixtures: &Fixtures, alpha: &Spine) {
+    let mut admin = db.connect().await.expect("admin connection");
+    grant(
+        &mut admin,
+        alpha.tenant,
+        "FILE",
+        alpha.visible.as_uuid(),
+        fixtures.alpha.member,
+        Action::File(FileAction::Preview),
+    )
+    .await;
+    for action in [FileAction::Edit, FileAction::Delete] {
+        grant(
+            &mut admin,
+            alpha.tenant,
+            "FILE",
+            alpha.also_visible.as_uuid(),
+            fixtures.alpha.member,
+            Action::File(action),
+        )
+        .await;
+    }
+    let _ignored = admin.close().await;
+}
+
+/// The `capabilities` object of one row of a listing, by file id.
+fn row_capabilities(page: &serde_json::Value, file: FileId) -> serde_json::Value {
+    page["items"]
+        .as_array()
+        .expect("items array")
+        .iter()
+        .find(|item| item["id"] == serde_json::Value::String(file.to_string()))
+        .unwrap_or_else(|| panic!("{file} is not in the listing: {page}"))["capabilities"]
+        .clone()
+}
+
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL; CI runs it with --include-ignored"]
+async fn a_listing_answers_per_row_rather_than_per_page() {
+    // ENC-152. Before this, a row carried no `capabilities` at all and a UI had two ways to draw a
+    // menu for it: render every action and find out on click, or re-derive permission client side,
+    // which `CLAUDE.md` forbids. The answer has to be per row — two files in one folder, one
+    // previewable and one editable, is the ordinary case, not the exotic one.
+    let (db, fixtures, alpha, _beta) = setup().await;
+    grant_divergent_file_actions(&db, &fixtures, &alpha).await;
+
+    let harness = harness(&db).await;
+    let (status, body) = get(
+        &harness,
+        fixtures.alpha.id,
+        fixtures.alpha.member,
+        &format!("/api/v1/libraries/{}/items", alpha.library),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(ids(&body).len(), 3, "the trim still runs: {body}");
+
+    let previewable = row_capabilities(&body, alpha.visible);
+    let editable = row_capabilities(&body, alpha.also_visible);
+    let plain = row_capabilities(&body, alpha.folder);
+
+    assert_ne!(previewable, editable, "every row was given the same answer");
+    assert_eq!(previewable["preview"], true);
+    assert_eq!(previewable["download"], false, "preview must not imply download");
+    assert_eq!(previewable["edit"], false, "a neighbour's grant reached this row");
+    assert_eq!(editable["edit"], true);
+    assert_eq!(editable["delete"], true);
+    assert_eq!(editable["preview"], false);
+    // The library's grant reaches `file.metadata_read` and nothing else, so the folder row is the
+    // control: it is readable, and it is readable *only*.
+    assert_eq!(plain["metadataRead"], true);
+    for action in [
+        "preview",
+        "download",
+        "print",
+        "export",
+        "edit",
+        "share",
+        "shareExternal",
+        "delete",
+        "sync",
+    ] {
+        assert_eq!(plain[action], false, "{action} arrived from nowhere");
+    }
+
+    // Twenty-seven capability answers across three rows, from nine batch resolutions, and one
+    // browse. Still exactly one audit row: a probe is a hint, not an action, and a listing that
+    // audited its probes would describe reads nobody performed, once per row per action.
+    let rows = audit_rows(&db, fixtures.alpha.id).await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].0, "container.read");
+    assert_eq!(rows[0].1, "ALLOW");
+}
+
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL; CI runs it with --include-ignored"]
+async fn a_listings_capabilities_are_exactly_what_the_file_endpoint_returns() {
+    // The property that matters most, and the one the implementation is shaped around: for the same
+    // file and the same caller, the row and `GET /files/{id}` must be the same object. If they can
+    // differ, the UI changes its mind about what a user may do purely because they clicked into the
+    // item — offering an action the server will refuse, or hiding one it would allow.
+    //
+    // Asserted over HTTP, on both objects the two responses share, for every row of the listing —
+    // including the folder, which `GET /files/{id}` also serves.
+    let (db, fixtures, alpha, _beta) = setup().await;
+    grant_divergent_file_actions(&db, &fixtures, &alpha).await;
+
+    let harness = harness(&db).await;
+    let (status, listing) = get(
+        &harness,
+        fixtures.alpha.id,
+        fixtures.alpha.member,
+        &format!("/api/v1/libraries/{}/items", alpha.library),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let mut seen: Vec<serde_json::Value> = Vec::new();
+    for row in listing["items"].as_array().expect("items") {
+        let id = row["id"].as_str().expect("id");
+        let (status, file) =
+            get(&harness, fixtures.alpha.id, fixtures.alpha.member, &format!("/api/v1/files/{id}"))
+                .await;
+        assert_eq!(status, StatusCode::OK, "{id}");
+        assert_eq!(row["capabilities"], file["capabilities"], "the two disagree about {id}");
+        assert_eq!(row["obligations"], file["obligations"], "the two disagree about {id}");
+        seen.push(row["capabilities"].clone());
+    }
+
+    // Without this the equality above would hold just as well if every object were identical, which
+    // is the one case that proves nothing.
+    assert!(
+        seen.iter().any(|capabilities| capabilities != &seen[0]),
+        "the fixture produced a uniform page: {listing}"
+    );
+}
+
 // ---------------------------------------------------------------------------------------------
 // Version history
 // ---------------------------------------------------------------------------------------------
