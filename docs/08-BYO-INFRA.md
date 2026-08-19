@@ -1,6 +1,6 @@
 # 08 — BYO Infrastructure & Configuration
 
-> **Status:** Draft · **Version:** 2.0 · **Owner:** Platform Engineering · **Last updated:** 2026-08-18
+> **Status:** Draft · **Version:** 2.1 · **Owner:** Platform Engineering · **Last updated:** 2026-08-20
 > **Authoritative for:** provider traits, BYO infrastructure, configuration model and precedence.
 
 ## 1. Principle
@@ -457,8 +457,18 @@ preview:
   sandbox: true
   max_pages: 500
   rendition_cache_bytes: 107374182400
-  watermark_cache: false
 
+```
+
+**`preview.watermark_cache` is deliberately not a setting.** An earlier revision listed it, defaulted
+to `false`. A control expressed as a default is a control somebody can turn off, and there is no
+deployment for which caching a watermarked artifact is correct: the watermark names the viewer, so a
+cached one either serves one person's identity to another or serves a stale identity to its owner
+(`§5.1` of `06-SECURITY-DLP-ACCESS.md`). It is now structural instead — a watermarked artifact has
+no cache key it could be stored under, because `RenditionKey` has nowhere to put a principal
+(`ENC-147`). Nothing in `crates/config` ever parsed the key.
+
+```yaml
 sync:
   enabled: true
   max_devices_per_user: 5
