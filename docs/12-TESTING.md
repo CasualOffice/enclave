@@ -90,12 +90,12 @@ T5 is the important one: it is run with a deliberately broken query builder, and
 |---|---|
 | S1 | Keyword search returns nothing from an inaccessible library |
 | S2 | Semantic search returns nothing from an inaccessible library |
-| S3 | **After a permission revocation, the revoked file disappears from search results immediately**, before any index update completes |
-| S4 | With the invalidation worker deliberately stopped, S3 still holds (post-filter + denylist) |
-| S5 | With Milvus returning deliberately over-permissive candidates, the post-filter drops them |
+| S3 | **After a permission revocation, the revoked file disappears from search results immediately**, before any index update completes. The candidate generator is unchanged across the revocation — it still proposes the file, as a real index would until a worker catches up — and the post-filter drops it. `crates/search/tests/postfilter.rs` (`ENC-506`) |
+| S4 | With the invalidation worker deliberately stopped, S3 still holds. There is no worker in the test at all, which is the assertion. Note what it does **not** isolate: because a revocation removes the ACL *and* writes the denylist, the post-filter alone is sufficient here — removing the denylist consultation leaves S3 and S4 green, which was checked. The denylist is necessary for staleness an ACL does not capture, and `the_denylist_suppresses_what_the_acl_alone_would_still_admit` is the row that isolates it. `crates/search/tests/postfilter.rs` (`ENC-506`) |
+| S5 | With the candidate generator returning deliberately over-permissive candidates, the post-filter drops them. Asserted against a **fake** generator rather than Milvus, and that is the stronger test: a fake can propose another tenant's file, a file that does not exist and a file never granted — things a real index would only offer by accident. The permitted file sits in the middle of the set, so a post-filter that refused everything fails too. `crates/search/tests/postfilter.rs` (`ENC-506`) |
 | S6 | A `MetadataRead`-only user receives titles but never excerpts |
 | S7 | RAG answers cite only chunks the caller may read; an uncitable answer is not returned |
-| S8 | `RESTRICTED` content is never sent to a non-local embedding or LLM provider |
+| S8 | `RESTRICTED` text never reaches a non-local embedding provider. Structural, not checked: `ClassifiedText` has no method returning its chunks, so the only way to obtain a `TextBatch<Remote>` is through an admission that refuses at and above the ceiling — holding one *is* the proof. Verified by writing the fallback a tired engineer would write, which fails to **compile**. The remote double panics rather than erroring, so "never reached" cannot be confused with "reached and recovered". `crates/embeddings/tests/routing.rs` (`ENC-508`) |
 | S9 | A `NO_INDEX` classification produces no chunks in the vector store at all |
 | S10 | Barrier-segmented content is excluded at query time, not merely at result time |
 

@@ -9,7 +9,24 @@ repository.workspace   = true
 authors.workspace      = true
 
 [dependencies]
-enclave-core = { workspace = true }
+enclave-core    = { workspace = true }
+# The extraction budget is `enclave-preview`'s, not a second one. `plans/M3-DISCOVERY.md` D24 says
+# extraction reuses the bounds rendering already has, and it also puts both parsers in the same D17
+# worker — so the two are co-resident by design and this edge costs that process nothing it was not
+# already carrying. `src/extract.rs` names the three places extraction genuinely differs.
+enclave-preview = { workspace = true }
+
+anyhow      = { workspace = true }
+async-trait = { workspace = true }
+thiserror   = { workspace = true }
+# `BoundedExtractor` enforces the wall clock with `tokio::time::timeout`, and every parser runs on
+# `spawn_blocking`; see `src/text.rs` for why that placement is the bound rather than a nicety.
+tokio       = { workspace = true }
+
+[dev-dependencies]
+# `test-util` gives `#[tokio::test(start_paused = true)]`, which makes the wall-clock bound testable
+# deterministically instead of as a race against a real clock.
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "test-util"] }
 
 [lints]
 workspace = true

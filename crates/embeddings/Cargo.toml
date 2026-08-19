@@ -11,5 +11,18 @@ authors.workspace      = true
 [dependencies]
 enclave-core = { workspace = true }
 
+# Providers are network- or GPU-bound, so the port is async. `async-trait` rather than RPITIT
+# because the router stores providers behind generics today and `crates/api` will want
+# `Arc<dyn EmbeddingProvider<Local>>` tomorrow, which RPITIT cannot give it.
+anyhow      = { workspace = true }
+async-trait = { workspace = true }
+thiserror   = { workspace = true }
+
+[dev-dependencies]
+# The routing tests are async only because the port is; no timers, no I/O, so the current-thread
+# runtime is enough. A panicking remote double needs the panic to unwind on the test's own task,
+# which is what `#[tokio::test]` gives and a spawned task would not.
+tokio = { workspace = true, features = ["rt", "macros"] }
+
 [lints]
 workspace = true

@@ -1318,7 +1318,11 @@ dependencies = [
 name = "enclave-embeddings"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "async-trait",
  "enclave-core",
+ "thiserror",
+ "tokio",
 ]
 
 [[package]]
@@ -1382,7 +1386,12 @@ dependencies = [
 name = "enclave-indexing"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "async-trait",
  "enclave-core",
+ "enclave-preview",
+ "thiserror",
+ "tokio",
 ]
 
 [[package]]
@@ -1530,7 +1539,17 @@ dependencies = [
 name = "enclave-search"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "enclave-authorization",
  "enclave-core",
+ "enclave-db",
+ "enclave-testing",
+ "sqlx",
+ "thiserror",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]
