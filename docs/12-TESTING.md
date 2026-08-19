@@ -152,9 +152,9 @@ the suite.
 
 | # | Assertion |
 |---|---|
-| G1 | An EICAR upload is quarantined and never becomes readable, previewable or searchable |
-| G2 | A decompression bomb is rejected by depth/size caps |
-| G3 | A malformed document fails extraction without crashing the worker or leaking a temp file |
+| G1 | An EICAR upload is quarantined and never becomes readable, previewable or searchable. `crates/antivirus/tests/eicar.rs` asserts the verdict and the incident against a real clamd, with a `Clean` control so an `Infected` verdict is evidence of detection rather than of a broken client. The *previewable* clause is now enforced rather than inferred: rendering is a read path, and `enclave_preview::ReadableVersion` cannot be constructed except from a row matching `status = 'AVAILABLE' AND av_status = 'CLEAN'`, so a quarantined version cannot be handed to a parser — `crates/preview/tests/cache.rs` (`ENC-146`) |
+| G2 | A decompression bomb is rejected by depth/size caps. `RenderBudget` bounds input and output independently — an input cap alone does not catch a bomb, since being small going in is its whole design — and `enclave_preview::Bounded` enforces both from *outside* the renderer, so a renderer that ignores its budget still cannot exceed it. `crates/preview/tests/bounds.rs`, whose renderers are all deliberately badly behaved (`ENC-146`) |
+| G3 | A malformed document fails extraction without crashing the worker or leaking a temp file — **not assertable until a real renderer lands (`ENC-146a`)**. The pipeline's half is in place: a failure to render is a `Refusal` in the success channel, never a retry, and the wall clock is enforced around the renderer rather than by it |
 | G4 | An SVG/HTML upload cannot execute script in a preview |
 | G5 | A file exceeding the library size limit is rejected before bytes are transferred |
 | G6 | With the AV engine down and `HOLD` policy, the version stays in `SCANNING` and unreadable |

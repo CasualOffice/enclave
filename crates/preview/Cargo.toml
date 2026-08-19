@@ -9,7 +9,25 @@ repository.workspace   = true
 authors.workspace      = true
 
 [dependencies]
-enclave-core = { workspace = true }
+enclave-core    = { workspace = true }
+enclave-db      = { workspace = true }
+enclave-storage = { workspace = true }
+
+anyhow      = { workspace = true }
+async-trait = { workspace = true }
+chrono      = { workspace = true }
+sqlx        = { workspace = true }
+thiserror   = { workspace = true }
+# `Bounded` enforces the wall clock with `tokio::time::timeout`; see `render.rs` for why that bound
+# is the pipeline's promise to its caller rather than a promise about the parser.
+tokio       = { workspace = true }
+uuid        = { workspace = true }
+
+[dev-dependencies]
+enclave-testing = { workspace = true }
+# `test-util` gives `#[tokio::test(start_paused = true)]`, which makes the wall-clock bound
+# testable deterministically instead of as a race against a real clock.
+tokio           = { workspace = true, features = ["rt-multi-thread", "macros", "time", "test-util"] }
 
 [lints]
 workspace = true
