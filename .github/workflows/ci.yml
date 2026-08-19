@@ -120,9 +120,32 @@ jobs:
       ENCLAVE_TEST_S3_ENDPOINT: http://localhost:9000
       ENCLAVE_TEST_S3_ACCESS_KEY_ID: enclave
       ENCLAVE_TEST_S3_SECRET_ACCESS_KEY: enclave-dev-secret
+      # Debug info is the overwhelming majority of `target/`, and a hosted runner has ~14 GB free.
+      # This workspace links one statically-linked test binary per test target — each carrying the
+      # whole dependency graph, aws-lc-sys and ClamAV bindings included — and adding two more in
+      # ENC-146 was what tipped it over: the linker died with SIGBUS, which is what a full
+      # filesystem looks like when `ld` is writing through an mmap rather than a `write(2)`.
+      #
+      # `line-tables-only` keeps what a backtrace needs — file and line for every frame, so a
+      # panic in CI still says where — and drops the type and variable descriptions that nothing
+      # here reads, because nobody attaches a debugger to a CI runner. Set only on this job, so
+      # local builds keep full debug info.
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
 
     steps:
       - uses: actions/checkout@v7
+
+      - name: Reclaim runner disk
+        # The hosted image ships ~25 GB of toolchains this workspace never uses. Removing them is
+        # faster than the build that would otherwise fail, and it is done *before* the cache is
+        # restored so the reported figure describes what the build actually gets.
+        run: |
+          set -euo pipefail
+          echo "Before:"; df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          echo "After:";  df -h / | tail -1
 
       - name: Install the pinned toolchain
         run: |
@@ -215,11 +238,20 @@ jobs:
           docker logs enclave-clamav | tail -40
           exit 1
 
+      - name: Report free disk before building
+        # So that the next time this job dies in the linker, the log says why on the line above it
+        # rather than leaving a bus error to be diagnosed from first principles (ENC-156).
+        run: df -h / | tail -1
+
       - name: cargo test --workspace
         # `--skip` excludes the one test that cannot share a cluster: it drops the cluster-wide
         # roles to recreate the race it exists to prove, which would break every other binary
         # holding a database. It runs in the `role-race` job below, against its own server.
         run: cargo test --workspace --locked -- --include-ignored --skip a_lost_role_creation_race
+
+      - name: Report free disk after building
+        if: always()
+        run: df -h / | tail -1
 
       - name: Report tests that were still skipped
         if: always()
