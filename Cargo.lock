@@ -1439,7 +1439,17 @@ dependencies = [
 name = "enclave-preview"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
  "enclave-core",
+ "enclave-db",
+ "enclave-storage",
+ "enclave-testing",
+ "sqlx",
+ "thiserror",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]
