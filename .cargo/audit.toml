@@ -22,6 +22,30 @@ ignore = [
     # This is an acceptance, not a resolution. It ends when aws-sdk-s3 bumps past the fix, and
     # `cargo audit` will say so on the first build after that — tracked as ENC-138.
     "RUSTSEC-2026-0253",
+
+    # RUSTSEC-2026-0192 — `ttf-parser` is unmaintained. Not a vulnerability: no advisory names a
+    # defect in it, only that its author will not be fixing future ones.
+    #
+    # Reached transitively: enclave-preview → ab_glyph → ttf-parser, to rasterise the watermark
+    # (ENC-169).
+    #
+    # An unmaintained *parser* is normally a serious finding in this product — parsers are the
+    # widest attack-surface class here, which is why `plans/M2-ACCESS-DELIVERY.md` D17 puts them out
+    # of process. This one differs in the way that decides it: **it never sees attacker-controlled
+    # input.** The only font it parses is `crates/preview/assets/inter-latin.ttf`, vendored in this
+    # repository and compiled in with `include_bytes!`. What a viewer controls is the text — their
+    # display name — and that is handled by our own code, which bounds it. No uploaded file reaches
+    # ttf-parser.
+    #
+    # Alternatives were weighed rather than assumed: `fontdue` is a second parser with the same
+    # exposure profile and no maintenance guarantee either; `resvg` and `cosmic-text` pull far more
+    # code, and resvg's MPL-2.0 licence is outside this workspace's allowlist.
+    #
+    # An acceptance, not a resolution. It ends when ab_glyph moves to a maintained parser, or when
+    # the watermark needs a font we do not ship — at which point the "input is always ours" argument
+    # stops holding and this entry must be revisited rather than renewed. ENC-176, revisit
+    # 2026-11-20.
+    "RUSTSEC-2026-0192",
 ]
 
 # RUSTSEC-2023-0071 (Marvin, `rsa`) was suppressed inline until now. It is deliberately NOT listed:

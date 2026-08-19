@@ -97,6 +97,41 @@ pub enum DbError {
         source: sqlx::migrate::MigrateError,
     },
 
+    /// A migration that this database has already applied has since been edited.
+    ///
+    /// sqlx compares the checksum recorded at apply time against the checksum of the copy embedded
+    /// in this binary, and refuses to continue when they differ. That refusal is the forward-only
+    /// gate working (`CLAUDE.md`, SQL conventions) and this variant does not soften it — the
+    /// migration still does not run.
+    ///
+    /// It exists because the refusal is unreadable at the moment it fires. The raw failure surfaces
+    /// as `Migrate(VersionMismatch(9))`: a number, no migration name, no cause, and — crucially —
+    /// no remedy, when the remedy is destructive and therefore not something to guess at. And it
+    /// fires almost exclusively in the one case where editing a migration is *legitimate*: a
+    /// migration that is not merged yet, being iterated on by the person who wrote it, against a
+    /// development database that has already applied an earlier draft of it. `ENC-172` cost three
+    /// attempts at verifying an unrelated change before that was worked out.
+    ///
+    /// The two cases have opposite remedies, so the message states both rather than picking one:
+    /// an edit to a merged migration is the defect and the migration is what has to give; an edit
+    /// to an unmerged one is expected and the database is what has to give.
+    #[error(
+        "migration {version} was applied to this database and has since been modified — the \
+         checksum recorded when it was applied is not the checksum of the copy in this binary. \
+         Migrations are forward-only: if {version} is already merged, the edit is the defect — \
+         revert it and add a new migration instead. If it is not merged yet, editing it is \
+         legitimate and the database is what has to give: drop and recreate it, or \
+         `DELETE FROM _sqlx_migrations WHERE version = {version}` and drop the objects that \
+         migration created, then re-run."
+    )]
+    MigrationModified {
+        /// The migration whose checksum no longer matches, in the numbering of `migrations/`.
+        version: i64,
+        /// The underlying failure, kept for diagnosis.
+        #[source]
+        source: sqlx::migrate::MigrateError,
+    },
+
     /// A cross-tenant path was requested on a deployment that has not configured one.
     ///
     /// Deliberately an error rather than a silent fall back to the application pool: the
@@ -117,6 +152,9 @@ impl DbError {
     pub fn is_retryable(&self) -> bool {
         match self {
             Self::InvalidConfig { .. } | Self::PlatformNotConfigured | Self::Migrate(_) => false,
+            // Never retryable: the checksums will not agree on the next attempt either, and a
+            // process that kept retrying would bury the one message that says how to fix it.
+            Self::MigrationModified { .. } => false,
             // Retryable: the losing racer's next attempt finds the roles already there.
             Self::RolesNotProvisioned { .. } => true,
             Self::Acquire(_) => true,

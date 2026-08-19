@@ -45,7 +45,33 @@ yanked = "deny"
 #
 # Format:
 #   { id = "RUSTSEC-0000-0000", reason = "why + owner + revisit YYYY-MM-DD" },
-ignore = []
+ignore = [
+    # RUSTSEC-2026-0192 — `ttf-parser` is unmaintained. Not a vulnerability: no advisory names a
+    # defect in it, only that its author will not be fixing future ones.
+    #
+    # Reached transitively: enclave-preview → ab_glyph → ttf-parser, to rasterise the watermark
+    # (ENC-169).
+    #
+    # Why the exposure is small enough to accept, specifically. An unmaintained *parser* is normally
+    # a serious finding here — parsers are the widest attack-surface class in this product, and
+    # plans/M2-ACCESS-DELIVERY.md D17 exists because of it. This one is different in the way that
+    # matters: it never sees attacker-controlled input. The only font it parses is
+    # `crates/preview/assets/inter-latin.ttf`, vendored in this repository and compiled in with
+    # `include_bytes!`. What a viewer controls is the *text* — their display name — and text is
+    # handled by our own code, which is why `crates/preview/src/composite.rs` bounds it. There is no
+    # path by which an uploaded file reaches ttf-parser.
+    #
+    # The alternatives were weighed rather than assumed: `fontdue` is a second parser with the same
+    # exposure profile and no maintenance guarantee either, and `resvg`/`cosmic-text` pull far more
+    # code (and, for resvg, an MPL-2.0 licence this workspace's allowlist excludes) to draw six
+    # lines of text.
+    #
+    # This is an acceptance, not a resolution. It ends when ab_glyph moves to a maintained parser,
+    # or when the watermark needs a font we do not ship — at which point the "input is always ours"
+    # argument above stops holding and this entry must be revisited rather than renewed.
+    # Tracked as ENC-176. Revisit 2026-11-20.
+    { id = "RUSTSEC-2026-0192", reason = "ab_glyph → ttf-parser; parses only our vendored font, never user input; revisit 2026-11-20 (ENC-176)" },
+]
 
 # ---------------------------------------------------------------------------
 # Licences — permissive only.

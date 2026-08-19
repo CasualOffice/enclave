@@ -46,6 +46,8 @@ tracing      = { workspace = true }
 uuid         = { workspace = true }
 
 [dev-dependencies]
+# Decoding the stub rendition and the marked response in the delivery tests.
+image = { workspace = true }
 enclave-testing = { workspace = true }
 tower = { workspace = true }
 serde_json = { workspace = true }

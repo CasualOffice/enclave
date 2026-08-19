@@ -87,12 +87,21 @@ pub async fn run_migrations_on(conn: &mut PgConnection) -> Result<(), DbError> {
 
 /// Turns an unreadable migration failure into one an operator can act on.
 ///
-/// Only one case is special-cased, and it earns it: the cluster-wide role race (`ENC-116`). Every
+/// Two cases are special-cased, and both earn it by having been met: the cluster-wide role race
+/// (`ENC-116`), and an already-applied migration that has since been edited (`ENC-172`). Every
 /// other failure passes through unchanged, because inventing friendly text for errors we have not
-/// actually seen produces confident, wrong advice.
+/// actually seen produces confident, wrong advice — `VersionMissing` and `Dirty` are deliberately
+/// left alone for exactly that reason.
+///
+/// Neither case changes what happens: both still fail, and the checksum comparison behind the
+/// second *is* the forward-only gate. What changes is that the message names the migration and the
+/// way out, rather than being a variant name and an integer.
 fn classify_migration_failure(error: sqlx::migrate::MigrateError) -> DbError {
     if is_role_creation_race(&error) {
         return DbError::RolesNotProvisioned { source: error };
+    }
+    if let sqlx::migrate::MigrateError::VersionMismatch(version) = &error {
+        return DbError::MigrationModified { version: *version, source: error };
     }
     DbError::Migrate(error)
 }
@@ -167,6 +176,51 @@ mod tests {
                 );
             }
             previous = Some(migration.version);
+        }
+    }
+
+    #[test]
+    fn an_edited_migration_names_itself_and_the_way_out() {
+        // `ENC-172`. The raw failure is `Migrate(VersionMismatch(9))`, which is a variant name and
+        // an integer: it says neither what was edited nor what to do, and the remedy is destructive
+        // enough that guessing is expensive. Assert the message carries both.
+        let classified =
+            classify_migration_failure(sqlx::migrate::MigrateError::VersionMismatch(9));
+
+        let DbError::MigrationModified { version, .. } = &classified else {
+            panic!("an edited migration must not stay an opaque Migrate: {classified:?}");
+        };
+        assert_eq!(*version, 9);
+
+        let message = classified.to_string();
+        assert!(message.contains('9'), "the message must name the migration: {message}");
+        assert!(
+            message.contains("_sqlx_migrations"),
+            "the message must give the remedy verbatim, not describe it: {message}"
+        );
+        assert!(
+            message.contains("forward-only") && message.contains("add a new migration"),
+            "the message must send someone with a *merged* migration forward, not backward, or it \
+             becomes a documented way round the gate: {message}"
+        );
+        assert!(
+            !classified.is_retryable(),
+            "the checksums will not agree on the next attempt, and a retry loop buries the message"
+        );
+    }
+
+    #[test]
+    fn other_migration_failures_are_left_alone() {
+        // The classifier's value is that it is narrow. A dirty migration and a missing one have
+        // different causes and different remedies; folding them in here would attach confident,
+        // wrong advice to failures nobody has actually diagnosed.
+        for error in
+            [sqlx::migrate::MigrateError::Dirty(3), sqlx::migrate::MigrateError::VersionMissing(3)]
+        {
+            assert!(
+                matches!(classify_migration_failure(error), DbError::Migrate(_)),
+                "only the two diagnosed failures are re-worded"
+            );
         }
     }
 

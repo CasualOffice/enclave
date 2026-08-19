@@ -53,6 +53,7 @@
 //! the collapse is least visible.
 
 pub mod budget;
+pub mod composite;
 pub mod error;
 pub mod model;
 pub mod raster;
@@ -62,6 +63,7 @@ pub mod service;
 pub mod watermark;
 
 pub use budget::{Refusal, RenderBudget};
+pub use composite::{composite as composite_watermark, CompositeRefusal};
 pub use error::{PreviewError, Result};
 pub use model::{GeneratorVersion, Rendition, RenditionKey, RenditionProfile};
 pub use raster::RasterRenderer;
