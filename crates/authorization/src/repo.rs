@@ -17,6 +17,11 @@
 //! caller's group closure, one fetch of the ACL rows for the union of every chain. Three round
 //! trips, whether the batch holds one resource or two hundred. A per-resource loop would be 600.
 //!
+//! The same three trips answer several *actions* at once ([`acl_entries_by_action`]), because the
+//! first two do not depend on the action at all and the third narrows by it with `= ANY` as cheaply
+//! as with `=`. A listing page asking ten capability questions about a page of rows is therefore
+//! three statements rather than thirty.
+//!
 //! # Running as the application role
 //!
 //! These queries return rows only when row-level security lets them. PR #22 is the reason that
@@ -135,19 +140,28 @@ WITH RECURSIVE closure AS (
 SELECT DISTINCT group_id FROM closure
 ";
 
-/// Every entry that could bear on this batch.
+/// Every entry that could bear on this batch, for every action it asks about.
 ///
 /// The `WHERE` clause narrows by node, action, expiry and principal so that a tenant's whole ACL
 /// does not cross the wire. It is a prefilter and not the rule — [`crate::resolve`] re-applies the
 /// principal and expiry tests on what comes back, so a mistake here costs bytes rather than
 /// correctness.
+///
+/// `action = ANY($2)` rather than `action = $2` because the cost of resolution is ~80% fixed
+/// (ENC-145, `tests/authorize_many_cost.rs`): a transaction and three round trips, plus about
+/// 0.03 ms per extra candidate. Asking about ten actions in ten calls therefore costs ten times a
+/// question that the same three statements can answer once. `a.action` is *selected* as well as
+/// filtered, because a row that arrives without saying which action it belongs to can only be
+/// attributed by guessing, and a misattributed `DENY` is a privilege change in whichever direction
+/// the guess went.
 const ACL_ENTRIES_SQL: &str = "
-SELECT a.resource_type, a.resource_id, a.principal_type, a.principal_id, a.effect, a.expires_at
+SELECT a.resource_type, a.resource_id, a.principal_type, a.principal_id, a.action, a.effect,
+       a.expires_at
   FROM acl_entries a
   JOIN unnest($3::text[], $4::uuid[]) AS n(resource_type, resource_id)
     ON n.resource_type = a.resource_type AND n.resource_id = a.resource_id
  WHERE a.tenant_id = $1
-   AND a.action = $2
+   AND a.action = ANY($2::text[])
    AND (a.expires_at IS NULL OR a.expires_at > $5)
    AND (
          a.principal_type = 'EVERYONE'
@@ -320,22 +334,73 @@ pub async fn group_closure(
     rows.iter().map(|row| column::<Uuid>(row, "group_id").map(GroupId::from_uuid)).collect()
 }
 
-/// Fetches the entries bearing on a set of chain nodes for one action.
+/// Which buckets each fetched row belongs in, keyed by the action as it is spelled in the column.
+///
+/// A `Vec<usize>` per action rather than a single index because a caller may repeat an action —
+/// nine capability probes that happen to include `download` twice, say — and every occurrence has
+/// to receive the same rows. Dropping the repeat would leave one column of the answer empty, which
+/// reads as "not granted" and silently removes a permission the caller has.
+fn destinations(actions: &[String]) -> HashMap<&str, Vec<usize>> {
+    let mut destinations: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (index, action) in actions.iter().enumerate() {
+        destinations.entry(action.as_str()).or_default().push(index);
+    }
+    destinations
+}
+
+/// Reads one `acl_entries` row into the shape resolution works on.
+fn entry(row: &sqlx::postgres::PgRow) -> Result<AclEntry> {
+    let raw_type: String = column(row, "resource_type")?;
+    let kind = AclResourceType::parse(&raw_type).ok_or(AuthzError::MalformedRow {
+        column: "resource_type",
+        reason: "not a resource type this resolver knows",
+    })?;
+    let raw_principal: String = column(row, "principal_type")?;
+    let principal_kind = PrincipalKind::parse(&raw_principal).ok_or(AuthzError::MalformedRow {
+        column: "principal_type",
+        reason: "not a principal kind this resolver knows",
+    })?;
+    let raw_effect: String = column(row, "effect")?;
+    let effect = Effect::parse(&raw_effect)
+        .ok_or(AuthzError::MalformedRow { column: "effect", reason: "neither ALLOW nor DENY" })?;
+
+    Ok(AclEntry {
+        resource: ChainNode::new(kind, column(row, "resource_id")?),
+        principal: Principal {
+            kind: principal_kind,
+            id: column::<Option<Uuid>>(row, "principal_id")?,
+        },
+        effect,
+        expires_at: column::<Option<DateTime<Utc>>>(row, "expires_at")?,
+    })
+}
+
+/// Fetches the entries bearing on a set of chain nodes, for several actions in one statement.
+///
+/// The result is one bucket per element of `actions`, index-aligned with it, holding only the rows
+/// whose `action` column equals that element. Splitting here rather than downstream is deliberate:
+/// it is the *only* point in the multi-action path where rows for different actions coexist, so it
+/// is the only place a `DENY` on `download` could end up deciding `preview`. Everything after it
+/// consumes one bucket at a time and cannot mix them even in principle.
 ///
 /// # Errors
 ///
-/// Storage failures and unreadable rows — including an unrecognised `effect`, `resource_type` or
-/// `principal_type`, none of which are guessed at.
-pub async fn acl_entries(
+/// Storage failures and unreadable rows — including an unrecognised `effect`, `resource_type`,
+/// `principal_type` or `action`, none of which are guessed at. An `action` that matches nothing the
+/// caller asked for cannot be produced by the query above, so seeing one means the text the caller
+/// bound and the text the row holds have stopped agreeing; filing it in an arbitrary bucket would
+/// apply a real entry to the wrong question, so it is refused instead.
+pub async fn acl_entries_by_action(
     conn: &mut PgConnection,
     tenant: TenantId,
-    action: &str,
+    actions: &[String],
     nodes: &[ChainNode],
     principals: &PrincipalSet,
     now: DateTime<Utc>,
-) -> Result<Vec<AclEntry>> {
-    if nodes.is_empty() {
-        return Ok(Vec::new());
+) -> Result<Vec<Vec<AclEntry>>> {
+    let mut buckets: Vec<Vec<AclEntry>> = vec![Vec::new(); actions.len()];
+    if nodes.is_empty() || actions.is_empty() {
+        return Ok(buckets);
     }
 
     let types: Vec<String> = nodes.iter().map(|n| n.kind.as_str().to_owned()).collect();
@@ -345,7 +410,7 @@ pub async fn acl_entries(
 
     let rows = sqlx::query(ACL_ENTRIES_SQL)
         .bind(tenant.as_uuid())
-        .bind(action)
+        .bind(actions)
         .bind(&types)
         .bind(&ids)
         .bind(now)
@@ -355,34 +420,78 @@ pub async fn acl_entries(
         .fetch_all(&mut *conn)
         .await?;
 
-    rows.iter()
-        .map(|row| {
-            let raw_type: String = column(row, "resource_type")?;
-            let kind = AclResourceType::parse(&raw_type).ok_or(AuthzError::MalformedRow {
-                column: "resource_type",
-                reason: "not a resource type this resolver knows",
-            })?;
-            let raw_principal: String = column(row, "principal_type")?;
-            let principal_kind =
-                PrincipalKind::parse(&raw_principal).ok_or(AuthzError::MalformedRow {
-                    column: "principal_type",
-                    reason: "not a principal kind this resolver knows",
-                })?;
-            let raw_effect: String = column(row, "effect")?;
-            let effect = Effect::parse(&raw_effect).ok_or(AuthzError::MalformedRow {
-                column: "effect",
-                reason: "neither ALLOW nor DENY",
-            })?;
+    let destinations = destinations(actions);
+    for row in &rows {
+        let action: String = column(row, "action")?;
+        let indices = destinations.get(action.as_str()).ok_or(AuthzError::MalformedRow {
+            column: "action",
+            reason: "not one of the actions this resolution asked about",
+        })?;
+        let entry = entry(row)?;
+        for index in indices {
+            buckets[*index].push(entry);
+        }
+    }
+    Ok(buckets)
+}
 
-            Ok(AclEntry {
-                resource: ChainNode::new(kind, column(row, "resource_id")?),
-                principal: Principal {
-                    kind: principal_kind,
-                    id: column::<Option<Uuid>>(row, "principal_id")?,
-                },
-                effect,
-                expires_at: column::<Option<DateTime<Utc>>>(row, "expires_at")?,
-            })
-        })
-        .collect()
+/// Fetches the entries bearing on a set of chain nodes for one action.
+///
+/// The whole body is a delegation to [`acl_entries_by_action`], for the reason
+/// `PgAclAuthorization::authorize` gives for delegating to its own batch path: a second
+/// implementation of one question is how the narrower form ends up applying a filter the wider one
+/// does not, and it is the wider one that the listing and search paths run.
+///
+/// # Errors
+///
+/// As [`acl_entries_by_action`].
+pub async fn acl_entries(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    action: &str,
+    nodes: &[ChainNode],
+    principals: &PrincipalSet,
+    now: DateTime<Utc>,
+) -> Result<Vec<AclEntry>> {
+    let actions = [action.to_owned()];
+    let mut buckets = acl_entries_by_action(conn, tenant, &actions, nodes, principals, now).await?;
+    // One action in, one bucket out. `pop` rather than indexing so that a shape this function did
+    // not expect yields no entries — which grants nothing — instead of a panic inside a policy
+    // stage.
+    Ok(buckets.pop().unwrap_or_default())
+}
+
+#[cfg(test)]
+mod tests {
+    // Assertions are the point of a test; the workspace warns on these in non-test code.
+    #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+
+    use super::*;
+
+    fn actions(names: &[&str]) -> Vec<String> {
+        names.iter().map(|name| (*name).to_owned()).collect()
+    }
+
+    #[test]
+    fn every_action_gets_its_own_bucket() {
+        let names = actions(&["file.preview", "file.download", "file.print"]);
+        let destinations = destinations(&names);
+        assert_eq!(destinations.get("file.preview"), Some(&vec![0]));
+        assert_eq!(destinations.get("file.download"), Some(&vec![1]));
+        assert_eq!(destinations.get("file.print"), Some(&vec![2]));
+        // The row that would carry one action's DENY into another's answer is one that lands in a
+        // bucket it does not belong to. Nothing here is a home for an action nobody asked about.
+        assert_eq!(destinations.get("file.export"), None);
+    }
+
+    #[test]
+    fn a_repeated_action_is_answered_at_every_position_it_appears() {
+        // Not a hypothetical: a capability table that lists an action twice would otherwise get a
+        // populated answer at the first position and an empty one at the second, and an empty
+        // bucket is indistinguishable from "nobody granted it".
+        let names = actions(&["file.download", "file.preview", "file.download"]);
+        let destinations = destinations(&names);
+        assert_eq!(destinations.get("file.download"), Some(&vec![0, 2]));
+        assert_eq!(destinations.get("file.preview"), Some(&vec![1]));
+    }
 }

@@ -148,6 +148,42 @@ pub trait AuthorizationService: Send + Sync + std::fmt::Debug {
         action: Action,
         resources: &[ResourceRef],
     ) -> Result<Vec<StageDecision>>;
+
+    /// Several actions across several resources, in one resolution.
+    ///
+    /// Returns one row per action, index-aligned with `actions`, each row index-aligned with
+    /// `resources`.
+    ///
+    /// # Why this is on the trait, and why it is defaulted
+    ///
+    /// A listing page asks the same question about one page of files nine or ten times over — once
+    /// per capability the response advertises — and `authorize_many` batches *resources*, not
+    /// actions. `ENC-167` measured what that costs: ten actions over 200 candidates take **8.1 ms**
+    /// in one pass and **68.5 ms** in ten, because resolution's price is transaction setup plus
+    /// three round trips rather than the size of the batch. Sixty milliseconds per page is not a
+    /// micro-optimisation on a budget of 300 ms for metadata (`docs/03 §23`).
+    ///
+    /// The default body loops [`Self::authorize_many`], so every stub, test double and
+    /// not-yet-configured implementation keeps working unchanged and answers identically — it is
+    /// only slower. An implementation that can do better overrides it. Adding it as a *required*
+    /// method would have made a performance improvement a breaking change for six deny-by-default
+    /// stages that have no use for it.
+    ///
+    /// # Errors
+    ///
+    /// Resolution failures.
+    async fn authorize_many_actions(
+        &self,
+        ctx: &RequestContext,
+        actions: &[Action],
+        resources: &[ResourceRef],
+    ) -> Result<Vec<Vec<StageDecision>>> {
+        let mut rows = Vec::with_capacity(actions.len());
+        for action in actions {
+            rows.push(self.authorize_many(ctx, *action, resources).await?);
+        }
+        Ok(rows)
+    }
 }
 
 /// Mandatory segmentation that overrides ordinary ACLs.

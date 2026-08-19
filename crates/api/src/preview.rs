@@ -143,7 +143,7 @@ pub async fn preview(
         };
 
     let obligations = decision.into_obligations();
-    satisfy(&obligations).map_err(|error| ApiError::new(error, request_id))?;
+    let required = satisfy(&obligations).map_err(|error| ApiError::new(error, request_id))?;
 
     let profile = profile_for(&rendition.profile)
         .ok_or_else(|| ApiError::new(Error::NotFound, request_id))?;
@@ -158,6 +158,15 @@ pub async fn preview(
     // is still a parse of hostile bytes by our own renderer. The witness this returns is the only
     // way to reach the pipeline, so an unscanned version cannot be rendered even by mistake.
     let version = readable_version(&mut tx, &ctx, file, request_id).await?;
+
+    // Read inside the same tenant-scoped transaction as everything else, and only when a mark is
+    // actually required — a preview with no watermark obligation must not pay for a lookup, and
+    // must not read a viewer's email at all.
+    let viewer = if required.watermark {
+        Some(viewer_identity(&mut tx, &ctx, request_id).await?)
+    } else {
+        None
+    };
 
     let delivery = pipeline
         .deliver(&mut tx, ctx.tenant_id, &version, profile, chrono::Utc::now())
@@ -176,9 +185,119 @@ pub async fn preview(
             Err(ApiError::new(Error::NotFound, request_id))
         }
         Delivery::Available { bytes, media_type, .. } => {
+            let bytes = if required.watermark {
+                mark(bytes, &media_type, &viewer, &ctx, file, request_id)?
+            } else {
+                bytes
+            };
             Ok(rendition_response(bytes, &media_type, request_id))
         }
     }
+}
+
+/// Who is looking, for the mark.
+///
+/// Read here rather than carried on [`RequestContext`] because a token says *which* principal, not
+/// what they are called — and a display name and an email are exactly the fields that must be
+/// current at the moment of viewing, not as of whenever the token was issued.
+#[derive(Debug, Clone)]
+struct Viewer {
+    display_name: String,
+    email: String,
+}
+
+/// Reads the viewer's name and email inside the caller's transaction.
+///
+/// # Errors
+///
+/// `404` if the actor has no user row in this tenant, which is the same answer as a missing file —
+/// a session whose subject has been deleted must not be told that it has been.
+async fn viewer_identity(
+    tx: &mut enclave_db::TenantScoped,
+    ctx: &RequestContext,
+    request_id: RequestId,
+) -> Result<Viewer, ApiError> {
+    use sqlx::Row as _;
+
+    let enclave_core::Actor::User(actor) = ctx.actor else {
+        // A service account or the system has no name to stamp. Refused rather than marked
+        // "system": a watermark exists to attribute a leak to a person, and one naming nobody in
+        // particular is a mark that satisfies the obligation on paper and not in fact.
+        return Err(ApiError::new(Error::denied(ReasonCode::AccessDenied), request_id));
+    };
+
+    let row = sqlx::query("SELECT email, display_name FROM users WHERE tenant_id = $1 AND id = $2")
+        .bind(ctx.tenant_id.as_uuid())
+        .bind(actor.as_uuid())
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(|error| ApiError::new(enclave_db::DbError::Query(error).into(), request_id))?
+        .ok_or_else(|| ApiError::new(Error::NotFound, request_id))?;
+
+    Ok(Viewer {
+        email: row.try_get("email").map_err(|_| ApiError::new(Error::NotFound, request_id))?,
+        display_name: row
+            .try_get("display_name")
+            .map_err(|_| ApiError::new(Error::NotFound, request_id))?,
+    })
+}
+
+/// Burns the viewer's identity into the rendition, or refuses.
+///
+/// The refusal is the point. `CLAUDE.md` rule 8: an obligation is satisfied or the operation fails.
+/// There is no arm here that serves the bytes anyway — not for an unsupported media type, not for a
+/// name the bundled face cannot draw, not for a base the compositor cannot decode.
+fn mark(
+    bytes: Vec<u8>,
+    media_type: &str,
+    viewer: &Option<Viewer>,
+    ctx: &RequestContext,
+    file: FileId,
+    request_id: RequestId,
+) -> Result<Vec<u8>, ApiError> {
+    let Some(viewer) = viewer.as_ref() else {
+        // Unreachable while `required.watermark` is the only thing that populates it; kept as a
+        // refusal rather than an `expect` so that a future edit which separates the two cannot turn
+        // a missing viewer into an unmarked page.
+        return Err(ApiError::new(Error::denied(ReasonCode::AccessDenied), request_id));
+    };
+
+    // Raster profiles only. `HtmlSanitized` wants the SVG overlay `enclave_preview::watermark`
+    // already produces, inside the markup — a different composition, not this one, and serving
+    // unmarked HTML while that is unwritten is precisely what rule 8 forbids.
+    if media_type != "image/png" {
+        tracing::info!(media_type, "no watermark compositor for this rendition; refusing");
+        return Err(ApiError::new(Error::denied(ReasonCode::AccessDenied), request_id));
+    }
+
+    let facts = enclave_preview::WatermarkFacts {
+        viewer_name: viewer.display_name.clone(),
+        viewer_email: viewer.email.clone(),
+        // Formatted here, in UTC with an explicit offset, because `docs/14-I18N-L10N.md` puts a
+        // watermark in the *viewer's* locale and time zone and this handler does not yet know
+        // either. UTC stated plainly is honest; a local-looking time that is actually UTC is not.
+        issued_at: chrono::Utc::now().format("%Y-%m-%d %H:%M UTC").to_string(),
+        // The file and the session, which is what makes a photographed screen attributable to one
+        // document and one sign-in rather than to an account. Identifiers rather than names: a file
+        // name is content, and content does not belong in a mark that will be screenshotted and
+        // pasted into a ticket.
+        file_reference: file.as_uuid().to_string(),
+        session_reference: ctx
+            .session_id
+            .map(|session| session.as_uuid().to_string())
+            .unwrap_or_default(),
+        // The classification label belongs here (`docs/06 §5.1`) and the classification stage is
+        // still a deny-by-default stub, so there is nothing truthful to write. Omitted rather than
+        // guessed: a mark asserting "Confidential" on content nobody classified is worse than one
+        // that says nothing about sensitivity.
+        classification: None,
+    };
+
+    enclave_preview::composite_watermark(&bytes, &facts, enclave_preview::WatermarkStyle::DEFAULT)
+        .map_err(|refusal| {
+            tracing::info!(?refusal, "the watermark could not be composited; refusing the preview");
+            ApiError::new(Error::denied(ReasonCode::AccessDenied), request_id)
+        })
 }
 
 /// Builds the response around a rendition's bytes.
@@ -272,7 +391,8 @@ async fn readable_version(
 /// # Errors
 ///
 /// [`Error::PolicyDenied`] when an obligation cannot be satisfied on this path.
-fn satisfy(obligations: &Obligations) -> Result<(), Error> {
+fn satisfy(obligations: &Obligations) -> Result<Required, Error> {
+    let mut required = Required::default();
     for obligation in obligations {
         match *obligation {
             // The expected pair on a preview, and both are satisfied by what this path is: a
@@ -280,23 +400,16 @@ fn satisfy(obligations: &Obligations) -> Result<(), Error> {
             // module (it holds no `BlobStore`), not a decision taken here.
             Obligation::NoDownload | Obligation::NoSync => {}
 
-            // **Refused, not satisfied.** This arm was a no-op while the endpoint returned `501`,
-            // on the honest grounds that nothing was rendered so nothing could be served
-            // unwatermarked. The moment a rendition is served, the same arm becomes a silent
-            // obligation drop — `CLAUDE.md` rule 8 — so it refuses instead.
+            // Recorded, not discharged here. This function decides nothing about the mark; it
+            // says the response must carry one, and the caller composites it into the pixels before
+            // any byte leaves. If that composition fails, the caller refuses — an obligation is
+            // satisfied or the operation fails (`CLAUDE.md` rule 8), and there is no third answer
+            // in which a rendition is served unmarked.
             //
-            // `crates/preview` composes the layer (`ENC-147`); what is missing is server-side
-            // rasterisation of it over a PNG. The tempting alternative — send the base rendition
-            // and the overlay separately and let the client combine them — is not a control at all:
-            // a client that simply does not draw the overlay receives an unmarked page, and the
-            // obligation exists precisely because that page identifies its viewer. `ENC-169`.
-            Obligation::Watermark => {
-                tracing::info!(
-                    "a watermark obligation reached the preview path, which cannot yet composite \
-                     one; refusing rather than serving an unmarked rendition"
-                );
-                return Err(Error::denied(ReasonCode::AccessDenied));
-            }
+            // It is burned into the artefact rather than sent alongside it, because an overlay the
+            // client is asked to draw is an overlay a client can decline to draw, and the
+            // obligation exists precisely because the page must identify whoever is looking at it.
+            Obligation::Watermark => required.watermark = true,
 
             // A preview mutates nothing, and the response carries no mutation affordance.
             Obligation::ReadOnly => {}
@@ -321,7 +434,18 @@ fn satisfy(obligations: &Obligations) -> Result<(), Error> {
             }
         }
     }
-    Ok(())
+    Ok(required)
+}
+
+/// What the response must carry before it may leave.
+///
+/// A struct rather than a `bool` because the next obligation this path learns to discharge — a
+/// print restriction, a classification banner — belongs beside it, and a second `bool` returned
+/// from the same function is how call sites start passing them in the wrong order.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Required {
+    /// The rendition must be marked with the viewer's identity.
+    watermark: bool,
 }
 
 /// Validates the caller-controlled query parameters.
@@ -477,13 +601,19 @@ mod tests {
     }
 
     #[test]
-    fn a_watermark_obligation_refuses_rather_than_serving_an_unmarked_rendition() {
-        // The arm that was a no-op while this endpoint returned `501`. It was honest then — nothing
-        // was rendered, so nothing could be served unwatermarked — and became an obligation drop
-        // the moment a rendition was served. `CLAUDE.md` rule 8.
-        let refusal = satisfy(&obligations([Obligation::Watermark]))
-            .expect_err("a watermark obligation must refuse until it can be composited");
-        assert!(matches!(refusal, Error::PolicyDenied { .. }), "{refusal:?}");
+    fn a_watermark_obligation_is_recorded_rather_than_quietly_dropped() {
+        // The history of this arm is the point. It was a no-op while the endpoint returned `501`
+        // (nothing rendered, so nothing served unmarked), then a refusal once a rendition was
+        // served, and now a *requirement* the caller must discharge — because `ENC-169` gave it
+        // something to discharge it with. What it has never been is silently satisfied.
+        let required = satisfy(&obligations([Obligation::Watermark]))
+            .expect("a watermark is dischargeable, so it is not a refusal");
+        assert!(required.watermark);
+
+        // And an ordinary preview carries no such requirement, or every response would pay for a
+        // composite and an identity lookup it does not need.
+        let plain = satisfy(&obligations([Obligation::NoDownload])).expect("ordinary");
+        assert!(!plain.watermark);
     }
 
     #[test]

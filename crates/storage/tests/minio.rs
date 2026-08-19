@@ -24,6 +24,15 @@
 //! `mc anonymous set download` writes, and asserts that the store refuses to be constructed
 //! against it. That assertion is the reason this file exists: a self-check that has never been run
 //! against an actually-public bucket is a self-check nobody has tested.
+//!
+//! # The leakage-matrix rows that live here
+//!
+//! A5 and A6 of `docs/12-TESTING.md §4.2` are properties of the provider rather than of any
+//! Enclave code path — "an unsigned request is refused", "a signature stops being honoured at its
+//! expiry" — and `crates/testing/tests/leakage.rs` routes them here for that reason. Asserting
+//! them against a mock would assert that the mock was written to agree with them. The half of A6
+//! that this backend cannot support is stated in that test's own documentation rather than
+//! quietly omitted.
 
 // Assertions are the point of a test; the workspace warns on these constructs elsewhere.
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
@@ -137,6 +146,41 @@ async fn get_status(url: &url::Url) -> u16 {
 
 fn new_key() -> ObjectKey {
     ObjectKey::version(TenantId::new_v7(), FileId::new_v7(), VersionId::new_v7())
+}
+
+/// Stores an object and returns the key it landed on.
+///
+/// The A5 and A6 tests both need an object that is genuinely *there*. A refusal on a key that was
+/// never written proves nothing about whether the provider checks signatures — an empty bucket
+/// refuses every read for the wrong reason, and the test would stay green after the control it
+/// covers was removed.
+async fn store_an_object(store: &S3BlobStore, body: &[u8]) -> ObjectKey {
+    let key = new_key();
+    let session = store
+        .create_upload(UploadRequest::new(key.clone(), body.len() as u64))
+        .await
+        .expect("create_upload");
+
+    let UploadTarget::Single { url } = &session.target else {
+        panic!("these bodies are far below the multipart threshold: {:?}", session.target);
+    };
+    let (status, _) = put(url, body.to_vec()).await;
+    assert_eq!(status, 200, "the pre-signed PUT was rejected");
+
+    store.complete_upload(&session).await.expect("complete_upload");
+    key
+}
+
+/// The URL somebody types when they have the key and nothing else.
+///
+/// Assembled from the endpoint and the key rather than derived from a signed URL with its query
+/// removed: what A5 is about is a request that was never signed at all, and a stripped URL carries
+/// the shape of one this process minted. Path style, which is what `S3Config::new` defaults to and
+/// what the fixture keeps.
+fn direct_url(endpoint: &url::Url, bucket: &str, key: &ObjectKey) -> url::Url {
+    format!("{}/{bucket}/{}", endpoint.as_str().trim_end_matches('/'), key.as_str())
+        .parse()
+        .expect("a valid object URL")
 }
 
 // ---------------------------------------------------------------------------
@@ -445,4 +489,114 @@ async fn an_unresolvable_credential_reference_fails_closed() {
         }
         other => panic!("expected a credential failure, got: {other:?}"),
     }
+}
+
+// ---------------------------------------------------------------------------
+// The leakage matrix: A5 and A6 of `docs/12-TESTING.md §4.2`.
+// ---------------------------------------------------------------------------
+
+/// A5 — direct object-key access without a signed URL fails at the storage layer.
+///
+/// Not the same question the self-check asks. The anonymous probe in `src/public_access.rs`
+/// fetches a key chosen so that it *cannot* exist, because that is the only way a `404` reads
+/// unambiguously as "the request was authorized"; it runs once, at startup, against the bucket as
+/// a whole. This asks whether a specific stored object's bytes are reachable by anyone who learns
+/// its key — leaked from a log, a referrer header, a screenshot — which is the exposure the row
+/// names. The object is confirmed readable *with* a signature first, so the refusal cannot be a
+/// missing object wearing a `403`.
+#[tokio::test]
+#[ignore = "requires the dev-stack MinIO and ENCLAVE_TEST_S3_*; CI runs it with --include-ignored"]
+async fn a5_a_stored_object_is_unreachable_without_a_signature() {
+    let (config, _admin, secrets) = fixture().await;
+    let bucket = config.bucket.clone();
+    let endpoint = config.endpoint.clone().expect("the fixture points at the dev-stack MinIO");
+    let store = S3BlobStore::connect_and_verify(config, &secrets).await.expect("connect");
+
+    let key =
+        store_an_object(&store, b"A5: reachable only through a URL this process minted").await;
+
+    let signed = store
+        .signed_download(key.as_str(), Duration::from_secs(60))
+        .await
+        .expect("signed_download");
+    assert_eq!(get_status(&signed).await, 200, "the object must be readable with a signature");
+
+    // The same object, addressed by its key, with no signature and no credential.
+    let direct = direct_url(&endpoint, &bucket, &key);
+
+    // A mistyped bucket or the wrong addressing style would earn a `403` of its own, and the
+    // assertion below would then pass without ever having named the object. The signed URL is
+    // known to reach it, so requiring the two paths to agree is what makes the refusal about the
+    // missing signature rather than about a URL that pointed nowhere.
+    assert_eq!(
+        direct.path(),
+        signed.path(),
+        "the unsigned URL must address exactly the object the signed one reaches"
+    );
+
+    let status = get_status(&direct).await;
+    assert!(
+        matches!(status, 401 | 403),
+        "an unsigned GET of a known key returned {status}: the provider answered a request \
+         carrying no credential, so every read control above it is advisory"
+    );
+
+    // And the signature is bound to the key it was minted for. Without that, one authorized
+    // download would be a key to the whole bucket: swap the path, keep the query, read anything.
+    let other = store_an_object(&store, b"A5: addressed by a signature that is not its own").await;
+    let mut repointed = signed.clone();
+    repointed.set_path(&format!("/{bucket}/{}", other.as_str()));
+    let status = get_status(&repointed).await;
+    assert!(
+        matches!(status, 401 | 403),
+        "a signed URL repointed at a different key returned {status}: the signature does not \
+         cover the object it names"
+    );
+}
+
+/// A6 — a signed URL cannot be replayed after expiry.
+///
+/// The row's second clause, "or after single use where supported", is not supported here and is
+/// not faked. SigV4 pre-signed URLs have no server-side use counter, so no S3-compatible backend
+/// can burn one; `StoreCapabilities::single_use_signed_urls` documents that at the field. What
+/// this asserts instead is the honest pair: the store reports the capability as absent, and a
+/// second fetch inside the TTL demonstrably succeeds. Pinning the replay as an observed fact is
+/// the point — it keeps `plans/M1-CONTENT-CORE.md` D14 (one URL per authorized request, minted at
+/// the last moment, never cached, short TTL) visibly the *only* thing between a captured URL and
+/// the bytes, so a future caller cannot quietly start treating a URL as spent.
+#[tokio::test]
+#[ignore = "requires the dev-stack MinIO and ENCLAVE_TEST_S3_*; CI runs it with --include-ignored"]
+async fn a6_a_signed_url_stops_working_at_expiry_and_replays_until_then() {
+    // SigV4 caps a pre-signed URL at seven days but imposes no floor, so seconds is a legitimate
+    // TTL and this test costs single digits. It is not shorter because the provider judges expiry
+    // against its own clock: a one-second URL would be racing container clock skew, and the last
+    // assertion would then pass for a reason that has nothing to do with expiry.
+    const TTL: Duration = Duration::from_secs(5);
+
+    let (config, _admin, secrets) = fixture().await;
+    let store = S3BlobStore::connect_and_verify(config, &secrets).await.expect("connect");
+    let key = store_an_object(&store, b"A6: valid until X-Amz-Date plus X-Amz-Expires").await;
+
+    let url = store.signed_download(key.as_str(), TTL).await.expect("signed_download");
+    assert_eq!(get_status(&url).await, 200, "a freshly signed URL must work");
+
+    assert_eq!(
+        get_status(&url).await,
+        200,
+        "a second fetch inside the TTL must succeed; a backend that refused it would mean the \
+         reported capabilities are wrong"
+    );
+    assert!(
+        !store.capabilities().single_use_signed_urls,
+        "the replay above is what the backend does, so the store must not advertise single use"
+    );
+
+    tokio::time::sleep(TTL + Duration::from_secs(2)).await;
+
+    let status = get_status(&url).await;
+    assert!(
+        matches!(status, 401 | 403),
+        "a signed URL served {status} after its expiry: the short TTL is the whole compensating \
+         control for a URL that cannot be revoked, and it is not being enforced"
+    );
 }

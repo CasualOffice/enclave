@@ -38,7 +38,10 @@
 //!   it and is a separate item.
 //! * **Action implication.** An `ALLOW` on `file.download` does not imply `file.metadata_read`.
 //!   Every implication is a policy decision, and inferring them here would silently widen every
-//!   grant a tenant has already written.
+//!   grant a tenant has already written. Resolving several actions in one pass
+//!   ([`AclResolver::effective_actions_in_tx`]) is not an exception to this: it shares the two
+//!   round trips that do not mention the action, and keeps each action's entries in a bucket of
+//!   their own from the moment they leave PostgreSQL.
 //! * **Caching.** Only the key. A cache whose invalidation is not designed is a stale-grant
 //!   machine, and stale grants outlive the revocation that was supposed to end them.
 
@@ -56,8 +59,8 @@ pub use materialise::{
     break_file_inheritance, break_library_inheritance, MAX_MATERIALISED_ENTRIES,
 };
 pub use resolve::{
-    AclEntry, AclResourceType, ChainNode, Effect, Effective, EffectiveIndex, InheritanceChain,
-    Principal, PrincipalKind, PrincipalSet,
+    AclEntry, AclResourceType, ChainNode, Effect, Effective, EffectiveGrid, EffectiveIndex,
+    InheritanceChain, Principal, PrincipalKind, PrincipalSet,
 };
 pub use self_service::SelfServiceAuthorization;
 pub use service::{AclResolver, PgAclAuthorization, ResolverLimits};

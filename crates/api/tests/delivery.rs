@@ -345,9 +345,24 @@ struct StubPipeline {
     unavailable: bool,
 }
 
-/// The bytes the stub serves. A real PNG signature so the assertion is about *these* bytes rather
-/// than about a length.
-const STUB_RENDITION: &[u8] = &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+/// The bytes the stub serves: a real, decodable page-sized white PNG.
+///
+/// Decodable matters. An earlier version was the eight-byte PNG *signature*, which made the
+/// watermark assertion below pass for the wrong reason — the compositor refused it as an
+/// undecodable base, and the test read that refusal as the obligation being enforced. A stub whose
+/// content cannot be processed tests the error path of whatever processes it.
+fn stub_rendition() -> Vec<u8> {
+    // Page-sized, not a token 8×8. The first version of this was tiny, and the watermark test then
+    // failed with byte-identical output — every glyph fell off the edge of the canvas. That found a
+    // real defect (`CompositeRefusal::NoRoom`), and it is also a reminder that a stub which is not
+    // the shape of the real thing tests a path the real thing never takes.
+    let canvas = image::RgbaImage::from_pixel(640, 480, image::Rgba([255, 255, 255, 255]));
+    let mut out = Vec::new();
+    image::DynamicImage::ImageRgba8(canvas)
+        .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+        .expect("encode the stub rendition");
+    out
+}
 
 #[async_trait::async_trait]
 impl PreviewPipeline for StubPipeline {
@@ -363,7 +378,7 @@ impl PreviewPipeline for StubPipeline {
             return Ok(Delivery::Unavailable(enclave_preview::Refusal::UnsupportedFormat));
         }
         Ok(Delivery::Available {
-            bytes: STUB_RENDITION.to_vec(),
+            bytes: stub_rendition(),
             media_type: "image/png".to_owned(),
             page_count: Some(1),
         })
@@ -476,7 +491,10 @@ async fn send(app: &Router, request: Request<Body>) -> Answer {
         .get(axum::http::header::CONTENT_TYPE)
         .map(|value| value.to_str().expect("ascii").to_owned());
     let headers = response.headers().clone();
-    let body = axum::body::to_bytes(response.into_body(), 64 * 1024).await.expect("body");
+    // 8 MiB, not 64 KiB. A rendition is an image, and a *watermarked* one is larger still —
+    // the first version of this cap made the watermark test fail with `LengthLimitError`, which
+    // reads like a product defect and is a limit in the test harness.
+    let body = axum::body::to_bytes(response.into_body(), 8 * 1024 * 1024).await.expect("body");
     Answer {
         status,
         cache_control,
@@ -557,8 +575,8 @@ async fn preview_allowed_and_download_denied_yields_a_rendition_path_and_no_sign
         "the rendition's media type comes from the profile, not from the source"
     );
     assert_eq!(
-        preview.bytes.as_slice(),
-        STUB_RENDITION,
+        preview.bytes,
+        stub_rendition(),
         "the response carried something other than the rendition the pipeline produced"
     );
     // The other half, and the one that makes the first half safe: nothing about the original is in
@@ -633,23 +651,25 @@ async fn a_no_download_obligation_refuses_before_any_url_is_generated() {
     );
     download.carries_no_original(&content);
 
-    // The preview of the same file carries a `WATERMARK` obligation. Until `ENC-148` this was a
-    // `501`, and the obligation was satisfied by the fact that nothing was rendered at all.
+    // The preview of the same file carries a `WATERMARK` obligation, and its history is worth
+    // keeping: a no-op while this endpoint returned `501` (nothing rendered, so nothing served
+    // unmarked), then a refusal once a rendition was served and there was no compositor, and now —
+    // since `ENC-169` — discharged, by burning the viewer's identity into the pixels.
     //
-    // Now something *is* rendered, and the stub pipeline beside this test would happily return
-    // bytes — so if the handler served them, it would serve an unmarked page under an obligation
-    // whose entire purpose is that the page identifies its viewer. `CLAUDE.md` rule 8: obligations
-    // are satisfied or the operation fails. It fails.
+    // The assertion is that the bytes *changed*. A response equal to the stub's rendition would
+    // mean the obligation was recorded and then dropped, which is the failure rule 8 forbids and
+    // the one a status-only check would miss entirely.
     let preview = get_preview(&app, &bearer, content.file).await;
     assert_eq!(
         preview.status,
-        StatusCode::FORBIDDEN,
-        "a watermark obligation must refuse, not serve an unmarked rendition: {}",
+        StatusCode::OK,
+        "a watermark obligation is dischargeable now, so the preview must succeed: {}",
         preview.body
     );
-    assert!(
-        preview.bytes != STUB_RENDITION,
-        "the rendition was served despite an unsatisfiable watermark obligation"
+    assert_ne!(
+        preview.bytes,
+        stub_rendition(),
+        "the response carried the base rendition unchanged — the watermark obligation was dropped"
     );
     preview.carries_no_original(&content);
 

@@ -34,9 +34,9 @@ use enclave_core::{FileId, LibraryId, TenantId, UserId, WorkspaceId};
 use enclave_db::{sql, DbPool, TenantScoped};
 use enclave_libraries::{ExternalSharing, LibraryRepository, LibrarySettings, VersioningMode};
 use enclave_storage::{
-    BlobStore, ByteRange, ByteStream, MultipartLimits, ObjectKey, ObjectMeta, PublicAccessCheck,
-    PublicAccessError, PublicAccessReport, Result as StorageResult, StoreCapabilities, Support,
-    UploadRequest, UploadSession, UploadTarget,
+    BlobStore, ByteRange, ByteStream, CompletedPart, MultipartLimits, ObjectKey, ObjectMeta,
+    PartTarget, PublicAccessCheck, PublicAccessError, PublicAccessReport, Result as StorageResult,
+    StoreCapabilities, Support, UploadRequest, UploadSession, UploadTarget,
 };
 use enclave_testing::{Fixtures, TestDb};
 use enclave_uploads::{
@@ -170,6 +170,119 @@ impl BlobStore for RecordingStore {
             backend: "recording-stub",
             multipart: Some(MultipartLimits {
                 min_part_bytes: 5 * 1024 * 1024,
+                max_part_bytes: 5 * 1024 * 1024 * 1024,
+                max_parts: 10_000,
+            }),
+            signed_urls: true,
+            single_use_signed_urls: false,
+            max_signed_url_ttl: StdDuration::from_secs(900),
+            versioning: Support::Unknown,
+            object_lock: Support::Unknown,
+            server_side_encryption: Support::Unknown,
+            range_reads: false,
+            server_side_copy: true,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// A store that refuses to be a byte pipe.
+// ---------------------------------------------------------------------------------------------
+
+/// The size M1's fifth exit criterion names.
+const FIVE_GIB: u64 = 5 * 1024 * 1024 * 1024;
+
+/// The part size the multipart arithmetic below assumes — S3's minimum, and MinIO's.
+const PART_BYTES: u64 = 5 * 1024 * 1024;
+
+/// A `BlobStore` whose byte-bearing methods panic.
+///
+/// `ENC-144`. The only two methods on [`BlobStore`] that can put object bytes in this process are
+/// `read_range`, which streams them here, and `copy`, which is server-side but is the operation
+/// [`enclave_uploads::StagedObject`]'s documentation rules out for the largest supported upload
+/// (`CopyObject` tops out at 5 GB). Both abort the test rather than returning an error, because an
+/// error is something the service under test could plausibly handle and move past — and the claim
+/// being tested is not "it copes", it is "it never asks".
+#[derive(Debug, Default)]
+struct ByteRefusingStore;
+
+#[async_trait]
+impl PublicAccessCheck for ByteRefusingStore {
+    async fn verify_not_public(&self) -> Result<PublicAccessReport, PublicAccessError> {
+        Ok(PublicAccessReport { bucket: "test".to_owned(), endpoint: None, probes: Vec::new() })
+    }
+}
+
+#[async_trait]
+impl BlobStore for ByteRefusingStore {
+    async fn create_upload(&self, request: UploadRequest) -> StorageResult<UploadSession> {
+        // A real part list, because the part list is the only thing the API holds that grows with
+        // the upload at all — and the test asserts how much. Handing back an empty one would make
+        // the memory assertion vacuous.
+        let count = request.content_length.div_ceil(PART_BYTES);
+        let mut parts = Vec::new();
+        for index in 0..count {
+            let part_number = u32::try_from(index + 1).expect("part number fits");
+            let offset = index * PART_BYTES;
+            parts.push(PartTarget {
+                part_number,
+                offset,
+                length: PART_BYTES.min(request.content_length - offset),
+                url: Url::parse(&format!("https://store.invalid/part/{part_number}")).expect("url"),
+            });
+        }
+
+        Ok(UploadSession {
+            key: request.key,
+            content_length: request.content_length,
+            target: UploadTarget::Multipart { upload_id: "five-gib".to_owned(), parts },
+            expires_at: Utc::now() + Duration::minutes(15),
+            completed_parts: Vec::new(),
+        })
+    }
+
+    async fn complete_upload(&self, session: &UploadSession) -> StorageResult<ObjectMeta> {
+        Ok(ObjectMeta {
+            key: session.key.clone(),
+            size_bytes: session.content_length,
+            etag: Some("etag".to_owned()),
+            checksum_sha256: Some(DIGEST_B64.to_owned()),
+            content_type: None,
+            last_modified: Some(Utc::now()),
+            provider_version_id: None,
+            server_side_encryption: None,
+        })
+    }
+
+    async fn signed_download(&self, _key: &str, _ttl: StdDuration) -> StorageResult<Url> {
+        Ok(Url::parse("https://store.invalid/get").expect("url"))
+    }
+
+    async fn read_range(&self, key: &str, _range: ByteRange) -> StorageResult<ByteStream> {
+        panic!(
+            "the upload path asked to stream `{key}` through this process. Content bytes go from \
+             the client to the store over signed URLs and must never reach the API — that is why \
+             M1's 5 GB criterion is a statement about memory at all."
+        );
+    }
+
+    async fn copy(&self, from: &str, _to: &str) -> StorageResult<()> {
+        panic!(
+            "the upload path asked the store to copy `{from}`. Bytes are staged under the key the \
+             version will keep, so a commit copies nothing; a copy also cannot address the \
+             criterion's 5 GB (see `staged.rs`)."
+        );
+    }
+
+    async fn delete(&self, _key: &str) -> StorageResult<()> {
+        Ok(())
+    }
+
+    fn capabilities(&self) -> StoreCapabilities {
+        StoreCapabilities {
+            backend: "byte-refusing-stub",
+            multipart: Some(MultipartLimits {
+                min_part_bytes: PART_BYTES,
                 max_part_bytes: 5 * 1024 * 1024 * 1024,
                 max_parts: 10_000,
             }),
@@ -877,6 +990,112 @@ async fn a_digest_the_store_computed_is_believed_only_when_it_matches() {
 
     let mut conn = db.connect().await.expect("connect");
     assert_eq!(stored_state(&mut conn, &disagreeing.session.id().to_string()).await, "FAILED");
+
+    pool.close().await;
+    drop(db);
+}
+
+/// `ENC-144` — M1's fifth exit criterion, exercised rather than argued.
+///
+/// The criterion is "5 GB resumable upload with flat API memory", and until now it was true by
+/// construction and untested: nothing would have caught a change that started routing content
+/// through the API. This drives a session declared at the criterion's full size through the whole
+/// machine — create, resume, complete, hand off to antivirus — against a store whose two
+/// byte-bearing methods abort the test.
+///
+/// It moves no data, and that is the point. The assertion is not about volume, which CI cannot
+/// afford and which would pass just as well against an implementation that streamed 5 GB through
+/// this process in small pieces. It is about *who touches the bytes*: if the answer is ever "we
+/// do", `ByteRefusingStore` panics and names the call.
+///
+/// `src/lib.rs`'s `flat_memory` module holds the other half — that no type in the crate can carry
+/// a run of content bytes in the first place.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL and migration 0006 (upload_sessions); CI runs it with --include-ignored"]
+async fn a_five_gigabyte_upload_is_completed_without_the_api_touching_a_byte() {
+    let (db, fixtures, pool) = start().await;
+    let alpha = fixtures.alpha.id;
+    let store = ByteRefusingStore;
+
+    let mut tx = TenantScoped::begin(&pool, alpha).await.expect("begin");
+    let (_workspace, library_id) =
+        library(&mut tx, alpha, fixtures.alpha.owner, "archives", None).await;
+
+    let issued = UploadService::create(
+        &mut tx,
+        &store,
+        alpha,
+        &upload(library_id, fixtures.alpha.owner, "backup.pdf", FIVE_GIB),
+        &UploadLimits::unrestricted_up_to(FIVE_GIB),
+        Duration::hours(24),
+        Utc::now(),
+    )
+    .await
+    .expect("create a session for the size the exit criterion names");
+    let id = issued.session.id();
+
+    // What the API hands the client is addresses. There is no arm of `UploadTarget` that could
+    // carry content, so this is also where the type-level half of the claim shows up at runtime.
+    let UploadTarget::Multipart { parts, .. } = &issued.target else {
+        panic!("five gigabytes cannot be a single PUT; the store must have returned parts");
+    };
+    assert_eq!(parts.len(), 1024, "5 GiB in 5 MiB parts");
+
+    // Everything the API retains for this upload, counted rather than asserted about in prose: the
+    // part list, its URLs, the staging key and the file name. The bound is one megabyte — *below a
+    // single part* — so a regression that buffered even one 5 MiB chunk fails here, never mind one
+    // that held the object.
+    let retained: usize = parts
+        .iter()
+        .map(|part| std::mem::size_of::<PartTarget>() + part.url.as_str().len())
+        .sum::<usize>()
+        + issued.session.record().staged.as_str().len()
+        + issued.session.record().name.len();
+    assert!(
+        retained < 1024 * 1024,
+        "the API retained {retained} bytes for a {FIVE_GIB}-byte upload; that is no longer flat"
+    );
+
+    // The client reports progress across the whole object, which is the resumable half of the
+    // criterion. It is a counter — `bytes_received` — and never the bytes themselves.
+    UploadService::record_progress(&mut tx, alpha, id, FIVE_GIB, Utc::now())
+        .await
+        .expect("record progress across five gigabytes");
+
+    let reported_parts: Vec<CompletedPart> = parts
+        .iter()
+        .map(|part| CompletedPart {
+            part_number: part.part_number,
+            etag: format!("etag-{}", part.part_number),
+        })
+        .collect();
+
+    let completion = UploadService::complete(
+        &mut tx,
+        &store,
+        alpha,
+        id,
+        &reported(FIVE_GIB),
+        reported_parts,
+        Utc::now(),
+    )
+    .await
+    .expect("complete");
+    tx.commit().await.expect("commit");
+
+    let Completion::HandedOff { session, handoff } = completion else {
+        panic!("a five-gigabyte upload whose size and digest agree must be accepted");
+    };
+    assert_eq!(session.state(), UploadState::Scanning);
+    assert_eq!(
+        handoff.content.size_bytes(),
+        FIVE_GIB,
+        "the size on the handoff is the store's number for the whole object"
+    );
+
+    // `CLAUDE.md` rule 9 still applies at this size: the row stops at SCANNING.
+    let mut conn = db.connect().await.expect("connect");
+    assert_eq!(stored_state(&mut conn, &id.to_string()).await, "SCANNING");
 
     pool.close().await;
     drop(db);

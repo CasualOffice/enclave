@@ -381,6 +381,88 @@ impl Effective {
     }
 }
 
+/// The verdicts of a set of actions over a set of resources: one [`Effective`] per pair.
+///
+/// # Why a type and not `Vec<Vec<Effective>>`
+///
+/// Because the only interesting bug in multi-action resolution is a transposition. Nested vectors
+/// leave "outer is the action" as a convention held in a doc comment, and a caller that read it the
+/// other way would hand every resource the first action's verdict — a page whose nine capabilities
+/// all report what `preview` said, which is a privilege change in whichever direction `preview`
+/// happened to resolve. Here the two axes are reachable only by name, and a caller that swaps them
+/// gets `None` or a different resource's answer rather than a plausible-looking wrong one.
+///
+/// Stored flat and action-major so that one action's verdicts are a contiguous slice: that is the
+/// shape every consumer wants, since a capability probe asks one action about a whole page.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EffectiveGrid {
+    actions: usize,
+    resources: usize,
+    verdicts: Vec<Effective>,
+}
+
+impl EffectiveGrid {
+    /// Builds the grid from one row of verdicts per action, each aligned with the batch.
+    ///
+    /// A row of the wrong length is made the right length here rather than trusted to be right:
+    /// short rows are padded with [`Effective::NotGranted`] and long ones truncated, so the grid's
+    /// shape is a property of the type rather than of every caller that constructs one. Padding
+    /// with the refusing verdict is the only safe direction — a missing answer must not read as a
+    /// grant.
+    #[must_use]
+    pub fn from_action_rows(resources: usize, rows: Vec<Vec<Effective>>) -> Self {
+        let actions = rows.len();
+        let mut verdicts = Vec::with_capacity(actions * resources);
+        for mut row in rows {
+            row.resize(resources, Effective::NotGranted);
+            verdicts.append(&mut row);
+        }
+        Self { actions, resources, verdicts }
+    }
+
+    /// How many actions were asked about.
+    #[must_use]
+    pub const fn actions(&self) -> usize {
+        self.actions
+    }
+
+    /// How many resources each action was asked about.
+    #[must_use]
+    pub const fn resources(&self) -> usize {
+        self.resources
+    }
+
+    /// One action's verdicts, index-aligned with the resources the batch was given.
+    ///
+    /// `None` for an action outside the grid, never an empty slice: an absent row and a row of
+    /// refusals are different facts, and only the caller knows which of the two its own contract
+    /// should turn into.
+    #[must_use]
+    pub fn for_action(&self, action: usize) -> Option<&[Effective]> {
+        if action >= self.actions {
+            return None;
+        }
+        let start = action * self.resources;
+        self.verdicts.get(start..start + self.resources)
+    }
+
+    /// The verdict for one `(action, resource)` pair.
+    #[must_use]
+    pub fn get(&self, action: usize, resource: usize) -> Option<Effective> {
+        if resource >= self.resources {
+            return None;
+        }
+        self.for_action(action).and_then(|row| row.get(resource)).copied()
+    }
+
+    /// Every action's row, in the order the actions were asked about.
+    pub fn rows(&self) -> impl Iterator<Item = &[Effective]> + '_ {
+        // Not `chunks`, which panics on a zero-length chunk: a grid over an empty batch is a legal
+        // thing to ask for, and a policy stage is the last place a panic belongs.
+        (0..self.actions).map(|action| self.for_action(action).unwrap_or_default())
+    }
+}
+
 /// What the fetched entries say about each node, once principal and expiry filtering is done.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct NodeEffects {
@@ -764,6 +846,84 @@ mod tests {
             );
         }
         assert!(Effective::Allowed.into_stage_decision().is_allowed());
+    }
+
+    #[test]
+    fn the_grid_keeps_each_actions_answer_to_itself() {
+        // The arrangement the multi-action path exists to serve and the one it can most easily get
+        // wrong: three resources, two actions, and no two cells alike. A grid that transposed its
+        // axes, or that filled every row from the first action's answer, disagrees with at least
+        // one of these six assertions.
+        let grid = EffectiveGrid::from_action_rows(
+            3,
+            vec![
+                vec![Effective::Allowed, Effective::Denied, Effective::NotGranted],
+                vec![Effective::Denied, Effective::NotGranted, Effective::Allowed],
+            ],
+        );
+
+        assert_eq!(grid.actions(), 2);
+        assert_eq!(grid.resources(), 3);
+        assert_eq!(grid.get(0, 0), Some(Effective::Allowed));
+        assert_eq!(grid.get(0, 1), Some(Effective::Denied));
+        assert_eq!(grid.get(0, 2), Some(Effective::NotGranted));
+        assert_eq!(grid.get(1, 0), Some(Effective::Denied));
+        assert_eq!(grid.get(1, 1), Some(Effective::NotGranted));
+        assert_eq!(grid.get(1, 2), Some(Effective::Allowed));
+
+        // A row is a contiguous slice of one action's verdicts, and `rows` walks them in order.
+        assert_eq!(
+            grid.for_action(1),
+            Some(&[Effective::Denied, Effective::NotGranted, Effective::Allowed][..])
+        );
+        assert_eq!(grid.rows().count(), 2);
+        assert_eq!(grid.rows().next(), grid.for_action(0));
+    }
+
+    #[test]
+    fn an_axis_read_the_wrong_way_round_is_refused_rather_than_answered() {
+        // Two actions over five resources. Asking for "resource 4's action row" — the transposed
+        // read — must not silently return action 4's answers, because there is no action 4.
+        let grid = EffectiveGrid::from_action_rows(
+            5,
+            vec![vec![Effective::Allowed; 5], vec![Effective::Denied; 5]],
+        );
+        assert_eq!(grid.for_action(4), None);
+        assert_eq!(grid.get(4, 1), None);
+        assert_eq!(grid.get(1, 5), None);
+    }
+
+    #[test]
+    fn a_row_of_the_wrong_length_is_made_to_refuse_rather_than_to_drift() {
+        // Neither shape is reachable from the resolver, which builds one verdict per resource. The
+        // point is that if one ever were, the extra cells refuse and the surplus is dropped — the
+        // failure is a capability withheld, never one invented, and never a row that shifts every
+        // later resource's answer by one.
+        let grid = EffectiveGrid::from_action_rows(
+            3,
+            vec![vec![Effective::Allowed], vec![Effective::Denied; 5]],
+        );
+        assert_eq!(
+            grid.for_action(0),
+            Some(&[Effective::Allowed, Effective::NotGranted, Effective::NotGranted][..])
+        );
+        assert_eq!(grid.for_action(1), Some(&[Effective::Denied; 3][..]));
+        assert_eq!(grid.actions(), 2);
+    }
+
+    #[test]
+    fn a_grid_over_an_empty_batch_answers_nothing_without_panicking() {
+        let grid = EffectiveGrid::from_action_rows(0, vec![Vec::new(), Vec::new()]);
+        assert_eq!(grid.actions(), 2);
+        assert_eq!(grid.resources(), 0);
+        assert_eq!(grid.for_action(0), Some(&[][..]));
+        assert_eq!(grid.get(0, 0), None);
+        assert_eq!(grid.rows().count(), 2);
+
+        let empty = EffectiveGrid::default();
+        assert_eq!(empty.actions(), 0);
+        assert_eq!(empty.rows().count(), 0);
+        assert_eq!(empty.for_action(0), None);
     }
 
     #[test]

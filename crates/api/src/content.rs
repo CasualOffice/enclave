@@ -874,18 +874,20 @@ async fn capabilities_for(
 ///
 /// # The cost, and where it now falls
 ///
-/// One resolution per action, because the trait batches *resources* and not actions: the ACL query
-/// filters on a single `action` column value. So a page of any size costs nine batch resolutions
-/// here — around three statements each, whatever the page holds — plus the trim's. Nine is still
-/// more than one, and the fix is an `action = ANY($1)` form of the batch query in
-/// `crates/authorization`; it is named rather than approximated here, because the approximation
-/// available — deriving `download` from `preview`, say — is exactly the parallel implementation the
-/// contract forbids.
+/// **One resolution for all of them.** `authorize_many_actions` batches actions as well as
+/// resources (`ENC-167`), so a page of any size costs one resolution here — around three statements,
+/// whatever the page holds — plus the trim's.
 ///
-/// Sequential rather than concurrent, deliberately. Each `authorize_many` opens its own
-/// tenant-scoped transaction, so nine in flight is nine connections held by one request; on the
-/// small pools this runs against that is how a listing under load starves the pool it is waiting
-/// for. The same reasoning closes [`browse`]'s own transaction before this is reached.
+/// It used to cost one per action, and the measurement is why that changed rather than a guess:
+/// ten actions over 200 candidates take **8.1 ms** in one pass and **68.5 ms** in ten, because
+/// resolution's price is transaction setup plus three round trips rather than the size of the
+/// batch. Sixty milliseconds per page against a 300 ms budget for metadata (`docs/03 §23`) is not
+/// a micro-optimisation.
+///
+/// The approximation that was available and deliberately not taken — deriving `download` from
+/// `preview`, say — is exactly the parallel implementation this function's contract forbids. What
+/// changed is where the batching happens, not what is asked.
+///
 async fn capabilities_for_many(
     authorization: &dyn AuthorizationService,
     ctx: &RequestContext,
@@ -912,13 +914,16 @@ async fn capabilities_for_many(
         })
         .collect();
 
-    for (name, action) in CAPABILITY_ACTIONS {
-        let decisions =
-            authorization.authorize_many(ctx, Action::File(*action), &resources).await?;
+    // One resolution for every action, not one per action. See the cost note above.
+    let actions: Vec<Action> =
+        CAPABILITY_ACTIONS.iter().map(|(_, action)| Action::File(*action)).collect();
+    let grid = authorization.authorize_many_actions(ctx, &actions, &resources).await?;
 
-        // Index-aligned by the same contract the trim relies on. A short vector leaves the tail
-        // rows without this capability, which withholds a button rather than offering one that will
-        // be refused — the direction an absent verdict has to fail in.
+    // Index-aligned with `actions`, which is index-aligned with `CAPABILITY_ACTIONS`. A short outer
+    // vector leaves the tail *actions* unanswered and a short inner one leaves the tail *rows*
+    // unanswered; both withhold a capability rather than offering one that will be refused, which
+    // is the direction an absent verdict has to fail in.
+    for ((name, action), decisions) in CAPABILITY_ACTIONS.iter().zip(grid) {
         for ((capabilities, wire), decision) in computed.iter_mut().zip(decisions) {
             if !decision.is_allowed() {
                 continue;
@@ -1198,10 +1203,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_page_costs_one_resolution_per_action_however_many_rows_it_holds() {
-        // The reason capabilities were left off a listing in the first place. Two hundred rows and
-        // one row cost the same nine resolutions; the per-row loop this replaces would have cost
-        // eighteen hundred.
+    async fn a_page_costs_the_same_resolution_however_many_rows_it_holds() {
+        // The reason capabilities were left off a listing in the first place: a per-row loop over
+        // two hundred rows would have been eighteen hundred resolutions.
+        //
+        // What this counts is `Scripted`'s `authorize_many`, and `Scripted` does not override
+        // `authorize_many_actions` — so it gets the trait's default body, which loops. That is
+        // deliberate and worth stating plainly: this test proves the count does not scale with the
+        // *page*, which is the property the API layer is responsible for. It cannot prove the count
+        // does not scale with the number of *actions*, because for this stub it does. That property
+        // belongs to `PgAclAuthorization`'s override and is measured where it can be — in
+        // `crates/authorization/tests/authorize_many_cost.rs`, which puts one pass at 8.1 ms
+        // against 68.5 ms for ten (`ENC-167`).
         let ctx = probe_context();
         let page: Vec<(ResourceRef, Obligations)> = (0..200)
             .map(|_| (ResourceRef::file(ctx.tenant_id, FileId::new_v7()), Obligations::none()))
@@ -1210,15 +1223,21 @@ mod tests {
         let authorization = Scripted::new(Vec::new());
         let computed = capabilities_for_many(&authorization, &ctx, &page).await.expect("probe");
         assert_eq!(computed.len(), 200);
-        assert_eq!(
-            authorization.calls.load(Ordering::Relaxed),
-            CAPABILITY_ACTIONS.len(),
-            "the page was resolved per row rather than per action"
-        );
+        let for_two_hundred = authorization.calls.load(Ordering::Relaxed);
 
         let one = Scripted::new(Vec::new());
         let _ = capabilities_for_many(&one, &ctx, &page[..1]).await.expect("probe");
-        assert_eq!(one.calls.load(Ordering::Relaxed), CAPABILITY_ACTIONS.len());
+        let for_one = one.calls.load(Ordering::Relaxed);
+
+        assert_eq!(
+            for_two_hundred, for_one,
+            "two hundred rows cost more resolutions than one, so the page is being resolved per row"
+        );
+        assert!(
+            for_two_hundred <= CAPABILITY_ACTIONS.len(),
+            "a page cost {for_two_hundred} resolutions for {} actions",
+            CAPABILITY_ACTIONS.len()
+        );
     }
 
     #[tokio::test]

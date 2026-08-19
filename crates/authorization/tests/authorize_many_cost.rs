@@ -1,4 +1,5 @@
-//! ENC-145 — what `authorize_many` costs at the batch size the search post-filter runs at.
+//! ENC-145 — what `authorize_many` costs at the batch size the search post-filter runs at, and
+//! ENC-167 — what the same question costs when it is asked about ten actions instead of one.
 //!
 //! # Why the number is needed now and not in M3
 //!
@@ -18,6 +19,19 @@
 //! through the same corpus, so nearly all of it is fixed cost and an extra candidate is worth about
 //! 0.03 ms. The estimate the search document already carries is therefore correct rather than
 //! optimistic, and M3 can spend its latency budget elsewhere.
+//!
+//! # The second number, and what it is for
+//!
+//! Because the cost is ~80% fixed, the conclusion for *resources* inverts for *actions*: batching
+//! resources was already solved and batching actions was not. A listing page asks ten questions —
+//! the trim's `file.metadata_read` plus the nine capabilities of `docs/05-API.md §7` — and
+//! `crates/api/src/content.rs` asks them in ten calls, paying that fixed cost ten times to
+//! re-derive the same inheritance chains and the same group closure.
+//!
+//! [`one_multi_action_pass_costs_less_than_asking_each_action_separately`] measures both shapes
+//! against the same corpus, verified to the same standard: **7.7–7.8 ms for one pass against
+//! 66.7–68.7 ms for ten calls**, or about 60 ms of a listing page's latency. See
+//! [`MULTI_ACTION_SPEEDUP_FLOOR`] for the spread and the bound.
 //!
 //! # Why an ignored integration test and not a criterion bench
 //!
@@ -66,6 +80,25 @@ use uuid::Uuid;
 /// The action the post-filter actually asks about: seeing that a hit exists at all
 /// (`docs/07-SEARCH-INDEXING.md §6.2`).
 const ACTION: Action = Action::File(FileAction::MetadataRead);
+
+/// The ten questions a listing page asks about every row it returns.
+///
+/// [`ACTION`] is the trim — may this caller see the row at all — and the other nine are the
+/// capability object of `docs/05-API.md §7`, in the order `crates/api/src/content.rs` lists them.
+/// Ten is not an illustrative number: it is what `browse` costs today, one `authorize_many` call
+/// each, which is what ENC-167 exists to collapse.
+const CAPABILITY_ACTIONS: [Action; 10] = [
+    ACTION,
+    Action::File(FileAction::Preview),
+    Action::File(FileAction::Download),
+    Action::File(FileAction::Print),
+    Action::File(FileAction::Export),
+    Action::File(FileAction::Edit),
+    Action::File(FileAction::Share),
+    Action::File(FileAction::ShareExternal),
+    Action::File(FileAction::Delete),
+    Action::File(FileAction::Sync),
+];
 
 /// Independent folder chains hanging off the library root.
 const CHAINS: usize = 20;
@@ -141,6 +174,21 @@ const P95_BUDGET_MS: f64 = 200.0;
 /// Unlike the millisecond bounds, this one does not care how fast the machine is: contention
 /// inflates the numerator and the denominator together.
 const BATCH_RATIO_CEILING: f64 = 25.0;
+
+/// How much cheaper one multi-action pass must be than the same ten actions asked one at a time.
+///
+/// **What was measured.** 8.6–8.9× across four runs on the machine described above: a p50 of
+/// 7.7–7.8 ms for one pass against 66.7–68.7 ms for ten calls — 59–61 ms saved on a page of two
+/// hundred rows, in a debug build over the loopback. That is very nearly the 10× the statement
+/// count suggests (three statements against thirty), which says the client-side work the batching
+/// cannot remove — ten `EffectiveIndex`es over 2 000 cells — is small beside the round trips, and
+/// it is the round trips a production deployment pays real network latency on.
+///
+/// A ratio for the same reason [`BATCH_RATIO_CEILING`] is one: it survives a slow shared runner,
+/// where both sides inflate together. The floor is set at a third of the measured value because the
+/// regression it exists to catch is not a slow multi-action pass but a fake one — the pass quietly
+/// becoming a loop over actions, which puts this at 1.0 on any hardware.
+const MULTI_ACTION_SPEEDUP_FLOOR: f64 = 3.0;
 
 /// The corpus: one spine, a forest of folder chains under it, and the candidate list.
 #[derive(Debug)]
@@ -442,6 +490,67 @@ impl Timings {
             }
         }
 
+        Self::from_samples(samples)
+    }
+
+    /// Times [`SAMPLES`] calls to the multi-action pass, checking every result.
+    async fn measure_actions(
+        authz: &PgAclAuthorization,
+        ctx: &RequestContext,
+        actions: &[Action],
+        resources: &[ResourceRef],
+        verify: &dyn Fn(&[Vec<StageDecision>]),
+    ) -> Self {
+        let mut samples: Vec<Duration> = Vec::with_capacity(SAMPLES);
+        for iteration in 0..WARMUP + SAMPLES {
+            let started = Instant::now();
+            let rows = authz
+                .authorize_many_actions(ctx, actions, resources)
+                .await
+                .expect("resolve the batch");
+            let elapsed = started.elapsed();
+
+            verify(&rows);
+            if iteration >= WARMUP {
+                samples.push(elapsed);
+            }
+        }
+        Self::from_samples(samples)
+    }
+
+    /// Times the same question asked one action at a time — what a listing page costs today.
+    ///
+    /// Sequential rather than concurrent because that is how `crates/api/src/content.rs` issues
+    /// them, and for its reason: each call opens its own tenant-scoped transaction, so ten in
+    /// flight is ten connections held by one request. Timing a concurrent version would flatter the
+    /// baseline by measuring a shape the API deliberately does not use.
+    async fn measure_action_by_action(
+        authz: &PgAclAuthorization,
+        ctx: &RequestContext,
+        actions: &[Action],
+        resources: &[ResourceRef],
+        verify: &dyn Fn(&[Vec<StageDecision>]),
+    ) -> Self {
+        let mut samples: Vec<Duration> = Vec::with_capacity(SAMPLES);
+        for iteration in 0..WARMUP + SAMPLES {
+            let started = Instant::now();
+            let mut rows: Vec<Vec<StageDecision>> = Vec::with_capacity(actions.len());
+            for action in actions {
+                rows.push(
+                    authz.authorize_many(ctx, *action, resources).await.expect("resolve an action"),
+                );
+            }
+            let elapsed = started.elapsed();
+
+            verify(&rows);
+            if iteration >= WARMUP {
+                samples.push(elapsed);
+            }
+        }
+        Self::from_samples(samples)
+    }
+
+    fn from_samples(mut samples: Vec<Duration>) -> Self {
         samples.sort_unstable();
         let total: Duration = samples.iter().sum();
         Self {
@@ -564,5 +673,119 @@ async fn the_search_post_filter_resolves_two_hundred_candidates_inside_its_budge
          pool — rule both out before widening this.",
         batch.p95,
         batch.p50
+    );
+}
+
+/// Checks a listing page's worth of verdicts, whichever path produced them.
+///
+/// The corpus resolves the ten actions three genuinely different ways, and this insists on all
+/// three. `metadata_read` is the mixed one — inherited grants, chain denials, explicit denials and
+/// an expired denial. `download` is allowed on every candidate, because the noise the fixture
+/// writes for another action is a real grant for this caller. The remaining eight are granted by
+/// nobody.
+///
+/// That spread is what makes the timing below meaningful. A pass that answered the first action ten
+/// times, or filed one action's rows under another, would be *faster* than the correct one and
+/// would have to be caught here or not at all.
+fn verify_capabilities(corpus: &Corpus, rows: &[Vec<StageDecision>]) {
+    assert_eq!(rows.len(), CAPABILITY_ACTIONS.len(), "the pass lost or invented an action");
+
+    for (row, action) in rows.iter().zip(CAPABILITY_ACTIONS) {
+        assert_eq!(row.len(), CANDIDATES, "the row for {action} lost or invented a verdict");
+        let allowed = row.iter().filter(|decision| decision.is_allowed()).count();
+
+        if action == ACTION {
+            assert_eq!(
+                allowed, EXPECTED_ALLOWED,
+                "{action} resolved to an unexpected mix, so the timing is of the wrong question"
+            );
+            for (index, decision) in row.iter().enumerate() {
+                assert!(
+                    !(corpus.denied_by_chain[index] && decision.is_allowed()),
+                    "a file below a denied chain root was allowed {action}, so the walk did not \
+                     climb"
+                );
+            }
+        } else if action == Action::File(FileAction::Download) {
+            assert_eq!(
+                allowed, CANDIDATES,
+                "{action} is granted on every candidate by the fixture's own entries; a shortfall \
+                 means rows written for one action stopped reaching it"
+            );
+        } else {
+            assert_eq!(
+                allowed, 0,
+                "nobody granted {action} on anything, so an allow here is another action's grant \
+                 arriving in the wrong bucket"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL with migrations 0004 and 0005 applied; CI runs it with --include-ignored"]
+async fn one_multi_action_pass_costs_less_than_asking_each_action_separately() {
+    // ENC-167. The measurement that decides whether the API layer should adopt the multi-action
+    // path: the same ten questions about the same two hundred rows, asked once and asked ten times,
+    // against the same corpus and verified to the same standard.
+    let db = TestDb::start().await.expect("start the test database");
+    let fixtures = db.seed().await.expect("seed the tenant fixtures");
+    let alpha = fixtures.alpha.id;
+    let caller = fixtures.alpha.member;
+
+    let mut admin = db.connect().await.expect("admin connection");
+    let corpus = build(&mut admin, alpha, &fixtures).await;
+    let candidates = corpus.candidates();
+
+    let pool = db.pool().await.expect("application-role pool");
+    let authz = PgAclAuthorization::new(pool);
+    let mut ctx = RequestContext::system(alpha);
+    ctx.actor = Actor::User(caller);
+
+    let verify = |rows: &[Vec<StageDecision>]| verify_capabilities(&corpus, rows);
+
+    // Both paths are held to the identical verification, so "faster" cannot mean "answered less".
+    let together =
+        Timings::measure_actions(&authz, &ctx, &CAPABILITY_ACTIONS, &candidates, &verify).await;
+    let separately =
+        Timings::measure_action_by_action(&authz, &ctx, &CAPABILITY_ACTIONS, &candidates, &verify)
+            .await;
+
+    println!(
+        "{}",
+        together.report(&format!(
+            "ENC-167 authorize_many_actions({} actions × {CANDIDATES} candidates, one pass, \
+             debug build)",
+            CAPABILITY_ACTIONS.len()
+        ))
+    );
+    println!(
+        "{}",
+        separately.report(&format!(
+            "ENC-167 {} × authorize_many({CANDIDATES} candidates), i.e. what a listing page \
+             costs today",
+            CAPABILITY_ACTIONS.len()
+        ))
+    );
+
+    let speedup = separately.p50 / together.p50;
+    println!(
+        "ENC-167 one pass for {} actions costs {speedup:.2}× less than {} passes \
+         ({:.1} ms → {:.1} ms), i.e. {:.1} ms saved per listing page",
+        CAPABILITY_ACTIONS.len(),
+        CAPABILITY_ACTIONS.len(),
+        separately.p50,
+        together.p50,
+        separately.p50 - together.p50
+    );
+
+    assert!(
+        speedup > MULTI_ACTION_SPEEDUP_FLOOR,
+        "one pass for {} actions costs {speedup:.1}× less than asking them separately, under the \
+         {MULTI_ACTION_SPEEDUP_FLOOR:.0}× floor. The saving comes from the two round trips that do \
+         not mention the action — the inheritance walk and the group closure — being paid once; \
+         check that `AclResolver::effective_actions_in_tx` still issues exactly one of each and one \
+         `ACL_ENTRIES_SQL` with `action = ANY`, rather than having become a loop over actions.",
+        CAPABILITY_ACTIONS.len()
     );
 }

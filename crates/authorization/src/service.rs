@@ -15,7 +15,8 @@ use uuid::Uuid;
 use crate::error::Result;
 use crate::repo;
 use crate::resolve::{
-    AclResourceType, ChainNode, Effective, EffectiveIndex, InheritanceChain, PrincipalSet,
+    AclResourceType, ChainNode, Effective, EffectiveGrid, EffectiveIndex, InheritanceChain,
+    PrincipalSet,
 };
 
 /// Bounds on how far resolution will walk before refusing to answer.
@@ -132,16 +133,15 @@ impl AclResolver {
     /// The returned vector is index-aligned with `resources`, including duplicates and including
     /// the entries that were refused without a query.
     ///
-    /// `now` is taken as an argument rather than read from the clock so that every resource in one
-    /// batch is judged against a single instant: with two hundred candidates and a `read` grant
-    /// expiring mid-flight, a per-resource `Utc::now()` would let two hits of the same search
-    /// disagree about whether the same entry had expired.
+    /// The body is a one-action call to [`AclResolver::effective_actions_in_tx`], for the reason
+    /// [`PgAclAuthorization::authorize`] gives for delegating to its own batch path: two
+    /// implementations of one question are how the narrower form ends up answering something the
+    /// wider one does not, and here the two would differ over the rule that matters most — which
+    /// action a fetched `DENY` belongs to.
     ///
     /// # Errors
     ///
-    /// Storage failures, unreadable rows, and a chain deeper than the configured limit. None of
-    /// these is converted into a denial: an evaluation that could not happen is not an evaluation
-    /// that said no (`crates/core/src/engine.rs`).
+    /// As [`AclResolver::effective_actions_in_tx`].
     pub async fn effective_in_tx(
         &self,
         conn: &mut PgConnection,
@@ -151,13 +151,72 @@ impl AclResolver {
         resources: &[ResourceRef],
         now: DateTime<Utc>,
     ) -> Result<Vec<Effective>> {
+        let grid = self
+            .effective_actions_in_tx(
+                conn,
+                tenant,
+                actor,
+                core::slice::from_ref(&action),
+                resources,
+                now,
+            )
+            .await?;
+        // One action in, one row out. Unreachable by construction; if it ever stopped holding, the
+        // refusing answer is the safe one, and it is still the right length.
+        Ok(grid
+            .for_action(0)
+            .map_or_else(|| vec![Effective::NotGranted; resources.len()], <[Effective]>::to_vec))
+    }
+
+    /// Resolves a set of actions over a batch of resources in one pass.
+    ///
+    /// The answer is keyed by `(action, resource)`: [`EffectiveGrid::for_action`] takes an index
+    /// into `actions` and yields a row index-aligned with `resources`, duplicates and
+    /// refused-without-a-query entries included.
+    ///
+    /// # Why the actions travel together
+    ///
+    /// The first two of the three round trips — the inheritance walk and the group closure — do not
+    /// mention the action at all, and ENC-145 measured the cost of a resolution as ~80% fixed
+    /// (`tests/authorize_many_cost.rs`). Ten actions asked one at a time therefore pay that fixed
+    /// cost ten times to re-derive identical chains. A listing page is exactly this shape: nine
+    /// capability probes plus the trim's `metadata_read`, over one page of rows.
+    ///
+    /// # Why it cannot mix one action's verdict into another's
+    ///
+    /// Rows are separated once, in [`repo::acl_entries_by_action`], by the `action` column the
+    /// query now selects; each action's [`EffectiveIndex`] is then built from its own bucket and
+    /// from nothing else. Deny-wins runs inside one index, so a `DENY` has no representation that
+    /// could reach another action's answer. What the two do share is each resource's inheritance
+    /// chain, which is action-independent by definition — and is looked up once here, so every
+    /// action necessarily decides against the same chain rather than against a re-derived one.
+    ///
+    /// `now` is taken as an argument rather than read from the clock so that every resource *and
+    /// every action* in one pass is judged against a single instant: with a `download` grant
+    /// expiring mid-flight, a per-call `Utc::now()` would let one page's capabilities disagree with
+    /// each other about whether the same entry had expired.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures, unreadable rows, and a chain deeper than the configured limit. None of
+    /// these is converted into a denial: an evaluation that could not happen is not an evaluation
+    /// that said no (`crates/core/src/engine.rs`).
+    pub async fn effective_actions_in_tx(
+        &self,
+        conn: &mut PgConnection,
+        tenant: TenantId,
+        actor: &Actor,
+        actions: &[Action],
+        resources: &[ResourceRef],
+        now: DateTime<Utc>,
+    ) -> Result<EffectiveGrid> {
         let targets: Vec<Target> = resources.iter().map(|r| classify(tenant, r)).collect();
 
         // An actor with no ACL principal cannot be named by any entry, so there is nothing to ask
         // the database. Returning before the queries is not just an optimisation: it is what stops
         // `EVERYONE` from being matched by a principal the ACL model has no way to talk about.
         let Some(principals) = PrincipalSet::for_actor(actor) else {
-            return Ok(vec![Effective::NotGranted; resources.len()]);
+            return Ok(refusing(actions.len(), resources.len()));
         };
 
         let mut files = Vec::new();
@@ -171,8 +230,9 @@ impl AclResolver {
                 Target::ForeignTenant | Target::Unsupported => {}
             }
         }
-        if files.is_empty() && libraries.is_empty() && workspaces.is_empty() {
-            return Ok(vec![Effective::NotGranted; resources.len()]);
+        if actions.is_empty() || (files.is_empty() && libraries.is_empty() && workspaces.is_empty())
+        {
+            return Ok(refusing(actions.len(), resources.len()));
         }
 
         // Query 1 — every candidate's chain, in one walk per family.
@@ -198,25 +258,47 @@ impl AclResolver {
         let groups = repo::group_closure(conn, tenant, direct, self.limits.max_group_depth).await?;
         let principals = principals.with_groups(groups);
 
-        // Query 3 — the entries on the union of every chain, once for the whole batch.
+        // Query 3 — the entries on the union of every chain, for every action, once for the whole
+        // batch. They come back already separated by action and are never seen together again.
         let mut nodes: Vec<ChainNode> =
             chains.values().flat_map(|chain| chain.nodes().iter().copied()).collect();
         nodes.sort_unstable();
         nodes.dedup();
-        let entries =
-            repo::acl_entries(conn, tenant, &action.to_string(), &nodes, &principals, now).await?;
+        let names: Vec<String> = actions.iter().map(ToString::to_string).collect();
+        let buckets =
+            repo::acl_entries_by_action(conn, tenant, &names, &nodes, &principals, now).await?;
 
-        let index = EffectiveIndex::build(&entries, &principals, now);
+        // Each resource's chain, resolved once and shared by every action. Sharing it is not a
+        // saving so much as a guarantee: inheritance does not vary by action, so two actions
+        // deciding against two separately-derived chains could only ever differ by a bug.
         let empty = InheritanceChain::default();
-        // Index-aligned with `resources`: one verdict per input, duplicates and refusals included.
-        Ok(targets
-            .into_iter()
-            .map(|target| match chain_key(target) {
-                None => Effective::NotGranted,
-                Some(key) => index.decide(chains.get(&key).unwrap_or(&empty)),
+        let walked: Vec<&InheritanceChain> = targets
+            .iter()
+            .map(|target| chain_key(*target).and_then(|key| chains.get(&key)).unwrap_or(&empty))
+            .collect();
+
+        // One row per action, each index-aligned with `resources`: one verdict per input,
+        // duplicates and refusals included.
+        let rows = buckets
+            .iter()
+            .map(|entries| {
+                let index = EffectiveIndex::build(entries, &principals, now);
+                walked.iter().map(|chain| index.decide(chain)).collect()
             })
-            .collect())
+            .collect();
+        Ok(EffectiveGrid::from_action_rows(resources.len(), rows))
     }
+}
+
+/// A grid that grants nothing, for the paths that refuse before any query runs.
+///
+/// Full-sized rather than empty: a caller that asked about ten actions must be able to read all ten
+/// answers, and an answer that is missing is one a caller has to invent a default for.
+fn refusing(actions: usize, resources: usize) -> EffectiveGrid {
+    EffectiveGrid::from_action_rows(
+        resources,
+        vec![vec![Effective::NotGranted; resources]; actions],
+    )
 }
 
 /// Folds one family's chains into the batch-wide map.
@@ -287,9 +369,9 @@ impl PgAclAuthorization {
     async fn resolve(
         &self,
         ctx: &RequestContext,
-        action: Action,
+        actions: &[Action],
         resources: &[ResourceRef],
-    ) -> CoreResult<Vec<StageDecision>> {
+    ) -> CoreResult<Vec<Vec<StageDecision>>> {
         // The tenant comes from the verified request context and from nowhere else
         // (`CLAUDE.md` rule 3); `ResourceRef::tenant_id` is checked *against* it in `classify`,
         // never used in its place.
@@ -298,7 +380,14 @@ impl PgAclAuthorization {
             .map_err(crate::error::AuthzError::from)?;
         let resolved = self
             .resolver
-            .effective_in_tx(&mut tx, ctx.tenant_id, &ctx.actor, action, resources, Utc::now())
+            .effective_actions_in_tx(
+                &mut tx,
+                ctx.tenant_id,
+                &ctx.actor,
+                actions,
+                resources,
+                Utc::now(),
+            )
             .await;
         // Read-only, so the rollback a dropped handle performs would be equivalent; committing
         // explicitly keeps the connection's return to the pool on the success path rather than in
@@ -306,12 +395,54 @@ impl PgAclAuthorization {
         let committed = tx.commit().await;
         let resolved = resolved?;
         committed.map_err(crate::error::AuthzError::from)?;
-        Ok(resolved.into_iter().map(Effective::into_stage_decision).collect())
+        Ok(resolved
+            .rows()
+            .map(|row| row.iter().copied().map(Effective::into_stage_decision).collect())
+            .collect())
+    }
+
+    /// One action's decisions, for the two trait methods that ask about exactly one.
+    async fn resolve_one(
+        &self,
+        ctx: &RequestContext,
+        action: Action,
+        resources: &[ResourceRef],
+    ) -> CoreResult<Vec<StageDecision>> {
+        let mut rows = self.resolve(ctx, core::slice::from_ref(&action), resources).await?;
+        // One action in, one row out. Unreachable otherwise; the refusing answer is the safe one,
+        // and `authorize`'s caller reads a missing verdict as a denial in any case.
+        Ok(rows.pop().unwrap_or_default())
     }
 }
 
 #[async_trait]
 impl AuthorizationService for PgAclAuthorization {
+    /// Resolves several actions over a batch of resources in one tenant-scoped transaction.
+    ///
+    /// The result is one row per element of `actions`, each index-aligned with `resources` — the
+    /// shape a capability probe wants, since it asks one action about a whole page at a time.
+    ///
+    /// This is an inherent method and not a trait one because
+    /// [`enclave_core::AuthorizationService`] batches resources only. Widening the trait would
+    /// oblige every implementation of it to answer a question most of them answer by looping
+    /// anyway; a caller that can name this type gets the saving today, and the trait can grow a
+    /// defaulted method when there is a second implementation that benefits.
+    ///
+    /// # Errors
+    ///
+    /// Resolution failures, which are never denials (`crate::error`).
+    async fn authorize_many_actions(
+        &self,
+        ctx: &RequestContext,
+        actions: &[Action],
+        resources: &[ResourceRef],
+    ) -> CoreResult<Vec<Vec<StageDecision>>> {
+        if resources.is_empty() {
+            return Ok(actions.iter().map(|_| Vec::new()).collect());
+        }
+        self.resolve(ctx, actions, resources).await
+    }
+
     async fn authorize(
         &self,
         ctx: &RequestContext,
@@ -321,7 +452,7 @@ impl AuthorizationService for PgAclAuthorization {
         // Deliberately the batch path with one element rather than a second implementation. Two
         // code paths for one question is how the singular form ends up enforcing something the
         // batch form does not — and it is the batch form that the search post-filter uses.
-        let mut decisions = self.resolve(ctx, action, core::slice::from_ref(resource)).await?;
+        let mut decisions = self.resolve_one(ctx, action, core::slice::from_ref(resource)).await?;
         match decisions.pop() {
             Some(decision) => Ok(decision),
             // Unreachable by construction: the resolver returns one verdict per input. If it ever
@@ -339,7 +470,7 @@ impl AuthorizationService for PgAclAuthorization {
         if resources.is_empty() {
             return Ok(Vec::new());
         }
-        self.resolve(ctx, action, resources).await
+        self.resolve_one(ctx, action, resources).await
     }
 }
 

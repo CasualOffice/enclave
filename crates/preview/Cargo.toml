@@ -18,6 +18,7 @@ async-trait = { workspace = true }
 chrono      = { workspace = true }
 # The raster decoder. Chosen for header-before-pixels inspection, and pinned to three formats — see
 # the note in the workspace manifest and the bound in `src/raster.rs`.
+ab_glyph    = { workspace = true }
 image       = { workspace = true }
 sqlx        = { workspace = true }
 thiserror   = { workspace = true }
