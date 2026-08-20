@@ -74,6 +74,33 @@ Everything Enclave puts in Redis is derived from PostgreSQL and must be reconstr
 development instance that forgets on every restart makes an accidental dependency on cached state
 fail here, on a laptop, rather than in production during a failover.
 
+## Running the tests against this stack
+
+Tests that need live infrastructure are `#[ignore]`d, and `--include-ignored` runs them. They read
+their endpoints from the environment, and a variable that is unset is a **failure**, not a skip —
+deliberately, so that a suite believed to be running cannot quietly not be. The consequence is that
+the first local run after `compose up` fails with a message naming the variable:
+
+```sh
+export DATABASE_URL=postgres://enclave:enclave@localhost:5432/enclave
+export ENCLAVE_TEST_S3_ENDPOINT=http://localhost:9000
+export ENCLAVE_TEST_S3_ACCESS_KEY_ID=enclave
+export ENCLAVE_TEST_S3_SECRET_ACCESS_KEY=enclave-dev-secret
+
+cargo test --workspace -- --include-ignored --skip a_lost_role_creation_race
+```
+
+`--skip a_lost_role_creation_race` because that test drops cluster-wide roles to recreate the race
+it exists to prove, which breaks every other binary holding a database. CI runs it in a job with a
+server of its own.
+
+The values above match `.github/workflows/ci.yml`, which is the file to check if a test passes in CI
+and fails here. Adjust the ports if you set any `ENCLAVE_DEV_*_PORT` override.
+
+**On Apple Silicon**, the antivirus tests cannot run: `clamav/clamav` publishes an amd64 image and
+no arm64 one, so `g1_an_eicar_upload_is_quarantined_and_never_becomes_available` fails for reasons
+unrelated to the code unless you run it under emulation (`ENC-525`). CI is amd64 and runs it.
+
 ## Monitoring
 
 `monitoring/alerts/search.yml` holds the search alerting rules that
