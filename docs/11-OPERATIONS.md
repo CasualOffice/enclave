@@ -1,6 +1,6 @@
 # 11 — Operations
 
-> **Status:** Draft · **Version:** 1.0 · **Owner:** SRE · **Last updated:** 2026-08-18
+> **Status:** Draft · **Version:** 1.1 · **Owner:** SRE · **Last updated:** 2026-08-21
 > **Authoritative for:** SLOs, runbooks, backup/DR, key rotation, migrations, capacity, on-call.
 
 ## 1. Service level objectives
@@ -154,6 +154,44 @@ If a conditional-access misconfiguration locks every administrator out, a break-
 - triggers an immediate high-severity alert to the security contact on use;
 - has its use reviewed within 24 hours, with a written record.
 
+### 5.7 Search metrics quiet, or the drop ratio at zero
+
+Trigger: `SearchPostFilterDropRatioZero`, `SearchPostFilterSilent`, `SearchDenylistSizeUnreported`
+or `MetricsSeriesDropped`.
+
+These four share a runbook because they share a shape: the signal stopped, and a stopped signal is
+worse news than a moving one. §5.2 handles the drop ratio *climbing*, which is the post-filter doing
+its job loudly. This section handles it going quiet, which is what a post-filter that is no longer
+running looks like from the outside — no errors, no latency change, no log line, and results that
+may contain documents the caller cannot see.
+
+```text
+1. Is the post-filter running at all?
+     enclave_search_postfilter_passes_total must be increasing. Compare against search request
+     volume. Flat counter + live traffic is a SEV1: results are reaching callers without
+     PostFilter::confirm. Take search offline for the affected tenants before diagnosing.
+     Flat counter + no traffic is a quiet Sunday. Confirm and close.
+2. Passes increasing, ratio exactly zero?
+     Check that both drop counters are still being published:
+       enclave_search_postfilter_candidates_dropped_total{reason="denylisted"}
+       enclave_search_postfilter_candidates_dropped_total{reason="unauthorized"}
+     A counter that is present and pinned is different from one that is absent. Present-and-pinned
+     means the code path runs and never drops — inspect a recent deploy of crates/search.
+3. Reproduce with the leakage suite. `12-TESTING.md §4.3` S5 offers deliberately over-permissive
+   candidates and asserts they are dropped. If S5 passes against the running build, the post-filter
+   is intact and the zero is real: confirm invalidation is healthy (§5.2 step 1) and raise the
+   alert's traffic floor rather than silencing it.
+4. Denylist gauge absent?
+     Nothing is calling the recorder that publishes enclave_search_denylist_entries. Both denylist
+     alerts are then incapable of firing, and a tenant can sit in degraded search unannounced.
+     Restore the call; until then, query retrieval_denylist directly per tenant.
+5. Series dropped at the cardinality cap?
+     Some tenants are unmonitored. Confirm which by comparing exported tenant_id labels against the
+     tenant list, then either raise the cap or aggregate upstream.
+```
+
+The judgement call in step 1 is the whole runbook. Everything else is confirmation.
+
 ## 6. Audit chain verification
 
 ```text
@@ -214,6 +252,30 @@ upload, or accept a queue and show it honestly in the UI.
 
 ## 10. Monitoring and alerting
 
+### 10.1 Where the metrics are, and why they are not on the API port
+
+The Prometheus exposition is served on a **listener of its own**, configured by `server.metrics_port`
+and `server.metrics_bind`. It is **off by default** (`metrics_port: null`) and binds to loopback when
+a port is given. `GET /metrics` is the only path it answers; the API port does not serve it at all,
+and a gate refuses any change that puts it there.
+
+That is not an inconvenience to route around. The exposition carries `tenant_id` labels — which
+tenants exist, how much each one searches, how far behind each one's invalidation has fallen — so it
+fails the bar this system sets for an unauthenticated endpoint: never a detail that identifies a
+tenant. Putting it behind the policy chain instead would require Prometheus to present a tenant it
+cannot honestly claim.
+
+So the port is yours to place. Bind it to a management interface, or to loopback with a sidecar
+scraping it. **Do not expose it to the internet**, and do not put it behind the same load balancer as
+the API on the assumption that authentication covers it — there is none, deliberately, because the
+separation is the control.
+
+If a scrape returns connection-refused, the likeliest cause is that `metrics_port` was never set: the
+process logs `metrics_port is unset; no metrics endpoint is served` at debug on start-up, and logs
+`metrics listening` with the address when it is set.
+
+### 10.2 Golden signals
+
 **Golden signals** per service: rate, errors, duration, saturation.
 
 Alerts that page:
@@ -228,15 +290,30 @@ Alerts that page:
 | Worker DLQ | Any message in the security-relevant DLQs |
 | AV unavailable | > 15 min with `unavailable_policy: HOLD` |
 | Post-filter drop ratio | > 20% for 15 min |
+| Post-filter drop ratio at zero | Exactly 0 for 30 min while candidates are still being proposed |
 | Retrieval denylist size | > 1 000 for a tenant |
+| Retrieval denylist over its limit | Above the tenant's configured limit — the tenant **is already** in degraded search |
 | Backup age | > 24 h since last verified backup |
 | Certificate expiry | < 14 days |
 | Quota reconciliation drift | > 0.1% |
 
 Alerts that ticket rather than page: index lag, rendition queue depth, SMTP retries, LDAP sync
-failures, embedding spend above forecast.
+failures, embedding spend above forecast, no post-filter passes recorded for 30 min, denylist size
+unreported for 1 h, metric series refused at the cardinality cap.
+
+**A threshold that can only be crossed upwards is half an alert.** The post-filter drop ratio has two
+of them, and the low one is the one that gets forgotten. A ratio that climbs means the index drifted
+and the post-filter caught it — bad, visible, recoverable. A ratio that is *exactly zero* while
+candidates flow most likely means the post-filter stopped dropping, which produces no error, no
+latency change and no log line, and answers with documents the caller may not see. §5.7 is its
+runbook, and the same reasoning is why the denylist gauge going absent is itself an alert: an alert
+that cannot fire looks exactly like one that has nothing to say.
 
 Every alert links to the runbook section that resolves it. An alert without a runbook is not shipped.
+
+The executable rules live in `deploy/monitoring/alerts/`; the thresholds above are what they are
+tuned to, and the denylist limit is read from the process's own configuration rather than restated
+in the rule file.
 
 ## 11. Incident response
 

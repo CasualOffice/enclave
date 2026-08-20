@@ -42,6 +42,15 @@ server:
   # believed forwarding header from an untrusted peer lets any client claim any source IP and walk
   # straight through conditional access (`docs/06-SECURITY-DLP-ACCESS.md`).
   trusted_proxies: []
+  # The Prometheus exposition, on a socket of its own. Null disables it entirely, which is the
+  # default: a deployment that has not decided where this port belongs should not have it open.
+  #
+  # It is **not** authenticated and never will be. The exposition carries `tenant_id` labels, so
+  # this port must reach your monitoring and nothing else — a private interface, or loopback with a
+  # sidecar. `docs/11-OPERATIONS.md §10.1` explains why it is not simply a route on 8080 behind the
+  # policy chain. `deploy/monitoring/prometheus.yml` scrapes the value below.
+  metrics_port: 9464
+  metrics_bind: "127.0.0.1"
   # Behind a proxy, this would read:
   # trusted_proxies:
   #   - cidr: "10.20.0.0/16"

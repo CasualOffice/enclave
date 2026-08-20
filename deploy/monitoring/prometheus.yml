@@ -1,0 +1,43 @@
+# Minimal Prometheus configuration for the development stack.
+#
+# Not a production manifest — deploy/ is the developer-facing half of docs/08-BYO-INFRA.md and
+# production monitoring is the operator's. It is here so that `alerts/search.yml` is loadable and
+# checkable rather than a file nobody ever runs:
+#
+#     promtool check config deploy/monitoring/prometheus.yml
+#     promtool check rules  deploy/monitoring/alerts/search.yml
+#
+# Neither has been run against these files: promtool is not in this repository's toolchain and no CI
+# job loads them. Until one does, "the rules are syntactically valid" is a claim, not a check.
+#
+# The targets below are the **metrics listener**, not the API port. `/metrics` is deliberately not
+# served on 8080: the exposition carries `tenant_id` labels, which is exactly what this system's
+# rule for an unauthenticated endpoint forbids, so it lives on a socket an operator places on a
+# private interface (`docs/11-OPERATIONS.md §10.1`). It is off unless `server.metrics_port` is set —
+# a refused connection here almost always means it was never configured.
+#
+# `enclave-worker` has no metrics listener yet; the worker binary does not exist. The job is kept so
+# the rule files load with both series present, and it will report the target as down until then.
+# That is honest, and better than deleting the job and rediscovering the gap later.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - alerts/*.yml
+
+scrape_configs:
+  - job_name: enclave-api
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["host.docker.internal:9464"]
+        labels:
+          service: api
+
+  - job_name: enclave-worker
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["host.docker.internal:9465"]
+        labels:
+          service: worker

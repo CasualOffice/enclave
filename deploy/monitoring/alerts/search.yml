@@ -1,0 +1,230 @@
+# Search alerting rules.
+#
+# Satisfies the M3 exit criterion "post-filter drop ratio and denylist size exported as metrics,
+# with alerts wired" (plans/M3-DISCOVERY.md §6). The metrics are declared in
+# crates/observability/src/metrics.rs and published from crates/search/src/postfilter.rs.
+#
+# docs/11-OPERATIONS.md §10: "Every alert links to the runbook section that resolves it. An alert
+# without a runbook is not shipped." Every rule below carries a `runbook` annotation, and every
+# section it names exists.
+#
+# ---------------------------------------------------------------------------------------------
+# The two thresholds that are NOT written here, on purpose
+# ---------------------------------------------------------------------------------------------
+#
+# The denylist limit is not a number in this file. It is scraped as
+# `enclave_search_denylist_limit`, published by the process from the configuration it is actually
+# running with. A limit written into YAML is a second copy of `DEFAULT_DENYLIST_LIMIT`, and the copy
+# that drifts is always this one — silently, in the direction of "the alert stopped firing".
+#
+# The drop ratio is not computed twice either. One recording rule defines it; both alerts read that
+# rule. Two expressions dividing "roughly the same" counters is how a dashboard and a page end up
+# disagreeing about whether anything is wrong.
+
+groups:
+  - name: enclave-search-postfilter
+    interval: 30s
+    rules:
+      # The ratio, defined once.
+      #
+      # A 15-minute window rather than 5: the post-filter's drop ratio is bursty at small volumes —
+      # one search of twenty candidates against a tenant mid-reorganisation can read 100% — and a
+      # window short enough to see that is a window short enough to page on it.
+      - record: enclave:search_postfilter_candidates_proposed:rate15m
+        expr: sum(rate(enclave_search_postfilter_candidates_proposed_total[15m]))
+
+      - record: enclave:search_postfilter_candidates_dropped:rate15m
+        expr: sum(rate(enclave_search_postfilter_candidates_dropped_total[15m]))
+
+      # 0/0 is NaN, which compares false against every threshold. That is the correct behaviour for
+      # an idle deployment: no candidates were proposed, so nothing was wrongly proposed, and
+      # neither the "high" nor the "zero" alert below has anything to say.
+      - record: enclave:search_postfilter_drop_ratio:rate15m
+        expr: >-
+          enclave:search_postfilter_candidates_dropped:rate15m
+            / enclave:search_postfilter_candidates_proposed:rate15m
+
+      # --- the ratio climbs -----------------------------------------------------------------
+      #
+      # The index is drifting more permissive than the ACLs and the post-filter is catching it.
+      # Correctness is not at risk — that is what the post-filter is for. Result quality is: pages
+      # come back short because over-fetch budget was spent on candidates that were then discarded.
+      #
+      # `for: 5m` on top of a 15-minute rate window, not `for: 15m`. The window already supplies the
+      # smoothing that "for 15 min" in docs/11 §10 is asking for; stacking both would take 30
+      # minutes to page on a condition that is visible in 15.
+      - alert: SearchPostFilterDropRatioHigh
+        expr: enclave:search_postfilter_drop_ratio:rate15m > 0.20
+        for: 5m
+        labels:
+          severity: page
+          service: search
+        annotations:
+          summary: Post-filter is discarding more than 20% of index candidates
+          description: >-
+            {{ $value | humanizePercentage }} of candidates offered to the post-filter are being
+            dropped. The vector index is more permissive than the ACLs it is supposed to mirror,
+            which means invalidation is behind. Search results stay correct — the post-filter is the
+            thing doing the dropping — but pages come back short and latency is being paid for
+            results nobody sees. Split by reason with
+            `enclave_search_postfilter_candidates_dropped_total`: `denylisted` points at the
+            invalidation worker, `unauthorized` at the index's ACL tokens.
+          runbook: docs/11-OPERATIONS.md#52-permission-drift-repair
+
+      # --- the ratio falls to zero ------------------------------------------------------------
+      #
+      # The alert people forget to write, and the more alarming of the two.
+      #
+      # A post-filter that stopped filtering does not fail, does not log and does not slow down. The
+      # only thing it does differently is return documents the caller may not see. Every other
+      # signal in the system stays green while it happens, which is exactly why the absence of drops
+      # has to be the signal.
+      #
+      # Not `< 0.001`. A small non-zero ratio is a working post-filter on a well-invalidated index;
+      # *exactly* zero, sustained, across every tenant, is the signature of a code path that stopped
+      # dropping. The traffic floor keeps a quiet deployment from paging: below roughly one
+      # candidate per second there is not enough evidence to distinguish "nothing was dropped" from
+      # "nothing happened".
+      #
+      # Honest limitation: a small, single-tenant, stable deployment can legitimately sit at zero
+      # for half an hour. Such a deployment should raise the floor rather than silence the alert —
+      # silencing it removes the only signal that distinguishes a working post-filter from an absent
+      # one.
+      - alert: SearchPostFilterDropRatioZero
+        expr: >-
+          enclave:search_postfilter_drop_ratio:rate15m == 0
+            and enclave:search_postfilter_candidates_proposed:rate15m > 1
+        for: 30m
+        labels:
+          severity: page
+          service: search
+        annotations:
+          summary: Post-filter dropped nothing for 30 minutes while candidates were flowing
+          description: >-
+            The post-filter has discarded exactly zero candidates for 30 minutes while candidates
+            were still being proposed. The benign reading — every tenant's index agreeing exactly
+            with every tenant's ACLs, for half an hour — is the least likely explanation. Treat as a
+            potential authorization-filtering failure until shown otherwise: a post-filter that
+            stopped dropping returns documents the caller may not see, and nothing else in the
+            system will say so.
+          runbook: docs/11-OPERATIONS.md#57-search-metrics-quiet-or-the-drop-ratio-at-zero
+
+      # --- the post-filter goes silent ---------------------------------------------------------
+      #
+      # Tickets rather than pages, because this module cannot see request volume: "nobody searched"
+      # and "search was served without the post-filter" produce the same flat counter from here. The
+      # runbook opens by separating them, which is a two-minute check against the API's request
+      # metrics — and until those exist, against the access log.
+      - alert: SearchPostFilterSilent
+        expr: >-
+          sum(rate(enclave_search_postfilter_passes_total[30m])) == 0
+            or absent(enclave_search_postfilter_passes_total)
+        for: 30m
+        labels:
+          severity: ticket
+          service: search
+        annotations:
+          summary: No post-filter passes recorded for 30 minutes
+          description: >-
+            Either nothing has searched in half an hour, or something is serving search results
+            without calling PostFilter::confirm. The second is a leak; the first is a Sunday. Check
+            search request volume before anything else.
+          runbook: docs/11-OPERATIONS.md#57-search-metrics-quiet-or-the-drop-ratio-at-zero
+
+  - name: enclave-search-denylist
+    interval: 30s
+    rules:
+      # Replicas each report their own observation of the same table, so the raw gauge has one
+      # series per tenant per instance. `max` rather than `avg`: the reading that matters is the
+      # largest any replica has seen, because that is the one that engages degraded mode.
+      - record: enclave:search_denylist_entries:max_by_tenant
+        expr: max by (tenant_id) (enclave_search_denylist_entries)
+
+      - record: enclave:search_denylist_limit:max_by_tenant
+        expr: max by (tenant_id) (enclave_search_denylist_limit)
+
+      # --- the backlog is growing --------------------------------------------------------------
+      #
+      # docs/11 §10's existing threshold. Well below the limit, so it arrives while there is still
+      # time to fix invalidation before users notice anything.
+      - alert: SearchDenylistBacklogGrowing
+        expr: enclave:search_denylist_entries:max_by_tenant > 1000
+        for: 15m
+        labels:
+          severity: page
+          service: search
+        annotations:
+          summary: Retrieval denylist above 1 000 files for tenant {{ $labels.tenant_id }}
+          description: >-
+            {{ $value }} files are suppressed from retrieval for this tenant, which is how far
+            behind invalidation is. Nothing a user can see has changed yet. If it keeps climbing to
+            the configured limit, degraded mode engages for this tenant and recall drops.
+          runbook: docs/11-OPERATIONS.md#52-permission-drift-repair
+
+      # --- the backlog crossed its limit --------------------------------------------------------
+      #
+      # Not a warning. crates/search/src/degraded.rs has already switched this tenant to lexical
+      # search over PostgreSQL and is returning `degraded: true`, so the alert describes a state the
+      # tenant's users are in, not one they might enter. Worded that way on purpose: an operator who
+      # reads this as "getting close" will not tell the customer, and the customer will conclude
+      # their documents were deleted (plans/M3-DISCOVERY.md D25).
+      #
+      # Compared against the scraped limit, not a literal — see the header.
+      - alert: SearchDenylistOverflowedAndTenantIsDegraded
+        expr: >-
+          enclave:search_denylist_entries:max_by_tenant
+            > enclave:search_denylist_limit:max_by_tenant
+        for: 5m
+        labels:
+          severity: page
+          service: search
+        annotations:
+          summary: Tenant {{ $labels.tenant_id }} is in degraded search — denylist over its limit
+          description: >-
+            {{ $value }} suppressed files exceeds this tenant's configured denylist limit, so
+            semantic search has already fallen back to lexical over PostgreSQL for them. Results are
+            still correct and still post-filtered; recall is reduced and responses carry
+            `degraded: true`. Tell the customer that rather than letting them infer it from missing
+            results.
+          runbook: docs/11-OPERATIONS.md#52-permission-drift-repair
+
+      # --- nobody is reporting the size ---------------------------------------------------------
+      #
+      # The gauge is set by whoever counts the denylist for the degraded-mode decision. If that call
+      # is not being made, both denylist alerts above are structurally incapable of firing and the
+      # dashboard is blank rather than reassuring. This turns that into a ticket instead of a
+      # discovery made during an incident.
+      - alert: SearchDenylistSizeUnreported
+        expr: absent(enclave_search_denylist_entries)
+        for: 1h
+        labels:
+          severity: ticket
+          service: search
+        annotations:
+          summary: Denylist size is not being reported by any process
+          description: >-
+            No process has published `enclave_search_denylist_entries` for an hour. Until one does,
+            SearchDenylistBacklogGrowing and SearchDenylistOverflowedAndTenantIsDegraded cannot
+            fire, and a tenant can be sitting in degraded search with nothing to say so.
+          runbook: docs/11-OPERATIONS.md#57-search-metrics-quiet-or-the-drop-ratio-at-zero
+
+  - name: enclave-metrics-self
+    interval: 30s
+    rules:
+      # --- the exposition is truncated ----------------------------------------------------------
+      #
+      # A gauge family at its cardinality cap silently stops reporting new tenants. That is a hole
+      # in the alerting story shaped exactly like "everything is fine".
+      - alert: MetricsSeriesDropped
+        expr: increase(enclave_metrics_series_dropped_total[1h]) > 0
+        for: 5m
+        labels:
+          severity: ticket
+          service: observability
+        annotations:
+          summary: Metric series are being refused at the cardinality cap
+          description: >-
+            A gauge family hit its per-process series cap, so some tenants' metrics are not being
+            exported and their alerts cannot fire. Either the deployment has outgrown the cap in
+            crates/observability/src/metrics.rs, or a label is taking values it was not meant to.
+          runbook: docs/11-OPERATIONS.md#57-search-metrics-quiet-or-the-drop-ratio-at-zero

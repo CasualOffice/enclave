@@ -322,6 +322,78 @@ jobs:
           docker logs enclave-clamav | tail -40
           exit 1
 
+      - name: Pull the Milvus image
+        # Split from "Start Milvus" for the reason ENC-503 gives above: this step is a transaction
+        # with Docker Hub, the next one is a database starting, and a red check must say which.
+        #
+        # `milvusdb/milvus` publishes to Docker Hub only — the same position ENC-140 recorded — and
+        # the pull is anonymous. Note for anyone reproducing a failure locally: a *stale* Docker Hub
+        # credential makes the daemon send it and receive `401 Unauthorized` on images that are
+        # anonymously pullable, on every image, not just this one. It reads exactly like a rate
+        # limit and is fixed by `docker logout` (ENC-522). Runners have no stored credential, so it
+        # cannot happen here.
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if docker pull milvusdb/milvus:v2.5.4; then
+              echo "milvusdb/milvus:v2.5.4 pulled on attempt ${attempt}"
+              exit 0
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              delay=$((attempt * 10))
+              echo "Docker Hub pull failed (attempt ${attempt}/3); retrying in ${delay}s"
+              sleep "$delay"
+            fi
+          done
+          echo "::error title=Milvus image pull failed — REGISTRY, not a search failure::docker pull milvusdb/milvus:v2.5.4 failed three times against Docker Hub. The vector-index tests in crates/search were NOT evaluated — nothing was asserted and nothing failed. Anonymous Hub pulls are budgeted per source IP and hosted runners share addresses, so a 429 here is shared-budget exhaustion rather than a defect in this change. Re-run the job."
+          exit 1
+
+      - name: Start Milvus
+        # Standalone with **embedded etcd and local storage**, which is why this needs no etcd and
+        # no MinIO container: `ETCD_USE_EMBED` plus `COMMON_STORAGETYPE=local` is the configuration
+        # Milvus's own `standalone_embed.sh` uses. The MinIO already running in this job is for the
+        # storage tests and is deliberately not shared — a Milvus writing segments into the bucket
+        # those tests assert over would make each suite's failures depend on the other's ordering.
+        #
+        # Why a real server rather than a fake: `crates/search/tests/milvus.rs` asserts that the
+        # collection Milvus *actually creates* carries `tenant_id` as its partition key, and that an
+        # index deliberately holding over-permissive `acl_tokens` still decides nothing (S5,
+        # docs/12-TESTING.md §4.3). A fake would assert that our fake matches our belief about
+        # Milvus, and the belief is the thing under test. It has already earned this: the collection
+        # schema was rejected by the real server on first contact (ENC-523).
+        run: |
+          set -euo pipefail
+          cat > /tmp/embedEtcd.yaml <<'EOF'
+          listen-client-urls: http://0.0.0.0:2379
+          advertise-client-urls: http://0.0.0.0:2379
+          quota-backend-bytes: 4294967296
+          auto-compaction-mode: revision
+          auto-compaction-retention: '1000'
+          EOF
+          printf '# no overrides\n' > /tmp/user.yaml
+          docker run -d --name enclave-milvus --pull never \
+            --security-opt seccomp:unconfined \
+            -e ETCD_USE_EMBED=true \
+            -e ETCD_DATA_DIR=/var/lib/milvus/etcd \
+            -e ETCD_CONFIG_PATH=/milvus/configs/embedEtcd.yaml \
+            -e COMMON_STORAGETYPE=local \
+            -v /tmp/embedEtcd.yaml:/milvus/configs/embedEtcd.yaml \
+            -v /tmp/user.yaml:/milvus/configs/user.yaml \
+            -p 19530:19530 -p 9091:9091 \
+            milvusdb/milvus:v2.5.4 milvus run standalone
+          # `/healthz` on the management port, not an open 19530: the gRPC port binds before the
+          # coordinators have registered, and a test that connects then is told the collection does
+          # not exist rather than being made to wait.
+          for _ in $(seq 1 90); do
+            if curl -sf http://localhost:9091/healthz >/dev/null 2>&1; then
+              echo "Milvus is ready"; exit 0
+            fi
+            sleep 4
+          done
+          echo "::error title=Milvus did not become ready — INFRASTRUCTURE, not a search failure::the server never answered /healthz, so the vector-index tests in crates/search were NOT evaluated. The container log below says why it did not start."
+          docker logs enclave-milvus | tail -60
+          exit 1
+
       - name: Report free disk before building
         # So that the next time this job dies in the linker, the log says why on the line above it
         # rather than leaving a bus error to be diagnosed from first principles (ENC-156).

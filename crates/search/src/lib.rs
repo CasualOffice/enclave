@@ -21,15 +21,27 @@
 //! is a worse recall guarantee, never a worse authorization guarantee — is enforced by that shape
 //! rather than by a review comment.
 //!
-//! There is still **no vector store client**. When it lands, its candidates go through
-//! [`SearchResults::confirm`], the sibling of the degraded path, and neither of them takes an
-//! argument that turns the post-filter off.
+//! [`vector`] and [`milvus`] are the real candidate generator, and they arrive last for the same
+//! reason: the guarantee was built first, against a fake, and the real index has to fit the shape
+//! the fake already proved. It does, literally — [`milvus::MilvusIndex`] hands back the same
+//! `Vec<Candidate>` `tests/postfilter.rs` builds by hand, into the same
+//! [`SearchResults::confirm`], with no argument that turns the post-filter off.
+//!
+//! # Two things named `VectorStore`, and why only one of them is
+//!
+//! [`degraded::VectorStore`] is a **health state**, not a client. The port a client implements is
+//! [`vector::VectorIndex`]. The names are kept apart deliberately: `VectorStore::Unreachable` reads
+//! as a fact about the world, and if the same identifier were also the trait every implementation
+//! bore, that sentence would stop being obvious at a glance — which matters, because it is the
+//! sentence [`Retrieval::decide`] turns on.
 
 pub mod degraded;
 pub mod denylist;
 pub mod error;
 pub mod lexical;
+pub mod milvus;
 pub mod postfilter;
+pub mod vector;
 
 pub use degraded::{
     Cause, DegradedReason, Retrieval, SearchResults, VectorStore, DEFAULT_DENYLIST_LIMIT,
@@ -37,4 +49,6 @@ pub use degraded::{
 pub use denylist::{lift_expired, suppress, suppressed};
 pub use error::SearchError;
 pub use lexical::LexicalCandidates;
+pub use milvus::{MilvusConfig, MilvusIndex};
 pub use postfilter::{Candidate, Confirmed, DropCounts, PostFilter};
+pub use vector::{Prefilter, VectorIndex, VectorQuery};
