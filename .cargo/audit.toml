@@ -8,6 +8,23 @@
 
 [advisories]
 ignore = [
+    # RUSTSEC-2026-0002 — `lru` 0.12.5, `IterMut` violates Stacked Borrows by invalidating an
+    # internal pointer. Unsoundness, not a vulnerability, and reaching it requires calling the
+    # affected API.
+    #
+    # **Nothing in this graph calls it.** `lru` 0.12.5 has exactly one reverse dependency —
+    # `milvus-sdk-rust` 2.6.0 (`cargo tree -i lru@0.12.5`) — which touches `lru` in exactly one
+    # file, `src/v2/client/cache.rs`, a collection-schema cache using `get`/`put`/`get_or_load`.
+    # That file contains no `iter_mut` at all; the twelve `iter_mut` calls elsewhere in the SDK are
+    # on `Vec`s in unrelated modules. `IterMut` is therefore never constructed.
+    #
+    # Note this is a *different* `lru` from the one below: `aws-sdk-s3` pulls 0.16.4, which this
+    # advisory does not affect, and the Milvus SDK pins `lru = "0.12"` — not optional, no feature
+    # disables it. Two copies, two advisories, one crate name; worth reading the version.
+    #
+    # Accepted on that evidence, not to make a build green. What retires it is the SDK widening its
+    # requirement — recheck when milvus-sdk-rust next releases. Revisit 2026-11-21 (ENC-526).
+    "RUSTSEC-2026-0002",
     # RUSTSEC-2026-0253 — unsoundness (not a vulnerability) in `lru`: `LruCache::pop()` is not
     # panic-safe, so a `Drop` impl that panics mid-pop can leave a dangling reference.
     #
