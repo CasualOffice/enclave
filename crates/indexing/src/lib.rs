@@ -92,6 +92,7 @@
 pub mod chunk;
 pub mod error;
 pub mod extract;
+pub mod manifest;
 pub mod model;
 pub mod pipeline;
 pub mod store;
@@ -102,6 +103,7 @@ pub use error::{IndexingError, Result};
 pub use extract::{
     BoundedExtractor, ExtractOutcome, ExtractRequest, Extractor, NoExtractor, TextlessSource,
 };
+pub use manifest::{claim, enqueue, record, start, BuildVersions, Claimed, WorkingState};
 pub use model::{
     Coordinates, ExtractorVersion, Segment, SegmentKind, TextDocument, SEGMENT_OVERHEAD_BYTES,
 };
