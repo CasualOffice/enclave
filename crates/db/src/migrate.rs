@@ -235,16 +235,26 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "needs PostgreSQL; runs under ENC-112's testcontainers harness"]
+    #[ignore = "needs PostgreSQL; CI runs it with --include-ignored"]
     async fn migrations_apply_to_an_empty_database_and_are_idempotent() {
-        let config = crate::test_support::test_config();
-        let (url, field) = config.migration_target().expect("the harness configures an owner url");
-        let options = url.connect_options(field).expect("valid url");
-        let mut conn = PgConnection::connect_with(&options).await.expect("connect");
+        // `TestDb::start` **is** the first apply: it creates an empty database and runs every
+        // migration on it, so the `expect` below is the first half of this test's name. That half
+        // is asserted there rather than here on purpose — the harness holds the setup lock across
+        // the run, and migration 0001's `CREATE ROLE` guard is check-then-act, so a first apply
+        // issued from here would race every other test binary in the cluster (`ENC-116`).
+        //
+        // A throwaway database rather than the one `DATABASE_URL` names: applying migrations to a
+        // developer's dev stack records their checksums in it, and that is `ENC-504`.
+        let db = enclave_testing::TestDb::start()
+            .await
+            .expect("migrations must apply to a fresh, empty database");
+        let mut conn = db.connect().await.expect("connect");
 
-        run_migrations_on(&mut conn).await.expect("first apply");
-        // Running twice is not a hypothetical: every replica does it on every rollout.
+        // Re-applying is not a hypothetical: every replica does it on every rollout. Safe outside
+        // the setup lock, because every migration is already recorded as applied — sqlx runs no
+        // statement at all, so there is no second `CREATE ROLE` to race with.
         run_migrations_on(&mut conn).await.expect("second apply must be a no-op");
+        run_migrations_on(&mut conn).await.expect("third apply must be a no-op");
     }
 }
 

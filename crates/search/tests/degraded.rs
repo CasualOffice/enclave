@@ -224,8 +224,13 @@ async fn lexical_search_finds_the_named_document_and_leaves_its_neighbour() {
         "lexical search returned {found:?}; wanted exactly {:?}",
         wanted.file
     );
-    // No extracted text exists to excerpt from, and a snippet cut from the filename would say
-    // nothing the hit does not already carry. `lexical` explains why the honest answer is nothing.
+    // Say which mechanism this proves, because until `ENC-529` it proved none: the lexical
+    // generator wrote `excerpt: None` unconditionally, so this line could not fail and was
+    // documenting a constant. It is now an assertion — the excerpt comes from the chunk that
+    // matched, and a file matched by its *name* has no matched passage, so there is nothing to
+    // quote. A snippet cut from the filename would say nothing the hit does not already carry.
+    // `crates/search/src/excerpt.rs` is the rule; the `MetadataRead` half of the same field is
+    // `tests/lexical_content.rs`.
     assert_eq!(results.hits()[0].excerpt, None);
 
     drop(db);

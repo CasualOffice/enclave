@@ -29,6 +29,16 @@ tracing   = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+# Every database-backed test in this crate runs against a throwaway database rather than against
+# whatever `DATABASE_URL` names (`ENC-504`): the structural gates below used to apply migrations to
+# the developer's own dev-stack database, which recorded checksums there and made the next run on
+# another branch fail the forward-only gate on a migration nobody had touched.
+#
+# This is a **dev**-dependency, and the direction matters: `enclave-testing` depends on this crate
+# normally, so a normal edge here would be a cycle Cargo refuses. Cargo permits the cycle precisely
+# because it closes through a dev edge — the same arrangement every domain crate already has with
+# `enclave-testing`, described in that crate's manifest.
+enclave-testing = { workspace = true }
 
 [lints]
 workspace = true

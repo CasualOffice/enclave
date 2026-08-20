@@ -67,25 +67,43 @@
 //! worse than a refusal here in a way it is not for previews: a preview that renders half a document
 //! looks wrong, and an index built from half a document looks like the document.
 //!
-//! **No OCR, and not by accident** (`ENC-161`). The port is shaped to take one — an OCR engine is
-//! another [`Extractor`], asked again for the pages an earlier one reported in [`TextlessSource`] —
-//! but shipping an engine is blocked on a decision this crate cannot make for the deployment.
-//! `plans/M3-DISCOVERY.md` Q12 asks for it before extraction ships; concretely it needs four things:
+//! # OCR, and the part of it that is still missing
 //!
-//! 1. **The engine**, under this workspace's licence allowlist (`deny.toml`) and installable in an
-//!    air-gapped image (`docs/08 §18`). Tesseract is Apache-2.0 and is a C dependency with a
-//!    language-data payload; the Rust-native alternatives are weaker and are also new parsers.
-//! 2. **Which languages ship by default.** Each trained language is tens of megabytes in the image,
-//!    and a tenant whose documents are in a language nobody enabled gets silently empty results —
-//!    the exact failure D24 is about, reintroduced through configuration.
-//! 3. **The cost ceiling, in the same units as the budget.** OCR is seconds per page against
-//!    milliseconds for text, so either [`RenderBudget::wall_clock`](enclave_preview::RenderBudget)
-//!    is different for OCR or a 900-page scan is a guaranteed [`Refusal::Timeout`]. That is the one
-//!    place a second budget may be genuinely warranted, and it should be decided rather than
-//!    discovered.
-//! 4. **Whether OCR output is marked as such.** Recognised text carries error, and a DLP rule or a
-//!    classification decision made on it is made on a guess. Whether that is allowed is a policy
-//!    question, not an extraction one.
+//! [`ocr`] answers `plans/M3-DISCOVERY.md` Q12: [`OcrExtractor`] recognises text in PNG, JPEG and
+//! WebP sources with `ocrs`/`rten`, English (Latin script) only, and [`OcrRetry`] re-runs it over
+//! exactly the pages an earlier extraction reported in [`TextlessSource`]. It is a **stage**, not a
+//! fallback — D24 — and the property that makes that true is that [`OcrRetry::retry`] passes every
+//! outcome except [`Outcome::NoText`] straight through, so OCR cannot turn *"this document failed"*
+//! into *"this document is empty"*.
+//!
+//! Of the four things this crate previously said were undecided, three now are:
+//!
+//! 1. **The engine.** `ocrs` on `rten`: MIT OR Apache-2.0, pure Rust, and — the decisive property —
+//!    no `links` key, so no C toolchain enters the D17 worker. The Tesseract bindings both declare
+//!    `links = "tesseract"` and cannot even coexist in one graph. The workspace manifest carries the
+//!    comparison; `rayon` comes along with `rten` and is an accepted cost, bounded by the worker's
+//!    `RTEN_NUM_THREADS` and process CPU limit rather than by anything here.
+//! 2. **Languages: English only.** Additive later — a new recognition model and a reindex of what it
+//!    changes, not a migration. A page in a script the model was not trained on comes back
+//!    [`ExtractOutcome::NoText`], which is a `FAILED` manifest with `no_text_extracted` rather than a
+//!    silently empty index entry.
+//! 3. **The cost ceiling.** [`OcrRetry::new`] takes its own [`RenderBudget`], applied **per page**.
+//!    A different value for one struct, not a second struct — a 900-page scan under the text
+//!    extractor's wall clock is a guaranteed [`Refusal::Timeout`], so this is the place `lib.rs`
+//!    said a second set of numbers might be warranted.
+//!
+//! The fourth — **whether OCR output is marked as such**, since recognised text carries error and a
+//! DLP or classification decision made on it is made on a guess — is answered only at the manifest
+//! level. `index_manifests.extractor_version` records `ocr/1+…`, so *the document* is identifiable
+//! as OCR-derived; an individual [`Chunk`] is not, because `migrations/0011` gives a chunk no column
+//! for it. Whether per-chunk provenance is required is a policy question and is still open.
+//!
+//! **What is still missing for the exit criterion.** *"A scanned, text-free PDF is searchable by its
+//! content"* needs each PDF page rendered to pixels, and nothing in this repository renders a PDF
+//! page — `crates/preview/src/raster.rs` refuses `PdfSanitized` because a page tree is a parser
+//! rather than a decoder. [`PageImages`] is the port that would supply them and [`NoPageImages`] is
+//! what a deployment has today: it recovers nothing and the manifest keeps saying `FAILED`. A
+//! scanned page uploaded *as an image* is searchable now; a scanned **PDF** is not.
 //!
 //! [`Refusal::Timeout`]: enclave_preview::Refusal::Timeout
 
@@ -94,6 +112,7 @@ pub mod error;
 pub mod extract;
 pub mod manifest;
 pub mod model;
+pub mod ocr;
 pub mod pipeline;
 pub mod store;
 pub mod text;
@@ -107,6 +126,7 @@ pub use manifest::{claim, defer, enqueue, record, start, BuildVersions, Claimed,
 pub use model::{
     Coordinates, ExtractorVersion, Segment, SegmentKind, TextDocument, SEGMENT_OVERHEAD_BYTES,
 };
+pub use ocr::{NoPageImages, OcrExtractor, OcrModels, OcrRetry, PageImages};
 pub use pipeline::{ManifestStatus, Outcome, Pipeline, Prepared, Reason};
 pub use store::{write_chunks, ChunkWrite};
 pub use text::PlainTextExtractor;

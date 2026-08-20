@@ -39,12 +39,13 @@
 //!
 //! Ignored by default because it needs a live PostgreSQL. CI runs it with `--include-ignored` in
 //! the `grant-coverage` job of `.github/workflows/structural-gates.yml`, against a service
-//! container; locally, start one and set `DATABASE_URL`.
+//! container; locally, start one and set `DATABASE_URL`. It inspects a throwaway database created
+//! by the harness, never the one `DATABASE_URL` names (`ENC-504`).
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
-use enclave_db::migrate::run_migrations_on;
-use sqlx::{Connection, PgConnection, Row};
+use enclave_testing::TestDb;
+use sqlx::{PgConnection, Row};
 
 /// The role the application connects as, and the only role this gate has an opinion about.
 const APP_ROLE: &str = "enclave_app";
@@ -58,18 +59,24 @@ const APP_ROLE: &str = "enclave_app";
 /// the point.
 const EXEMPT: &[(&str, &str)] = &[];
 
-fn database_url() -> Option<String> {
-    std::env::var("DATABASE_URL").ok().filter(|u| !u.trim().is_empty())
-}
-
-async fn connect_and_migrate() -> PgConnection {
-    let url = database_url().expect(
-        "DATABASE_URL must be set to run the grant coverage gate; \
-         CI provides a service container, locally use deploy/compose/dev.yml",
+/// A freshly created, freshly migrated database, and a connection to it.
+///
+/// The handle is returned rather than dropped because dropping it drops the database — the caller
+/// has to keep it alive for as long as the connection is used.
+///
+/// This gate used to migrate the database `DATABASE_URL` names directly, which is what `ENC-504`
+/// removed: locally that is a developer's dev stack, and a migration applied to it records the
+/// migration's checksum there, failing the forward-only gate on every later run from a branch that
+/// no longer has it. The role attributes read below are cluster-wide either way — `enclave_app` and
+/// `enclave_platform` are created by migration 0001 and belong to the cluster, not to a database —
+/// so moving the connection one database over changes nothing about what is being asserted.
+async fn migrated_database() -> (TestDb, PgConnection) {
+    let db = TestDb::start().await.expect(
+        "the grant coverage gate needs a PostgreSQL it may create databases on; CI provides a \
+         service container, locally use deploy/compose/dev.yml and set DATABASE_URL",
     );
-    let mut conn = PgConnection::connect(&url).await.expect("connect to the test database");
-    run_migrations_on(&mut conn).await.expect("apply migrations");
-    conn
+    let conn = db.connect().await.expect("connect to the throwaway database");
+    (db, conn)
 }
 
 /// Names of `audit_events` and every partition currently attached to it.
@@ -107,7 +114,7 @@ async fn audit_tables(conn: &mut PgConnection) -> Vec<String> {
 #[tokio::test]
 #[ignore = "requires a live PostgreSQL; CI runs it with --include-ignored"]
 async fn every_tenant_scoped_table_is_reachable_by_the_application_role() {
-    let mut conn = connect_and_migrate().await;
+    let (_db, mut conn) = migrated_database().await;
 
     // A table is only usable if the schema containing it is too. Checked first and separately,
     // because a missing schema USAGE makes every per-table result below a false negative and the
@@ -195,7 +202,7 @@ async fn every_tenant_scoped_table_is_reachable_by_the_application_role() {
 #[tokio::test]
 #[ignore = "requires a live PostgreSQL; CI runs it with --include-ignored"]
 async fn the_audit_trail_is_append_only_on_every_partition() {
-    let mut conn = connect_and_migrate().await;
+    let (_db, mut conn) = migrated_database().await;
 
     let tables = audit_tables(&mut conn).await;
     assert!(
@@ -282,7 +289,7 @@ async fn the_audit_trail_is_append_only_on_every_partition() {
 #[tokio::test]
 #[ignore = "requires a live PostgreSQL; CI runs it with --include-ignored"]
 async fn the_application_role_cannot_opt_out_of_row_level_security() {
-    let mut conn = connect_and_migrate().await;
+    let (_db, mut conn) = migrated_database().await;
 
     let row = sqlx::query(
         r#"
@@ -348,7 +355,7 @@ async fn the_application_role_cannot_opt_out_of_row_level_security() {
 #[tokio::test]
 #[ignore = "requires a live PostgreSQL; CI runs it with --include-ignored"]
 async fn the_application_role_can_set_the_tenant_parameter() {
-    let mut conn = connect_and_migrate().await;
+    let (_db, mut conn) = migrated_database().await;
 
     // Half one: the catalog grant. `GRANT SET ON PARAMETER app.tenant_id TO enclave_app` is what
     // migration 0003 added; if a later migration revokes it, this is where that shows up.

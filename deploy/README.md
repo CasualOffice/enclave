@@ -214,6 +214,17 @@ Integration tests do not need this: `TestDb::start` creates a uniquely-named dat
 binary from `DATABASE_URL` and drops it afterwards, so a test run never touches the database you
 have been poking at by hand.
 
+What "never touches" means precisely, since it used not to be true (`ENC-504`): **no migration is
+ever applied to the database `DATABASE_URL` names, and no table is created in it.** That matters
+because a migration applied there records its *checksum* there — so editing an unmerged migration,
+running the tests and then switching branches used to leave your dev database failing the
+forward-only checksum gate on a migration you were no longer touching. What still happens against
+it, and is unavoidable, is `CREATE DATABASE` / `DROP DATABASE` (cluster-level statements have to be
+issued from inside some database), a session advisory lock that serialises setup, and
+`pg_terminate_backend` against connections to the throwaway. Migration `0001` also creates the
+three `enclave_*` roles, which are cluster objects and outlive the throwaway database that created
+them. None of that survives in your schema.
+
 ## Signing keys
 
 `deploy/config/dev-keys/` holds the Ed25519 key the development `KeyProvider` generates on first

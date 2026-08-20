@@ -244,14 +244,18 @@ mod tests {
     #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
     use super::*;
-    use crate::test_support::test_config;
+    use crate::test_support::test_database;
 
     #[tokio::test]
     async fn an_invalid_configuration_fails_before_a_socket_is_opened() {
         // No database is running in a unit-test environment, so reaching the connect attempt would
         // produce `Connect`, not `InvalidConfig`. Getting `InvalidConfig` back is the proof that
         // validation happened first.
-        let config = test_config().with_max_connections(0);
+        // No TestDb here on purpose: this test asserts that validation happens *before* a socket
+        // is opened, so it must run — and pass — with no PostgreSQL anywhere. Starting a throwaway
+        // database would make it depend on the very thing it proves is not reached.
+        let config = crate::DbConfig::new("postgres://enclave@localhost:5432/enclave")
+            .with_max_connections(0);
         let err = DbPool::connect(&config).await.expect_err("must be refused");
         assert!(matches!(err, DbError::InvalidConfig { field: "max_connections", .. }));
     }
@@ -268,29 +272,32 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "needs PostgreSQL; runs under ENC-112's testcontainers harness"]
+    #[ignore = "needs PostgreSQL; CI runs it with --include-ignored"]
     async fn the_platform_path_is_refused_when_it_is_not_configured() {
-        let pool = DbPool::connect(&test_config()).await.expect("connect");
+        let (_db, config) = test_database().await;
+        let pool = DbPool::connect(&config).await.expect("connect");
         assert!(!pool.has_platform_access());
         let err = pool.platform_connection().await.expect_err("must not fall back to the app pool");
         assert!(matches!(err, DbError::PlatformNotConfigured));
     }
 
     #[tokio::test]
-    #[ignore = "needs PostgreSQL; runs under ENC-112's testcontainers harness"]
+    #[ignore = "needs PostgreSQL; CI runs it with --include-ignored"]
     async fn health_check_uses_the_application_pool() {
-        let pool = DbPool::connect(&test_config()).await.expect("connect");
+        let (_db, config) = test_database().await;
+        let pool = DbPool::connect(&config).await.expect("connect");
         pool.health_check().await.expect("a healthy database answers SELECT 1");
         pool.close().await;
     }
 
     #[tokio::test]
-    #[ignore = "needs PostgreSQL; runs under ENC-112's testcontainers harness"]
+    #[ignore = "needs PostgreSQL; CI runs it with --include-ignored"]
     async fn the_configured_statement_timeout_is_actually_in_force() {
         // The setup hook is easy to get wrong in a way that is invisible: a typo in the batch means
         // no timeout at all, and nothing fails until a runaway query takes a pool down.
         use std::time::Duration;
-        let config = test_config().with_statement_timeout(Duration::from_millis(200));
+        let (_db, config) = test_database().await;
+        let config = config.with_statement_timeout(Duration::from_millis(200));
         let pool = DbPool::connect(&config).await.expect("connect");
         let mut scoped = pool.begin(TenantId::new_v7()).await.expect("begin");
         let result = sqlx::query("SELECT pg_sleep(5)").execute(&mut *scoped).await;

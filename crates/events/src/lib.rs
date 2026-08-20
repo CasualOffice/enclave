@@ -82,17 +82,22 @@ pub use transport::{InMemoryTransport, Transport};
 /// These tests are `#[ignore]` rather than mocked: the properties they assert — that a rollback
 /// leaves nothing behind, that an advisory lock excludes a second session — are properties of
 /// PostgreSQL, and a mock of PostgreSQL asserting them would only be asserting itself
-/// (`plans/M0-FOUNDATIONS.md` D7). They will be un-ignored once ENC-112 provides a container
-/// fixture; until then they run against the dev stack:
+/// (`plans/M0-FOUNDATIONS.md` D7). Each gets a throwaway database from `enclave_testing::TestDb`,
+/// so `DATABASE_URL` need only point at a server these may create databases on:
 ///
 /// ```text
 /// DATABASE_URL=postgres://…/enclave cargo test -p enclave-events -- --ignored
 /// ```
+///
+/// They used to connect to `DATABASE_URL` directly and depend on some *other* crate's test having
+/// migrated it first — an ordering that was an accident of how Cargo sequences test binaries, and a
+/// migration that had no business being applied there at all (`ENC-504`).
 #[cfg(test)]
 pub(crate) mod test_support {
     #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
     use enclave_core::TenantId;
+    use enclave_testing::TestDb;
     use sqlx::{PgConnection, PgPool, Row};
     use std::sync::atomic::{AtomicI64, Ordering};
 
@@ -107,16 +112,45 @@ pub(crate) mod test_support {
     /// A lock rather than a database per test, because it matches the thing being modelled: there
     /// is one publisher per cluster, holding one advisory lock. Tests that run it should queue for
     /// the same reason production instances do.
+    ///
+    /// `ENC-504` gave every test its own database, which now isolates them on its own, so this is
+    /// no longer the only thing keeping them apart. It is kept rather than deleted because it still
+    /// models the production shape, and because removing it would be a behavioural change to five
+    /// concurrency tests made in the same commit as a change to how they get a database — two
+    /// things failing at once is two things nobody can attribute.
     pub(crate) fn outbox_lock() -> &'static tokio::sync::Mutex<()> {
         static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
         LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
     }
 
-    /// Connects to the database named by `DATABASE_URL`.
-    pub(crate) async fn pool() -> PgPool {
-        let url = std::env::var("DATABASE_URL")
-            .expect("DATABASE_URL must be set to run the ignored database tests");
-        PgPool::connect(&url).await.expect("connect to the test database")
+    /// A throwaway database, migrated, and a pool onto it.
+    ///
+    /// Returns a guard rather than a bare [`PgPool`] because the database lives exactly as long as
+    /// the `TestDb` inside it: hold the value for the length of the test and the database is
+    /// dropped when it goes out of scope. It derefs to the pool, so call sites read as they did.
+    pub(crate) async fn pool() -> TestPool {
+        let db = TestDb::start().await.expect(
+            "these tests need a PostgreSQL they may create databases on; CI provides a service \
+             container, locally use deploy/compose/dev.yml and set DATABASE_URL",
+        );
+        let pool = PgPool::connect(db.url()).await.expect("connect to the test database");
+        TestPool { pool, _db: db }
+    }
+
+    /// A pool and the throwaway database it addresses, kept together so neither outlives the other.
+    pub(crate) struct TestPool {
+        pool: PgPool,
+        /// Dropped last, which drops the database. Named with a leading underscore because it is
+        /// held for its destructor and nothing else.
+        _db: TestDb,
+    }
+
+    impl std::ops::Deref for TestPool {
+        type Target = PgPool;
+
+        fn deref(&self) -> &Self::Target {
+            &self.pool
+        }
     }
 
     /// Every outbox row for a tenant, published or not.
@@ -152,9 +186,11 @@ pub(crate) mod test_support {
 
     /// An advisory-lock key no other test is using.
     ///
-    /// Tests share one database, and advisory-lock keys share one namespace across it. Contending
-    /// on the real publisher key would make two unrelated tests serialise — or, worse, make one
-    /// silently observe itself as a follower and assert nothing.
+    /// Advisory-lock keys share one namespace within a database. Contending on the real publisher
+    /// key would make two unrelated tests serialise — or, worse, make one silently observe itself
+    /// as a follower and assert nothing. Since `ENC-504` each test has its own database and so its
+    /// own namespace, but a test that asserts on leadership must still not use the key production
+    /// uses, or a stray publisher in the same database would decide the outcome.
     pub(crate) fn unique_lock_key() -> i64 {
         static NEXT: AtomicI64 = AtomicI64::new(0);
         // Far from `OUTBOX_PUBLISHER_LOCK_KEY`, and distinct per call within a run.

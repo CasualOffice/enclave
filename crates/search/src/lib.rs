@@ -21,6 +21,11 @@
 //! is a worse recall guarantee, never a worse authorization guarantee — is enforced by that shape
 //! rather than by a review comment.
 //!
+//! [`excerpt`] answers a question `ENC-515` left open and `ENC-529` closes: what a quotation from a
+//! document may look like. It is a small module with a long argument, because both obvious answers
+//! — `ts_headline` over the indexed expression, `ts_headline` over the raw text — are wrong in ways
+//! that are hard to see from a call site, and one of them is wrong *invisibly*.
+//!
 //! [`health`] is the signal that a store which is *up* can still be *wrong*. Reachability catches
 //! loud failures; a collection recreated empty answers every probe and returns almost nothing, with
 //! `degraded: false` on the response. It is per tenant, taken in a background loop, and it has no
@@ -44,6 +49,7 @@
 pub mod degraded;
 pub mod denylist;
 pub mod error;
+pub mod excerpt;
 pub mod health;
 pub mod lexical;
 pub mod milvus;

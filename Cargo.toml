@@ -205,6 +205,35 @@ url          = "2"
 # suppressing.
 milvus-sdk-rust = "2.6.0"
 
+# optical character recognition
+#
+# `plans/M3-DISCOVERY.md` Q12, answered 2026-08-21: `ocrs` on `rten`, English (Latin script) only.
+#
+# The decisive property is not accuracy, it is the **absence of a `links` key**. Both Rust bindings
+# to Tesseract (`tesseract`, `leptess`) declare `links = "tesseract"`, so they cannot coexist in one
+# dependency graph, and either one puts libtesseract and libleptonica — two large C parsers — inside
+# the D17 worker whose entire design is about not trusting parsers. `ocrs`/`rten` is pure Rust, MIT
+# OR Apache-2.0 across its tree, and adds no system library. `unsafe_code = "forbid"` applies to this
+# workspace's crates and not to a dependency's, so this is not a claim that `rten` contains no
+# `unsafe` — only that nothing here has to build or link a C toolchain to use it.
+#
+# **`rayon` comes with it, and that contradicts the note on `image` above.** `rten` depends on
+# `rayon` unconditionally (there is no feature that removes it) and sizes its global pool from the
+# physical core count, so OCR nests a thread pool inside the `spawn_blocking` thread the extractor
+# already runs on — exactly the parallelism the `image` note declines to accept. Taken anyway,
+# because the alternative is a C OCR engine that also threads and additionally brings a C toolchain,
+# and because the bound is available from outside: `rten` reads `RTEN_NUM_THREADS`, so the D17
+# worker's deployment sets it alongside the process CPU limit. `crates/indexing/src/ocr.rs` says the
+# same thing where an operator will read it; nothing in library code sets the variable, because a
+# library mutating the process environment is a global side effect its caller never asked for.
+#
+# `rten` is taken with `default-features = false` plus `rten_format`: the default set also enables
+# `onnx_format`, which is a second model-file parser reading a format we do not ship weights in. An
+# enabled parser nobody uses is still a parser in the image (the same argument the `image` pin
+# makes), and the `.rten` models are the only ones `ocrs` publishes.
+ocrs         = "0.12.2"
+rten         = { version = "0.24.0", default-features = false, features = ["rten_format"] }
+
 # dev
 trybuild     = "1"
 
