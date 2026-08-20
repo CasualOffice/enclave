@@ -178,6 +178,22 @@ rm -rf target/debug/incremental      # rebuild time is the only loss
 
 Prefer that to `cargo clean`, which throws away every dependency build as well.
 
+**But know what it costs, because this bit me.** Deleting `incremental` *forces a full rebuild*, and
+a full rebuild of this workspace writes far more into `target/debug/deps` than the delete freed —
+one statically-linked binary per test target. Reclaiming 6.8 GB that way and immediately running
+`cargo test --workspace` took the volume from 17 GiB free to **5.6 GiB**, which is the range where
+the previous outage started.
+
+So the order matters:
+
+- **Low on disk and about to build?** `rm -rf target/debug` — the decisive one. It costs a full
+  rebuild you were going to pay for anyway, and reclaims everything.
+- **Comfortable on disk and want to trim?** `rm -rf target/debug/incremental`, and do not
+  immediately start a full workspace build.
+
+The rule of thumb: `target/debug/deps` is the bulk (22 GB was observed), `incremental` is the
+remainder. Deleting the smaller one and rebuilding grows the larger one.
+
 **Do not run a cleanup while other work is in flight.** Deleting scratch files or pruning Docker
 images while a parallel session is mid-edit is a change to that session's work — that has already
 happened here once. If disk is short and something else is running, say so and wait.
