@@ -478,29 +478,65 @@ fn sniff(source: &[u8]) -> Option<ImageFormat> {
     SUPPORTED_FORMATS.contains(&format).then_some(format)
 }
 
+/// What a [`PageImages`] source had to say about one page.
+///
+/// Three arms rather than an [`Option`], and the third is the whole reason this type exists.
+/// [`Absent`](Self::Absent) and [`Refused`](Self::Refused) must not collapse into one another,
+/// because [`OcrRetry::retry`] does opposite things with them: an absent page is *skipped* and the
+/// rest of the document proceeds, and a refused page fails the whole attempt.
+///
+/// Collapsing them either way is a known failure mode of this crate:
+///
+/// - **refusal read as absence** is D24 exactly. A rasteriser that timed out on page 3 of 900 would
+///   have pages 1–2 indexed, `READY` on the manifest, and nothing anywhere saying the other 898 are
+///   missing — a document that appears correctly filed and searchable while almost all of its
+///   content is absent;
+/// - **absence read as refusal** would fail every document a deployment's rasteriser does not cover,
+///   which is what [`NoPageImages`] returns for every page.
+///
+/// The port originally returned `Option<Vec<u8>>` and `ENC-537` widened it, because the first real
+/// implementation ([`crate::pdf`]) has verdicts to report and neither existing arm could carry one
+/// honestly: `None` would have produced the partial index above, and an
+/// [`IndexingError`] would have made a document engineered to hang into a retry — the
+/// denial-of-service primitive `plans/M2-ACCESS-DELIVERY.md` D17 exists to refuse.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PageImage {
+    /// The page's pixels, in a format the OCR extractor sniffs rather than believes.
+    Rendered(Vec<u8>),
+    /// There is no image for this page, and that is not a failure.
+    ///
+    /// A page outside the source's range, or a source nothing in this deployment can rasterise. The
+    /// page goes unrecognised, which leaves the document textless if no other page yields text,
+    /// which is a `FAILED` manifest somebody reads.
+    Absent,
+    /// A verdict about this page: it will not rasterise, and re-running changes nothing.
+    ///
+    /// Handled exactly as an extractor's refusal is — the whole attempt becomes
+    /// [`Outcome::Refused`]. See [`OcrRetry`]'s module documentation for why one bad page fails the
+    /// document rather than yielding a partial index.
+    Refused(Refusal),
+}
+
 /// Supplies the raster image of one page of a source, for OCR to read.
 ///
-/// The port that does not exist anywhere else in this codebase, and naming it is the point: OCR over
-/// a scanned **PDF** needs each page rendered to pixels, and nothing in this repository renders a PDF
-/// page. `crates/preview/src/raster.rs` refuses `PdfSanitized` and says why — a page tree is a
-/// parser rather than a decoder and belongs in the D17 worker.
+/// The port that exists because OCR over a scanned **PDF** needs each page rendered to pixels, and
+/// `crates/preview/src/raster.rs` will not do it: it refuses `PdfSanitized` because a page tree is a
+/// parser rather than a decoder, and it continues to refuse it.
 ///
-/// So the exit criterion *"a scanned, text-free PDF is searchable by its content"* needs an
-/// implementation of this trait that this change does not provide. [`NoPageImages`] is what a
-/// deployment has today, and it refuses honestly rather than making the gap invisible.
+/// [`crate::pdf`] is the implementation that closes the exit criterion *"a scanned, text-free PDF is
+/// searchable by its content"*, and it is only constructible when a deployment has mounted PDFium.
+/// [`NoPageImages`] is what every other deployment has, and it recovers nothing rather than making
+/// the gap invisible.
 #[async_trait]
 pub trait PageImages: Send + Sync {
-    /// The image bytes of a one-based page, or `None` if this source cannot produce that page.
-    ///
-    /// `None` is *"there is no image for this page"* and is not a failure — a page outside the
-    /// source's range, or a source nothing can rasterise. It leaves the page unrecognised, which
-    /// leaves the document textless, which is a `FAILED` manifest somebody reads.
+    /// The image of a **one-based** page.
     ///
     /// # Errors
     ///
-    /// Only for failures that are *ours* — the rasteriser died, the pipe broke. An error here must
-    /// never be reported as a document without text; see `crates/indexing/src/error.rs`.
-    async fn page_image(&self, page: u32) -> Result<Option<Vec<u8>>>;
+    /// Only for failures that are *ours* — the rasteriser died, the pipe broke. Anything about the
+    /// document is a [`PageImage::Refused`] in the success channel, and an error here must never be
+    /// reported as a document without text; see `crates/indexing/src/error.rs`.
+    async fn page_image(&self, page: u32) -> Result<PageImage>;
 }
 
 /// The page source a deployment has when nothing can rasterise pages.
@@ -508,6 +544,10 @@ pub trait PageImages: Send + Sync {
 /// The deny-by-default stub, in the shape [`NoExtractor`](crate::NoExtractor) and
 /// `crates/preview::NoRenderer` already use. It yields no image for any page, so an OCR retry over a
 /// scanned PDF recovers nothing and the manifest keeps saying `FAILED` / `no_text_extracted`.
+///
+/// [`PageImage::Absent`] and not [`PageImage::Refused`]: a deployment that mounted no rasteriser has
+/// made no finding about anybody's document, and recording `UNSUPPORTED_FORMAT` against every
+/// scanned PDF in the corpus would put a verdict on a metric that is really a configuration state.
 ///
 /// That is the correct behaviour and not a placeholder for it: the tempting shortcut — hand the OCR
 /// engine the PDF's own bytes and let it try — feeds an image decoder a file that is not an image,
@@ -517,8 +557,8 @@ pub struct NoPageImages;
 
 #[async_trait]
 impl PageImages for NoPageImages {
-    async fn page_image(&self, _page: u32) -> Result<Option<Vec<u8>>> {
-        Ok(None)
+    async fn page_image(&self, _page: u32) -> Result<PageImage> {
+        Ok(PageImage::Absent)
     }
 }
 
@@ -591,8 +631,19 @@ impl<E: Extractor, P: PageImages> OcrRetry<E, P> {
         // page of the document would be correct and nine hundred times more expensive, and nothing
         // about the output would show it — which is why `tests` asserts what was asked for.
         for &page in &textless.pages_without_text {
-            let Some(image) = self.pages.page_image(page).await? else {
-                continue;
+            let image = match self.pages.page_image(page).await? {
+                PageImage::Rendered(image) => image,
+                // Not a failure: no such page, or nothing here rasterises this source.
+                PageImage::Absent => continue,
+                // A verdict about this page, recorded exactly as an extractor's refusal is — first
+                // one wins, and the document is refused below whatever the other pages yielded.
+                // Recorded rather than returned here so the two refusal sources go through one
+                // place; the pages after it cost a rasteriser call each, which is the same price
+                // the extractor's refusal path already pays and is bounded by `max_pages`.
+                PageImage::Refused(refusal) => {
+                    refused.get_or_insert(refusal);
+                    continue;
+                }
             };
 
             let outcome = self
@@ -708,21 +759,26 @@ mod tests {
         asked: Mutex<Vec<u32>>,
         /// Pages this source cannot produce an image for.
         missing: Vec<u32>,
+        /// Pages the rasteriser returns a verdict about.
+        refused: Vec<u32>,
         /// Fails instead of answering — a dead rasteriser.
         broken: bool,
     }
 
     #[async_trait]
     impl PageImages for RecordingPages {
-        async fn page_image(&self, page: u32) -> Result<Option<Vec<u8>>> {
+        async fn page_image(&self, page: u32) -> Result<PageImage> {
             self.asked.lock().expect("no panics in this test").push(page);
             if self.broken {
                 return Err(IndexingError::Worker(anyhow::anyhow!("the rasteriser died")));
             }
-            if self.missing.contains(&page) {
-                return Ok(None);
+            if self.refused.contains(&page) {
+                return Ok(PageImage::Refused(Refusal::OutputTooLarge));
             }
-            Ok(Some(tiny_png()))
+            if self.missing.contains(&page) {
+                return Ok(PageImage::Absent);
+            }
+            Ok(PageImage::Rendered(tiny_png()))
         }
     }
 
@@ -1123,6 +1179,30 @@ mod tests {
             Some(5),
             "the recovered text was attributed to the page that had no image"
         );
+    }
+
+    #[tokio::test]
+    async fn a_page_the_rasteriser_refused_fails_the_document_rather_than_indexing_the_rest() {
+        // `ENC-537`, and the reason `PageImages` returns three arms rather than an `Option`. Page 2
+        // will not rasterise; pages 1 and 3 recognise fine. The tempting answer is `READY` with two
+        // pages of three in the index, and it is D24's failure mode exactly — a document that reads
+        // as correctly filed and searchable with a third of its content missing and nothing on any
+        // surface saying so.
+        //
+        // The positive control is the test above: the identical shape with `missing` instead of
+        // `refused` is `READY`. Without it this assertion would pass against a retry that refused
+        // every document it touched.
+        let retry = retry_over(
+            vec![Answer::Text("page one"), Answer::Text("page three")],
+            RecordingPages { refused: vec![2], ..RecordingPages::default() },
+        );
+
+        let prepared =
+            retry.retry(VersionId::new_v7(), textless(vec![1, 2, 3])).await.expect("no error");
+
+        assert_eq!(prepared.outcome, Outcome::Refused(Refusal::OutputTooLarge));
+        assert_eq!(prepared.outcome.status(), ManifestStatus::Failed);
+        assert!(prepared.chunks.is_empty(), "a refused attempt must not leave chunks behind");
     }
 
     #[tokio::test]

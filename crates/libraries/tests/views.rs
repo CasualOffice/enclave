@@ -23,15 +23,24 @@ async fn start() -> (TestDb, Fixtures, DbPool) {
     (db, fixtures, pool)
 }
 
-async fn insert_workspace(conn: &mut PgConnection, tenant: TenantId, owner: UserId) -> Uuid {
+/// The slug is a parameter because `uq_workspace_slug` is unique per tenant: a test that needs both
+/// a library and a list needs two workspaces, and giving them the same name is a unique violation
+/// arriving in the middle of an assertion about something else.
+async fn insert_workspace(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    owner: UserId,
+    slug: &str,
+) -> Uuid {
     let id = Uuid::now_v7();
     sqlx::query(
         "INSERT INTO workspaces (id, tenant_id, name, slug, visibility, created_by, created_at,
                                  updated_at)
-         VALUES ($1, $2, 'Engineering', 'engineering', 'PRIVATE', $3, $4, $4)",
+         VALUES ($1, $2, $3, $3, 'PRIVATE', $4, $5, $5)",
     )
     .bind(id)
     .bind(tenant.as_uuid())
+    .bind(slug)
     .bind(owner.as_uuid())
     .bind(Utc::now())
     .execute(&mut *conn)
@@ -86,7 +95,7 @@ fn new_view(
 
 async fn library(pool: &DbPool, tenant: TenantId, owner: UserId) -> LibraryId {
     let mut tx = TenantScoped::begin(pool, tenant).await.expect("begin");
-    let workspace = insert_workspace(&mut tx, tenant, owner).await;
+    let workspace = insert_workspace(&mut tx, tenant, owner, "engineering").await;
     let created = LibraryRepository::create(
         &mut tx,
         tenant,
@@ -98,6 +107,72 @@ async fn library(pool: &DbPool, tenant: TenantId, owner: UserId) -> LibraryId {
     .expect("create library");
     tx.commit().await.expect("commit");
     created.id
+}
+
+/// A list in its own workspace, inserted directly: migration 0015 creates the table and no crate
+/// owns it yet, so there is no repository to go through.
+async fn list(pool: &DbPool, tenant: TenantId, owner: UserId) -> Uuid {
+    let mut tx = TenantScoped::begin(pool, tenant).await.expect("begin");
+    let workspace = insert_workspace(&mut tx, tenant, owner, "operations").await;
+    let id = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO lists (id, tenant_id, workspace_id, name, slug, created_at, updated_at)
+         VALUES ($1, $2, $3, 'Risks', 'risks', $4, $4)",
+    )
+    .bind(id)
+    .bind(tenant.as_uuid())
+    .bind(workspace)
+    .bind(Utc::now())
+    .execute(&mut *tx)
+    .await
+    .expect("insert list");
+    tx.commit().await.expect("commit");
+    id
+}
+
+/// Attempt a `library_views` row with whatever container columns the caller wants, bypassing
+/// `ViewRepository` — which cannot express a list-owned view, and would refuse the malformed cases
+/// before the database ever saw them. The point of these tests is what the *schema* refuses.
+async fn insert_raw_view(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    library_id: Option<Uuid>,
+    list_id: Option<Uuid>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO library_views
+           (id, tenant_id, library_id, list_id, name, view_type, filter_definition,
+            sort_definition, visible_columns, scope, is_default, created_by, created_at,
+            updated_at)
+         VALUES ($1, $2, $3, $4, 'V', 'LIST', '{}'::jsonb, '[]'::jsonb, '[]'::jsonb,
+                 'LIBRARY', FALSE, $5, $6, $6)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(tenant.as_uuid())
+    .bind(library_id)
+    .bind(list_id)
+    .bind(Uuid::nil())
+    .bind(Utc::now())
+    .execute(&mut *conn)
+    .await
+    .map(|_| ())
+}
+
+/// The constraint a refusal names, or `<accepted>` / `<not a constraint>`.
+///
+/// Asserted on rather than `is_err()`, because two constraints now guard these columns and an
+/// assertion that something failed cannot tell which one held. That is the shape `docs/12 §1.2`
+/// warns about: after migration 0015 the "both containers" case below would fail on the foreign key
+/// if its list id were fictional, and the test would still pass while proving nothing about the
+/// `CHECK` it is named for.
+fn refusal(result: &Result<(), sqlx::Error>) -> String {
+    match result {
+        Ok(()) => "<accepted>".to_owned(),
+        Err(e) => e
+            .as_database_error()
+            .and_then(|d| d.constraint())
+            .map_or_else(|| format!("<not a constraint: {e}>"), ToOwned::to_owned),
+    }
 }
 
 /// One person's arrangement is not visible to another person.
@@ -266,36 +341,73 @@ async fn a_library_has_exactly_one_default_and_a_personal_view_can_never_be_it()
 
 /// A view belongs to exactly one container.
 #[tokio::test]
-#[ignore = "requires a live PostgreSQL with migrations 0001–0010; CI runs it with --include-ignored"]
+#[ignore = "requires a live PostgreSQL with migrations 0001–0015; CI runs it with --include-ignored"]
 async fn a_view_cannot_belong_to_both_a_library_and_a_list_or_to_neither() {
     let (db, fixtures, pool) = start().await;
     let alpha = fixtures.alpha.id;
     let library = library(&pool, alpha, fixtures.alpha.owner).await;
-    let now = Utc::now();
+    // A *real* list, in the same tenant, so the "both" case has nothing to fail on but the CHECK.
+    let list = list(&pool, alpha, fixtures.alpha.owner).await;
 
-    let mut tx = TenantScoped::begin(&pool, alpha).await.expect("begin");
     for (label, library_id, list_id) in
-        [("both", Some(library.as_uuid()), Some(Uuid::now_v7())), ("neither", None, None)]
+        [("both", Some(library.as_uuid()), Some(list)), ("neither", None, None)]
     {
-        let attempt = sqlx::query(
-            "INSERT INTO library_views
-               (id, tenant_id, library_id, list_id, name, view_type, filter_definition,
-                sort_definition, visible_columns, scope, is_default, created_by, created_at,
-                updated_at)
-             VALUES ($1, $2, $3, $4, 'V', 'LIST', '{}'::jsonb, '[]'::jsonb, '[]'::jsonb,
-                     'LIBRARY', FALSE, $5, $6, $6)",
-        )
-        .bind(Uuid::now_v7())
-        .bind(alpha.as_uuid())
-        .bind(library_id)
-        .bind(list_id)
-        .bind(Uuid::nil())
-        .bind(now)
-        .execute(&mut *tx)
-        .await;
-        assert!(attempt.is_err(), "a view belonging to {label} container(s) was accepted");
+        // A fresh transaction per case, because the first refusal aborts the one it happened in and
+        // every later statement then fails with `25P02` regardless of what it says. This test used
+        // to share one transaction and assert `is_err()`, so its second case had been passing on
+        // the abort rather than on the constraint since it was written.
+        let mut tx = TenantScoped::begin(&pool, alpha).await.expect("begin");
+        let attempt = insert_raw_view(&mut tx, alpha, library_id, list_id).await;
+        assert_eq!(
+            refusal(&attempt),
+            "library_views_belongs_to_one_container",
+            "a view belonging to {label} container(s) was not refused by the CHECK this test is \
+             named for"
+        );
+        tx.rollback().await.expect("rollback");
     }
+
+    drop(db);
+}
+
+/// `list_id` may only name a list in the caller's own tenant (`ENC-502`, migration 0015).
+///
+/// Until 0015 this column carried no key at all, because `lists` had no migration: a view naming
+/// another tenant's list was two individually well-formed rows, which is exactly the cross-tenant
+/// reference `docs/04 §3.3` makes composite keys mandatory to prevent. Row-level security does not
+/// close it — RLS decides which rows a query returns and has no opinion about the value sitting in
+/// a column, and PostgreSQL runs referential-integrity checks with RLS deliberately not forced, so
+/// the *only* thing standing between a view and another tenant's list is `tenant_id` being part of
+/// the key.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL with migrations 0001–0015; CI runs it with --include-ignored"]
+async fn a_view_cannot_name_a_list_from_another_tenant_or_no_list_at_all() {
+    let (db, fixtures, pool) = start().await;
+    let (alpha, beta) = (fixtures.alpha.id, fixtures.beta.id);
+    let alpha_list = list(&pool, alpha, fixtures.alpha.owner).await;
+    let beta_list = list(&pool, beta, fixtures.beta.owner).await;
+
+    // The positive control, and it is not optional: every assertion below is about a refusal, and
+    // refusals are free against a schema that rejects list-owned views outright.
+    let mut tx = TenantScoped::begin(&pool, alpha).await.expect("begin");
+    let own = insert_raw_view(&mut tx, alpha, None, Some(alpha_list)).await;
+    assert_eq!(refusal(&own), "<accepted>", "a view over the tenant's own list was refused");
     tx.rollback().await.expect("rollback");
+
+    for (label, list_id) in
+        [("another tenant's list", beta_list), ("a list that does not exist", Uuid::now_v7())]
+    {
+        // One transaction per case: a failed statement aborts the one it ran in, and a second
+        // attempt inside it fails with `25P02` whatever the constraint would have said.
+        let mut tx = TenantScoped::begin(&pool, alpha).await.expect("begin");
+        let attempt = insert_raw_view(&mut tx, alpha, None, Some(list_id)).await;
+        assert_eq!(
+            refusal(&attempt),
+            "library_views_list_fkey",
+            "a view naming {label} was not refused by the foreign key"
+        );
+        tx.rollback().await.expect("rollback");
+    }
 
     drop(db);
 }

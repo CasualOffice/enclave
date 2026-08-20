@@ -40,8 +40,8 @@ use enclave_db::{DbPool, TenantScoped};
 use enclave_search::health::{self, Expected, IndexCensus, IndexHealth};
 use enclave_search::vector::{field, VectorIndex, VectorQuery};
 use enclave_search::{
-    denylist, Cause, MilvusConfig, MilvusIndex, PostFilter, Prefilter, Retrieval, VectorStore,
-    DEFAULT_COVERAGE_FLOOR, DEFAULT_DENYLIST_LIMIT,
+    denylist, Cause, Excerpt, Highlights, MilvusConfig, MilvusIndex, PostFilter, Prefilter,
+    Retrieval, VectorStore, DEFAULT_COVERAGE_FLOOR, DEFAULT_DENYLIST_LIMIT,
 };
 use enclave_testing::content::Spine;
 use enclave_testing::{Fixtures, TestDb};
@@ -113,7 +113,26 @@ async fn index_chunks(
     caller: UserId,
     spines: &[Spine],
 ) {
+    let bodies: Vec<String> =
+        spines.iter().map(|spine| format!("the body of {}", spine.file)).collect();
+    index_chunks_with_text(client, collection, tenant, caller, spines, bodies).await;
+}
+
+/// As [`index_chunks`], with the chunk bodies supplied.
+///
+/// Split out for `ENC-538`, whose question is entirely about how much of a chunk's `text` reaches a
+/// candidate — so that test needs a chunk the size the chunker really produces, and every other test
+/// here needs a body short enough to read in a failure message.
+async fn index_chunks_with_text(
+    client: &sdk::ClientV2,
+    collection: &str,
+    tenant: TenantId,
+    caller: UserId,
+    spines: &[Spine],
+    bodies: Vec<String>,
+) {
     let count = spines.len();
+    assert_eq!(bodies.len(), count, "one body per spine");
     let token = format!("user:{caller}");
     let now = Utc::now().timestamp();
 
@@ -150,10 +169,7 @@ async fn index_chunks(
         )
         .with_validity(vec![true; count])
         .expect("a title for every row"),
-        FieldData::varchar(
-            field::TEXT,
-            spines.iter().map(|spine| format!("the body of {}", spine.file)).collect(),
-        ),
+        FieldData::varchar(field::TEXT, bodies),
         FieldData::float_vector(field::DENSE_VECTOR, (0..count).map(dense).collect()),
         FieldData::sparse_float_vector(
             field::SPARSE_VECTOR,
@@ -310,6 +326,147 @@ async fn s5_an_over_permissive_index_decides_nothing() {
     assert_eq!(counts.proposed, 3);
     assert_eq!(counts.unauthorized, 1, "the ungranted file was dropped by something else");
     assert_eq!(counts.denylisted, 1, "the denylist did not suppress the purged file");
+
+    drop_collection(&client, &index.config().collection).await;
+    drop(db);
+}
+
+/// **S6, against a real index** (`docs/12 §4.3`) — a `MetadataRead`-only caller gets the dense hit
+/// and no excerpt, and cannot tell that from a chunk that had nothing to quote.
+///
+/// `ENC-541`. The gate is literally the same [`PostFilter::confirm`] the lexical S6 test exercises,
+/// so this is coverage rather than a second mechanism — but `ENC-538` made this path produce
+/// excerpts that are **new objects**, cut here from the chunk's `text` by `excerpt::preview` rather
+/// than passed through, and the assertion that they are withheld is worth running against candidates
+/// a real Milvus produced rather than inferring it from the lexical case.
+///
+/// Three files, and the third is the reason the test is worth running:
+///
+/// - `withheld` has a chunk of body text and the caller holds `file.metadata_read` alone. There is a
+///   quotation and they do not get it.
+/// - `unquotable` is indexed with an **empty** `text`. That is a legitimate state rather than a
+///   contrivance — `milvus::decode` says so, because a metadata-only update writes scalars and
+///   vectors and leaves the body alone — and it is the dense path's version of the lexical path's
+///   name-only match: a hit with nothing to quote. The caller holds both actions and still receives
+///   no excerpt.
+/// - `readable` is the **positive control**. Without it every assertion here passes against a
+///   decoder returning `None` for everything, which is `docs/12 §1.2`'s recurring shape and which
+///   `ENC-538` already caught once on this exact path.
+///
+/// As everywhere in this file the index's `acl_tokens` name the caller on all three, so the index's
+/// own opinion is that everything is fully visible and PostgreSQL is the only thing saying otherwise.
+///
+/// The difference between the first two exists in exactly one place and it is operator-facing:
+/// `DropCounts::excerpt_withheld`. Nothing the caller receives distinguishes them.
+#[tokio::test]
+#[ignore = "requires a live Milvus (deploy/compose/dev.yml --profile search) and a live PostgreSQL \
+            with migrations 0001–0011; CI runs it with --include-ignored"]
+async fn s6_a_metadata_only_caller_gets_no_excerpt_from_a_dense_candidate() {
+    let (db, fixtures, pool) = start().await;
+    let alpha = fixtures.alpha.id;
+    let caller = fixtures.alpha.member;
+    let now = Utc::now();
+
+    let (withheld, unquotable, readable) =
+        (Spine::new(alpha), Spine::new(alpha), Spine::new(alpha));
+    let body = "Clause 7.2(b) sets out the perihelion review procedure.".to_owned();
+
+    let mut admin = db.connect().await.expect("admin connection");
+    for spine in [&withheld, &unquotable, &readable] {
+        spine.insert(&mut admin, fixtures.alpha.owner, now).await.expect("spine");
+    }
+    grant_action(&mut admin, alpha, withheld.file, caller, "file.metadata_read").await;
+    for spine in [&unquotable, &readable] {
+        for action in ["file.metadata_read", "file.content_read"] {
+            grant_action(&mut admin, alpha, spine.file, caller, action).await;
+        }
+    }
+
+    let index = MilvusIndex::new(config());
+    index.ensure_collection().await.expect("provision the collection");
+    let client = raw_client().await;
+    index_chunks_with_text(
+        &client,
+        &index.config().collection,
+        alpha,
+        caller,
+        &[withheld, unquotable, readable],
+        vec![body.clone(), String::new(), body.clone()],
+    )
+    .await;
+
+    let all = Prefilter::unnarrowed();
+    let embedding = dense(0);
+    let proposed = index
+        .candidates(VectorQuery {
+            tenant: alpha,
+            embedding: &embedding,
+            budget: BUDGET,
+            prefilter: &all,
+        })
+        .await
+        .expect("the index answers");
+
+    // The generator's half, asserted before the post-filter's: the excerpt this test is about must
+    // exist in the candidate, or "withheld" below is indistinguishable from "never produced".
+    let candidate = proposed
+        .iter()
+        .find(|candidate| candidate.file_id == withheld.file)
+        .unwrap_or_else(|| panic!("the index did not propose {}: {proposed:?}", withheld.file));
+    assert!(
+        candidate.excerpt.is_some(),
+        "the candidate carries no excerpt, so the post-filter has nothing to withhold and this \
+         test proves nothing"
+    );
+
+    let authorization = PgAclAuthorization::new(pool.clone());
+    let mut tx = TenantScoped::begin(&pool, alpha).await.expect("begin");
+    let (confirmed, counts) =
+        PostFilter::confirm(&mut tx, &authorization, &ctx(alpha, caller), proposed)
+            .await
+            .expect("post-filter");
+    tx.commit().await.expect("commit");
+
+    let hit = |file: FileId| -> &enclave_search::Confirmed {
+        confirmed
+            .iter()
+            .find(|hit| hit.file_id == file)
+            .unwrap_or_else(|| panic!("{file} is not among the hits: {confirmed:?}"))
+    };
+
+    // The control, first. A caller holding `ContentRead` over a chunk with text receives the
+    // quotation, and it is that chunk's text.
+    let quotation =
+        hit(readable.file).excerpt.clone().expect("the control must receive its excerpt");
+    assert!(
+        body.starts_with(quotation.text().trim_end_matches('…')),
+        "the control's excerpt is not text from its chunk: {shown:?}",
+        shown = quotation.text()
+    );
+
+    assert_eq!(
+        hit(withheld.file).excerpt,
+        None,
+        "the excerpt reached a caller who may know the document exists and may not read it"
+    );
+    assert_eq!(
+        hit(unquotable.file).excerpt,
+        None,
+        "a chunk indexed with no text has nothing to quote"
+    );
+    assert_eq!(
+        hit(withheld.file).excerpt,
+        hit(unquotable.file).excerpt,
+        "a withheld excerpt is distinguishable from an absent one, which tells the caller there is \
+         content here they may not see"
+    );
+
+    assert_eq!(confirmed.len(), 3, "all three are visible hits: {confirmed:?}");
+    assert_eq!(counts.unauthorized, 0, "nobody was dropped; only an excerpt was");
+    assert_eq!(
+        counts.excerpt_withheld, 1,
+        "the withheld quotation was not reported; an operator cannot see the ContentRead gate firing"
+    );
 
     drop_collection(&client, &index.config().collection).await;
     drop(db);
@@ -511,6 +668,129 @@ async fn a_census_counts_only_the_tenant_it_was_asked_about() {
         "a tenant whose chunks are gone stayed complete because the collection holds someone \
          else's"
     );
+
+    drop_collection(&client, &index.config().collection).await;
+}
+
+/// A chunk of about the size `ChunkBudget::max_chars` produces, so that a budget assertion over one
+/// is a real cut rather than a formality.
+fn full_chunk() -> String {
+    let mut chunk = String::from(
+        "Section 4.1 Allowances. Employees may claim the standard allowance each quarter, subject \
+         to approval by their line manager. ",
+    );
+    while chunk.chars().count() < 3_000 {
+        chunk.push_str(
+            "Nothing in this section affects the statutory minimum, and the appendix governs \
+             where the two disagree. ",
+        );
+    }
+    chunk
+}
+
+/// **`ENC-538`, against the real thing.** A dense hit carries a *quotation* of its chunk, not the
+/// chunk.
+///
+/// The defect this closes was in the decoder and nowhere else: `text` was passed through untouched,
+/// so a caller received up to 3 200 characters of document body from a healthy store and 240 from a
+/// degraded one, for the same document. `src/excerpt.rs` proves the cutter; only a live search
+/// proves that the decoder calls it, which is where the bug actually was.
+///
+/// Two documents, and the short one is the point as much as the long one. Every assertion about the
+/// long chunk's excerpt being *smaller* than the chunk passes for free against a decoder that
+/// returns `None` for everything — `docs/12 §1.2` — so the short document is the positive control:
+/// it must arrive with its body intact and unmarked.
+///
+/// Deliberately needs no PostgreSQL. The question is what the generator produces, and `Spine` is
+/// used here only as a bundle of identifiers to write into the index.
+#[tokio::test]
+#[ignore = "requires a live Milvus (deploy/compose/dev.yml --profile search); CI runs it with \
+            --include-ignored"]
+async fn a_dense_hit_quotes_its_chunk_rather_than_carrying_all_of_it() {
+    let tenant = TenantId::new_v7();
+    let caller = UserId::new_v7();
+    let (long, short) = (Spine::new(tenant), Spine::new(tenant));
+
+    let body = full_chunk();
+    let note = "A short note about tantalum.".to_owned();
+    assert!(
+        body.chars().count() > enclave_search::excerpt::MAX_CHARS * 4,
+        "the fixture is not large enough for the assertions below to mean anything: {} characters",
+        body.chars().count()
+    );
+
+    let index = MilvusIndex::new(config());
+    index.ensure_collection().await.expect("provision the collection");
+    let client = raw_client().await;
+    index_chunks_with_text(
+        &client,
+        &index.config().collection,
+        tenant,
+        caller,
+        &[long, short],
+        vec![body.clone(), note.clone()],
+    )
+    .await;
+
+    let all = Prefilter::unnarrowed();
+    let embedding = dense(0);
+    let proposed = index
+        .candidates(VectorQuery { tenant, embedding: &embedding, budget: BUDGET, prefilter: &all })
+        .await
+        .expect("the index answers");
+
+    let excerpt = |file: FileId| -> Option<Excerpt> {
+        proposed
+            .iter()
+            .find(|candidate| candidate.file_id == file)
+            .unwrap_or_else(|| {
+                panic!(
+                    "the index did not propose {file}, so nothing here is about \
+                                       the excerpt: {proposed:?}"
+                )
+            })
+            .excerpt
+            .clone()
+    };
+
+    // The control. An ordinary chunk arrives whole, unmarked, and character for character.
+    assert_eq!(
+        excerpt(short.file).as_ref().map(Excerpt::text),
+        Some(note.as_str()),
+        "a chunk that fits the budget did not survive the decoder intact, so every assertion \
+         below could be satisfied by dropping excerpts altogether"
+    );
+
+    let quoted = excerpt(long.file).expect("a chunk of document body carries an excerpt");
+    assert!(
+        quoted.text().chars().count() <= enclave_search::excerpt::MAX_CHARS + 2,
+        "the decoder passed the chunk through: {} characters against a budget of {}",
+        quoted.text().chars().count(),
+        enclave_search::excerpt::MAX_CHARS
+    );
+    assert!(
+        quoted.text().ends_with('…'),
+        "text was dropped from the end and not marked as elided: {:?}",
+        quoted.text()
+    );
+    let trimmed = quoted.text().trim_end_matches('…');
+    assert!(
+        body.starts_with(trimmed),
+        "the excerpt is not verbatim text from the head of the chunk: {trimmed:?}"
+    );
+
+    // **`ENC-542`.** A dense hit has no matched span, so it carries no offsets — and says which
+    // kind of nothing that is. `Terms(vec![])` would mean the locator ran and found nothing; the
+    // truth is that there was never a narrower span to find, because the matched unit is the chunk.
+    // A renderer reading `Unlocated` marks nothing, rather than marking the whole passage.
+    for hit in [&quoted, &excerpt(short.file).expect("the control carries an excerpt")] {
+        assert_eq!(
+            hit.highlights(),
+            &Highlights::Unlocated,
+            "a dense candidate claims located matches: {shown:?}",
+            shown = hit.text()
+        );
+    }
 
     drop_collection(&client, &index.config().collection).await;
 }

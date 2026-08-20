@@ -34,6 +34,12 @@
 //! chunk, located by the same tokenization the index matched on, and **nothing at all** when that
 //! term cannot be located, rather than a plausible-looking passage from somewhere else.
 //!
+//! It is the path that carries **offsets** (`ENC-542`): the terms were located here, so
+//! [`crate::Excerpt`]'s [`crate::Highlights::Terms`] says where, and the API layer marks up from
+//! them rather than tokenizing document content a third time. The dense path has none and says so
+//! with [`crate::Highlights::Unlocated`]. They travel inside the excerpt, never beside it, so
+//! withholding one withholds both.
+//!
 //! Producing one here is not disclosing one. The excerpt rides on [`Candidate`] and is released only
 //! where every other disclosure decision is made — [`crate::PostFilter::confirm`], resolving
 //! `ContentRead` — so a caller who may know the document exists and may not read it gets the hit and
@@ -185,6 +191,8 @@ pub async fn candidates(
             // `ENC-529`. The quotation rule lives in `crate::excerpt` and is documented there; what
             // matters here is that this produces `None` whenever it cannot locate the matched term,
             // so a disagreement with PostgreSQL's tokenizer costs an excerpt and never invents one.
+            // `ENC-542`: the located spans ride along inside the returned `Excerpt`, so nothing on
+            // this line has to be remembered about them separately.
             //
             // Cut here rather than carried whole to the post-filter: the chunk is up to 3 200
             // characters of document body, and everything past this line only ever needs the ~240

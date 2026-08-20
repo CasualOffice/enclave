@@ -434,6 +434,61 @@ jobs:
           done
           echo "ENCLAVE_OCR_MODELS=${RUNNER_TEMP}/ocr-models" >> "$GITHUB_ENV"
 
+      - name: Fetch PDFium
+        # Same shape and the same reason as the OCR models above: a transaction with a release host,
+        # split from the assertions so a red check says which of the two failed. A failure here means
+        # the library was not fetched — it does not mean PDF rasterisation is broken.
+        #
+        # **Fetched, never committed** — and here that is not a licence problem, unlike the OCR
+        # weights. It is a binary-artefact problem: 7 MB of shared object per platform, content
+        # nobody reviews in a diff, invisible to `cargo deny` because it is not a crate. Staging it
+        # in a throwaway runner is how `crates/indexing/tests/pdf.rs` gets to run without any of that
+        # entering the tree (`ENC-537`).
+        #
+        # **The licence of what is fetched**, since something is being pulled into a build: PDFium
+        # itself is **BSD-3-Clause** (`licenses/pdfium.txt` in the archive) and the packaging around
+        # it is **MIT** (`LICENSE`, © Benoit Blanchon). The bundled third-party libraries are
+        # permissive too — FreeType under the BSD-style FTL rather than its GPLv2 alternative, plus
+        # zlib, libpng, libjpeg-turbo, lcms, OpenJPEG, ICU, Abseil, simdutf. All inside `deny.toml`'s
+        # allowlist. Nothing here is redistributed by us in any case.
+        #
+        # `pdfium-*` and **not** `pdfium-v8-*`: the V8 archives embed a JavaScript engine and enable
+        # PDF scripting. `args.gn` in the archive fetched below reads `pdf_enable_v8 = false` and
+        # `pdf_enable_xfa = false`, which is the build this depends on — a page tree is already the
+        # widest attack-surface class in the product without a JIT and an XML forms parser behind it.
+        #
+        # The tag is pinned to `chromium/7881` and is **an ABI pair with the `pdfium_7881` feature**
+        # in the workspace manifest. `pdfium-render` resolves every export eagerly at `dlopen`, so a
+        # mismatch fails loudly at the mount rather than subtly at render — but it fails, so the two
+        # move together or not at all.
+        run: |
+          set -euo pipefail
+          tag=chromium%2F7881
+          archive=pdfium-linux-x64.tgz
+          base=https://github.com/bblanchon/pdfium-binaries/releases/download/${tag}
+          mkdir -p "${RUNNER_TEMP}/pdfium"
+          fetched=0
+          for attempt in 1 2 3; do
+            if curl -fsSL --max-time 180 -o "${RUNNER_TEMP}/${archive}" "${base}/${archive}"; then
+              fetched=1; break
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              # Not `&& sleep`: on the last attempt the test is false, the compound returns
+              # non-zero, and `set -e` kills the step before the error message below is printed.
+              sleep $((attempt * 10))
+            fi
+          done
+          if [ "$fetched" -ne 1 ]; then
+            echo "::error title=PDFium download failed — NETWORK, not a test failure::${archive} could not be fetched from ${base} after 3 attempts. The PDF rasterisation tests in crates/indexing were NOT evaluated — nothing was asserted and nothing failed. Re-run the job."
+            exit 1
+          fi
+          tar -xzf "${RUNNER_TEMP}/${archive}" -C "${RUNNER_TEMP}/pdfium"
+          echo "libpdfium.so $(stat -c%s "${RUNNER_TEMP}/pdfium/lib/libpdfium.so") bytes"
+          # The build flags travel with the archive; printing them means the "no V8, no XFA" claim
+          # above is visible in the log rather than only in this comment.
+          cat "${RUNNER_TEMP}/pdfium/args.gn"
+          echo "ENCLAVE_PDFIUM=${RUNNER_TEMP}/pdfium/lib" >> "$GITHUB_ENV"
+
       - name: Report free disk before building
         # So that the next time this job dies in the linker, the log says why on the line above it
         # rather than leaving a bus error to be diagnosed from first principles (ENC-156).

@@ -23,8 +23,13 @@ pub enum WorkerError {
     #[error("worker database failure")]
     Database(#[from] enclave_db::DbError),
 
-    /// The denylist sweep failed inside `enclave-search`.
-    #[error("the denylist sweep failed")]
+    /// A call into `enclave-search` failed — the sweep's `DELETE`, or a coverage probe's two
+    /// counts.
+    ///
+    /// Named for the crate rather than for the caller, because both loops that reach it report
+    /// through this one variant and a message naming the sweep appears in a coverage probe's log
+    /// line otherwise.
+    #[error("a call into enclave-search failed")]
     Search(#[from] enclave_search::SearchError),
 
     /// Indexing a version failed for a reason that is not the document's fault.

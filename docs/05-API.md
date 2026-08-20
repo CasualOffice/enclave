@@ -1,6 +1,6 @@
 # 05 — API Surface
 
-> **Status:** Draft · **Version:** 1.0 · **Owner:** Platform Engineering · **Last updated:** 2026-08-18
+> **Status:** Draft · **Version:** 1.2 · **Owner:** Platform Engineering · **Last updated:** 2026-08-21
 > **Authoritative for:** REST contracts, error model, pagination, idempotency, versioning, rate limits.
 
 ## 1. Principles
@@ -314,6 +314,19 @@ POST /api/v1/search
 
 - `excerpt` is returned only when the caller holds `ContentRead`; metadata-only callers get title and
   path.
+- `excerpt` is bounded at **240 characters** plus its elision marks, and that bound does not vary
+  with `diagnostics.mode` or `diagnostics.degraded` — a client sizing a page may assume it.
+  `07-SEARCH-INDEXING.md §6.2.1` defines what an excerpt is and which window each mode quotes.
+- The `<em>` above is applied **here**, at the API layer, from offsets retrieval carries alongside
+  the text. Retrieval never emits markup: it is the layer furthest from a renderer, and interpolating
+  document content into a markup string there is how stored XSS is delivered. Only lexical hits carry
+  offsets — a dense hit matched a whole chunk and nothing in it matched *at a position* — so an
+  excerpt from a dense hit arrives **unmarked**, and a client must not read the absence of `<em>` as
+  a failure. Everything outside the `<em>` tags is the document's own text.
+- An excerpt is a **fragment** of a document, so it may contain a bidirectional control the document
+  balances and the quotation does not. Renderers isolate it (`14-I18N-L10N.md §7`); the characters
+  are never stripped, because an excerpt is a verbatim quotation and a caller shown one must be able
+  to find it in the file.
 - `diagnostics.degraded` is `true` when the vector store is unavailable and the query fell back to
   lexical-only, so the UI can say so honestly rather than silently returning fewer results.
 - Related: `POST /search/suggest`, `POST /search/answer` (RAG; always returns cited chunk sources).

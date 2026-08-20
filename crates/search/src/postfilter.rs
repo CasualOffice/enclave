@@ -72,6 +72,7 @@ use enclave_observability::metrics::search::PostFilterPass;
 use sqlx::PgConnection;
 
 use crate::error::SearchError;
+use crate::excerpt::Excerpt;
 
 /// One thing the index proposed.
 ///
@@ -86,11 +87,15 @@ pub struct Candidate {
     pub file_id: FileId,
     /// The index's own score, passed through untouched.
     pub score: f32,
-    /// The text the index would show as an excerpt, if the caller may read content.
+    /// The quotation the index would show as an excerpt, if the caller may read content.
     ///
     /// Held here rather than fetched later because the index already has it; whether it is
     /// *disclosed* is decided below.
-    pub excerpt: Option<String>,
+    ///
+    /// One field, not two. `ENC-542` put the highlighting offsets *inside* [`Excerpt`] rather than
+    /// beside it, so that withholding is one `None` and there is no second field to forget — see
+    /// that type for the argument.
+    pub excerpt: Option<Excerpt>,
 }
 
 /// One thing the caller may actually see.
@@ -107,7 +112,12 @@ pub struct Confirmed {
     /// `None` here is not "the index had none" — it is also "you may know this exists and not read
     /// it". The two are deliberately indistinguishable to the caller: telling them apart would say
     /// *there is content here you may not see*, which is a fact about a document they cannot read.
-    pub excerpt: Option<String>,
+    ///
+    /// That is why the highlighting offsets `ENC-542` added live **inside** [`Excerpt`]. A
+    /// `highlights` field beside this one would carry the distinction this `Option` refuses to make:
+    /// a response with `excerpt: null` and offsets on it says there was a passage. There is no
+    /// arrangement of this type that can disclose one without the other.
+    pub excerpt: Option<Excerpt>,
 }
 
 /// An excerpt field, rendered without its contents.
@@ -121,7 +131,12 @@ pub struct Confirmed {
 /// Present-versus-absent is still shown, because that is what makes a `Debug` line worth reading and
 /// it is not content. It says nothing a caller could not already determine: they are holding the
 /// excerpt, or they are not.
-struct WithheldExcerpt<'a>(Option<&'a str>);
+///
+/// [`Excerpt`]'s own `Debug` renders the same string, so this is now the outer of two defences
+/// rather than the only one. Both are kept: this one is what protects these two fields whatever
+/// [`Excerpt`] later grows, and that one is what protects every other place an excerpt can reach a
+/// format string.
+struct WithheldExcerpt<'a>(Option<&'a Excerpt>);
 
 impl std::fmt::Debug for WithheldExcerpt<'_> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -138,7 +153,7 @@ impl std::fmt::Debug for Candidate {
             .debug_struct("Candidate")
             .field("file_id", &self.file_id)
             .field("score", &self.score)
-            .field("excerpt", &WithheldExcerpt(self.excerpt.as_deref()))
+            .field("excerpt", &WithheldExcerpt(self.excerpt.as_ref()))
             .finish()
     }
 }
@@ -149,7 +164,7 @@ impl std::fmt::Debug for Confirmed {
             .debug_struct("Confirmed")
             .field("file_id", &self.file_id)
             .field("score", &self.score)
-            .field("excerpt", &WithheldExcerpt(self.excerpt.as_deref()))
+            .field("excerpt", &WithheldExcerpt(self.excerpt.as_ref()))
             .finish()
     }
 }
@@ -378,6 +393,20 @@ mod tests {
     /// in a formatted string is unambiguous.
     const BODY: &str = "the perihelion review procedure";
 
+    /// Where in [`BODY`] the query matched — `perihelion`, at bytes 4..14.
+    ///
+    /// Written out rather than derived so that the assertion "this string does not appear in the
+    /// rendering" has a literal to look for. It is the shape of the redacted thing, which is what
+    /// `ENC-542` decided must not survive a `Debug` either.
+    const OFFSETS: &str = "4..14";
+
+    /// An excerpt of [`BODY`] carrying the offsets of the term that matched.
+    fn located() -> Excerpt {
+        assert_eq!(&BODY[4..14], "perihelion", "the fixture's offsets do not name a term");
+        Excerpt::located(BODY.to_owned(), std::iter::once(4..14).collect())
+            .expect("a well-formed span")
+    }
+
     /// **`CLAUDE.md` rule 10, on the type that carries the content.** A candidate's `Debug` must not
     /// print the excerpt.
     ///
@@ -389,7 +418,7 @@ mod tests {
     #[test]
     fn a_candidates_debug_output_never_carries_the_excerpt() {
         let candidate =
-            Candidate { file_id: FileId::new_v7(), score: 0.5, excerpt: Some(BODY.to_owned()) };
+            Candidate { file_id: FileId::new_v7(), score: 0.5, excerpt: Some(located()) };
 
         let rendered = format!("{candidate:?}");
         assert!(
@@ -399,6 +428,12 @@ mod tests {
         assert!(
             rendered.contains("<content withheld>"),
             "the excerpt's presence must still be visible: {rendered}"
+        );
+        assert!(
+            !rendered.contains(OFFSETS),
+            "a candidate's Debug printed the highlighting offsets: {rendered}. They are derived \
+             from the content — a span says a matched term of this length occurs at this position — \
+             so printing them beside a redacted body gives back part of what the redaction removed"
         );
 
         // The envelope reaches it through a derived `Debug`, which is how it would actually happen.
@@ -415,12 +450,47 @@ mod tests {
     /// logging its own response would hit.
     #[test]
     fn a_confirmed_hits_debug_output_never_carries_the_excerpt() {
-        let hit =
-            Confirmed { file_id: FileId::new_v7(), score: 0.5, excerpt: Some(BODY.to_owned()) };
+        let hit = Confirmed { file_id: FileId::new_v7(), score: 0.5, excerpt: Some(located()) };
 
         let rendered = format!("{hit:?}");
         assert!(!rendered.contains(BODY), "a hit's Debug printed document content: {rendered}");
         assert!(rendered.contains("<content withheld>"));
+        assert!(
+            !rendered.contains(OFFSETS),
+            "a hit's Debug printed the highlighting offsets: {rendered}"
+        );
+    }
+
+    /// **`ENC-542`.** Withholding an excerpt takes its offsets with it, because there is nowhere for
+    /// them to be left behind.
+    ///
+    /// The property `Confirmed::excerpt` documents, asserted on the value rather than trusted to the
+    /// field list: a hit whose excerpt was withheld renders exactly as one that never had an
+    /// excerpt, offsets included. The regression this guards is the obvious next feature — a
+    /// `highlights: Vec<Range<usize>>` field beside `excerpt`, which the post-filter would have to
+    /// remember to clear, and which would say *there was a passage here* on the response the moment
+    /// somebody forgot.
+    ///
+    /// The `located` control is what stops this passing against a type that dropped highlighting
+    /// altogether.
+    #[test]
+    fn a_withheld_excerpt_is_indistinguishable_from_an_absent_one_offsets_included() {
+        let file = FileId::new_v7();
+        let withheld = Confirmed { file_id: file, score: 0.5, excerpt: None };
+        let absent = Confirmed { file_id: file, score: 0.5, excerpt: None };
+        let disclosed = Confirmed { file_id: file, score: 0.5, excerpt: Some(located()) };
+
+        assert_eq!(withheld, absent, "the two meanings of `None` became distinguishable");
+        assert_eq!(format!("{withheld:?}"), format!("{absent:?}"));
+        assert_ne!(
+            withheld, disclosed,
+            "the control: an excerpt that *was* disclosed must differ, or this test holds against \
+             a type that carries nothing"
+        );
+        assert!(matches!(
+            disclosed.excerpt.as_ref().map(Excerpt::highlights),
+            Some(crate::excerpt::Highlights::Terms(_))
+        ));
     }
 
     /// An absent excerpt renders as `None`, so the redaction is not itself a signal.

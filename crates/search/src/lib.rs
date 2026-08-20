@@ -63,6 +63,7 @@ pub use denylist::{
     catch_up, confirm_indexed, lift_expired, suppress, suppressed, CatchUp, SuppressionSeq,
 };
 pub use error::SearchError;
+pub use excerpt::{Excerpt, Highlights};
 pub use health::{
     CoverageFloor, Expected, IndexCensus, IndexHealth, Unknown, DEFAULT_COVERAGE_FLOOR,
 };

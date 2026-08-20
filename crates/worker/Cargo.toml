@@ -31,11 +31,18 @@ uuid      = { workspace = true }
 
 [dev-dependencies]
 enclave-testing = { workspace = true }
+# `tests/coverage.rs` asserts that the probe pass's reading reaches the gauges an operator scrapes.
+# A dev edge only: the pass publishes through `enclave_search::health::probe`, which is where the
+# reading is computed, so nothing in this crate's library half knows the metrics exist.
+enclave-observability = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
 bytes = "1"
 url = { workspace = true }
-tokio           = { workspace = true, features = ["rt-multi-thread", "macros"] }
+# `sync` for the mutex that serialises the tests reading those process-wide gauges: the fixture
+# tenant ids are deterministic, so two tests probing `tenant-alpha` at once would read each other's
+# numbers.
+tokio           = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
 
 [lints]
 workspace = true
