@@ -27,6 +27,22 @@ pub enum WorkerError {
     #[error("the denylist sweep failed")]
     Search(#[from] enclave_search::SearchError),
 
+    /// Indexing a version failed for a reason that is not the document's fault.
+    ///
+    /// A document that will not parse is **not** this: that is an `Outcome`, recorded on the
+    /// manifest and counted. This is the storage or database underneath failing, which stops the
+    /// queue rather than marking one file.
+    #[error("indexing failed")]
+    Indexing(#[from] enclave_indexing::IndexingError),
+
+    /// Reading a version's readability failed.
+    #[error("the readable-version lookup failed")]
+    Preview(#[from] enclave_preview::PreviewError),
+
+    /// Object storage failed while reading a version's bytes.
+    #[error("reading object storage failed")]
+    Blob(#[from] enclave_storage::StorageError),
+
     /// A stored row could not be interpreted.
     ///
     /// Fixed vocabulary rather than the offending value: these loops read rows written by the

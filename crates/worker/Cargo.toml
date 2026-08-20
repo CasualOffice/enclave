@@ -19,6 +19,9 @@ enclave-audit = { workspace = true }
 # lives beside the one every search reads, and two copies of it are two chances for the sweep to
 # lift something the search still considers in force.
 enclave-search = { workspace = true }
+enclave-indexing = { workspace = true }
+enclave-preview = { workspace = true }
+enclave-storage = { workspace = true }
 
 chrono    = { workspace = true }
 sqlx      = { workspace = true }
@@ -28,6 +31,10 @@ uuid      = { workspace = true }
 
 [dev-dependencies]
 enclave-testing = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+bytes = "1"
+url = { workspace = true }
 tokio           = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
 [lints]

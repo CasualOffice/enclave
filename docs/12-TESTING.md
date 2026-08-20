@@ -1,6 +1,6 @@
 # 12 — Testing & Quality Gates
 
-> **Status:** Draft · **Version:** 1.2 · **Owner:** Engineering · **Last updated:** 2026-08-21
+> **Status:** Draft · **Version:** 1.3 · **Owner:** Engineering · **Last updated:** 2026-08-21
 > **Authoritative for:** test strategy, the security leakage matrix, CI gates, release criteria.
 
 ## 1. Philosophy
@@ -163,6 +163,7 @@ the suite.
 | G4 | An SVG/HTML upload cannot execute script in a preview — **still blocked on the sanitizer**, which the raster renderer does not provide and does not pretend to: it decodes PNG/JPEG/WebP and re-encodes pixels, so an SVG is `Refused(UnsupportedFormat)` rather than rendered unsafely. `HtmlSanitized` remains `NoRenderer`'s. Distinct from A9, which covers markup injected through the *watermark's* fields |
 | G5 | A file exceeding the library size limit is rejected before bytes are transferred |
 | G6 | With the AV engine down and `HOLD` policy, the version stays in `SCANNING` and unreadable |
+| G7 | **The indexer never reads a version antivirus has not cleared.** `crates/worker/tests/indexing.rs` asserts it on the *store*, not only on the manifest: a `SCANNING` or `INFECTED` version is deferred and its bytes are never fetched. Distinct from `G1`, which covers the read paths a user drives — this is the one path that reads content with no user present, and getting it wrong is quieter than anywhere else. An indexer that read an unscanned upload would put its contents in the search index, where every later permission check on the *file* passes legitimately and the content is disclosed as an excerpt, with nothing reporting an error. Enforced by reading versions through `enclave_preview::repo::readable_version` — the same query the preview path uses — rather than asking the question a second time |
 
 ### 4.9 Workflows and signing
 

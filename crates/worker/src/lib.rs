@@ -59,6 +59,7 @@
 
 pub mod epoch;
 pub mod error;
+pub mod indexing;
 pub mod invalidation;
 
 pub use error::{Result, WorkerError};
