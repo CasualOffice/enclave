@@ -1,6 +1,6 @@
 # 07 — Search & Indexing
 
-> **Status:** Draft · **Version:** 1.2 · **Owner:** Search Engineering · **Last updated:** 2026-08-21
+> **Status:** Draft · **Version:** 1.3 · **Owner:** Search Engineering · **Last updated:** 2026-08-21
 > **Authoritative for:** the indexing pipeline, Milvus schema, permission-aware retrieval, ACL invalidation, rebuild.
 
 ## 1. Position of the index
@@ -175,26 +175,46 @@ access, regardless of how stale per-file ACL tokens are.
 
 Every candidate is confirmed before it reaches the caller:
 
-```rust
-let candidates = vector_store.search(&sec_ctx, request).await?;
-let file_ids: Vec<_> = candidates.iter().map(|c| c.file_id).collect();
-
-// one batched query against PostgreSQL, not a loop
-let decisions = authorization
-    .authorize_many(ctx, Action::File(FileAction::MetadataRead), &file_refs)
-    .await?;
-
-let visible = candidates.into_iter()
-    .zip(decisions)
-    .filter(|(_, d)| d.is_allowed())
-    .collect::<Vec<_>>();
-```
-
 Two levels of disclosure are checked, not one:
 
 - `MetadataRead` — required to see the hit at all (title, path, location);
 - `ContentRead` — required to see the `excerpt`. A user who may see that a document exists but not
   read it gets the title and no snippet.
+
+Both are resolved in **one** call, not two passes:
+
+```rust
+const DISCLOSURE_ACTIONS: [Action; 2] =
+    [Action::File(FileAction::MetadataRead), Action::File(FileAction::ContentRead)];
+
+let candidates = vector_store.search(&sec_ctx, request).await?;
+let resources: Vec<_> = candidates
+    .iter()
+    .map(|c| ResourceRef::file(ctx.tenant_id, c.file_id))
+    .collect();
+
+// One batched query against PostgreSQL, for both actions at once — not a loop, and not
+// two passes. The result is a grid, index-aligned with DISCLOSURE_ACTIONS.
+let grid = authorization
+    .authorize_many_actions(ctx, &DISCLOSURE_ACTIONS, &resources)
+    .await?;
+
+let metadata = grid.first();
+let content = grid.get(1);
+```
+
+**Why one call and not two.** `ENC-145` measured resolution as roughly **80% fixed cost** — 1.4 ms
+for a single candidate, 7.0 ms for two hundred. A second pass therefore very nearly doubles the
+post-filter's price, while asking for more candidates in the same pass is close to free. `ENC-167`
+made the batched multi-action form available and `plans/M3-DISCOVERY.md` D20 locks it. Measured
+end to end, the two forms were **8.1 ms against 68.5 ms** for a page of results.
+
+**Read the `get`/`first` shape above as load-bearing, not defensive.** The grid is index-aligned
+with the actions, and a short outer vector leaves an action unanswered while a short inner one
+leaves a candidate unanswered. Both must *drop* the candidate. An absent verdict is never a grant,
+and code that unwraps here would turn a truncated response into a disclosure — which is why the
+implementation in `crates/search/src/postfilter.rs` treats a missing entry as a denial rather than
+indexing into the grid directly.
 
 This layer is **mandatory and unconditional**. It is what makes the guarantee, and it is the reason
 `acl_tokens` may be treated as an optimization. It costs one indexed batch query per search — a

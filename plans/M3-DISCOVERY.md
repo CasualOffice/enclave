@@ -17,12 +17,20 @@ of who may see it. Both of those — the second copy, and the second idea — ar
 
 ### Exit criteria (from the roadmap — may not be weakened here)
 
-- [ ] **S3**: a revoked file vanishes from results **immediately**, before any index update.
-- [ ] **S4**: S3 still holds with the invalidation worker stopped.
-- [ ] **S5**: deliberately over-permissive index candidates are dropped by the post-filter.
-- [ ] **S8**: `RESTRICTED` text never reaches a non-local embedding provider.
-- [ ] Post-filter drop ratio and denylist size exported as metrics, with alerts wired.
-- [ ] A scanned, text-free PDF is searchable by its content (`ENC-161`).
+- [x] **S3**: a revoked file vanishes from results **immediately**, before any index update.
+- [x] **S4**: S3 still holds with the invalidation worker stopped.
+- [x] **S5**: deliberately over-permissive index candidates are dropped by the post-filter.
+- [x] **S8**: `RESTRICTED` text never reaches a non-local embedding provider.
+- [x] Post-filter drop ratio and denylist size exported as metrics, with alerts wired.
+- [ ] A scanned, text-free PDF is searchable by its content (`ENC-161`). **Not met** — no OCR;
+      blocked on model files and the language decision in `Q12`.
+
+Assessed in [`M3-THREAT-WALKTHROUGH.md`](M3-THREAT-WALKTHROUGH.md `§4`), which also records the
+residual risks the ticks above do not cover. The short version: the **authorization** properties are
+met and were each verified by breaking them on purpose; the **retrieval-completeness** properties are
+not. Conflating those two is how a milestone gets called done — a search that cannot find a scanned
+contract is visibly incomplete, and a search that returns a document the caller may not read is not
+visible at all.
 
 ---
 
@@ -152,11 +160,17 @@ research project to arrange in Milvus.
 
 - [ ] Every M3 P1 is `DONE`.
 - [ ] All six exit criteria demonstrated, each by a test that has been watched to fail.
-- [ ] Leakage matrix §4.3 (S1–S10) complete and green.
-- [ ] The post-filter's drop ratio and the denylist size are exported, with alerts wired to a runbook.
-- [ ] `docs/07 §6.2`'s example updated to the single-call form of D20, so it is not copied wrongly.
-- [ ] A written threat walkthrough of the search path, reviewed before merge — the roadmap asks for
+- [x] Leakage matrix §4.3 (S1–S10) complete and green. `§4.8` also gained **G7** — the indexer
+      never reads a version antivirus has not cleared, which is rule 9 on the one path with no user
+      present.
+- [x] The post-filter's drop ratio and the denylist size are exported, with alerts wired to a runbook
+      — and, since `ENC-521`, a listener that serves them. They existed for a while with nothing
+      scraping them, which is a metric that reads as zero forever.
+- [x] `docs/07 §6.2`'s example updated to the single-call form of D20, so it is not copied wrongly
+      (`ENC-505`).
+- [x] A written threat walkthrough of the search path, reviewed before merge — the roadmap asks for
       this specifically, and it is the one milestone where tests alone are not the bar.
+      [`M3-THREAT-WALKTHROUGH.md`](M3-THREAT-WALKTHROUGH.md).
 
 ---
 
