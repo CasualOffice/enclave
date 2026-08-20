@@ -153,6 +153,35 @@ issue before writing the code — not something to resolve in review.
 - Performance-sensitive changes: include a before/after measurement against the budgets in
   [`docs/03-LLD.md §23`](docs/03-LLD.md).
 
+## Disk, and the failure that does not say "disk"
+
+`target/` grows to **30–40 GB** in normal use, and `target/debug/incremental` is most of it — this
+workspace links one statically-linked binary per test target and keeps incremental state for all of
+them. Keep **20 GB** free. Check it before a long session:
+
+```sh
+df -h /
+du -sh target/debug/incremental
+```
+
+This matters because of how it fails. When the volume filled during development, the first symptom
+was not "no space left on device" — it was **PostgreSQL refusing connections** and the Docker daemon
+becoming unresponsive, from containers that had been healthy a minute earlier. Two sessions spent
+close to an hour diagnosing a database outage that was a full disk (`ENC-530`; `ENC-156` is the same
+failure in CI, arriving as a `SIGBUS` in the linker).
+
+The cheapest recovery, and the least destructive:
+
+```sh
+rm -rf target/debug/incremental      # rebuild time is the only loss
+```
+
+Prefer that to `cargo clean`, which throws away every dependency build as well.
+
+**Do not run a cleanup while other work is in flight.** Deleting scratch files or pruning Docker
+images while a parallel session is mid-edit is a change to that session's work — that has already
+happened here once. If disk is short and something else is running, say so and wait.
+
 ## Documentation contributions
 
 Docs are a first-class deliverable here. When contributing to `docs/`:

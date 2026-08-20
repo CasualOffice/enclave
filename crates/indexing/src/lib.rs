@@ -93,6 +93,7 @@ pub mod chunk;
 pub mod error;
 pub mod extract;
 pub mod model;
+pub mod pipeline;
 pub mod store;
 pub mod text;
 
@@ -104,6 +105,7 @@ pub use extract::{
 pub use model::{
     Coordinates, ExtractorVersion, Segment, SegmentKind, TextDocument, SEGMENT_OVERHEAD_BYTES,
 };
+pub use pipeline::{ManifestStatus, Outcome, Pipeline, Prepared, Reason};
 pub use store::{write_chunks, ChunkWrite};
 pub use text::PlainTextExtractor;
 
