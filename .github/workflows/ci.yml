@@ -394,6 +394,46 @@ jobs:
           docker logs enclave-milvus | tail -60
           exit 1
 
+      - name: Fetch the OCR models
+        # Split from the tests for the reason ENC-503 gives about ClamAV: this step is a transaction
+        # with a CDN, the tests are `ENC-535`'s assertions about our wiring, and a red check must say
+        # which. A failure here means the models were not fetched — it does not mean OCR is broken.
+        #
+        # **Fetched, never committed.** The published ocrs models are CC-BY-SA-4.0, which
+        # `deny.toml` excludes and which `cargo deny` structurally cannot see, because the crate is
+        # permissively licensed and weights are not a crate (`ENC-535`). Downloading them into a
+        # throwaway CI runner to run tests is use, not redistribution; baking them into an image or
+        # committing them to the tree would be redistribution, and is why neither happens.
+        #
+        # These are the two files `ocrs`'s own `download-models.sh` fetches. **Not** the `.rten`
+        # files on the Hugging Face model card: those are training checkpoints that do not fail —
+        # they return plausible nonsense, and on a blank page hallucinate lines of single characters
+        # (`ENC-536`). Wrong weights would make these tests fail confusingly rather than cleanly.
+        run: |
+          set -euo pipefail
+          base=https://ocrs-models.s3-accelerate.amazonaws.com
+          mkdir -p "${RUNNER_TEMP}/ocr-models"
+          for model in text-detection text-recognition; do
+            fetched=0
+            for attempt in 1 2 3; do
+              if curl -fsSL --max-time 120 -o "${RUNNER_TEMP}/ocr-models/${model}.rten" "${base}/${model}.rten"; then
+                fetched=1; break
+              fi
+              if [ "$attempt" -lt 3 ]; then
+                # `&& sleep` here would be a bug: on the last attempt the test is false, the
+                # compound returns non-zero, and `set -e` kills the step before the error message
+                # below is ever printed — turning a legible download failure into a bare exit code.
+                sleep $((attempt * 10))
+              fi
+            done
+            if [ "$fetched" -ne 1 ]; then
+              echo "::error title=OCR model download failed — NETWORK, not a test failure::${model}.rten could not be fetched from ${base} after 3 attempts. The OCR tests in crates/indexing were NOT evaluated — nothing was asserted and nothing failed. Re-run the job."
+              exit 1
+            fi
+            echo "${model}.rten $(stat -c%s "${RUNNER_TEMP}/ocr-models/${model}.rten") bytes"
+          done
+          echo "ENCLAVE_OCR_MODELS=${RUNNER_TEMP}/ocr-models" >> "$GITHUB_ENV"
+
       - name: Report free disk before building
         # So that the next time this job dies in the linker, the log says why on the line above it
         # rather than leaving a bus error to be diagnosed from first principles (ENC-156).
