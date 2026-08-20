@@ -63,13 +63,16 @@
 //!
 //! # What is deliberately not here
 //!
-//! **No model.** `plans/M3-DISCOVERY.md` Q14 is open: which local model, and does it ship in the
-//! image or mount at runtime. That decision sets `dimensions()`, which the Milvus collection is
-//! created against and which `index_manifests.embedding_model` records — changing it later is a
-//! full reindex (`docs/07 §9`) — and it decides whether an air-gapped install needs a model volume
-//! or just the image (`docs/08 §18`). Guessing it would be expensive to un-guess, so this crate
-//! ships [`NoLocalModel`] and [`NoRemoteProvider`], in the deny-by-default shape `crates/core`'s
-//! policy stages and `crates/preview::NoRenderer` use.
+//! **No weights, but the model is now decided.** Q14 is answered — [`model::ACTIVE`] is `bge-m3`
+//! at 1024 dimensions, delivered by mount rather than baked into the image ([`model::DELIVERY`]).
+//! That fixes the width the Milvus collection is created with and the string
+//! `index_manifests.embedding_model` records; changing it later is a full reindex (`docs/07 §9`),
+//! which is why it was settled before the first production index rather than after.
+//!
+//! What is still absent is the *inference*: this crate ships [`NoLocalModel`] and
+//! [`NoRemoteProvider`], in the deny-by-default shape `crates/core`'s policy stages and
+//! `crates/preview::NoRenderer` use. A deployment without weights refuses to index rather than
+//! indexing nothing, which is the distinction the three guards above exist to hold.
 //!
 //! **No `APPROVED_ONLY` tier.** `docs/07 §2.3` has three tiers; this crate implements the boundary
 //! S8 is about. [`Locality`] is sealed so the third arrives beside the ceiling rather than being
@@ -82,12 +85,14 @@
 
 pub mod error;
 pub mod locality;
+pub mod model;
 pub mod provider;
 pub mod router;
 pub mod text;
 
 pub use error::{EmbeddingError, Result};
 pub use locality::{Local, Locality, Remote};
+pub use model::{EmbeddingModel, ACTIVE, DELIVERY};
 pub use provider::{
     Availability, Embedding, EmbeddingProvider, ModelId, NoLocalModel, NoRemoteProvider,
 };

@@ -132,7 +132,22 @@ pub struct MilvusConfig {
     pub load_timeout: Duration,
     /// The collection to read. Defaults to `docs/07 §4`'s.
     pub collection: String,
-    /// Embedding width, set by the model (`plans/M3-DISCOVERY.md` Q14).
+    /// Embedding width, set by the model.
+    ///
+    /// **This must be `enclave_embeddings::model::ACTIVE.dimension`** — 1024, for `bge-m3`, which
+    /// is Q14's answer. It is not defaulted here and this crate does not depend on `embeddings`, so
+    /// nothing enforces the agreement at compile time; the caller that builds the collection is
+    /// responsible for reading it from there rather than typing a number.
+    ///
+    /// Why that matters more than an ordinary config field: the width is fixed when the collection
+    /// is *created*. A mismatch does not error at either end — Milvus accepts vectors of the width
+    /// it was created with, and the model emits the width it was trained at — so the failure is a
+    /// dimension error at insert if you are lucky, and silently degraded retrieval if you are not.
+    /// Correcting it afterwards means a new collection and every chunk of every tenant re-embedded
+    /// (`docs/07 §9`).
+    ///
+    /// `ENC-533` tracks making this a compile-time agreement, once a crate exists that depends on
+    /// both and can hold the assertion without a dependency invented for the purpose.
     pub dimension: u32,
     /// Partition-key partitions.
     ///
