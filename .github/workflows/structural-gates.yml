@@ -404,6 +404,40 @@ jobs:
             echo "in \`.github/scripts/no_raw_pool.py\` **with the reason**, in a commit a reviewer"
             echo "will see."
           } >> "$GITHUB_STEP_SUMMARY"
+  # --------------------------------------------------------------------------
+  # Gate: the tracker's rollup agrees with its rows. Static, and cheap.
+  # --------------------------------------------------------------------------
+  tracker-rollup:
+    name: 'RULE: the tracker rollup agrees with its rows'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: The rollup counts what the rows say
+        run: python3 .github/scripts/tracker_rollup.py
+      - name: Explain on failure
+        if: failure()
+        run: |
+          {
+            echo "### FAILED - Tracker rollup"
+            echo ""
+            echo "\`TRACKER.md §5\` disagrees with the rows in \`§3\` and \`§4\`."
+            echo ""
+            echo "\`CLAUDE.md\` asks for the row, the rollup and the log in the **same edit**."
+            echo "This is the part that gets forgotten, because the rows are the work and the"
+            echo "table is admin afterwards. It has drifted three times: once reading"
+            echo "\"Phase 1: 0 done\" while twenty-four of its rows were merged, once nine rows"
+            echo "behind, and once by six P1s because increments were applied to a base that was"
+            echo "already stale."
+            echo ""
+            echo "Each time it was caught by somebody reading carefully, which is not a control."
+            echo "A rollup nobody can trust is worse than no rollup, because a planning decision"
+            echo "gets made from it."
+            echo ""
+            echo "Fix it with:"
+            echo ""
+            echo "    python3 .github/scripts/tracker_rollup.py --fix"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   obligations:
     name: "RULE: PolicyDecision is must_use and never discarded"
     runs-on: ubuntu-latest
@@ -784,6 +818,7 @@ jobs:
       - dependencies
       - api-contract
       - web-gates
+      - tracker-rollup
     runs-on: ubuntu-latest
     steps:
       - name: Fail unless every gate succeeded
