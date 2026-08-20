@@ -37,10 +37,11 @@ use chrono::Utc;
 use enclave_authorization::PgAclAuthorization;
 use enclave_core::{Actor, FileId, RequestContext, TenantId, UserId};
 use enclave_db::{DbPool, TenantScoped};
+use enclave_search::health::{self, Expected, IndexCensus, IndexHealth};
 use enclave_search::vector::{field, VectorIndex, VectorQuery};
 use enclave_search::{
-    denylist, MilvusConfig, MilvusIndex, PostFilter, Prefilter, Retrieval, VectorStore,
-    DEFAULT_DENYLIST_LIMIT,
+    denylist, Cause, MilvusConfig, MilvusIndex, PostFilter, Prefilter, Retrieval, VectorStore,
+    DEFAULT_COVERAGE_FLOOR, DEFAULT_DENYLIST_LIMIT,
 };
 use enclave_testing::content::Spine;
 use enclave_testing::{Fixtures, TestDb};
@@ -384,6 +385,182 @@ async fn a_connection_failure_is_a_state_and_not_an_error() {
         })
         .await;
     assert!(outcome.is_err(), "an unreachable store answered a query with results: {outcome:?}");
+}
+
+/// **`ENC-516`, against the real thing.** A live, healthy, *empty* collection degrades a tenant
+/// PostgreSQL says is indexed.
+///
+/// This is the state the reachability trigger cannot see and the one the milestone is arranged
+/// against: Milvus is up, `has_collection` succeeds, the circuit is closed, and the tenant's
+/// partition holds nothing because somebody recreated the collection. Every existing signal reports
+/// health. The response would say `degraded: false` and return almost nothing.
+///
+/// Both directions are asserted from the same live collection, because the assertion that carries
+/// the weight is the difference: chunks are then inserted for the same tenant and the same probe has
+/// to come back `Complete`. A probe that degraded unconditionally would pass the first half.
+#[tokio::test]
+#[ignore = "requires a live Milvus (deploy/compose/dev.yml --profile search) and a live PostgreSQL \
+            with migrations 0001–0014; CI runs it with --include-ignored"]
+async fn a_live_but_empty_collection_degrades_a_tenant_that_postgres_says_is_indexed() {
+    let (db, fixtures, pool) = start().await;
+    let alpha = fixtures.alpha.id;
+    let owner = fixtures.alpha.owner;
+    let now = Utc::now();
+
+    let indexed = Spine::new(alpha);
+    let mut admin = db.connect().await.expect("admin connection");
+    indexed.insert(&mut admin, owner, now).await.expect("spine");
+    // PostgreSQL's record of a successful indexing run: one READY manifest, one chunk.
+    manifest(&mut admin, alpha, &indexed, owner, 1).await;
+
+    let index = MilvusIndex::new(config());
+    index.ensure_collection().await.expect("provision the collection");
+
+    // The collection exists and is loaded, so reachability is honest and unhelpful.
+    assert_eq!(
+        index.reachability().await,
+        VectorStore::Available,
+        "the store is up; if this said otherwise the rest of the test proves nothing"
+    );
+
+    let mut tx = TenantScoped::begin(&pool, alpha).await.expect("begin");
+    let empty = health::probe(&mut tx, alpha, &index, DEFAULT_COVERAGE_FLOOR)
+        .await
+        .expect("probe the empty collection");
+    tx.commit().await.expect("commit");
+
+    let decision = Retrieval::decide(empty.store_state(), 0, DEFAULT_DENYLIST_LIMIT);
+    let Retrieval::Degraded(reason) = decision else {
+        panic!("a live, empty collection answered `degraded: false`: {decision:?}");
+    };
+    assert_eq!(
+        reason.cause(),
+        Cause::IndexDepleted { expected_chunks: 1, observed_chunks: 0 },
+        "the cause must name the hole rather than the connection"
+    );
+
+    // Now index the chunk PostgreSQL said was there, and the same probe has to stop degrading.
+    let client = raw_client().await;
+    index_chunks(&client, &index.config().collection, alpha, fixtures.alpha.member, &[indexed])
+        .await;
+
+    let mut tx = TenantScoped::begin(&pool, alpha).await.expect("begin");
+    let stocked = health::probe(&mut tx, alpha, &index, DEFAULT_COVERAGE_FLOOR)
+        .await
+        .expect("probe the populated collection");
+    tx.commit().await.expect("commit");
+
+    assert_eq!(
+        Retrieval::decide(stocked.store_state(), 0, DEFAULT_DENYLIST_LIMIT),
+        Retrieval::Complete,
+        "a store holding what PostgreSQL expects degraded anyway, which would make every search \
+         degraded and the flag meaningless"
+    );
+
+    drop_collection(&client, &index.config().collection).await;
+    drop(db);
+}
+
+/// The census counts one tenant's chunks, not the collection's.
+///
+/// The failure this catches is a single missing clause: without the partition-key predicate, a
+/// tenant whose own chunks are entirely gone reads as fully stocked on the strength of everybody
+/// else's data — the health signal reporting green *because* another tenant is healthy. `beta` is
+/// loaded and `alpha` is empty, so a census that ignored the tenant returns a non-zero count here.
+/// Deliberately needs **no PostgreSQL**. The question is entirely about what the store counts, and
+/// the fewer moving parts stand between the assertion and the answer, the harder it is to explain a
+/// failure away. `Spine` is used here only as a bundle of identifiers to write into the index; no
+/// row is inserted anywhere.
+#[tokio::test]
+#[ignore = "requires a live Milvus (deploy/compose/dev.yml --profile search); CI runs it with \
+            --include-ignored"]
+async fn a_census_counts_only_the_tenant_it_was_asked_about() {
+    let (alpha, beta) = (TenantId::new_v7(), TenantId::new_v7());
+    let theirs = Spine::new(beta);
+
+    let index = MilvusIndex::new(config());
+    index.ensure_collection().await.expect("provision the collection");
+    let client = raw_client().await;
+    index_chunks(&client, &index.config().collection, beta, UserId::new_v7(), &[theirs]).await;
+
+    assert_eq!(
+        index.chunks(beta).await.expect("census beta"),
+        1,
+        "the collection does not hold beta's chunk, so the zero below would mean nothing"
+    );
+    assert_eq!(
+        index.chunks(alpha).await.expect("census alpha"),
+        0,
+        "alpha's census counted another tenant's chunks, so an emptied alpha partition would read \
+         as healthy on the strength of beta's data"
+    );
+
+    // And the consequence, spelled out against the comparison that uses it: alpha has manifests
+    // claiming forty chunks and none of its own in the store, so it degrades even though the
+    // collection is not empty.
+    let alpha_is_missing = IndexHealth::assess(
+        Expected::Chunks(40),
+        index.chunks(alpha).await.expect("census alpha"),
+        DEFAULT_COVERAGE_FLOOR,
+    );
+    assert!(
+        matches!(
+            Retrieval::decide(alpha_is_missing.store_state(), 0, DEFAULT_DENYLIST_LIMIT),
+            Retrieval::Degraded(_)
+        ),
+        "a tenant whose chunks are gone stayed complete because the collection holds someone \
+         else's"
+    );
+
+    drop_collection(&client, &index.config().collection).await;
+}
+
+/// Writes the `file_versions` row and the `READY` manifest that says the file was indexed.
+///
+/// The manifest is PostgreSQL's half of the coverage signal: `chunk_count` is what the store is
+/// then measured against.
+async fn manifest(
+    conn: &mut sqlx::PgConnection,
+    tenant: TenantId,
+    spine: &Spine,
+    owner: UserId,
+    chunk_count: i32,
+) {
+    let version = Uuid::now_v7();
+    let now = Utc::now();
+
+    sqlx::query(
+        "INSERT INTO file_versions
+           (id, tenant_id, file_id, object_key, storage_profile_id, size_bytes, checksum_sha256,
+            mime_type, major, minor, status, av_status, created_by, created_at)
+         VALUES ($1, $2, $3, $4, $5, 1024, 'deadbeef', 'application/pdf', 1, 0, 'AVAILABLE',
+                 'CLEAN', $6, $7)",
+    )
+    .bind(version)
+    .bind(tenant.as_uuid())
+    .bind(spine.file.as_uuid())
+    .bind(format!("tenants/{}/blobs/{version}", tenant.as_uuid()))
+    .bind(Uuid::now_v7())
+    .bind(owner.as_uuid())
+    .bind(now)
+    .execute(&mut *conn)
+    .await
+    .expect("a version for the manifest to name");
+
+    sqlx::query(
+        "INSERT INTO index_manifests
+           (tenant_id, file_id, version_id, index_version, extractor_version, chunker_version,
+            embedding_model, status, chunk_count, updated_at)
+         VALUES ($1, $2, $3, 1, 'v1', 'v1', 'local-test', 'READY', $4, $5)",
+    )
+    .bind(tenant.as_uuid())
+    .bind(spine.file.as_uuid())
+    .bind(version)
+    .bind(chunk_count)
+    .bind(now)
+    .execute(&mut *conn)
+    .await
+    .expect("the manifest");
 }
 
 /// A client for the test's own writes.

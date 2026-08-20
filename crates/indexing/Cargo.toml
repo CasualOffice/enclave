@@ -18,6 +18,11 @@ enclave-preview = { workspace = true }
 
 anyhow      = { workspace = true }
 async-trait = { workspace = true }
+# `src/store.rs` writes chunk text to PostgreSQL so the degraded search path can match on it. Plain
+# `sqlx` rather than `enclave-db`: this crate opens no pool and starts no transaction — it takes the
+# caller's `&mut PgConnection`, which is what lets a chunk write share the transaction that moves
+# `index_manifests`.
+sqlx        = { workspace = true }
 #  gives the deterministic chunk ids docs/07 §2 specifies.
 uuid        = { workspace = true }
 thiserror   = { workspace = true }
@@ -29,6 +34,13 @@ tokio       = { workspace = true }
 # `test-util` gives `#[tokio::test(start_paused = true)]`, which makes the wall-clock bound testable
 # deterministically instead of as a race against a real clock.
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "test-util"] }
+# `tests/chunk_store.rs` runs against a real PostgreSQL: the properties it asserts are properties of
+# a statement, and a fake connection would only prove that the code calls the code.
+enclave-testing = { workspace = true }
+# `TenantScoped` is how a test writes as the application role with a tenant set, which is the only
+# way an RLS assertion means anything — the harness's own connection is a superuser.
+enclave-db      = { workspace = true }
+chrono          = { workspace = true }
 
 [lints]
 workspace = true

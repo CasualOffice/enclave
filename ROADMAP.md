@@ -115,6 +115,17 @@ Three tracks run concurrently once M0 completes. This is what turns ~90 engineer
 Frontend deliberately trails backend by one milestone. Building UI against an unstable API produces
 rework, and the API stabilizes at the end of each milestone, not the start.
 
+**The design system already exists**, so the web shell does not start from a blank page. The client
+design system, layout and prototype are built in Claude Design and reachable through the Claude
+Design MCP:
+
+    https://claude.ai/design/p/c02388c5-f47e-443e-adc4-4020470148b1?file=Enclave+Client.dc.html
+
+Read it before writing any UI. The visual language and component structure are decided; the work is
+to implement them against `docs/09-UX-WHITE-LABELING.md` and `docs/14-I18N-L10N.md`, not to invent a
+second one. Recorded here rather than in a chat because the milestone that needs it is months out
+(noted 2026-08-21).
+
 The fourth backend engineer floats to whatever is on the critical path — this is the schedule's
 shock absorber, and it is the first thing consumed when an estimate is wrong.
 

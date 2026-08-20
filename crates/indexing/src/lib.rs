@@ -47,6 +47,17 @@
 //! document nobody can see. [`text`] gives the argument in full, including why a NUL byte anywhere
 //! refuses the source outright.
 //!
+//! # Where the text goes
+//!
+//! [`store`] writes chunk text to PostgreSQL, which is what lets degraded search find a document by
+//! what it *says* rather than by what it is called (`ENC-515`). Milvus holds a copy too
+//! (`docs/07 §4`) and it is the wrong copy for that caller by construction: the lexical fallback
+//! runs when the vector store cannot be reached.
+//!
+//! [`write_chunks`] replaces a file's text rather than adding to it, in one statement, for the
+//! reason [`store`] gives in full — half of that operation leaves the previous version's wording
+//! matchable against a file that no longer contains it.
+//!
 //! # What is deliberately not here
 //!
 //! **No document formats.** PDF and OOXML are a ZIP parser, an XML parser and a page tree, each
@@ -82,6 +93,7 @@ pub mod chunk;
 pub mod error;
 pub mod extract;
 pub mod model;
+pub mod store;
 pub mod text;
 
 pub use chunk::{chunk_id, Chunk, ChunkBudget, Chunker, ChunkerVersion};
@@ -92,6 +104,7 @@ pub use extract::{
 pub use model::{
     Coordinates, ExtractorVersion, Segment, SegmentKind, TextDocument, SEGMENT_OVERHEAD_BYTES,
 };
+pub use store::{write_chunks, ChunkWrite};
 pub use text::PlainTextExtractor;
 
 /// Re-exported so that a caller bounding an extraction and a caller bounding a render name the same

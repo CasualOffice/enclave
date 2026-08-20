@@ -1,6 +1,6 @@
 # 07 — Search & Indexing
 
-> **Status:** Draft · **Version:** 1.0 · **Owner:** Search Engineering · **Last updated:** 2026-08-18
+> **Status:** Draft · **Version:** 1.2 · **Owner:** Search Engineering · **Last updated:** 2026-08-21
 > **Authoritative for:** the indexing pipeline, Milvus schema, permission-aware retrieval, ACL invalidation, rebuild.
 
 ## 1. Position of the index
@@ -26,9 +26,15 @@ file.version.created
  -> Metadata Enrichment   title, path, owner, dates, custom fields
  -> Classification        detected label, may raise the file's classification
  -> Embed                 provider routed by classification
+ -> chunk_text upsert     chunk text into PostgreSQL, replacing the file's previous text
  -> Milvus upsert         chunk rows with security metadata
  -> index_manifests.status = READY
 ```
+
+The `chunk_text` write (`04-DATA-MODEL.md §15`) is what makes degraded retrieval able to match on
+document *content*: the lexical fallback runs when Milvus cannot be reached, so the copy it searches
+cannot be Milvus's. It replaces the file's stored text rather than adding to it — wording removed by
+a new version must stop being matchable through that file.
 
 Every stage is idempotent on `(file_id, version_id, index_version)`. A retried event re-runs stages
 without duplicating chunks: chunk IDs are deterministic,
@@ -239,9 +245,49 @@ So any invalidation that **reduces** access takes effect immediately:
 4. If Redis is unavailable, the denylist is read from PostgreSQL; if that also fails, vector search
    fails closed for that tenant.
 
-Denylist entries carry `clears_at` as a backstop, and the scheduler reconciles by comparing
+Denylist entries carry `clears_at` as a backstop deadline, and the scheduler reconciles by comparing
 `index_manifests.acl_epoch` against `files.acl_revision`: any manifest whose epoch is behind is
-re-queued and its file stays denylisted until it catches up.
+re-queued.
+
+**A suppression is lifted by `clears_at` alone, and by nothing else.** The temptation is to lift it
+when the index has caught up, and until `04-DATA-MODEL.md §15`'s `suppression_seq` / `indexed_seq`
+pair existed, nothing could even express that. Now that something can, the rule still holds and is
+now a deliberate refusal rather than a limitation: making a lift conditional on a worker reporting
+back would make S4 (`12-TESTING.md §4.3` — a stopped invalidation worker changes nothing a caller
+can observe) pass because the worker ran, rather than because the denylist write sits inside the ACL
+transaction. The catch-up columns are an operator's signal and a rebuild's input. The query path
+reads neither, and there is deliberately no per-file "is this file's index current?" accessor, for
+the reason `crates/worker/src/lib.rs` gives: that predicate is the one a search eventually calls to
+skip work.
+
+### 6.4.1 A store that is up and *wrong*
+
+Everything above assumes an index that is stale. The failure it does not cover is an index that is
+**absent** — a collection dropped and recreated empty, a restore that missed a volume, a rebuild
+that stopped halfway, a tenant nothing ever indexed. Reachability cannot see it: the server answers,
+the collection exists, the circuit stays closed. Search returns two hits out of forty thousand
+documents and reports `degraded: false`. That is worse than an outage, because an outage is visible.
+
+So coverage is a third degradation trigger, alongside unreachability and denylist overflow:
+
+1. A background probe, per tenant, sums `chunk_count` over that tenant's `READY` manifests — what
+   PostgreSQL says the store holds — and asks the store for its own count of that tenant's chunks.
+2. Below a configured share of the expectation (default 50%), the tenant degrades to lexical search
+   with `degraded: true`, exactly as the other two triggers do.
+3. **A background probe, never a per-request measurement.** A trigger sampled inside a request makes
+   the same query answer completely at 10:00:01 and degraded at 10:00:02 with no state change, which
+   is why latency is not a trigger either.
+
+Two limits, stated rather than discovered:
+
+- **It detects absence, not wrongness.** The right number of wrong chunks reads as healthy. Nothing
+  about content, embeddings or `acl_tokens` is inspected — the post-filter is what makes a wrong
+  candidate harmless, and what it cannot do is notice a candidate that was never offered.
+- **It is blind where `chunk_count` is not recorded.** That column defaults to `0`, so a pipeline
+  that never populates it produces tenants that expect nothing and can never be found depleted. That
+  reading is reported as *unknown* rather than folded into "healthy", exported as
+  `enclave_search_index_coverage_unknown`, and alerted on — because the difference between a quiet
+  signal and a blind one is invisible otherwise.
 
 ### 6.5 Why not rely on `acl_tokens` alone
 
@@ -265,7 +311,10 @@ Layers 1, 2 and 4 hold the guarantee. Layer 3 makes it fast.
 | Invalidation job backed up | Denylist blocks the file at query time |
 | Milvus returns unauthorized candidates | Post-filter drops them; drop-ratio metric fires |
 | Redis denylist unavailable | PostgreSQL fallback; then fail closed for vector search |
-| Milvus entirely down | Lexical search over PostgreSQL; `degraded: true` |
+| Milvus entirely down | Lexical search over PostgreSQL — file names, scalar metadata and `chunk_text` — post-filtered as usual; `degraded: true` |
+| Milvus up but the tenant's chunks are missing | Coverage probe finds the store below its floor; lexical search, `degraded: true` (`§6.4.1`) |
+| Milvus up, chunks present, contents wrong | **Not detected by coverage.** The post-filter keeps it correct; the drop-ratio metric is what shows it |
+| `chunk_count` never recorded by the indexer | Coverage is *unknown* for that tenant and says so; the depletion trigger cannot fire and an alert names that |
 | Vector cache incomplete | Repair falls back to re-embedding for the affected files |
 
 ## 7. Ranking
@@ -321,10 +370,14 @@ During rebuild, search continues against the old collection. Files whose manifes
 
 Per-tenant metrics: index lag (`file.version.created` → `READY`), manifest status distribution,
 embedding spend, query latency by mode, post-filter drop ratio, denylist size, epoch-drift count,
-degraded-query rate, rebuild progress.
+degraded-query rate, rebuild progress, and index coverage — expected chunks, observed chunks, the
+floor they are compared against, and whether the reading could be established at all (`§6.4.1`).
 
 Alert thresholds worth naming: post-filter drop ratio > 20% sustained, denylist size > 1 000,
-epoch-drift count > 0 for more than 15 minutes, index lag P95 > 10 minutes.
+epoch-drift count > 0 for more than 15 minutes, index lag P95 > 10 minutes, observed chunks below
+the coverage floor for more than 10 minutes, and coverage *unknown* for more than two hours — the
+last one because a signal that cannot see is indistinguishable from a signal that sees nothing
+wrong. Rules: `deploy/monitoring/alerts/search.yml`.
 
 ## 11. Multi-tenancy and residency
 
