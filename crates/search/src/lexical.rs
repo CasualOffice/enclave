@@ -19,14 +19,27 @@
 //! - A file by a **whole word in its name**. `budget` finds `Q3 budget-forecast.xlsx`.
 //! - A file by a **whole word in one of its scalar metadata values** — `metadata_values.value_text`,
 //!   the generated projection migration 0009 maintains.
+//! - A file by a **whole word in its extracted text** — `chunk_text`, which
+//!   `enclave_indexing::store` writes as documents are indexed (migration 0013, `ENC-515`). A
+//!   300-page agreement whose body says *indemnity* is findable by that word without it appearing
+//!   anywhere in the filename.
+//!
+//! # What the content half depends on, and what it therefore misses
+//!
+//! `chunk_text` holds the text of the version that was **last indexed**, which is not always the
+//! current one. A file uploaded a moment ago, or one whose extraction failed or refused
+//! (`enclave_indexing`'s `ExtractOutcome`), has no rows there and is findable by name and metadata
+//! only — the pre-`ENC-515` behaviour, now the exception rather than the rule. That is ordinary
+//! index staleness rather than a hole in the fallback: nothing here is a statement about
+//! permissions, and every candidate is post-filtered whatever produced it.
+//!
+//! Formats matter more than freshness in practice. Only what an `enclave_indexing::Extractor`
+//! handles has text at all, and today that is UTF-8 plain text and Markdown — PDF and OOXML wait on
+//! D17's out-of-process worker. So *most* of a real tenant's content is still name-and-metadata only
+//! on this path, and saying otherwise would misdescribe what a caller is getting during an incident.
 //!
 //! # What it cannot find, and this list is the honest part
 //!
-//! - **Anything by document content.** There is no extracted-text table yet; D24's extraction lands
-//!   in the sandboxed worker. A 300-page agreement whose text says *indemnity* is invisible here
-//!   unless that word is in its filename or a metadata field. This is the largest gap between
-//!   degraded and complete retrieval and the main reason the `degraded` flag has to reach the
-//!   caller: without it, "not found" reads as "not there".
 //! - **Prefixes and substrings.** `budg` finds nothing. Prefix matching means building a `tsquery`
 //!   from user input rather than letting `plainto_tsquery` do it, and a query-syntax parser over
 //!   untrusted input is not a thing to introduce on the path that only runs during an incident.
@@ -54,14 +67,18 @@
 //! the two disagree, and a search for `budget.xlsx` that cannot find `budget.xlsx` is the shape of
 //! that bug. `[[:alnum:]]` is Unicode-aware in a UTF-8 database, so `Größe` survives as one token.
 //!
-//! # Cost, and the index that is missing
+//! # Cost, and the indexes these expressions must match
 //!
-//! There is no expression index for these `to_tsvector` calls, so this is a sequential scan of the
-//! tenant's files. It is acceptable *because of when it runs*: the vector store is already down, the
-//! alternative is answering nothing, and a scan bounded by one tenant's file count is a cost paid
-//! during an incident rather than continuously. It is not acceptable as a permanent state — a GIN
-//! index on the normalized name expression belongs in a migration, and this module is written so
-//! that adding one changes the plan and not the SQL.
+//! Every `to_tsvector` expression below has a GIN index behind it: `files.name` and
+//! `metadata_values.value_text` in migration 0012, `chunk_text.text` in 0013.
+//!
+//! An expression index is used **only** when the query's expression is identical, so the copies here
+//! and the copies there are not redundancy to be tidied away — they are the same string twice on
+//! purpose. A difference of one character does not make this query slower; it makes it a sequential
+//! scan while the index sits unused, which reads as "full-text search is slow" rather than as a
+//! typo. That mattered least on `files.name`, where the scan was bounded by a tenant's file count,
+//! and matters most on `chunk_text`, which holds tens of rows per document and is the largest table
+//! this schema has.
 
 use enclave_core::{FileId, TenantId};
 use sqlx::{PgConnection, Row as _};
@@ -143,12 +160,19 @@ pub async fn candidates(
                 column: "score",
                 reason: "missing or not a rank",
             })?;
-            // No excerpt, and that is a decision rather than an omission. There is no extracted
-            // text to excerpt from; a headline cut from the filename tells the caller nothing the
-            // hit does not already carry; and a headline cut from a metadata value would push a
-            // field value behind the post-filter's `ContentRead` gate, which answers a different
-            // disclosure question than the one metadata values are governed by. An empty snippet is
-            // a visible gap. A snippet assembled from the wrong source is an invisible one.
+            // Still no excerpt, and it is still a decision. There is text to cut one from now, and
+            // that makes the choice sharper rather than settling it: a headline over the
+            // *normalized* expression returns the punctuation-stripped form, which is not the
+            // sentence the document contains, and a headline over the raw text is a second
+            // tokenization that can highlight a different span than the one that matched. Both are
+            // decisions about what a quotation from a document is allowed to look like, and they
+            // belong to a row of their own rather than to the change that made text searchable. An
+            // empty snippet is a visible gap; a snippet assembled from the wrong source is an
+            // invisible one.
+            //
+            // Note where the gate would be if this changes: the excerpt field is disclosed only
+            // when the post-filter resolves `ContentRead`, and chunk text is document content, so
+            // the machinery is already the right shape. Nothing here may disclose it directly.
             Ok(Candidate { file_id, score, excerpt: None })
         })
         .collect::<Result<Vec<_>, SearchError>>()?;
@@ -165,29 +189,68 @@ pub async fn candidates(
 /// `GROUP BY f.id` collapses the metadata join — a file with eight fields must not appear eight
 /// times — and is legal against the other `f.` columns because `id` is the primary key.
 ///
-/// A name match outranks a metadata match by a factor of two: a filename is evidence about the
-/// document, a field value is evidence about one attribute of it. The exact factor is Q15's to
-/// settle (`plans/M3-DISCOVERY.md §7` asks whether degraded mode should rank at all). What is not
-/// open is that the order is **total and deterministic** — `file_id` breaks every remaining tie —
-/// because an order that varies between two identical queries makes a paginating caller skip rows
-/// and repeat others, and "search dropped a result" is a report nobody can reproduce.
+/// # Why content is aggregated in a CTE and not joined like metadata
 ///
-/// The boost is written `2.0::real` rather than `2.0`. An unsuffixed literal is `numeric`, which
-/// makes the product `numeric`, which makes the whole column `numeric` — and the decode below then
-/// fails with `MalformedRow` at runtime rather than anywhere a type checker would have caught it.
-/// It did, on the first run.
+/// A document has tens of chunks and can have tens of metadata values, and joining both into the
+/// same row set multiplies them: sixty chunks by eight fields is 480 rows for one file, every one of
+/// them carrying the chunk's text through a `to_tsvector` the planner has no reason to compute once.
+/// `GROUP BY f.id` would still give the right *answer*, at a cost that grows with the product of two
+/// unrelated numbers.
+///
+/// So `content` reduces chunk matches to at most one row per file **before** the join, and the file
+/// list is then left-joined against it. The predicate `k.file_id IS NOT NULL` is what admits a file
+/// matched only by its body.
+///
+/// The tenant predicate appears in the CTE as well as in the outer query. `chunk_text` has its own
+/// row-level security, so this is the same belt-and-braces the outer query already uses — and the
+/// CTE is evaluated on its own, so leaving it out would mean scanning every tenant's chunks and
+/// discarding the others at the join, which is both slower and a shape nobody should have to
+/// re-derive as safe.
+///
+/// # Ranking
+///
+/// A name match outranks the other two by a factor of two: a filename is evidence about the
+/// document, where a field value is evidence about one attribute of it and a chunk match is evidence
+/// about one passage. Content and metadata are level with each other, deliberately unweighted —
+/// `ts_rank` over a 2,400-character chunk and over a short field value are not comparable
+/// quantities, and inventing a coefficient between them would look like a decision when it is a
+/// guess. The exact factors are Q15's to settle (`plans/M3-DISCOVERY.md §7` asks whether degraded
+/// mode should rank at all). What is not open is that the order is **total and deterministic** —
+/// `file_id` breaks every remaining tie — because an order that varies between two identical queries
+/// makes a paginating caller skip rows and repeat others, and "search dropped a result" is a report
+/// nobody can reproduce.
+///
+/// The boost is written `2.0::real` rather than `2.0`, and the content default `0.0::real` for the
+/// same reason. An unsuffixed literal is `numeric`, which makes the product `numeric`, which makes
+/// the whole column `numeric` — and the decode below then fails with `MalformedRow` at runtime
+/// rather than anywhere a type checker would have caught it. It did, on the first run.
 const CANDIDATES_SQL: &str = "
 WITH q AS (
     SELECT plainto_tsquery('simple', regexp_replace($2, '[^[:alnum:]]+', ' ', 'g')) AS tsq
+), content AS (
+    SELECT c.file_id, max(ts_rank(t.text_tsv, q.tsq)) AS score
+      FROM chunk_text c
+      CROSS JOIN q
+      CROSS JOIN LATERAL (
+          SELECT to_tsvector('simple', regexp_replace(c.text, '[^[:alnum:]]+', ' ', 'g'))
+                 AS text_tsv
+      ) t
+     WHERE c.tenant_id = $1
+       AND t.text_tsv @@ q.tsq
+     GROUP BY c.file_id
 )
 SELECT f.id AS file_id,
-       max(GREATEST(ts_rank(v.name_tsv, q.tsq) * 2.0::real, ts_rank(v.meta_tsv, q.tsq))) AS score
+       max(GREATEST(ts_rank(v.name_tsv, q.tsq) * 2.0::real,
+                    ts_rank(v.meta_tsv, q.tsq),
+                    coalesce(k.score, 0.0::real))) AS score
   FROM files f
   CROSS JOIN q
   LEFT JOIN metadata_values m
          ON m.tenant_id = f.tenant_id
         AND m.resource_type = 'FILE'
         AND m.resource_id = f.id
+  LEFT JOIN content k
+         ON k.file_id = f.id
   CROSS JOIN LATERAL (
       SELECT to_tsvector('simple', regexp_replace(f.name, '[^[:alnum:]]+', ' ', 'g')) AS name_tsv,
              to_tsvector('simple', regexp_replace(coalesce(m.value_text, ''),
@@ -197,7 +260,7 @@ SELECT f.id AS file_id,
    AND f.deleted_at IS NULL
    AND f.node_type = 'FILE'
    AND f.status = 'AVAILABLE'
-   AND (v.name_tsv @@ q.tsq OR v.meta_tsv @@ q.tsq)
+   AND (v.name_tsv @@ q.tsq OR v.meta_tsv @@ q.tsq OR k.file_id IS NOT NULL)
  GROUP BY f.id
  ORDER BY score DESC, f.modified_at DESC, f.id
  LIMIT $3

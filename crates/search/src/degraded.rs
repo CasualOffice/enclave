@@ -28,12 +28,15 @@
 //!
 //! # When degraded mode engages, and why not on latency
 //!
-//! [`Retrieval::decide`] engages it on exactly two signals, both of which are *states that persist
-//! across requests*:
+//! [`Retrieval::decide`] engages it on exactly three signals, every one of which is a *state that
+//! persists across requests*:
 //!
 //! 1. **The vector store is unreachable** — the circuit is open, the collection will not load, the
 //!    connection cannot be made.
-//! 2. **The denylist has outgrown its limit** (`docs/07-SEARCH-INDEXING.md §6.4`), which means
+//! 2. **The vector store is depleted** — it answers, and holds materially less than PostgreSQL says
+//!    is indexed for the tenant. `crate::health` is where that is established and why it is
+//!    established in a background probe rather than in a request.
+//! 3. **The denylist has outgrown its limit** (`docs/07-SEARCH-INDEXING.md §6.4`), which means
 //!    invalidation is so far behind that the index is known to be wrong at scale. Serving from it
 //!    would burn over-fetch budget on candidates the post-filter is about to drop, and crowd out the
 //!    results that would have survived.
@@ -48,19 +51,32 @@
 //! it that eventually turn a sustained failure into [`VectorStore::Unreachable`], and only then does
 //! this decision change.
 //!
-//! ## The failure mode this trigger has
+//! [`VectorStore::Depleted`] is admissible under exactly that rule, and it is worth being explicit
+//! about why rather than trusting the reader to notice. It is not a measurement of a request: it is
+//! a property of what the store *contains*, which changes only when something writes to it or wipes
+//! it. Two identical queries seconds apart get the same answer, and the state has an operator-facing
+//! explanation — "this tenant's collection holds 0 of 40 000 chunks" — that survives being written
+//! in an incident channel. `Slow` has none of those properties. Anything proposed for this enum
+//! should be held against them.
 //!
-//! Say it plainly, because every trigger has one. This one covers *loud* failures. A vector store
-//! that is up and answering but **wrong** — a collection dropped and recreated empty, a botched
-//! rebuild, a tenant whose documents were never indexed — keeps the circuit closed, returns few or
-//! no candidates, and the response says `degraded: false`. That is the confident wrong answer this
-//! whole milestone is arranged against, and no amount of connection health detects it. Catching it
-//! needs a different signal: `index_manifests` counting `READY` files against what the store holds,
-//! and an alert when those diverge. That is not built here, and it is the gap to close next.
+//! ## The failure modes this trigger has
 //!
-//! The second, milder failure mode is on the recovery side: a circuit breaker holds open through its
-//! probe interval, so the fallback stays engaged for a short while after the store is healthy again.
-//! That costs recall for seconds, which is the side of this trade to err on.
+//! Say them plainly, because every trigger has some. **Signal 2 detects absence, not wrongness.**
+//! The right number of *wrong* chunks reads as healthy: a collection whose vectors were built with
+//! the wrong embedding model, or whose `acl_tokens` are a year stale, counts perfectly well.
+//! Nothing here inspects content, and nothing needs to — the post-filter is what makes a wrong
+//! candidate harmless (`CLAUDE.md` rule 5), and what it cannot do is notice that a candidate was
+//! never offered.
+//!
+//! **And it is blind where `chunk_count` is unrecorded.** `crate::health` states that in full:
+//! a tenant whose `READY` manifests all claim zero chunks expects nothing, so it can never be found
+//! depleted. That reads as [`crate::health::Unknown::ChunkCountsUnrecorded`] and is exported as a
+//! metric, rather than being folded into "fine".
+//!
+//! The milder failure mode is on the recovery side: a circuit breaker holds open through its probe
+//! interval, and a coverage probe runs on an interval too, so the fallback stays engaged for a
+//! short while after the store is healthy again. That costs recall for seconds, which is the side of
+//! this trade to err on.
 
 use enclave_core::{AuthorizationService, RequestContext};
 use sqlx::PgConnection;
@@ -75,18 +91,32 @@ use crate::postfilter::{Candidate, Confirmed, DropCounts, PostFilter};
 /// figure: one tenant's reorganisation degrades that tenant, and no other.
 pub const DEFAULT_DENYLIST_LIMIT: usize = 10_000;
 
-/// Whether the vector store can be reached, as observed across requests rather than within one.
+/// The health of the vector store, as observed across requests rather than within one.
 ///
 /// **There is no `Slow` variant, and there must not be one.** See the module documentation: a
 /// latency-triggered fallback engages under load, which is when the vector path is worth the most,
-/// and it engages per request, which makes the same query answer differently seconds apart.
+/// and it engages per request, which makes the same query answer differently seconds apart. The bar
+/// a variant has to clear is that one — a state of the *store*, not a measurement of a request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VectorStore {
-    /// Reachable — the circuit is closed. This says nothing about how fast the last query was, and
-    /// deliberately cannot be made to.
+    /// Reachable, and holding roughly what PostgreSQL says it should. This says nothing about how
+    /// fast the last query was, and deliberately cannot be made to.
     Available,
     /// Not reachable: the circuit is open, the collection is not loaded, or the connection failed.
     Unreachable,
+    /// Reachable, and materially emptier than the authority says it should be — a collection
+    /// recreated, a rebuild that stopped halfway, a tenant nothing ever indexed.
+    ///
+    /// Established by [`crate::health::probe`] in a background loop; both counts are carried so an
+    /// operator reading the cause sees the size of the hole rather than a boolean. `Available` and
+    /// this are two readings of a store that answers, which is the distinction `reachability` alone
+    /// cannot make.
+    Depleted {
+        /// Chunks across the tenant's `READY` manifests, from PostgreSQL.
+        expected_chunks: u64,
+        /// Chunks the store reported holding for the tenant.
+        observed_chunks: u64,
+    },
 }
 
 /// What put retrieval into degraded mode.
@@ -116,6 +146,17 @@ impl DegradedReason {
 pub enum Cause {
     /// The vector store could not be reached.
     VectorStoreUnreachable,
+    /// The vector store is answering and is missing most of what should be in it.
+    ///
+    /// Carries both counts for the same reason [`Cause::DenylistOverflowing`] does: an operator
+    /// needs to tell "a rebuild is halfway through" from "the collection is empty", and those are
+    /// the same verdict with very different numbers under it.
+    IndexDepleted {
+        /// Chunks across the tenant's `READY` manifests, from PostgreSQL.
+        expected_chunks: u64,
+        /// Chunks the store reported holding for the tenant.
+        observed_chunks: u64,
+    },
     /// Invalidation is backed up far enough that the index is wrong at scale.
     DenylistOverflowing {
         /// Suppressed files for this tenant.
@@ -140,9 +181,14 @@ impl Retrieval {
     /// Both arguments are states that outlive a single request, which is the whole point — see the
     /// module documentation for why no per-request signal appears here.
     ///
-    /// Unreachability wins over denylist pressure when both hold: a store that cannot be reached
-    /// makes the size of the denylist moot, and reporting the reason that is actionable
-    /// (*the store is down*) beats reporting the one that is merely also true.
+    /// The three causes are ranked, and the ranking is about which sentence an operator should be
+    /// handed first when several are true at once.
+    ///
+    /// Unreachability wins over everything: a store that cannot be reached makes both the size of
+    /// its contents and the size of the denylist moot. A depleted store outranks denylist pressure
+    /// because it explains the symptom — *the index is missing* answers "why did search return
+    /// nothing" — while denylist pressure describes a backlog whose repair does nothing for an
+    /// empty collection. Each of them is true; only one of them is where to start.
     #[must_use]
     pub const fn decide(
         store: VectorStore,
@@ -152,6 +198,12 @@ impl Retrieval {
         match store {
             VectorStore::Unreachable => {
                 Self::Degraded(DegradedReason(Cause::VectorStoreUnreachable))
+            }
+            VectorStore::Depleted { expected_chunks, observed_chunks } => {
+                Self::Degraded(DegradedReason(Cause::IndexDepleted {
+                    expected_chunks,
+                    observed_chunks,
+                }))
             }
             VectorStore::Available if denylist_entries > denylist_limit => {
                 Self::Degraded(DegradedReason(Cause::DenylistOverflowing {
@@ -293,17 +345,67 @@ mod tests {
         );
     }
 
+    /// **`ENC-516`.** A store that is up and empty degrades, and says which one it is.
+    ///
+    /// The state this closes is the worst shape available: the circuit closed, `reachability`
+    /// answering `Available` and being right, two hits returned out of forty thousand documents,
+    /// and `degraded: false` on the response. Confidently complete, and wrong.
+    #[test]
+    fn a_depleted_store_degrades_and_reports_the_size_of_the_hole() {
+        let store = VectorStore::Depleted { expected_chunks: 40_000, observed_chunks: 0 };
+        let decision = Retrieval::decide(store, 0, DEFAULT_DENYLIST_LIMIT);
+        let Retrieval::Degraded(reason) = decision else {
+            panic!("a store holding nothing must degrade: {decision:?}");
+        };
+        assert_eq!(
+            reason.cause(),
+            Cause::IndexDepleted { expected_chunks: 40_000, observed_chunks: 0 },
+            "the operator needs both numbers to tell a rebuild in progress from an empty collection"
+        );
+    }
+
+    #[test]
+    fn an_unreachable_store_outranks_a_depleted_one() {
+        // Both are true of a store that went away mid-rebuild. "It is down" is the one to act on.
+        let decision = Retrieval::decide(VectorStore::Unreachable, 0, DEFAULT_DENYLIST_LIMIT);
+        let Retrieval::Degraded(reason) = decision else { panic!("must degrade") };
+        assert_eq!(reason.cause(), Cause::VectorStoreUnreachable);
+    }
+
+    #[test]
+    fn a_depleted_store_outranks_denylist_pressure() {
+        // Repairing invalidation does nothing for a collection that is empty, so the empty
+        // collection is the sentence to lead with.
+        let store = VectorStore::Depleted { expected_chunks: 100, observed_chunks: 1 };
+        let decision = Retrieval::decide(store, 10_001, DEFAULT_DENYLIST_LIMIT);
+        let Retrieval::Degraded(reason) = decision else { panic!("must degrade") };
+        assert_eq!(
+            reason.cause(),
+            Cause::IndexDepleted { expected_chunks: 100, observed_chunks: 1 },
+            "with the index missing, the denylist size is a true fact that fixes nothing"
+        );
+    }
+
     /// Latency cannot be expressed as a degradation trigger, and that is asserted as a type
     /// property because the dangerous version of this bug is not a wrong branch — it is somebody
     /// adding `VectorStore::Slow` in six months because a dashboard asked for it. This match is
-    /// exhaustive over the enum, so a third variant does not compile until whoever added it has
+    /// exhaustive over the enum, so a fourth variant does not compile until whoever added it has
     /// read the module documentation and decided what it means here.
+    ///
+    /// `Depleted` arrived as the third and is what that forcing function is for: it did not
+    /// compile until this test was revisited, which is where the "is it a state of the store or a
+    /// measurement of a request?" question got asked.
     #[test]
-    fn the_only_states_are_available_and_unreachable() {
-        for store in [VectorStore::Available, VectorStore::Unreachable] {
+    fn every_store_state_is_a_state_of_the_store_and_none_of_them_is_latency() {
+        let states = [
+            VectorStore::Available,
+            VectorStore::Unreachable,
+            VectorStore::Depleted { expected_chunks: 10, observed_chunks: 0 },
+        ];
+        for store in states {
             let degrades = match store {
                 VectorStore::Available => false,
-                VectorStore::Unreachable => true,
+                VectorStore::Unreachable | VectorStore::Depleted { .. } => true,
             };
             assert_eq!(
                 Retrieval::decide(store, 0, DEFAULT_DENYLIST_LIMIT) != Retrieval::Complete,

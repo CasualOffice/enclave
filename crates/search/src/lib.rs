@@ -21,6 +21,12 @@
 //! is a worse recall guarantee, never a worse authorization guarantee — is enforced by that shape
 //! rather than by a review comment.
 //!
+//! [`health`] is the signal that a store which is *up* can still be *wrong*. Reachability catches
+//! loud failures; a collection recreated empty answers every probe and returns almost nothing, with
+//! `degraded: false` on the response. It is per tenant, taken in a background loop, and it has no
+//! per-file form — see its documentation for why a "is this file's index current?" predicate is the
+//! one function this crate must never grow.
+//!
 //! [`vector`] and [`milvus`] are the real candidate generator, and they arrive last for the same
 //! reason: the guarantee was built first, against a fake, and the real index has to fit the shape
 //! the fake already proved. It does, literally — [`milvus::MilvusIndex`] hands back the same
@@ -38,6 +44,7 @@
 pub mod degraded;
 pub mod denylist;
 pub mod error;
+pub mod health;
 pub mod lexical;
 pub mod milvus;
 pub mod postfilter;
@@ -46,8 +53,13 @@ pub mod vector;
 pub use degraded::{
     Cause, DegradedReason, Retrieval, SearchResults, VectorStore, DEFAULT_DENYLIST_LIMIT,
 };
-pub use denylist::{lift_expired, suppress, suppressed};
+pub use denylist::{
+    catch_up, confirm_indexed, lift_expired, suppress, suppressed, CatchUp, SuppressionSeq,
+};
 pub use error::SearchError;
+pub use health::{
+    CoverageFloor, Expected, IndexCensus, IndexHealth, Unknown, DEFAULT_COVERAGE_FLOOR,
+};
 pub use lexical::LexicalCandidates;
 pub use milvus::{MilvusConfig, MilvusIndex};
 pub use postfilter::{Candidate, Confirmed, DropCounts, PostFilter};

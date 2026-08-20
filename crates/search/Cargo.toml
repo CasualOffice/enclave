@@ -33,6 +33,12 @@ uuid      = { workspace = true }
 [dev-dependencies]
 enclave-authorization = { workspace = true }
 enclave-testing       = { workspace = true }
+# `tests/lexical_content.rs` stores its chunk text through the writer that ships
+# (`enclave_indexing::write_chunks`) rather than through hand-written SQL. The two halves of
+# `ENC-515` are a table written by one crate and read by another, and the interesting failure is
+# them disagreeing about it — which a test that spells the INSERT itself cannot see. A dev edge
+# only: nothing in this crate's library half knows indexing exists.
+enclave-indexing      = { workspace = true }
 async-trait           = { workspace = true }
 tokio                 = { workspace = true, features = ["rt-multi-thread", "macros"] }
 

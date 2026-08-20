@@ -41,9 +41,11 @@
 //! is the side to err on.
 //!
 //! It also cannot see a collection that exists and is **empty or wrong** — a botched rebuild, a
-//! tenant that was never indexed. `crate::degraded` already names that as the gap this whole
-//! trigger has and says what closes it: `index_manifests` counting `READY` files against what the
-//! store holds. Nothing here changes that, and nothing here should be read as covering it.
+//! tenant that was never indexed. That is not this probe's job and it must not become it: a
+//! `has_collection` answers a question about the server, and asking it to answer a question about
+//! the contents would put a per-tenant aggregate in front of every request. The separate signal is
+//! [`IndexCensus`], implemented below and compared against `index_manifests` by `crate::health` in
+//! a background loop.
 //!
 //! There is no circuit breaker in front of this yet, so the probe reconnects inline and every
 //! request during an outage pays `connect_timeout` once. Keep that timeout short. The write lock
@@ -64,6 +66,7 @@ use tokio::sync::RwLock;
 
 use crate::degraded::VectorStore;
 use crate::error::SearchError;
+use crate::health::IndexCensus;
 use crate::postfilter::Candidate;
 use crate::vector::{field, VectorIndex, VectorQuery, COLLECTION};
 
@@ -413,6 +416,62 @@ impl VectorIndex for MilvusIndex {
             }
         }
     }
+}
+
+#[async_trait]
+impl IndexCensus for MilvusIndex {
+    /// Counts this tenant's chunks with a server-side `count(*)`.
+    ///
+    /// Server-side because the alternative — paging entities back to count them — turns a health
+    /// probe into a scan of the collection, and the probe would then be the most expensive thing
+    /// the process does. `crate::health` calls this on an interval, per tenant, and never inside a
+    /// request.
+    ///
+    /// The expression constrains the partition key, so the count is of one tenant's partition and
+    /// not of the collection. That is not an isolation control — nothing here is, see
+    /// [`crate::vector`] — but it is the difference between a signal and a number: a census that
+    /// counted every tenant's chunks would report a healthy total for a tenant whose own chunks are
+    /// all gone, which is precisely the failure this exists to catch.
+    ///
+    /// Read at the configured consistency, which is [`ConsistencyLevel::Bounded`] in production. A
+    /// count that lags a few seconds behind the newest inserts cannot move a signal whose threshold
+    /// is half the collection.
+    async fn chunks(&self, tenant: enclave_core::TenantId) -> Result<u64, SearchError> {
+        let client = self
+            .session()
+            .await
+            .ok_or(SearchError::VectorIndex { operation: "connect", retryable: true })?;
+
+        let (filter, templates) = census_filter(tenant);
+        let request = sdk::request::dql::QueryRequest::builder()
+            .collection_name(self.config.collection.clone())
+            .filter(filter)
+            .filter_templates(templates)
+            .output_fields([COUNT_STAR])
+            .consistency_level(self.config.consistency)
+            .build()
+            .map_err(|_| invalid_request("count"))?;
+
+        let response = client.query(request).await.map_err(|error| failed("count", &error))?;
+        Ok(response.results().get_row_count())
+    }
+}
+
+/// The aggregate output field Milvus recognises. Not a field on the collection, which is why it is
+/// not in [`field`].
+const COUNT_STAR: &str = "count(*)";
+
+/// The census expression: one tenant's partition, and nothing else.
+///
+/// Separate from [`build_filter`] rather than sharing it, because the two answer different
+/// questions and coupling them would make a narrowing added for retrieval quietly narrow the health
+/// signal too — a census that skipped a library the caller cannot see would report that library's
+/// chunks as missing.
+fn census_filter(tenant: enclave_core::TenantId) -> (String, HashMap<String, serde_json::Value>) {
+    let filter = format!("{} == {{tenant}}", field::TENANT_ID);
+    let templates =
+        HashMap::from([("tenant".to_owned(), serde_json::Value::from(tenant.to_string()))]);
+    (filter, templates)
 }
 
 /// Builds the filter expression and its template values.
@@ -832,6 +891,30 @@ mod tests {
         }
         assert!(indexed.contains(&field::DENSE_VECTOR));
         assert!(indexed.contains(&field::SPARSE_VECTOR));
+    }
+
+    /// The census counts *one tenant's* chunks, and the clause that makes that true is one line.
+    ///
+    /// Without it the count is of the whole collection, and a tenant whose partition was wiped
+    /// reads as fully stocked on the strength of everybody else's data — the exact failure
+    /// `crate::health` exists to catch, restored by deleting a clause. The live proof is
+    /// `tests/milvus.rs::a_census_counts_only_the_tenant_it_was_asked_about`; this is the cheap
+    /// echo of it that runs on a machine with no Milvus.
+    #[test]
+    fn the_census_expression_constrains_the_tenant_and_asks_for_a_count() {
+        let tenant = TenantId::new_v7();
+        let (filter, templates) = census_filter(tenant);
+        assert_eq!(filter, "tenant_id == {tenant}");
+        assert_eq!(
+            templates.get("tenant"),
+            Some(&serde_json::Value::from(tenant.to_string())),
+            "the tenant was interpolated somewhere other than the template binding"
+        );
+        assert_eq!(COUNT_STAR, "count(*)", "the aggregate the SDK recognises, spelled exactly");
+        assert!(
+            !filter.contains(field::ACL_TOKENS),
+            "a health probe has no business naming a permission field"
+        );
     }
 
     #[test]

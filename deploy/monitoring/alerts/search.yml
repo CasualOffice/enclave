@@ -208,6 +208,100 @@ groups:
             fire, and a tenant can be sitting in degraded search with nothing to say so.
           runbook: docs/11-OPERATIONS.md#57-search-metrics-quiet-or-the-drop-ratio-at-zero
 
+  - name: enclave-search-index-coverage
+    interval: 30s
+    rules:
+      # What these rules are about, in one line: a vector store that is **up and wrong**.
+      #
+      # Every other signal in this file describes a store that is answering with the wrong things.
+      # This group describes one that is answering with nothing — a collection dropped and
+      # recreated, a restore that missed a volume, a rebuild that stopped halfway. Reachability
+      # cannot see it: the server is there, `has_collection` succeeds, the circuit stays closed. The
+      # search returns two hits out of forty thousand documents and says it is complete.
+      #
+      # crates/search/src/health.rs establishes the reading in a background probe, per tenant, and
+      # crates/search/src/degraded.rs turns it into `degraded: true`. The floor is scraped, never
+      # written here — same reason as the denylist limit, see the header.
+      - record: enclave:search_index_expected_chunks:max_by_tenant
+        expr: max by (tenant_id) (enclave_search_index_expected_chunks)
+
+      - record: enclave:search_index_observed_chunks:max_by_tenant
+        expr: max by (tenant_id) (enclave_search_index_observed_chunks)
+
+      # --- the tenant is already degraded -------------------------------------------------------
+      #
+      # Worded as a state the tenant is in rather than one they might enter, for the reason the
+      # denylist overflow alert is: an operator who reads it as "getting close" will not tell the
+      # customer, and the customer will conclude their documents were deleted
+      # (plans/M3-DISCOVERY.md D25).
+      #
+      # `for: 10m` rather than 5: a tenant mid-rebuild legitimately crosses this floor on the way
+      # back up, and a page for a rebuild that is working is a page people learn to ignore.
+      - alert: SearchIndexDepletedAndTenantIsDegraded
+        expr: >-
+          enclave:search_index_observed_chunks:max_by_tenant * 100
+            < enclave:search_index_expected_chunks:max_by_tenant
+              * max by (tenant_id) (enclave_search_index_coverage_floor_percent)
+        for: 10m
+        labels:
+          severity: page
+          service: search
+        annotations:
+          summary: Tenant {{ $labels.tenant_id }} is in degraded search — its index is missing
+          description: >-
+            The vector store holds far fewer chunks for this tenant than its READY manifests say it
+            should, so semantic search has already fallen back to lexical over PostgreSQL for them
+            and responses carry `degraded: true`. This is absence, not drift: the collection was
+            recreated, a restore missed it, or a rebuild stopped part-way. Results stay correct and
+            still post-filtered; recall is a fraction of normal. Compare
+            `enclave_search_index_observed_chunks` against `enclave_search_index_expected_chunks`
+            for the size of the hole, then rebuild.
+          runbook: docs/11-OPERATIONS.md#51-index-rebuild
+
+      # --- the signal is blind ------------------------------------------------------------------
+      #
+      # The alert that matters most and reads as the least urgent.
+      #
+      # `index_manifests.chunk_count` defaults to 0. A pipeline that never populates it produces
+      # tenants that expect nothing, can never be found depleted, and look exactly like a fleet of
+      # healthy indexes. The alert above then cannot fire — not "does not", *cannot* — and the only
+      # evidence is this flag.
+      - alert: SearchIndexCoverageUnknown
+        expr: max by (tenant_id) (enclave_search_index_coverage_unknown) == 1
+        for: 2h
+        labels:
+          severity: ticket
+          service: search
+        annotations:
+          summary: Index coverage cannot be established for tenant {{ $labels.tenant_id }}
+          description: >-
+            The depletion signal is blind for this tenant. Either it has nothing indexed — the
+            ordinary state of a new tenant, and the benign reading — or its READY manifests record
+            no chunk counts, in which case SearchIndexDepletedAndTenantIsDegraded cannot fire for it
+            and an empty collection would go unnoticed. Check whether the tenant has READY manifests
+            with `chunk_count = 0`; if it does, the indexer is not recording what it wrote.
+          runbook: docs/11-OPERATIONS.md#51-index-rebuild
+
+      # --- nobody is probing --------------------------------------------------------------------
+      #
+      # The coverage gauges are set by the health probe. If it is not running, both rules above are
+      # structurally incapable of firing and the dashboard is blank rather than reassuring — the
+      # same hole SearchDenylistSizeUnreported covers for the denylist.
+      - alert: SearchIndexCoverageUnreported
+        expr: absent(enclave_search_index_observed_chunks)
+        for: 1h
+        labels:
+          severity: ticket
+          service: search
+        annotations:
+          summary: Index coverage is not being probed by any process
+          description: >-
+            No process has published `enclave_search_index_observed_chunks` for an hour, so nothing
+            is comparing the vector store's contents against what PostgreSQL says it holds. A tenant
+            whose index has been wiped would answer searches confidently and completely, with
+            nothing to say so.
+          runbook: docs/11-OPERATIONS.md#57-search-metrics-quiet-or-the-drop-ratio-at-zero
+
   - name: enclave-metrics-self
     interval: 30s
     rules:

@@ -403,14 +403,104 @@ pub mod search {
         DENYLIST_LIMIT.set(&tenant, limit);
     }
 
-    /// Stops reporting a tenant's denylist pressure.
+    /// Chunks a tenant's `READY` manifests say the vector store should hold.
+    ///
+    /// PostgreSQL's half of the index-coverage signal (`crates/search/src/health.rs`). Published
+    /// beside the observed count rather than as a ratio, for the same reason the drop ratio is not
+    /// a gauge: a ratio recorded here would be a third implementation of a division, and it would
+    /// be the one the dashboard reads.
+    pub static INDEX_EXPECTED_CHUNKS: GaugeVec = GaugeVec::new(
+        "enclave_search_index_expected_chunks",
+        "Chunks across a tenant's READY index manifests — what PostgreSQL says the vector store \
+         holds.",
+        "tenant_id",
+        DENYLIST_SERIES_CAPACITY,
+    );
+
+    /// Chunks the vector store reports holding for a tenant.
+    pub static INDEX_OBSERVED_CHUNKS: GaugeVec = GaugeVec::new(
+        "enclave_search_index_observed_chunks",
+        "Chunks the vector store reports for a tenant. Far below the expected count means the \
+         index is absent rather than stale.",
+        "tenant_id",
+        DENYLIST_SERIES_CAPACITY,
+    );
+
+    /// The share of the expectation a tenant's store must hold to avoid degraded mode, in percent.
+    ///
+    /// Scraped rather than written into a rule file, for the reason [`DENYLIST_LIMIT`] gives: a
+    /// threshold duplicated in YAML is a threshold that drifts, always in the direction of an alert
+    /// that stopped firing.
+    pub static INDEX_COVERAGE_FLOOR_PERCENT: GaugeVec = GaugeVec::new(
+        "enclave_search_index_coverage_floor_percent",
+        "The percentage of the expected chunk count below which a tenant's vector store is treated \
+         as depleted.",
+        "tenant_id",
+        DENYLIST_SERIES_CAPACITY,
+    );
+
+    /// `1` when coverage could not be established for a tenant, `0` when it could.
+    ///
+    /// The metric that says *this signal is blind*, and the reason it exists is that its blindness
+    /// is invisible otherwise: a deployment whose indexer never records `chunk_count` expects zero
+    /// chunks for every tenant, can never find one depleted, and looks exactly like a fleet of
+    /// perfectly healthy indexes. An unknown reading is not an error and not a degradation — it is
+    /// an operator's problem, and this is how it reaches them.
+    pub static INDEX_COVERAGE_UNKNOWN: GaugeVec = GaugeVec::new(
+        "enclave_search_index_coverage_unknown",
+        "1 when a tenant's index coverage could not be established — the depletion signal is blind \
+         for that tenant.",
+        "tenant_id",
+        DENYLIST_SERIES_CAPACITY,
+    );
+
+    /// One coverage reading, as levels.
+    ///
+    /// Not `enclave_search::IndexHealth`, for the reason [`PostFilterPass`] gives: `observability`
+    /// sits at the bottom of the dependency graph and naming a type from `search` would invert it.
+    /// This struct transports three numbers and derives nothing.
+    #[derive(Debug, Clone, Copy)]
+    pub struct IndexCoverage {
+        /// Chunks the tenant's `READY` manifests claim, or `None` when PostgreSQL asserted nothing
+        /// usable — which is the unknown case, and is published as such rather than as a zero.
+        pub expected_chunks: Option<u64>,
+        /// Chunks the store reported.
+        pub observed_chunks: u64,
+        /// The floor the two were compared against, in percent.
+        pub floor_percent: u32,
+    }
+
+    impl IndexCoverage {
+        /// Publishes the reading for `tenant`.
+        ///
+        /// All four series in one call so no caller can report a count without the threshold it is
+        /// judged against, or an expectation without the flag saying whether it means anything. An
+        /// unknown reading publishes the observed count and `unknown = 1`, and leaves the expected
+        /// gauge at zero — a tenant PostgreSQL asserts nothing about genuinely expects nothing, and
+        /// the flag is what stops that being read as health.
+        pub fn record(self, tenant: TenantId) {
+            let tenant = tenant.to_string();
+            INDEX_EXPECTED_CHUNKS.set(&tenant, self.expected_chunks.unwrap_or(0));
+            INDEX_OBSERVED_CHUNKS.set(&tenant, self.observed_chunks);
+            INDEX_COVERAGE_FLOOR_PERCENT.set(&tenant, u64::from(self.floor_percent));
+            INDEX_COVERAGE_UNKNOWN.set(&tenant, u64::from(self.expected_chunks.is_none()));
+        }
+    }
+
+    /// Stops reporting a tenant's denylist pressure and index coverage.
     ///
     /// For tenant deletion (`docs/11-OPERATIONS.md §12`): a gauge left behind reports a backlog for
-    /// a tenant that no longer has one, and holds a slot against the cardinality cap forever.
+    /// a tenant that no longer has one, and holds a slot against the cardinality cap forever. A
+    /// coverage gauge left behind is worse than idle — a deleted tenant's manifests are gone and
+    /// its chunks may not be, so the reading it freezes at is one nobody can act on.
     pub fn forget_tenant(tenant: TenantId) {
         let tenant = tenant.to_string();
         DENYLIST_ENTRIES.forget(&tenant);
         DENYLIST_LIMIT.forget(&tenant);
+        INDEX_EXPECTED_CHUNKS.forget(&tenant);
+        INDEX_OBSERVED_CHUNKS.forget(&tenant);
+        INDEX_COVERAGE_FLOOR_PERCENT.forget(&tenant);
+        INDEX_COVERAGE_UNKNOWN.forget(&tenant);
     }
 }
 
@@ -454,6 +544,10 @@ pub const ALL: &[Instrument] = &[
     Instrument::Counter(&search::EXCERPTS_WITHHELD),
     Instrument::Gauge(&search::DENYLIST_ENTRIES),
     Instrument::Gauge(&search::DENYLIST_LIMIT),
+    Instrument::Gauge(&search::INDEX_EXPECTED_CHUNKS),
+    Instrument::Gauge(&search::INDEX_OBSERVED_CHUNKS),
+    Instrument::Gauge(&search::INDEX_COVERAGE_FLOOR_PERCENT),
+    Instrument::Gauge(&search::INDEX_COVERAGE_UNKNOWN),
     Instrument::Counter(&meta::SERIES_DROPPED),
 ];
 
@@ -696,6 +790,44 @@ mod tests {
         search::forget_tenant(tenant);
         assert_eq!(DENYLIST_ENTRIES.get(&tenant.to_string()), None);
         assert_eq!(DENYLIST_LIMIT.get(&tenant.to_string()), None);
+    }
+
+    /// An unknown coverage reading publishes the flag that says so, and does not publish an
+    /// expectation it does not have.
+    ///
+    /// The failure mode this test is about is a quiet one: if `expected_chunks: None` were
+    /// published as a zero with no flag, a tenant whose signal is blind would be indistinguishable
+    /// on the dashboard from a tenant whose index is perfect, and the alert wired to the blindness
+    /// could not exist.
+    #[test]
+    fn an_unknown_coverage_reading_is_flagged_rather_than_published_as_a_zero() {
+        let tenant = TenantId::new_v7();
+        search::IndexCoverage { expected_chunks: None, observed_chunks: 900, floor_percent: 50 }
+            .record(tenant);
+
+        let key = tenant.to_string();
+        assert_eq!(search::INDEX_COVERAGE_UNKNOWN.get(&key), Some(1));
+        assert_eq!(search::INDEX_EXPECTED_CHUNKS.get(&key), Some(0));
+        assert_eq!(
+            search::INDEX_OBSERVED_CHUNKS.get(&key),
+            Some(900),
+            "an orphaned tenant's chunks are still worth reporting"
+        );
+        assert_eq!(search::INDEX_COVERAGE_FLOOR_PERCENT.get(&key), Some(50));
+
+        // And a known reading clears the flag rather than leaving it stuck at the last unknown.
+        search::IndexCoverage {
+            expected_chunks: Some(1_000),
+            observed_chunks: 900,
+            floor_percent: 50,
+        }
+        .record(tenant);
+        assert_eq!(search::INDEX_COVERAGE_UNKNOWN.get(&key), Some(0));
+        assert_eq!(search::INDEX_EXPECTED_CHUNKS.get(&key), Some(1_000));
+
+        search::forget_tenant(tenant);
+        assert_eq!(search::INDEX_OBSERVED_CHUNKS.get(&key), None);
+        assert_eq!(search::INDEX_COVERAGE_UNKNOWN.get(&key), None);
     }
 
     #[test]

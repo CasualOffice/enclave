@@ -1,6 +1,6 @@
 # 04 — Data Model
 
-> **Status:** Draft · **Version:** 1.0 · **Owner:** Platform Engineering · **Last updated:** 2026-08-18
+> **Status:** Draft · **Version:** 1.2 · **Owner:** Platform Engineering · **Last updated:** 2026-08-21
 > **Authoritative for:** all PostgreSQL DDL, tenant isolation, quotas. No other document defines schema.
 
 ## 1. Conventions
@@ -32,7 +32,7 @@
 | Security | `classifications`, `security_facts`, `dlp_policies`, `dlp_incidents`, `conditional_access_policies`, `network_zones`, `trusted_proxies`, `barrier_segments`, `barrier_assignments` |
 | Compliance | `retention_policies`, `retention_assignments`, `legal_holds`, `legal_hold_items`, `records` |
 | Audit | `audit_events`, `config_versions` |
-| Search | `index_manifests`, `retrieval_denylist` |
+| Search | `index_manifests`, `retrieval_denylist`, `chunk_text` |
 | Delivery | `renditions`, `sync_devices`, `sync_cursors`, `editor_sessions`, `notifications` |
 | Platform | `events_outbox`, `idempotency_keys`, `quotas`, `quota_usage`, `jobs` |
 
@@ -1071,10 +1071,78 @@ CREATE TABLE retrieval_denylist (
     file_id    UUID NOT NULL,
     reason     TEXT NOT NULL,
     added_at   TIMESTAMPTZ NOT NULL,
-    clears_at  TIMESTAMPTZ,
-    PRIMARY KEY (tenant_id, file_id)
+    clears_at  TIMESTAMPTZ,                          -- backstop deadline, asserted by the writer
+    suppression_seq BIGINT NOT NULL DEFAULT 1,       -- bumped by every suppression of this file
+    indexed_seq     BIGINT,                          -- generation a confirmed store write covered
+    PRIMARY KEY (tenant_id, file_id),
+    CONSTRAINT retrieval_denylist_indexed_seq_bounded
+        CHECK (indexed_seq IS NULL OR indexed_seq <= suppression_seq)
 );
+```
 
+**`clears_at` is a deadline, not a freshness signal.** It was once documented as "when the
+suppression may be lifted, once the index has caught up", and nothing in the schema could answer the
+second half: a denylist row referenced no index write, `index_manifests.acl_epoch` is about a
+*rewrite* of ACL tokens rather than a *removal* from the vector store, a suppressed file may have no
+manifest row at all (so a join reads "caught up" and "never indexed" identically), and a `NULL`
+`clears_at` is exactly the case where nobody has asserted anything.
+
+The two `seq` columns express what the join could not, in three states that stay distinct:
+
+| Reading | Meaning |
+|---|---|
+| `indexed_seq IS NULL` | **Unknown.** Nobody has asserted anything — the state of every row until an index writer reports back |
+| `indexed_seq < suppression_seq` | A store write is confirmed; a later suppression is not covered by it |
+| `indexed_seq >= suppression_seq` | A confirmed store write covers the current suppression |
+
+A counter rather than a timestamp because `added_at` comes from the caller's clock and a
+confirmation comes from another process's; a value read from the row and written back to it has no
+clock in it. It is an *assertion* by the writer, which PostgreSQL cannot verify against Milvus —
+safe to store precisely because nothing depends on it: lifting is `clears_at` alone, and the search
+read consults neither column (`07-SEARCH-INDEXING.md §6.4`).
+
+```sql
+CREATE TABLE chunk_text (
+    tenant_id       UUID NOT NULL,
+    chunk_id        UUID NOT NULL,                   -- uuid_v5(version, chunker || ordinal), §07 2
+    file_id         UUID NOT NULL,
+    version_id      UUID NOT NULL,                   -- which version this text was extracted from
+    ordinal         BIGINT NOT NULL CHECK (ordinal >= 0),
+    chunker_version TEXT NOT NULL,
+    text            TEXT NOT NULL,
+    written_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, chunk_id)
+);
+CREATE INDEX idx_chunk_text_fts ON chunk_text
+    USING GIN (to_tsvector('simple', regexp_replace(text, '[^[:alnum:]]+', ' ', 'g')));
+CREATE INDEX idx_chunk_text_file    ON chunk_text (tenant_id, file_id);
+CREATE INDEX idx_chunk_text_version ON chunk_text (tenant_id, version_id);
+```
+
+**Extracted text lives in PostgreSQL as well as in Milvus, and the duplication is the point.**
+Degraded search (`07-SEARCH-INDEXING.md §6.4`) runs when the vector store cannot be reached, so the
+copy it matches on cannot be the one in the vector store. Without this table the lexical fallback
+searched file names and scalar metadata only, and a contract whose body said *indemnity* was
+invisible unless that word was in its filename.
+
+It is a **derived store**: both foreign keys cascade, deleting every row costs recall until the next
+reindex and costs nothing else, and a purge reaching it is required rather than optional
+(`03-LLD.md §18`). It is not an authorization surface — it carries no ACL tokens, no classification
+rank and no barrier tokens, because retrieval over it produces candidates that the post-filter
+confirms against `acl_entries` (`§6.2`).
+
+A file's rows are replaced wholesale by the indexing writer, in the statement that writes them:
+chunk ids are deterministic, so a retry updates the same rows, and every chunk of the file that the
+run did not produce — the whole of the previous version's text — is deleted in the same statement.
+Half of that operation leaves wording removed in a new version still matchable through the file, with
+every permission check passing.
+
+The GIN expression must stay character-for-character identical to the query in
+`crates/search/src/lexical.rs`: an expression index is used only when the expressions match exactly,
+and a divergence produces a sequential scan over the largest table in the schema rather than an
+error.
+
+```sql
 CREATE TABLE renditions (
     tenant_id   UUID NOT NULL,
     version_id  UUID NOT NULL,
