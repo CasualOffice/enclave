@@ -1,6 +1,6 @@
 # 12 — Testing & Quality Gates
 
-> **Status:** Draft · **Version:** 1.4 · **Owner:** Engineering · **Last updated:** 2026-08-21
+> **Status:** Draft · **Version:** 1.5 · **Owner:** Engineering · **Last updated:** 2026-08-21
 > **Authoritative for:** test strategy, the security leakage matrix, CI gates, release criteria.
 
 ## 1. Philosophy
@@ -15,6 +15,39 @@ forever. They are not a one-time audit; they are the executable form of the acce
 little if preview, search, sync, MCP and the editor each re-implement the check. The chain is
 implemented once (`03-LLD.md §12`), and the matrix in `§4` asserts that every surface routes through
 it.
+
+### 1.1 A test is not believed until it has been watched to fail
+
+Write the test, then **break the thing it tests on purpose** and confirm it fails *by name*. Restore,
+and confirm it passes. A test that has never failed is a claim, not a check.
+
+This is not a counsel of perfection — it has caught roughly eight of this project's own tests being
+vacuous, and each one had been read and reviewed first:
+
+- a concurrency test passed 3/3 against a naive implementation, because the pool was capped at two
+  connections and the race could not occur;
+- `S3`/`S4` stayed green with the denylist deleted, because a revocation also removes the ACL and the
+  post-filter refused the file anyway — so the tests proved a different mechanism than they named;
+- a `D24` test passed with the empty-document guard removed, because the chunker drops whitespace
+  segments and a *different* guard caught it — the comment claimed the wrong one was load-bearing;
+- an image-bomb test passed twice for two different wrong reasons: first a bad CRC made the file
+  unreadable, then the decoder's own allocation limit refused it before our check was reached.
+
+**The recurring shape: an assertion about an absence passes for free.** `excerpt == None`,
+"no cross-tenant row", "no `set_status` in this module", "these bytes were never read" — all of them
+hold trivially against an implementation that does nothing at all. Two habits close it:
+
+1. **Include a positive control.** Assert that the thing *does* appear in the case where it should.
+   Without a third document that receives its excerpt, every assertion in an excerpt test passes
+   against code that returns `None` for everything.
+2. **Say which mechanism the test proves.** When a deliberate violation does *not* fail a test, that
+   is a finding: the test is proving something other than what its name says. Record which control
+   actually holds the property rather than deleting the test or quietly rewording it.
+
+A source-scanning test — one that asserts some string does *not* appear in a file — deserves special
+care, because the needle it searches for appears in its own source. Two such tests here failed
+against themselves on first run. Assemble the needle at run time, exactly as `CLAUDE.md` rule 11
+prescribes for PEM banners.
 
 ## 2. Test pyramid
 
