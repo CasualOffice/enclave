@@ -209,10 +209,42 @@ pub(crate) fn run() -> Result<()> {
 
     let report = analyze(&sources)?;
 
+    // Checked before the enforce rule, because the answer for `/metrics` is not "allowlist it".
+    if let Some(route) = telemetry_route(&report) {
+        println!(
+            "::error title=/metrics does not belong on the policy-routed API::{}",
+            describe(route)
+        );
+        anyhow::bail!(
+            "policy-routing: {API_SRC} registers a telemetry route. The Prometheus exposition \
+             carries `tenant_id` labels — which tenants exist and how much each one searches — so \
+             it fails the bar the `ready` exemption states for an unauthenticated endpoint: it \
+             must never include a detail that identifies a tenant. Allowlisting it would publish \
+             that to anyone who can reach the API port, and putting it behind the chain would \
+             require Prometheus to hold a tenant it cannot honestly claim. It belongs on the \
+             separate listener `serve_metrics` in crates/api/src/main.rs, bound to loopback by \
+             default (ENC-521)."
+        );
+    }
+
+    // The metrics listener is a different router on a different socket, so the enforce rule does
+    // not apply to it: there is no policy chain to reach, and no tenant to reach it for. It is
+    // still *listed* below, because a route excluded silently is a route nobody reviews.
+    let separate: Vec<&Route> =
+        report.routes.iter().filter(|route| route.file == METRICS_LISTENER).collect();
+    let separate_count = separate.len();
+
     println!("policy-routing — every Axum route handler must reach PolicyEngine::enforce");
     println!("  rule: CLAUDE.md rule 1, docs/12-TESTING.md §5, plans/M0-FOUNDATIONS.md ENC-110");
     println!("  scanned: {} file(s) under {API_SRC}", sources.len());
     print_allowlist(&report);
+    if separate_count > 0 {
+        println!();
+        println!(
+            "  {separate_count} route(s) in {METRICS_LISTENER} are on the separate metrics \
+             listener, not this router, and are exempt from the enforce rule."
+        );
+    }
 
     if report.routes.is_empty() {
         println!();
@@ -226,7 +258,9 @@ pub(crate) fn run() -> Result<()> {
     println!();
     println!("{} route registration(s):", report.routes.len());
     for route in &report.routes {
-        let verdict = if report.violations.iter().any(|v| v.route == *route) {
+        let verdict = if route.file == METRICS_LISTENER {
+            "separate listener"
+        } else if report.violations.iter().any(|v| v.route == *route) {
             "FAIL"
         } else if route.handler.as_deref().is_some_and(|h| report.exempted.contains(h)) {
             "exempt"
@@ -255,6 +289,31 @@ pub(crate) fn run() -> Result<()> {
         report.violations.len()
     );
 }
+
+/// Finds a route that would serve telemetry from the policy-routed API, if one has appeared.
+///
+/// Separate from the enforce rule because it is not the same question. That rule asks whether a
+/// handler reaches `PolicyEngine::enforce`, and its escape hatch is the allowlist. This asks
+/// whether a path should be on this router at all, and for the metrics exposition the answer is no
+/// regardless of what it does or does not enforce — so it must not be expressible as an exemption.
+fn telemetry_route(report: &Report) -> Option<&Route> {
+    report.routes.iter().find(|route| {
+        let telemetry = route
+            .path
+            .as_deref()
+            .is_some_and(|path| path == "/metrics" || path.ends_with("/metrics"));
+        telemetry && route.file != METRICS_LISTENER
+    })
+}
+
+/// The one file allowed to register `/metrics`: the separate listener, which is not this router.
+///
+/// A path rather than a handler name, unlike [`ALLOWLIST`], because the question is *which router*
+/// a route joins and the handler cannot answer that. Confining it to a file whose whole contents
+/// are the metrics listener is the closest a source lint gets to "not on the API router" — the
+/// residual gap is that someone could build a second router in this file, which would be visible
+/// in review of a file that exists for one purpose.
+const METRICS_LISTENER: &str = "crates/api/src/metrics_listener.rs";
 
 /// Emit a GitHub error annotation so the failure lands on the offending line in the diff view.
 fn emit_annotation(violation: &Violation) {
@@ -336,6 +395,13 @@ pub(crate) fn analyze(sources: &[(String, String)]) -> Result<Report> {
     let mut report = Report { routes, ..Report::default() };
 
     for route in &report.routes {
+        // The metrics listener is a different router on a different socket. There is no policy
+        // chain for its handler to reach and no tenant to reach it for, so the enforce rule does
+        // not apply — skipped here rather than in `run` so that this function is the single answer
+        // and a caller cannot get a different verdict by asking directly.
+        if route.file == METRICS_LISTENER {
+            continue;
+        }
         let Some(handler) = route.handler.clone() else {
             report
                 .violations

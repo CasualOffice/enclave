@@ -189,6 +189,22 @@ futures      = "0.3"
 ipnetwork    = { version = "0.21", features = ["serde"] }
 url          = "2"
 
+# vector store
+#
+# The official SDK, and the reason it is the official one matters here: the wire protocol is
+# protobuf generated from Milvus's own `.proto` files, so the alternative to this crate is
+# maintaining a generated gRPC client against a moving schema.
+#
+# Licence note, because `cargo deny check licenses` reports it as a warning rather than a clean
+# pass. The crate declares no SPDX `license` field — it uses `license-file = "LICENSE"`, and that
+# file is the Apache-2.0 text, which cargo-deny matches and accepts against this workspace's
+# allowlist. So it *is* Apache-2.0 and no exception was needed, but the metadata says so only by
+# textual match rather than by declaration, and a `no-license-field` warning is what that looks
+# like. If askalono's match ever drops below the 0.93 confidence threshold in deny.toml this
+# becomes a build failure with no code change, so the warning is worth leaving visible rather than
+# suppressing.
+milvus-sdk-rust = "2.6.0"
+
 # dev
 trybuild     = "1"
 

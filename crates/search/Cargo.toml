@@ -11,10 +11,22 @@ authors.workspace      = true
 [dependencies]
 enclave-core = { workspace = true }
 enclave-db   = { workspace = true }
+# The post-filter publishes its drop counts where it computes them (`postfilter.rs`), so the drop
+# ratio has exactly one producer. `observability` depends only on `core`, so this adds no cycle.
+enclave-observability = { workspace = true }
 
 anyhow    = { workspace = true }
+async-trait = { workspace = true }
 chrono    = { workspace = true }
+milvus-sdk-rust = { workspace = true }
+# Filter values are bound as templates rather than formatted into the expression
+# (`src/milvus.rs`), and the SDK takes those bindings as JSON.
+serde_json = { workspace = true }
 sqlx      = { workspace = true }
+# `sync` for the lock guarding the lazily-established Milvus session. A `std` lock cannot be held
+# across the `.await` that reconnects, and dropping it around the connect is what lets every
+# request in an outage start its own attempt.
+tokio     = { workspace = true, features = ["sync"] }
 thiserror = { workspace = true }
 uuid      = { workspace = true }
 

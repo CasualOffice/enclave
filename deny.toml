@@ -71,6 +71,10 @@ ignore = [
     # argument above stops holding and this entry must be revisited rather than renewed.
     # Tracked as ENC-176. Revisit 2026-11-20.
     { id = "RUSTSEC-2026-0192", reason = "ab_glyph → ttf-parser; parses only our vendored font, never user input; revisit 2026-11-20 (ENC-176)" },
+    # Listed here as well as in `.cargo/audit.toml` even though `cargo deny` does not currently
+    # flag it. ENC-137 is why: a suppression that lives in one of the two configs and not the other
+    # is discovered when the other gate runs, which is in CI, on somebody else's pull request.
+    { id = "RUSTSEC-2026-0002", reason = "milvus-sdk-rust → lru 0.12.5; unsound IterMut is never constructed — the SDK's only lru user (v2/client/cache.rs) has no iter_mut; revisit 2026-11-21 (ENC-526)" },
 ]
 
 # ---------------------------------------------------------------------------

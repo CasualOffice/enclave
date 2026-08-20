@@ -9,6 +9,8 @@ from. Production manifests are not here; this directory is the developer-facing 
 | [`compose/dev.yml`](compose/dev.yml) | The local infrastructure stack |
 | [`config/enclave.example.yaml`](config/enclave.example.yaml) | Template for `enclave.yaml`, which is git-ignored |
 | `config/dev-keys/` | Development JWT signing keys, generated on first run, git-ignored, never committed |
+| [`monitoring/alerts/`](monitoring/alerts) | Prometheus alerting and recording rules |
+| [`monitoring/prometheus.yml`](monitoring/prometheus.yml) | Minimal scrape config, so the rules above are loadable rather than decorative |
 
 ## Start it
 
@@ -71,6 +73,57 @@ be able to stop every contributor from starting PostgreSQL.
 Everything Enclave puts in Redis is derived from PostgreSQL and must be reconstructible from it. A
 development instance that forgets on every restart makes an accidental dependency on cached state
 fail here, on a laptop, rather than in production during a failover.
+
+## Running the tests against this stack
+
+Tests that need live infrastructure are `#[ignore]`d, and `--include-ignored` runs them. They read
+their endpoints from the environment, and a variable that is unset is a **failure**, not a skip —
+deliberately, so that a suite believed to be running cannot quietly not be. The consequence is that
+the first local run after `compose up` fails with a message naming the variable:
+
+```sh
+export DATABASE_URL=postgres://enclave:enclave@localhost:5432/enclave
+export ENCLAVE_TEST_S3_ENDPOINT=http://localhost:9000
+export ENCLAVE_TEST_S3_ACCESS_KEY_ID=enclave
+export ENCLAVE_TEST_S3_SECRET_ACCESS_KEY=enclave-dev-secret
+
+cargo test --workspace -- --include-ignored --skip a_lost_role_creation_race
+```
+
+`--skip a_lost_role_creation_race` because that test drops cluster-wide roles to recreate the race
+it exists to prove, which breaks every other binary holding a database. CI runs it in a job with a
+server of its own.
+
+The values above match `.github/workflows/ci.yml`, which is the file to check if a test passes in CI
+and fails here. Adjust the ports if you set any `ENCLAVE_DEV_*_PORT` override.
+
+**On Apple Silicon**, the antivirus tests cannot run: `clamav/clamav` publishes an amd64 image and
+no arm64 one, so `g1_an_eicar_upload_is_quarantined_and_never_becomes_available` fails for reasons
+unrelated to the code unless you run it under emulation (`ENC-525`). CI is amd64 and runs it.
+
+## Monitoring
+
+`monitoring/alerts/search.yml` holds the search alerting rules that
+[`docs/11-OPERATIONS.md §10`](../docs/11-OPERATIONS.md) describes: post-filter drop ratio in both
+directions, retrieval denylist size against the limit the process is running with, and the
+"this signal went quiet" alerts that make an unfireable alert visible instead of reassuring. Each
+rule carries a `runbook` annotation naming the section that resolves it — `docs/11 §10` refuses to
+ship an alert without one.
+
+`/metrics` is served on a **listener of its own**, not on the API port — set `server.metrics_port`
+(the example config uses `9464`, which is what `prometheus.yml` scrapes). It is off by default and
+binds to loopback. The exposition carries `tenant_id` labels, so it must never be reachable from
+where the API is; [`docs/11-OPERATIONS.md §10.1`](../docs/11-OPERATIONS.md) has the reasoning and the
+deployment rule. If a scrape is refused, the usual cause is that `metrics_port` was left unset.
+
+Two honest gaps remain, written here rather than discovered during an incident:
+
+- **`promtool` is not in the toolchain**, so `check rules` has never been run over this file and no
+  CI job loads it. The rules parse as YAML; that is all that has been verified.
+- **`enclave-worker` has no metrics listener**, because the worker binary does not exist yet. Its
+  scrape job is kept in `prometheus.yml` so the rules load with both series present, and it will
+  show as a down target until the binary lands. That is deliberate: a missing job reads as
+  "monitored", and a down one reads as what it is.
 
 ## Registries and pinning
 

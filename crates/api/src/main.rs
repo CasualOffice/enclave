@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::Context as _;
-use enclave_api::{router, unconfigured_stages, ApiState, Delivery};
+use enclave_api::{metrics_listener, router, unconfigured_stages, ApiState, Delivery};
 use enclave_core::PolicyEngine;
 
 #[tokio::main]
@@ -78,6 +78,18 @@ async fn main() -> anyhow::Result<()> {
     let delivery = Delivery::unconfigured();
     for capability in delivery.unconfigured_capabilities() {
         tracing::warn!(capability, "delivery capability is not configured");
+    }
+
+    // The metrics listener, if one is configured, on its own socket — see `serve_metrics`.
+    if let Some(port) = config.server.metrics_port {
+        let addr = SocketAddr::new(config.server.metrics_bind, port);
+        let listener = tokio::net::TcpListener::bind(addr)
+            .await
+            .with_context(|| format!("bind metrics listener on {addr}"))?;
+        tracing::info!(%addr, "metrics listening");
+        tokio::spawn(metrics_listener::serve(listener, shutdown()));
+    } else {
+        tracing::debug!("metrics_port is unset; no metrics endpoint is served");
     }
 
     let addr = SocketAddr::new(config.server.bind, config.server.port);

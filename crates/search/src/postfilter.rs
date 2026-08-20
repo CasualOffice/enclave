@@ -53,10 +53,22 @@
 //! some way the ACL does not capture: a file whose content was purged, a document re-classified
 //! above the caller's ceiling. Dropping first is also cheaper than resolving rows that are about to
 //! be discarded.
+//!
+//! # The drop counts are published from here, and only from here
+//!
+//! `plans/M3-DISCOVERY.md §6` requires the drop ratio as a metric. [`DropCounts`] is where that
+//! number is produced, so [`confirm`](PostFilter::confirm) is where it is published — a second
+//! tally assembled anywhere else would be the copy that eventually disagrees with this one, and the
+//! disagreement would surface as a dashboard and a test that cannot both be right.
+//!
+//! Note that the *ratio* is still not computed twice. [`DropCounts::drop_ratio`] answers it in
+//! process; the recording rule in `deploy/monitoring/alerts/search.yml` answers it at query time.
+//! Both divide the same two counters, and neither is stored.
 
 use enclave_core::{
     Action, AuthorizationService, FileAction, FileId, RequestContext, ResourceRef, Result,
 };
+use enclave_observability::metrics::search::PostFilterPass;
 use sqlx::PgConnection;
 
 use crate::error::SearchError;
@@ -161,6 +173,30 @@ impl PostFilter {
         ctx: &RequestContext,
         candidates: Vec<Candidate>,
     ) -> Result<(Vec<Confirmed>, DropCounts), SearchError> {
+        let outcome = Self::resolve(conn, authorization, ctx, candidates).await;
+        if let Ok((_, counts)) = &outcome {
+            publish(*counts);
+        }
+        outcome
+    }
+
+    /// The pass itself. Split from [`PostFilter::confirm`] purely so that the metric has exactly one
+    /// publication point.
+    ///
+    /// The alternative — a `publish` call beside each `Ok` below — offers three chances to forget
+    /// one, and the one that gets forgotten is the early return taken when *everything* was
+    /// denylisted. That is a 100% drop ratio: the single pass an operator most needs to see, missing
+    /// from the metric precisely when invalidation is furthest behind.
+    ///
+    /// Nothing is published on the error path. A failed pass has no complete tally — `counts` stops
+    /// wherever the failure was — and feeding a partial one to a ratio would move the ratio for a
+    /// reason that has nothing to do with the index drifting.
+    async fn resolve(
+        conn: &mut PgConnection,
+        authorization: &dyn AuthorizationService,
+        ctx: &RequestContext,
+        candidates: Vec<Candidate>,
+    ) -> Result<(Vec<Confirmed>, DropCounts), SearchError> {
         let mut counts = DropCounts { proposed: candidates.len(), ..DropCounts::default() };
         if candidates.is_empty() {
             return Ok((Vec::new(), counts));
@@ -233,5 +269,155 @@ impl PostFilter {
         }
 
         Ok((confirmed, counts))
+    }
+}
+
+/// Publishes one completed pass to the process metric registry.
+///
+/// A field-by-field hand-off rather than a conversion, because `observability` sits below `search`
+/// in the dependency graph and cannot name [`DropCounts`]. What crosses the boundary is four
+/// tallies and nothing derived from them, so this remains a transport rather than a second
+/// implementation of the drop ratio.
+///
+/// The `usize` to `u64` widening is lossless on every target this ships to, and a saturating cast
+/// would be dishonest anyway: a candidate set that overflowed `u64` is not a metric problem.
+fn publish(counts: DropCounts) {
+    PostFilterPass {
+        proposed: counts.proposed as u64,
+        denylisted: counts.denylisted as u64,
+        unauthorized: counts.unauthorized as u64,
+        excerpt_withheld: counts.excerpt_withheld as u64,
+    }
+    .record();
+}
+
+#[cfg(test)]
+mod tests {
+    // Assertions are the point of a test: a panic here is the failure signal, not a
+    // production hazard. The workspace warns on these constructs for non-test code.
+    #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+
+    use std::sync::{Mutex, MutexGuard, PoisonError};
+
+    use enclave_observability::metrics::search::{
+        CANDIDATES_DROPPED_DENYLISTED, CANDIDATES_DROPPED_UNAUTHORIZED, CANDIDATES_PROPOSED,
+        EXCERPTS_WITHHELD, POST_FILTER_PASSES,
+    };
+
+    use super::*;
+
+    /// The instruments are process-global and the harness is threaded, so a test that reads one has
+    /// to be the only test moving one.
+    static SERIAL: Mutex<()> = Mutex::new(());
+
+    fn serial() -> MutexGuard<'static, ()> {
+        SERIAL.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Every counter, in one read, so a test can assert on what did *not* move as cheaply as on
+    /// what did.
+    fn snapshot() -> [u64; 5] {
+        [
+            POST_FILTER_PASSES.value(),
+            CANDIDATES_PROPOSED.value(),
+            CANDIDATES_DROPPED_DENYLISTED.value(),
+            CANDIDATES_DROPPED_UNAUTHORIZED.value(),
+            EXCERPTS_WITHHELD.value(),
+        ]
+    }
+
+    #[test]
+    fn every_tally_the_pass_produced_reaches_the_metric_it_belongs_to() {
+        let _guard = serial();
+        let before = snapshot();
+
+        publish(DropCounts { proposed: 30, denylisted: 4, unauthorized: 6, excerpt_withheld: 2 });
+
+        let after = snapshot();
+        assert_eq!(
+            [
+                after[0] - before[0],
+                after[1] - before[1],
+                after[2] - before[2],
+                after[3] - before[3],
+                after[4] - before[4]
+            ],
+            [1, 30, 4, 6, 2],
+            "each tally must land on its own counter; a swapped pair reads as the wrong runbook"
+        );
+    }
+
+    #[test]
+    fn a_pass_that_dropped_nothing_still_reports_that_it_ran() {
+        // The zero case is the one the "drop ratio at zero" alert reads. If a clean pass published
+        // nothing, the ratio would be computed over the drops of the *unclean* passes alone and
+        // could never fall to zero — the alert would be structurally incapable of firing.
+        let _guard = serial();
+        let before = snapshot();
+
+        publish(DropCounts { proposed: 20, denylisted: 0, unauthorized: 0, excerpt_withheld: 0 });
+
+        let after = snapshot();
+        assert_eq!(after[0], before[0] + 1, "the pass must be counted");
+        assert_eq!(after[1], before[1] + 20, "the denominator must move");
+        assert_eq!(after[2], before[2], "nothing was denylisted");
+        assert_eq!(after[3], before[3], "nothing was unauthorized");
+    }
+
+    #[test]
+    fn an_empty_candidate_set_moves_the_pass_counter_and_nothing_else() {
+        // `confirm` returns early on an empty candidate set, and this is the tally it returns.
+        // Publishing it keeps "the post-filter ran" true for a query that matched nothing, which is
+        // what separates a quiet system from one that stopped post-filtering.
+        let _guard = serial();
+        let before = snapshot();
+
+        publish(DropCounts::default());
+
+        let after = snapshot();
+        assert_eq!(after[0], before[0] + 1);
+        assert_eq!(&after[1..], &before[1..], "no candidates means no candidate counts");
+    }
+
+    #[test]
+    fn the_published_counters_agree_with_the_ratio_the_pass_computed() {
+        // `DropCounts::drop_ratio` is the in-process implementation and the recording rule in
+        // deploy/monitoring/alerts/search.yml is the query-time one. They are only allowed to be
+        // two implementations of one number if they divide the same two numbers.
+        let _guard = serial();
+        let counts =
+            DropCounts { proposed: 40, denylisted: 3, unauthorized: 5, excerpt_withheld: 7 };
+        let before = snapshot();
+
+        publish(counts);
+
+        let after = snapshot();
+        let proposed = after[1] - before[1];
+        let dropped = (after[2] - before[2]) + (after[3] - before[3]);
+        let ratio = dropped as f64 / proposed as f64;
+        assert!(
+            (ratio - counts.drop_ratio()).abs() < 1e-9,
+            "metric ratio {ratio} disagrees with DropCounts::drop_ratio {}",
+            counts.drop_ratio()
+        );
+    }
+
+    #[test]
+    fn a_withheld_excerpt_is_reported_but_is_not_a_drop() {
+        // `DropCounts::confirmed` does not subtract it, and neither may the ratio: a hit the caller
+        // can see without its snippet was disclosed, not discarded.
+        let _guard = serial();
+        let counts =
+            DropCounts { proposed: 10, denylisted: 0, unauthorized: 0, excerpt_withheld: 10 };
+        assert_eq!(counts.confirmed(), 10);
+        assert!((counts.drop_ratio() - 0.0).abs() < f64::EPSILON);
+
+        let before = snapshot();
+        publish(counts);
+        let after = snapshot();
+
+        assert_eq!(after[4], before[4] + 10, "the withheld excerpts must still be visible");
+        assert_eq!(after[2], before[2]);
+        assert_eq!(after[3], before[3], "and must not move either drop counter");
     }
 }

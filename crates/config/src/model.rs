@@ -109,6 +109,24 @@ pub struct ServerConfig {
     /// The URL clients reach this deployment on, used for token issuer, cookie domain and links in
     /// mail. `None` means "derive from bind and port", which is only sane in development.
     pub public_url: Option<Url>,
+    /// Port for the metrics listener, or `None` to not serve metrics at all.
+    ///
+    /// **A separate listener, deliberately, and not a route on the API.** The exposition carries
+    /// `tenant_id` labels — which tenants exist, how much each searches, how far behind each one's
+    /// invalidation is. That is customer data in aggregate, and the policy-routing allowlist says in
+    /// its own words that an unauthenticated endpoint "must never include a detail that identifies a
+    /// tenant or a resource".
+    ///
+    /// Putting it on its own port is what lets an operator bind it to a private interface while the
+    /// API faces the world, without either a policy exemption that would be wrong or an
+    /// authentication scheme Prometheus would have to be taught. `None` by default: a deployment
+    /// that has not thought about where this port goes should not have it open.
+    pub metrics_port: Option<u16>,
+
+    /// Address for the metrics listener. Defaults to loopback, and should stay there unless the
+    /// scraper is on another host and the network between them is trusted.
+    pub metrics_bind: IpAddr,
+
     /// Networks whose forwarding headers may be believed, and how many hops each strips.
     ///
     /// Empty by default. An empty list means the peer address is the client address — the only safe
@@ -123,6 +141,10 @@ impl Default for ServerConfig {
         Self {
             bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
             port: 8080,
+            // Off unless a deployment asks for it. The exposition carries tenant labels, so a port
+            // nobody chose to open is a port that should not be open.
+            metrics_port: None,
+            metrics_bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
             public_url: None,
             trusted_proxies: Vec::new(),
         }

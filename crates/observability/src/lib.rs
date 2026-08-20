@@ -48,6 +48,13 @@
 //! # }
 //! ```
 //!
+//! # Metrics
+//!
+//! [`metrics`] is the other half of this crate: the counters and gauges an operator alerts on, and
+//! the Prometheus text exposition that carries them out. It shares this crate with tracing for one
+//! reason — both are the process's output about itself, and both have to sit below everything that
+//! produces that output without dragging a dependency in with them.
+//!
 //! Per-request instrumentation uses the span macro and the typed recorders, never bare string
 //! field names:
 //!
@@ -67,6 +74,8 @@ compile_error!(
      tracing-opentelemetry pinned in [workspace.dependencies] (ENC-114). Until they are, build \
      the OTLP layer in the binary and pass it to `enclave_observability::init_with_layer`."
 );
+
+pub mod metrics;
 
 use std::fmt;
 

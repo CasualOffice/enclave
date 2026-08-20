@@ -11,6 +11,7 @@ pub mod download;
 pub mod error;
 pub mod health;
 pub mod me;
+pub mod metrics_listener;
 pub mod preview;
 pub mod state;
 
