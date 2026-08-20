@@ -103,7 +103,7 @@ pub use error::{IndexingError, Result};
 pub use extract::{
     BoundedExtractor, ExtractOutcome, ExtractRequest, Extractor, NoExtractor, TextlessSource,
 };
-pub use manifest::{claim, enqueue, record, start, BuildVersions, Claimed, WorkingState};
+pub use manifest::{claim, defer, enqueue, record, start, BuildVersions, Claimed, WorkingState};
 pub use model::{
     Coordinates, ExtractorVersion, Segment, SegmentKind, TextDocument, SEGMENT_OVERHEAD_BYTES,
 };

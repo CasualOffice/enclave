@@ -135,6 +135,34 @@ pub async fn start(
     Ok(())
 }
 
+/// Returns a claimed row to the queue without recording an attempt.
+///
+/// For the case the worker cannot act on and must not judge: a version whose antivirus scan has not
+/// finished. `CLAUDE.md` rule 9 says nothing serves content before the scan completes, and indexing
+/// reads content — so the file is not indexable *yet*, which is a different fact from failing to
+/// index.
+///
+/// Recording it as `FAILED` would be wrong twice: `attempts` would climb for a file nothing is
+/// wrong with, and a supervisor watching that column would eventually escalate a document that is
+/// simply waiting. Leaving it `EXTRACTING` would be worse — it would never be claimed again.
+///
+/// `updated_at` moves, so the row goes to the back of the oldest-first queue rather than being
+/// re-claimed immediately in a hot loop. That is the whole rate limit, and it is enough: the queue
+/// drains in order, so a scanning file is retried once per pass at most.
+///
+/// # Errors
+///
+/// Storage failures.
+pub async fn defer(conn: &mut PgConnection, tenant: TenantId, file: FileId) -> Result<()> {
+    sqlx::query(DEFER_SQL)
+        .bind(tenant.as_uuid())
+        .bind(file.as_uuid())
+        .execute(&mut *conn)
+        .await
+        .map_err(IndexingError::Storage)?;
+    Ok(())
+}
+
 /// The states a worker passes through, none of which is terminal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkingState {
@@ -264,6 +292,15 @@ UPDATE index_manifests
    SET status = $3, updated_at = now()
  WHERE tenant_id = $1 AND file_id = $2
    AND status NOT IN ('READY', 'SKIPPED')
+";
+
+/// Back to `PENDING`, and only from a working state: a row that has already reached a terminal
+/// status is not the worker's to reopen. `attempts` is untouched — see `defer`.
+const DEFER_SQL: &str = "
+UPDATE index_manifests
+   SET status = 'PENDING', updated_at = now()
+ WHERE tenant_id = $1 AND file_id = $2
+   AND status IN ('EXTRACTING', 'EMBEDDING', 'INDEXING')
 ";
 
 /// The one terminal write. `attempts` grows only on failure; `indexed_at` is set only on success.

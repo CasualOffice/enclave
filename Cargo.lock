@@ -1716,18 +1716,25 @@ dependencies = [
 name = "enclave-worker"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "bytes",
  "chrono",
  "enclave-audit",
  "enclave-config",
  "enclave-core",
  "enclave-db",
  "enclave-events",
+ "enclave-indexing",
+ "enclave-preview",
  "enclave-search",
+ "enclave-storage",
  "enclave-testing",
+ "futures",
  "sqlx",
  "thiserror 2.0.20",
  "tokio",
  "tracing",
+ "url",
  "uuid",
 ]
 
