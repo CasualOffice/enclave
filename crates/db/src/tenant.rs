@@ -187,7 +187,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::test_support::test_config;
+    use crate::test_support::test_database;
 
     /// D3's proof, and the reason this crate exists in the shape it does.
     ///
@@ -201,12 +201,13 @@ mod tests {
     /// session `SET`, a task would frequently observe the tenant of whoever last used that
     /// connection.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    #[ignore = "needs PostgreSQL; runs under ENC-112's testcontainers harness"]
+    #[ignore = "needs PostgreSQL; CI runs it with --include-ignored"]
     async fn no_transaction_ever_observes_another_tenants_context() {
         const TENANTS: usize = 6;
         const TASKS: usize = 24;
 
-        let pool = crate::DbPool::connect(&test_config().with_max_connections(2))
+        let (_db, config) = test_database().await;
+        let pool = crate::DbPool::connect(&config.with_max_connections(2))
             .await
             .expect("connect to the test database");
 
@@ -261,11 +262,12 @@ mod tests {
     /// the state the next caller inherits. If `SET LOCAL` were ever changed to a session `SET`,
     /// this is the test that would fail first and most clearly.
     #[tokio::test]
-    #[ignore = "needs PostgreSQL; runs under ENC-112's testcontainers harness"]
+    #[ignore = "needs PostgreSQL; CI runs it with --include-ignored"]
     async fn a_returned_connection_carries_no_tenant_context() {
         // A pool of one guarantees the connection examined afterwards is the same physical
         // connection the transaction used — otherwise the test could pass by luck.
-        let pool = crate::DbPool::connect(&test_config().with_max_connections(1))
+        let (_db, config) = test_database().await;
+        let pool = crate::DbPool::connect(&config.with_max_connections(1))
             .await
             .expect("connect to the test database");
 
@@ -292,9 +294,10 @@ mod tests {
     /// A rollback must clear the context just as a commit does — the abort path is the one people
     /// forget, and it is reached by every `?` in every handler.
     #[tokio::test]
-    #[ignore = "needs PostgreSQL; runs under ENC-112's testcontainers harness"]
+    #[ignore = "needs PostgreSQL; CI runs it with --include-ignored"]
     async fn a_rolled_back_transaction_also_clears_the_context() {
-        let pool = crate::DbPool::connect(&test_config().with_max_connections(1))
+        let (_db, config) = test_database().await;
+        let pool = crate::DbPool::connect(&config.with_max_connections(1))
             .await
             .expect("connect to the test database");
 
@@ -319,9 +322,10 @@ mod tests {
     /// Dropping the handle without committing must behave like the rollback above: no leaked
     /// context, and no half-written transaction.
     #[tokio::test]
-    #[ignore = "needs PostgreSQL; runs under ENC-112's testcontainers harness"]
+    #[ignore = "needs PostgreSQL; CI runs it with --include-ignored"]
     async fn dropping_the_handle_clears_the_context_too() {
-        let pool = crate::DbPool::connect(&test_config().with_max_connections(1))
+        let (_db, config) = test_database().await;
+        let pool = crate::DbPool::connect(&config.with_max_connections(1))
             .await
             .expect("connect to the test database");
 
@@ -349,9 +353,10 @@ mod tests {
     /// mean application predicates and RLS disagree, which is the failure mode where one layer
     /// silently stops contributing.
     #[tokio::test]
-    #[ignore = "needs PostgreSQL; runs under ENC-112's testcontainers harness"]
+    #[ignore = "needs PostgreSQL; CI runs it with --include-ignored"]
     async fn the_handles_tenant_matches_the_servers() {
-        let pool = crate::DbPool::connect(&test_config()).await.expect("connect");
+        let (_db, config) = test_database().await;
+        let pool = crate::DbPool::connect(&config).await.expect("connect");
         let tenant = TenantId::new_v7();
         let mut scoped = pool.begin(tenant).await.expect("begin");
         assert_eq!(scoped.tenant_id(), tenant);

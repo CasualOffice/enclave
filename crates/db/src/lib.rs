@@ -91,32 +91,41 @@ pub type Result<T, E = DbError> = core::result::Result<T, E>;
 mod test_support {
     //! Shared setup for the tests that need a real database.
     //!
-    //! Every test using this is `#[ignore]`d until ENC-112 lands the testcontainers harness. The
-    //! URL is read from the environment rather than hard-coded so that the harness can point the
-    //! same tests at a throwaway container, and so that nothing resembling a credential is ever
-    //! committed (`CLAUDE.md` rule 11) — the fallback below is a local development default with no
-    //! password in it.
+    //! Every test using this is `#[ignore]`d and gets a **throwaway** database from
+    //! `enclave_testing::TestDb`, never the one `DATABASE_URL` names. That is `ENC-504`: the
+    //! database a developer exports as `DATABASE_URL` is their dev stack, and a test run that
+    //! writes migration state into it makes the next run on a different branch fail the
+    //! forward-only checksum gate on a migration nobody touched.
+    //!
+    //! `enclave-testing` is a dev-dependency of this crate and depends on it normally; Cargo allows
+    //! that cycle because it closes through a dev edge. See `Cargo.toml`.
+
+    // A harness that could not start is a test that cannot run; the workspace warns on this in
+    // non-test code, and every test module in this crate carries the same allow.
+    #![allow(clippy::expect_used)]
 
     use crate::DbConfig;
+    use enclave_testing::TestDb;
 
-    /// Configuration for a database the harness has already started and migrated.
-    pub(crate) fn test_config() -> DbConfig {
-        // `DATABASE_URL` first, because that is what every other consumer already uses — the
-        // enclave-testing harness, the RLS coverage gate, sqlx's own tooling and psql.
-        //
-        // Two names for one thing is why these tests ran nowhere. CI set `DATABASE_URL`; these
-        // tests read `ENCLAVE_TEST_DATABASE_URL`, found nothing, fell back to a default pointing at
-        // a database that did not exist, and were `#[ignore]`d so nobody saw them fail. The
-        // fallback is kept for anyone with the old variable exported, but it is no longer the
-        // only name that works.
-        let url = std::env::var("DATABASE_URL")
-            .ok()
-            .filter(|u| !u.trim().is_empty())
-            .or_else(|| std::env::var("ENCLAVE_TEST_DATABASE_URL").ok())
-            .unwrap_or_else(|| "postgres://postgres@localhost:5432/enclave_test".to_owned());
-        // The harness's container gives one superuser credential, so it is both the application
-        // and the migration URL there. A real deployment separates them, which is why the two
-        // fields exist rather than one.
+    /// A throwaway database, migrated, plus the configuration to reach it.
+    ///
+    /// The handle comes back with the configuration because dropping it drops the database. A test
+    /// that binds it to `_` gets a pool pointing at a database that is already being deleted.
+    pub(crate) async fn test_database() -> (TestDb, DbConfig) {
+        let db = TestDb::start().await.expect(
+            "these tests need a PostgreSQL they may create databases on; CI provides a service \
+             container, locally use deploy/compose/dev.yml and set DATABASE_URL",
+        );
+        let config = config_for(&db);
+        (db, config)
+    }
+
+    /// Configuration addressing an already-created, already-migrated test database.
+    pub(crate) fn config_for(db: &TestDb) -> DbConfig {
+        // The harness's cluster gives one superuser credential, so it is both the application and
+        // the migration URL here. A real deployment separates them, which is why the two fields
+        // exist rather than one.
+        let url = db.url().to_owned();
         DbConfig::new(url.clone()).with_migration_url(url).with_application_name("enclave-tests")
     }
 }

@@ -104,6 +104,17 @@ Three properties are load-bearing:
    Distinguishing them would say *there is content here you may not see*, which is a fact about a
    document they cannot read.
 
+   This became a live property rather than a cheap one at `ENC-529`, when the degraded path started
+   producing excerpts: before that, `None` for everything honoured it by accident. `S6` now asserts
+   it against a running degraded query, with a third file that *does* receive its quotation so the
+   assertion cannot pass against a generator that returns nothing. The distinction is required to
+   exist exactly once, in the operator-facing `excerpt_withheld` counter.
+
+   It holds in `Debug` too (`S11`). `Candidate` and `Confirmed` hand-write theirs and print
+   `Some(<content withheld>)`, because an excerpt is file content (`CLAUDE.md` rule 10) and because a
+   `Debug` that distinguishes withheld from absent reintroduces at the log line what the response
+   refuses to say.
+
 ### 2.6 Degraded mode is a worse recall guarantee, never a worse authorization one
 
 Lexical retrieval over PostgreSQL still goes through `PostFilter::confirm`. `SearchResults.degraded`
@@ -157,7 +168,9 @@ Named here because a threat walkthrough that lists only successes is a marketing
 | R1 | **Coverage detects absence, not wrongness.** The index-health check compares the store's chunk count against `READY` manifests. An index holding the *right number of wrong chunks* — stale ACL tokens, content from a superseded version — reads as healthy | The post-filter is what makes this harmless: wrong chunks are dropped on resolution. The health signal is a recall and cost signal, not a safety one, and `crates/search/src/health.rs` says so in its own documentation rather than leaving it to be assumed |
 | R2 | **Nothing writes `indexed_seq`.** The schema can express "the index has caught up"; no producer sets it, so every row reads *unasserted* | Correct by construction — the tri-state exists so that "unknown" is representable rather than being read as "no". Nothing depends on the column. `ENC-528` |
 | R3 | **A scanned PDF is not searchable by its content.** No OCR — `ENC-161` is blocked on model files and a language decision (Q12) | This is an **unmet M3 exit criterion**, not an accepted risk. It is recorded as such in `§4` below rather than being quietly reclassified |
-| R4 | **Degraded search returns no excerpt**, so the `ContentRead` disclosure path is exercised by tests but not by a running degraded query | `ENC-529`. The machinery is the right shape — an excerpt is released only when the post-filter resolves `ContentRead` — but a path with no production traffic has weaker evidence than one with it |
+| R4 | **The quotation rule mirrors PostgreSQL's tokenizer rather than calling it.** `crates/search/src/excerpt.rs` locates the matched span by restating the indexed rule — a term is the lowercase of a maximal alphanumeric run — because both `ts_headline` forms are wrong (`docs/07 §6.2.1`). `char::is_alphanumeric` is Unicode's answer where `[[:alnum:]]` is the collation's, and the default parser may subdivide a run this module keeps whole | `ENC-529`. Acceptable because the disagreement fails to `None` — the caller gets the hit with no quotation, which is already indistinguishable from an excerpt withheld for want of `ContentRead`, so it costs recall of *context* and can never become a disclosure. It cannot quote an unmatched span either: the chunk was selected by `@@`, and the window must contain a run equal to one of the query's. What would close it is a Postgres-side locator that returns offsets rather than marked-up text, which `ts_headline` does not offer |
+| R8 | **No excerpt is highlighted.** `docs/05 §11` shows the matched term wrapped in `<em>`; retrieval returns plain text | Deliberate. Emitting markup means interpolating untrusted document content into a markup string in the crate furthest from any renderer, which is `docs/12 §4.2` A9's defect on a new path. Closed by carrying the matched offsets alongside the text so the API layer marks up without parsing content — `ENC-529`'s follow-up |
+| R9 | **An excerpt is a fragment, so bidi state balanced in the whole document can be unbalanced in the quotation.** An unterminated U+202E in a result list reverses the rendering of surrounding UI text | Not fixed here, and named rather than half-fixed: stripping the character would make the excerpt no longer verbatim, and refusing to quote chunks containing explicit bidi marks would cost excerpts across every right-to-left tenant. The remedy is at render — isolating each excerpt (`unicode-bidi: isolate`, or FSI…PDI) — which is where the same problem is already solved for filenames |
 | R5 | **Degraded ordering is undecided** (Q15). Ranking badly may be worse than not ranking | Open question, owned by Product. Not a safety property: order does not change which documents a caller may see |
 | R6 | **The vector index has never run against a Milvus under load**, only against a single-node standalone in CI | A performance and correctness-at-scale gap, not a disclosure one. The post-filter's cost is measured (7.0 ms for 200 candidates); the index's is not |
 | R7 | **No search API endpoint exists yet**, so none of this has been exercised through the policy chain end to end | The chain is enforced structurally by `xtask policy-routing`, which fails the build on a handler that cannot reach `enforce`. Verified by deliberate violation, so the guarantee does not depend on the endpoint existing |

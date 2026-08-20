@@ -24,6 +24,21 @@
 //!   300-page agreement whose body says *indemnity* is findable by that word without it appearing
 //!   anywhere in the filename.
 //!
+//! # The excerpt
+//!
+//! A file matched on its **text** carries a quotation of the passage that matched; one matched only
+//! on its name or its metadata does not, because there is no matched passage to quote and a snippet
+//! cut from a filename says nothing the hit does not already carry.
+//!
+//! [`crate::excerpt`] holds the rule and the argument for it — in short, a verbatim substring of the
+//! chunk, located by the same tokenization the index matched on, and **nothing at all** when that
+//! term cannot be located, rather than a plausible-looking passage from somewhere else.
+//!
+//! Producing one here is not disclosing one. The excerpt rides on [`Candidate`] and is released only
+//! where every other disclosure decision is made — [`crate::PostFilter::confirm`], resolving
+//! `ContentRead` — so a caller who may know the document exists and may not read it gets the hit and
+//! no quotation, exactly as they did before this path could cut one.
+//!
 //! # What the content half depends on, and what it therefore misses
 //!
 //! `chunk_text` holds the text of the version that was **last indexed**, which is not always the
@@ -160,20 +175,24 @@ pub async fn candidates(
                 column: "score",
                 reason: "missing or not a rank",
             })?;
-            // Still no excerpt, and it is still a decision. There is text to cut one from now, and
-            // that makes the choice sharper rather than settling it: a headline over the
-            // *normalized* expression returns the punctuation-stripped form, which is not the
-            // sentence the document contains, and a headline over the raw text is a second
-            // tokenization that can highlight a different span than the one that matched. Both are
-            // decisions about what a quotation from a document is allowed to look like, and they
-            // belong to a row of their own rather than to the change that made text searchable. An
-            // empty snippet is a visible gap; a snippet assembled from the wrong source is an
-            // invisible one.
+            // The chunk the content CTE picked, or NULL for a file matched by name or metadata
+            // alone. NULL is the ordinary case, not a defect: there is no matched passage to quote
+            // when nothing in the body matched.
+            let text = row.try_get::<Option<String>, _>("chunk_text").map_err(|_| {
+                SearchError::MalformedRow { column: "chunk_text", reason: "missing or not text" }
+            })?;
+
+            // `ENC-529`. The quotation rule lives in `crate::excerpt` and is documented there; what
+            // matters here is that this produces `None` whenever it cannot locate the matched term,
+            // so a disagreement with PostgreSQL's tokenizer costs an excerpt and never invents one.
             //
-            // Note where the gate would be if this changes: the excerpt field is disclosed only
-            // when the post-filter resolves `ContentRead`, and chunk text is document content, so
-            // the machinery is already the right shape. Nothing here may disclose it directly.
-            Ok(Candidate { file_id, score, excerpt: None })
+            // Cut here rather than carried whole to the post-filter: the chunk is up to 3 200
+            // characters of document body, and everything past this line only ever needs the ~240
+            // that will be shown. Whether even that is *disclosed* is the post-filter's
+            // `ContentRead` question, asked identically whether the excerpt is `Some` or `None`.
+            let excerpt = text.as_deref().and_then(|text| crate::excerpt::quote(text, query));
+
+            Ok(Candidate { file_id, score, excerpt })
         })
         .collect::<Result<Vec<_>, SearchError>>()?;
 
@@ -200,6 +219,26 @@ pub async fn candidates(
 /// So `content` reduces chunk matches to at most one row per file **before** the join, and the file
 /// list is then left-joined against it. The predicate `k.file_id IS NOT NULL` is what admits a file
 /// matched only by its body.
+///
+/// # Why that CTE is `DISTINCT ON` rather than `GROUP BY`, and why its `ORDER BY` has four terms
+///
+/// It has to carry the chunk's **text** as well as its rank, because that text is what
+/// `crate::excerpt` quotes (`ENC-529`), and an aggregate cannot hand back the row the maximum came
+/// from. `DISTINCT ON (c.file_id)` keeps the whole winning row.
+///
+/// Which row wins is then a decision rather than an implementation detail, so it is spelled out:
+/// highest rank, then lowest `ordinal`, then `chunk_id`. The last two exist because rank ties are
+/// ordinary — two chunks of one document containing the query word once each score identically —
+/// and without a total order PostgreSQL is free to return either. That would be a document whose
+/// quotation changes between two identical searches, which is the same defect as an unstable sort
+/// order and is reported the same way: "search changed its mind", reproducible by nobody. `ordinal`
+/// before `chunk_id` so the tie is broken by where the passage is in the document rather than by a
+/// UUID.
+///
+/// `max(k.text)` in the outer query is an identity, not a choice. `content` yields at most one row
+/// per file, so every row of a `GROUP BY f.id` group carries the same text; the aggregate is there
+/// because the grouping rule requires one, and PostgreSQL's functional-dependency exemption covers
+/// only columns of the table whose primary key is grouped on — `files`, not this CTE.
 ///
 /// The tenant predicate appears in the CTE as well as in the outer query. `chunk_text` has its own
 /// row-level security, so this is the same belt-and-braces the outer query already uses — and the
@@ -228,7 +267,15 @@ const CANDIDATES_SQL: &str = "
 WITH q AS (
     SELECT plainto_tsquery('simple', regexp_replace($2, '[^[:alnum:]]+', ' ', 'g')) AS tsq
 ), content AS (
-    SELECT c.file_id, max(ts_rank(t.text_tsv, q.tsq)) AS score
+    SELECT DISTINCT ON (c.file_id)
+           c.file_id,
+           ts_rank(t.text_tsv, q.tsq) AS score,
+           c.text AS text,
+           -- Carried into the select list rather than left in the ORDER BY alone: the outer query
+           -- never reads them, and a tie-break that is visible in the CTE's output is one a reader
+           -- can check against the ordering below.
+           c.ordinal,
+           c.chunk_id
       FROM chunk_text c
       CROSS JOIN q
       CROSS JOIN LATERAL (
@@ -237,12 +284,16 @@ WITH q AS (
       ) t
      WHERE c.tenant_id = $1
        AND t.text_tsv @@ q.tsq
-     GROUP BY c.file_id
+     ORDER BY c.file_id,
+              ts_rank(t.text_tsv, q.tsq) DESC,
+              c.ordinal,
+              c.chunk_id
 )
 SELECT f.id AS file_id,
        max(GREATEST(ts_rank(v.name_tsv, q.tsq) * 2.0::real,
                     ts_rank(v.meta_tsv, q.tsq),
-                    coalesce(k.score, 0.0::real))) AS score
+                    coalesce(k.score, 0.0::real))) AS score,
+       max(k.text) AS chunk_text
   FROM files f
   CROSS JOIN q
   LEFT JOIN metadata_values m

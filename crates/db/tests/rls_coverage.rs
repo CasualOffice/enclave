@@ -17,12 +17,13 @@
 //!   the product. A table in that state is a misconfiguration, not a safe default.
 //!
 //! Ignored by default because it needs a live PostgreSQL. CI runs it with `--include-ignored`
-//! against a service container; locally, start one and set `DATABASE_URL`.
+//! against a service container; locally, start one and set `DATABASE_URL`. It inspects a
+//! throwaway database created by the harness, never the one `DATABASE_URL` names (`ENC-504`).
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
-use enclave_db::migrate::run_migrations_on;
-use sqlx::{Connection, PgConnection, Row};
+use enclave_testing::TestDb;
+use sqlx::{PgConnection, Row};
 
 /// Tables that legitimately carry a `tenant_id` column while not being tenant-scoped rows.
 ///
@@ -31,24 +32,30 @@ use sqlx::{Connection, PgConnection, Row};
 /// an entry is a reviewable act, and a reviewer should ask why the column is there at all.
 const EXEMPT: &[(&str, &str)] = &[];
 
-fn database_url() -> Option<String> {
-    std::env::var("DATABASE_URL").ok().filter(|u| !u.trim().is_empty())
-}
-
-async fn connect_and_migrate() -> PgConnection {
-    let url = database_url().expect(
-        "DATABASE_URL must be set to run the RLS coverage gate; \
-         CI provides a service container, locally use deploy/compose/dev.yml",
+/// A freshly created, freshly migrated database, and a connection to it.
+///
+/// The handle is returned rather than dropped because dropping it drops the database — the caller
+/// has to keep it alive for as long as the connection is used.
+///
+/// This gate used to migrate the database `DATABASE_URL` names directly. That is what `ENC-504`
+/// removed: on a developer's machine that database is their dev stack, and applying a migration to
+/// it records the migration's checksum there, so an unmerged migration edited on one branch fails
+/// the forward-only gate on every later run from another. Nothing about what is asserted changes —
+/// the schema being inspected is produced by exactly the same `run_migrations_on`, one database
+/// over.
+async fn migrated_database() -> (TestDb, PgConnection) {
+    let db = TestDb::start().await.expect(
+        "the RLS coverage gate needs a PostgreSQL it may create databases on; CI provides a \
+         service container, locally use deploy/compose/dev.yml and set DATABASE_URL",
     );
-    let mut conn = PgConnection::connect(&url).await.expect("connect to the test database");
-    run_migrations_on(&mut conn).await.expect("apply migrations");
-    conn
+    let conn = db.connect().await.expect("connect to the throwaway database");
+    (db, conn)
 }
 
 #[tokio::test]
 #[ignore = "requires a live PostgreSQL; CI runs it with --include-ignored"]
 async fn every_tenant_scoped_table_has_rls_enabled_forced_and_a_policy() {
-    let mut conn = connect_and_migrate().await;
+    let (_db, mut conn) = migrated_database().await;
 
     // One query rather than three, so the report names every offending table at once. A gate that
     // surfaces one failure per run turns a ten-minute fix into a ten-round game.
@@ -135,7 +142,7 @@ async fn every_tenant_scoped_table_has_rls_enabled_forced_and_a_policy() {
 #[tokio::test]
 #[ignore = "requires a live PostgreSQL; CI runs it with --include-ignored"]
 async fn the_isolation_policy_reads_the_tenant_from_the_session_not_the_query() {
-    let mut conn = connect_and_migrate().await;
+    let (_db, mut conn) = migrated_database().await;
 
     // A policy that hard-codes a tenant, or that compares tenant_id to itself, would satisfy the
     // structural test above while isolating nothing. Assert the predicate actually consults the
@@ -190,7 +197,7 @@ async fn the_isolation_policy_reads_the_tenant_from_the_session_not_the_query() 
 #[tokio::test]
 #[ignore = "requires a live PostgreSQL; CI runs it with --include-ignored"]
 async fn the_audit_trail_cannot_be_rewritten_by_the_application_role() {
-    let mut conn = connect_and_migrate().await;
+    let (_db, mut conn) = migrated_database().await;
 
     // Test U2 (docs/12-TESTING.md §4.9). An append-only audit trail that the application can UPDATE
     // is not append-only, and the difference only becomes visible when someone needs the log to be

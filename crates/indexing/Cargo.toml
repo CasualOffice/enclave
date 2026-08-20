@@ -18,6 +18,16 @@ enclave-preview = { workspace = true }
 
 anyhow      = { workspace = true }
 async-trait = { workspace = true }
+# The OCR engine and its inference runtime. `plans/M3-DISCOVERY.md` Q12; the workspace manifest
+# carries the argument for this pair over a Tesseract binding, and `src/ocr.rs` carries the
+# argument for what it is allowed to be handed.
+ocrs        = { workspace = true }
+rten        = { workspace = true }
+# The same decoder `enclave-preview` uses, with the same three formats, so a page image and a
+# preview are read by one parser rather than two that agree until one is upgraded. `src/ocr.rs`
+# repeats raster.rs's sniff â header â decide â decode order, which needs
+# `ImageReader::into_decoder` and `total_bytes()`.
+image       = { workspace = true }
 # `src/store.rs` writes chunk text to PostgreSQL so the degraded search path can match on it. Plain
 # `sqlx` rather than `enclave-db`: this crate opens no pool and starts no transaction — it takes the
 # caller's `&mut PgConnection`, which is what lets a chunk write share the transaction that moves
@@ -41,6 +51,12 @@ enclave-testing = { workspace = true }
 # way an RLS assertion means anything — the harness's own connection is a superuser.
 enclave-db      = { workspace = true }
 chrono          = { workspace = true }
+# `tests/ocr.rs` rasterises a known string and asserts the engine reads it back. Borrowed from
+# `enclave-preview`'s watermark compositor rather than vendored a second time — the face is already
+# in this repository, and a second copy of a font file is a second thing to keep in step with
+# `crates/preview/assets/README.md`'s licensing note. A committed scan would be the alternative, and
+# a binary fixture is content nobody reviews in a diff.
+ab_glyph        = { workspace = true }
 
 [lints]
 workspace = true

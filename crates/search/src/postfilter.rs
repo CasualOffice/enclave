@@ -78,7 +78,9 @@ use crate::error::SearchError;
 /// Deliberately carries no permission field. The vector store's `acl_tokens` do not appear in this
 /// type, and that is the point: a struct with a `visible: bool` on it is one somebody eventually
 /// trusts.
-#[derive(Debug, Clone, PartialEq)]
+///
+/// [`Debug`] is hand-written and withholds the excerpt. See [`Confirmed`] for why.
+#[derive(Clone, PartialEq)]
 pub struct Candidate {
     /// The file the index believes matched.
     pub file_id: FileId,
@@ -92,7 +94,9 @@ pub struct Candidate {
 }
 
 /// One thing the caller may actually see.
-#[derive(Debug, Clone, PartialEq)]
+///
+/// [`Debug`] is hand-written and withholds the excerpt. See the impl for why.
+#[derive(Clone, PartialEq)]
 pub struct Confirmed {
     /// The file.
     pub file_id: FileId,
@@ -104,6 +108,50 @@ pub struct Confirmed {
     /// it". The two are deliberately indistinguishable to the caller: telling them apart would say
     /// *there is content here you may not see*, which is a fact about a document they cannot read.
     pub excerpt: Option<String>,
+}
+
+/// An excerpt field, rendered without its contents.
+///
+/// `CLAUDE.md` rule 10: never log file content. An excerpt **is** file content — until `ENC-529`
+/// only the Milvus path ever put any in a [`Candidate`], and the lexical path now does too, so the
+/// hazard is on both. The realistic way it happens is not somebody printing a snippet on purpose; it
+/// is `tracing::debug!(?candidates)` in an incident, and the derived `Debug` on the envelope types
+/// (`LexicalCandidates`, `SearchResults`) reaching these through it.
+///
+/// Present-versus-absent is still shown, because that is what makes a `Debug` line worth reading and
+/// it is not content. It says nothing a caller could not already determine: they are holding the
+/// excerpt, or they are not.
+struct WithheldExcerpt<'a>(Option<&'a str>);
+
+impl std::fmt::Debug for WithheldExcerpt<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            None => formatter.write_str("None"),
+            Some(_) => formatter.write_str("Some(<content withheld>)"),
+        }
+    }
+}
+
+impl std::fmt::Debug for Candidate {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Candidate")
+            .field("file_id", &self.file_id)
+            .field("score", &self.score)
+            .field("excerpt", &WithheldExcerpt(self.excerpt.as_deref()))
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for Confirmed {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Confirmed")
+            .field("file_id", &self.file_id)
+            .field("score", &self.score)
+            .field("excerpt", &WithheldExcerpt(self.excerpt.as_deref()))
+            .finish()
+    }
 }
 
 /// What a post-filter pass discarded, for the metric the exit criteria require.
@@ -324,6 +372,67 @@ mod tests {
             CANDIDATES_DROPPED_UNAUTHORIZED.value(),
             EXCERPTS_WITHHELD.value(),
         ]
+    }
+
+    /// The document body used by the redaction tests. Distinctive enough that finding it anywhere
+    /// in a formatted string is unambiguous.
+    const BODY: &str = "the perihelion review procedure";
+
+    /// **`CLAUDE.md` rule 10, on the type that carries the content.** A candidate's `Debug` must not
+    /// print the excerpt.
+    ///
+    /// The failure this prevents is not a deliberate one. It is `tracing::debug!(?candidates)` added
+    /// during an incident: `LexicalCandidates` derives `Debug` over a `Vec<Candidate>`, so a single
+    /// such line writes document bodies into the log aggregator — and search logs have a much
+    /// broader audience than the documents they quote, which is the same argument `docs/06 §…` makes
+    /// for keeping DLP match values out of incident records.
+    #[test]
+    fn a_candidates_debug_output_never_carries_the_excerpt() {
+        let candidate =
+            Candidate { file_id: FileId::new_v7(), score: 0.5, excerpt: Some(BODY.to_owned()) };
+
+        let rendered = format!("{candidate:?}");
+        assert!(
+            !rendered.contains(BODY),
+            "a candidate's Debug printed document content: {rendered}"
+        );
+        assert!(
+            rendered.contains("<content withheld>"),
+            "the excerpt's presence must still be visible: {rendered}"
+        );
+
+        // The envelope reaches it through a derived `Debug`, which is how it would actually happen.
+        let batch = format!("{:?}", vec![candidate]);
+        assert!(
+            !batch.contains(BODY),
+            "a Vec<Candidate>'s Debug printed document content: {batch}"
+        );
+    }
+
+    /// The same, on the type that reaches an API layer.
+    ///
+    /// `SearchResults` derives `Debug` over a `Vec<Confirmed>`, so this is the one that a handler
+    /// logging its own response would hit.
+    #[test]
+    fn a_confirmed_hits_debug_output_never_carries_the_excerpt() {
+        let hit =
+            Confirmed { file_id: FileId::new_v7(), score: 0.5, excerpt: Some(BODY.to_owned()) };
+
+        let rendered = format!("{hit:?}");
+        assert!(!rendered.contains(BODY), "a hit's Debug printed document content: {rendered}");
+        assert!(rendered.contains("<content withheld>"));
+    }
+
+    /// An absent excerpt renders as `None`, so the redaction is not itself a signal.
+    ///
+    /// Worth asserting because the tempting implementation prints something like
+    /// `<0 characters withheld>` for both cases, and a `Debug` that distinguishes "withheld" from
+    /// "there was none" reintroduces at the log line exactly the distinction `Confirmed::excerpt`
+    /// refuses to make in the response.
+    #[test]
+    fn an_absent_excerpt_renders_the_same_as_it_always_did() {
+        let hit = Confirmed { file_id: FileId::new_v7(), score: 0.5, excerpt: None };
+        assert!(format!("{hit:?}").contains("excerpt: None"), "{hit:?}");
     }
 
     #[test]

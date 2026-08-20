@@ -18,6 +18,15 @@
 //!    matching widens what the generator proposes, and every candidate it proposes still goes
 //!    through `PostFilter::confirm`.
 //!
+//! `ENC-529` added a third, and it belongs here because it is the same asymmetry one step further
+//! on: the path now cuts an **excerpt** from that text, and an excerpt is a quotation of a document.
+//! Two things follow. What is quoted must be text the document contains — `crates/search/src/
+//! excerpt.rs` records why both `ts_headline` forms fail that, one visibly and one invisibly. And
+//! the quotation is released only where every other disclosure decision is made, so a caller holding
+//! `MetadataRead` alone gets the hit and nothing else — indistinguishable from a document that had
+//! no quotable passage, which is `docs/12 §4.3` S6 and is the assertion this file exists to make now
+//! that there is something real to withhold.
+//!
 //! # The text is written by the writer that ships
 //!
 //! `enclave_indexing::write_chunks` puts the rows here, not an `INSERT` spelled out in this file.
@@ -39,7 +48,8 @@ use enclave_indexing::{
     write_chunks, Chunk, ChunkBudget, Chunker, ChunkerVersion, Coordinates, Segment, SegmentKind,
 };
 use enclave_search::{
-    lexical, DegradedReason, Retrieval, SearchResults, VectorStore, DEFAULT_DENYLIST_LIMIT,
+    lexical, Confirmed, DegradedReason, Retrieval, SearchResults, VectorStore,
+    DEFAULT_DENYLIST_LIMIT,
 };
 use enclave_testing::content::Spine;
 use enclave_testing::{Fixtures, TestDb};
@@ -83,6 +93,21 @@ async fn file_with_body(
     name: &str,
     body: &str,
 ) -> FileId {
+    file_with_paragraphs(admin, tenant, owner, name, &[body]).await
+}
+
+/// As [`file_with_body`], with each paragraph landing in a chunk of its own.
+///
+/// `target_chars: 1` makes the chunker flush after every segment, so the paragraph at index *n* is
+/// the chunk at ordinal *n*. That is what lets a test say *the excerpt came from the third chunk*
+/// rather than inferring it from the text.
+async fn file_with_paragraphs(
+    admin: &mut PgConnection,
+    tenant: TenantId,
+    owner: UserId,
+    name: &str,
+    paragraphs: &[&str],
+) -> FileId {
     let now = Utc::now();
     let spine = Spine::new(tenant);
     spine.insert(&mut *admin, owner, now).await.expect("spine");
@@ -96,15 +121,16 @@ async fn file_with_body(
 
     let version = insert_version(&mut *admin, tenant, spine.file, owner, 1).await;
     let chunker = Chunker::new(CHUNKER, ChunkBudget { target_chars: 1, ..ChunkBudget::DEFAULT });
-    let chunks: Vec<Chunk> = chunker.chunk(
-        version,
-        &[Segment {
+    let segments: Vec<Segment> = paragraphs
+        .iter()
+        .map(|text| Segment {
             kind: SegmentKind::Paragraph,
-            text: body.to_owned(),
+            text: (*text).to_owned(),
             coordinates: Coordinates::none(),
-        }],
-    );
-    assert!(!chunks.is_empty(), "the fixture produced no chunks to store");
+        })
+        .collect();
+    let chunks: Vec<Chunk> = chunker.chunk(version, &segments);
+    assert_eq!(chunks.len(), paragraphs.len(), "the fixture did not chunk one paragraph per chunk");
     write_chunks(&mut *admin, tenant, spine.file, version, CHUNKER, &chunks)
         .await
         .expect("store chunk text");
@@ -164,6 +190,20 @@ async fn grant_action(
     .execute(&mut *conn)
     .await
     .expect("grant");
+}
+
+/// The hit for one file, or a failure naming the file that is missing.
+fn hit_for(results: &SearchResults, file: FileId) -> &Confirmed {
+    results
+        .hits()
+        .iter()
+        .find(|hit| hit.file_id == file)
+        .unwrap_or_else(|| panic!("{file:?} is not among the hits: {:?}", results.hits()))
+}
+
+/// An excerpt with its elision marks removed — the part that claims to be text from the document.
+fn quoted(excerpt: &str) -> &str {
+    excerpt.trim_matches('…')
 }
 
 /// Runs the degraded search a caller would get with the vector store down.
@@ -416,6 +456,236 @@ async fn wording_removed_by_a_new_version_stops_being_findable() {
         1,
         "the new version's text is not searchable; the prune removed more than it should have"
     );
+
+    drop(db);
+}
+
+/// **`ENC-529`** — a content hit carries a quotation of the passage that matched, and the quotation
+/// is text the document actually contains.
+///
+/// The punctuation is the assertion. `Clause 7.2(b)` is *made of* its punctuation, and the obvious
+/// implementation — `ts_headline` over the expression migrations 0012 and 0013 index — returns
+/// `Clause 7 2 b`, which no document contains and which a caller cannot find in the file they are
+/// then shown. `crates/search/src/excerpt.rs` records why both `ts_headline` forms were rejected;
+/// this is that decision asserted end to end, through the real query, against text written by the
+/// real writer.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL with migrations 0001–0013; CI runs it with --include-ignored"]
+async fn a_content_hit_quotes_the_document_including_the_punctuation_the_index_strips() {
+    let (db, fixtures, pool) = start().await;
+    let alpha = fixtures.alpha.id;
+    let caller = fixtures.alpha.member;
+    let mut admin = db.connect().await.expect("admin connection");
+
+    let body = "Clause 7.2(b) sets out the perihelion review procedure, and Schedule 4 names the \
+                reviewers who must sign it off before the end of the accounting period.";
+    let file =
+        file_with_body(&mut admin, alpha, fixtures.alpha.owner, "record-one.txt", body).await;
+    for action in ["file.metadata_read", "file.content_read"] {
+        grant_action(&mut admin, alpha, file, caller, action).await;
+    }
+
+    let results = search(&pool, alpha, caller, "perihelion").await;
+
+    let excerpt =
+        hit_for(&results, file).excerpt.clone().expect("a content hit carries a quotation");
+    assert!(
+        body.contains(quoted(&excerpt)),
+        "the excerpt is not text from the document.\n  document: {body:?}\n  excerpt:  {excerpt:?}"
+    );
+    assert!(
+        excerpt.to_lowercase().contains("perihelion"),
+        "the excerpt does not contain the word that caused the hit: {excerpt:?}"
+    );
+    assert!(
+        excerpt.contains("7.2(b)"),
+        "the excerpt was cut from the punctuation-stripped form the index matches on: {excerpt:?}"
+    );
+
+    drop(db);
+}
+
+/// **S6, on the degraded path** (`docs/12 §4.3`) — a `MetadataRead`-only caller gets the hit and no
+/// excerpt, and cannot tell that from a document that simply had none.
+///
+/// `plans/M3-THREAT-WALKTHROUGH.md §2.5` states the property this defends: distinguishing a withheld
+/// excerpt from an absent one would say *there is content here you may not see*, which is a fact
+/// about a document the caller cannot read. `Confirmed::excerpt` is `Option<String>` and `None`
+/// deliberately means both things; before `ENC-529` that was cheap to honour on this path, because
+/// the lexical generator never produced an excerpt at all.
+///
+/// Three files, so the assertion is about disclosure rather than about absence:
+///
+/// - `withheld` matched on its **body** and the caller holds `MetadataRead` only. There is a
+///   quotation and they do not get it.
+/// - `unquotable` matched on its **name**. The caller holds both actions and there is still no
+///   excerpt, because nothing in the body matched and a snippet cut from a filename would say
+///   nothing the hit does not already carry.
+/// - `readable` matched on its body with both actions granted. **This one is the reason the test is
+///   worth running**: without it every assertion below passes against the pre-`ENC-529` code, which
+///   returned `None` for everything.
+///
+/// The difference between the first two exists in exactly one place, and it is operator-facing:
+/// `DropCounts::excerpt_withheld`. Nothing in what the caller receives distinguishes them.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL with migrations 0001–0013; CI runs it with --include-ignored"]
+async fn a_metadata_only_caller_gets_no_excerpt_and_cannot_tell_it_from_a_document_with_none() {
+    let (db, fixtures, pool) = start().await;
+    let alpha = fixtures.alpha.id;
+    let caller = fixtures.alpha.member;
+    let owner = fixtures.alpha.owner;
+    let mut admin = db.connect().await.expect("admin connection");
+
+    let body = "The supplier shall provide an indemnity against third-party claims.";
+
+    let withheld = file_with_body(&mut admin, alpha, owner, "record-one.txt", body).await;
+    grant_action(&mut admin, alpha, withheld, caller, "file.metadata_read").await;
+
+    let unquotable = file_with_body(
+        &mut admin,
+        alpha,
+        owner,
+        "indemnity-summary.txt",
+        "A short administrative note with nothing relevant in it.",
+    )
+    .await;
+    let readable = file_with_body(&mut admin, alpha, owner, "record-three.txt", body).await;
+    for file in [unquotable, readable] {
+        for action in ["file.metadata_read", "file.content_read"] {
+            grant_action(&mut admin, alpha, file, caller, action).await;
+        }
+    }
+
+    let results = search(&pool, alpha, caller, "indemnity").await;
+
+    assert_eq!(results.hits().len(), 3, "all three files are hits: {:?}", results.hits());
+
+    // The control, first: if this is `None` the test below proves nothing, because it would pass
+    // against an implementation that never produces an excerpt at all.
+    let quotation = hit_for(&results, readable)
+        .excerpt
+        .clone()
+        .expect("a caller holding ContentRead over a body match must receive the quotation");
+    assert!(body.contains(quoted(&quotation)), "the control's excerpt is not from the document");
+
+    assert_eq!(
+        hit_for(&results, withheld).excerpt,
+        None,
+        "the excerpt reached a caller who may know the document exists and may not read it"
+    );
+    assert_eq!(
+        hit_for(&results, unquotable).excerpt,
+        None,
+        "a file matched by its name alone has no matched passage, so it has nothing to quote"
+    );
+    assert_eq!(
+        hit_for(&results, withheld).excerpt,
+        hit_for(&results, unquotable).excerpt,
+        "a withheld excerpt is distinguishable from an absent one, which tells the caller there is \
+         content here they may not see"
+    );
+
+    // The distinction exists exactly once, and it is for the operator watching disclosure narrow.
+    assert_eq!(
+        results.counts().excerpt_withheld,
+        1,
+        "the withheld quotation was not reported; an operator cannot see the ContentRead gate firing"
+    );
+    assert_eq!(results.counts().unauthorized, 0, "nobody was dropped: all three are visible hits");
+
+    drop(db);
+}
+
+/// The quotation comes from the chunk that matched, not from the beginning of the document.
+///
+/// This is the failure `ts_headline` over the raw text produces silently: its tokenization disagrees
+/// with the indexed one, it finds nothing to highlight, and rather than saying so it returns the
+/// **opening words of the document** — handed to a caller as the passage that answered their query.
+/// Three paragraphs, three chunks, and the query word only in the last one; the first paragraph
+/// carries a word that must not appear.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL with migrations 0001–0013; CI runs it with --include-ignored"]
+async fn the_quotation_is_cut_from_the_chunk_that_matched_and_not_from_the_first_one() {
+    let (db, fixtures, pool) = start().await;
+    let alpha = fixtures.alpha.id;
+    let caller = fixtures.alpha.member;
+    let mut admin = db.connect().await.expect("admin connection");
+
+    let opening = "This agreement is made between the parties named in Schedule 1.";
+    let closing = "Employees may claim the tantalum allowance each quarter, in arrears.";
+    let file = file_with_paragraphs(
+        &mut admin,
+        alpha,
+        fixtures.alpha.owner,
+        "record-one.txt",
+        &[opening, "The parties agree to the terms set out below.", closing],
+    )
+    .await;
+    for action in ["file.metadata_read", "file.content_read"] {
+        grant_action(&mut admin, alpha, file, caller, action).await;
+    }
+
+    let results = search(&pool, alpha, caller, "tantalum").await;
+
+    let excerpt =
+        hit_for(&results, file).excerpt.clone().expect("a content hit carries a quotation");
+    assert!(
+        closing.contains(quoted(&excerpt)),
+        "the excerpt did not come from the chunk that matched.\n  matched: {closing:?}\n  \
+         excerpt: {excerpt:?}"
+    );
+    assert!(
+        !excerpt.contains("Schedule 1"),
+        "the excerpt is the opening of the document dressed as the passage that matched: {excerpt:?}"
+    );
+
+    drop(db);
+}
+
+/// Two identical searches return the identical quotation.
+///
+/// Rank ties between chunks are ordinary — two paragraphs of one document each containing the query
+/// word once score the same — and without a total order in the `DISTINCT ON`'s `ORDER BY`,
+/// PostgreSQL may return either. That is a document whose quotation changes between two identical
+/// searches, which is reported as "search changed its mind" and reproduced by nobody. The fixture is
+/// built to be exactly that tie.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL with migrations 0001–0013; CI runs it with --include-ignored"]
+async fn a_tie_between_two_matching_chunks_is_broken_the_same_way_every_time() {
+    let (db, fixtures, pool) = start().await;
+    let alpha = fixtures.alpha.id;
+    let caller = fixtures.alpha.member;
+    let mut admin = db.connect().await.expect("admin connection");
+
+    let first = "The tantalum allowance is paid each quarter.";
+    let second = "The tantalum entitlement is reviewed each year.";
+    let file = file_with_paragraphs(
+        &mut admin,
+        alpha,
+        fixtures.alpha.owner,
+        "record-one.txt",
+        &[first, second],
+    )
+    .await;
+    for action in ["file.metadata_read", "file.content_read"] {
+        grant_action(&mut admin, alpha, file, caller, action).await;
+    }
+
+    let expected = search(&pool, alpha, caller, "tantalum").await;
+    let expected = hit_for(&expected, file).excerpt.clone().expect("a quotation");
+    assert!(
+        first.contains(quoted(&expected)),
+        "the lowest ordinal must win a rank tie, so the quotation is the earlier passage: {expected:?}"
+    );
+
+    for _ in 0..5 {
+        let again = search(&pool, alpha, caller, "tantalum").await;
+        assert_eq!(
+            hit_for(&again, file).excerpt.as_deref(),
+            Some(expected.as_str()),
+            "the same query quoted a different passage on a repeat run"
+        );
+    }
 
     drop(db);
 }

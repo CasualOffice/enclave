@@ -25,6 +25,12 @@ uuid         = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
+# The database-backed tests here used to run against whatever `DATABASE_URL` named, and relied on
+# some *other* crate's test having migrated it first. Both halves were wrong: the ordering was an
+# accident of the order Cargo runs test binaries in, and the migration it depended on was the one
+# that poisoned a developer's dev stack with checksums from an unmerged branch (`ENC-504`). They
+# get a throwaway database from the harness now, like every other database-backed test.
+enclave-testing = { workspace = true }
 
 [lints]
 workspace = true

@@ -19,6 +19,33 @@
 //! Because each binary gets its own database, test binaries can run in parallel without seeing each
 //! other's rows — which matters, since `cargo test` runs them concurrently by default.
 //!
+//! # What the harness does to the database `DATABASE_URL` names
+//!
+//! **It never applies a migration to it, and never creates a table in it** (`ENC-504`). That is not
+//! a nicety. `DATABASE_URL` locally is a developer's dev-stack database, and a migration applied to
+//! it records that migration's *checksum*. Edit an unmerged migration, run the tests, switch
+//! branches, and every later run fails the forward-only checksum gate on a migration you are no
+//! longer touching — the gate is right, the state it is comparing against was written by the test
+//! run itself. It cost three interruptions in one afternoon before it was removed as a class.
+//!
+//! What is left, and why each is safe:
+//!
+//! * **`CREATE DATABASE` / `DROP DATABASE`.** Cluster-level statements have to be issued from
+//!   inside *some* database, and this is the only one the harness is given. They add and remove
+//!   entries in `pg_database`; they write nothing inside the administrative database.
+//! * **A session-level advisory lock** (`SETUP_LOCK`), taken and released on a connection this
+//!   crate owns. Advisory locks live in shared memory and are gone when the session ends.
+//! * **`pg_terminate_backend`** against connections to the throwaway database, so `DROP DATABASE`
+//!   is not blocked by a pool that has not finished closing.
+//! * **Three cluster-wide roles**, created by migration `0001` inside the throwaway database.
+//!   Roles are cluster objects rather than database objects, so they outlive it. This is
+//!   unavoidable — it is the migration's own behaviour, not the harness's — and it is what
+//!   `SETUP_LOCK` exists to serialise (`ENC-116`).
+//!
+//! `tests/shared_database.rs` asserts this by measurement rather than by reading the code: it
+//! points a whole harness lifecycle at an empty stand-in database and then asserts that stand-in
+//! came out with no `_sqlx_migrations` and no tables.
+//!
 //! ```no_run
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let db = enclave_testing::TestDb::start().await?;
@@ -175,25 +202,73 @@ impl fmt::Debug for TestDb {
     }
 }
 
+/// Whether [`TestDb`] applies the workspace's migrations to the database it creates.
+///
+/// Only ever `Skip` for the one caller that needs a database with *nothing* in it: the proof that
+/// the harness leaves the database it was pointed at alone, which needs a stand-in that cannot
+/// already satisfy the assertion.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Migrations {
+    Apply,
+    Skip,
+}
+
 impl TestDb {
     /// Creates a fresh database, applies every migration, and returns a handle to it.
+    ///
+    /// The database named by `DATABASE_URL` is used only to issue `CREATE DATABASE`; nothing is
+    /// migrated or written there (see the module documentation).
     ///
     /// # Errors
     ///
     /// [`HarnessError::NoDatabaseUrl`] when `DATABASE_URL` is unset, and connection or migration
     /// failures otherwise.
     pub async fn start() -> Result<Self, HarnessError> {
-        let admin_url = std::env::var("DATABASE_URL")
-            .ok()
-            .filter(|u| !u.trim().is_empty())
-            .ok_or(HarnessError::NoDatabaseUrl)?;
+        Self::create(&admin_url_from_env()?, Migrations::Apply).await
+    }
+
+    /// Creates a fresh, migrated database using `admin_url` in place of `DATABASE_URL`.
+    ///
+    /// The seam that lets a test point the whole lifecycle at a database it is willing to have
+    /// inspected afterwards — which is how `tests/shared_database.rs` proves the claim above by
+    /// measurement instead of by reading this file. Ordinary tests want [`TestDb::start`].
+    ///
+    /// The setup lock is still taken on the database `DATABASE_URL` names, not on `admin_url` — see
+    /// `TestDb::create` for why one fixed database is the only arrangement that serialises anything.
+    /// So `DATABASE_URL` must still be reachable when it is set, which it is wherever this is used.
+    ///
+    /// # Errors
+    ///
+    /// Connection or migration failures.
+    pub async fn start_on(admin_url: &str) -> Result<Self, HarnessError> {
+        Self::create(admin_url, Migrations::Apply).await
+    }
+
+    /// Creates a fresh database and does **not** migrate it.
+    ///
+    /// One caller: `tests/shared_database.rs`, which needs a genuinely empty database to stand in
+    /// for `DATABASE_URL`'s so that "nothing was written here" is a claim with one way to be true.
+    /// Every other caller wants [`TestDb::start`] — [`TestDb::seed`] fails against one of these,
+    /// because there is no schema to seed into.
+    ///
+    /// Note that migrating one of these by hand runs `CREATE ROLE` outside the setup lock, which is
+    /// the `ENC-116` race. Use [`TestDb::start_on`] to get a migrated database instead.
+    ///
+    /// # Errors
+    ///
+    /// [`HarnessError::NoDatabaseUrl`] when `DATABASE_URL` is unset, and connection failures
+    /// otherwise.
+    pub async fn start_unmigrated() -> Result<Self, HarnessError> {
+        Self::create(&admin_url_from_env()?, Migrations::Skip).await
+    }
+
+    async fn create(admin_url: &str, migrations: Migrations) -> Result<Self, HarnessError> {
+        let admin_url = admin_url.to_owned();
 
         // Unique per handle, so parallel test binaries cannot collide. Truncated because
         // PostgreSQL identifiers stop at 63 bytes.
         let suffix = Uuid::new_v4().simple().to_string();
         let name = format!("enclave_test_{}", &suffix[..16]);
-
-        let mut admin = connect(&admin_url).await?;
 
         // Serialise setup across every TestDb in this cluster.
         //
@@ -208,35 +283,68 @@ impl TestDb {
         // tracked as ENC-116; this makes the harness deterministic without editing history or
         // weakening the gate that forbids it.
         //
+        // It is held on its **own** connection, to the database `DATABASE_URL` names, and not on
+        // the connection that issues the DDL. PostgreSQL advisory locks are scoped to a database —
+        // the lock tag carries the database OID — so two sessions attached to different databases
+        // never conflict. `CREATE ROLE` is cluster-wide, so a lock taken per-`admin_url` would
+        // serialise nothing across `start_on`. One fixed database means one queue.
+        //
         // Session-level, on a connection this function owns for its whole duration, so it is
-        // released when `admin` closes even if we return early.
-        sqlx::query("SELECT pg_advisory_lock($1)").bind(SETUP_LOCK).execute(&mut admin).await?;
+        // released when that connection closes even if we return early.
+        let lock_url = admin_url_from_env().unwrap_or_else(|_| admin_url.clone());
+        let mut lock = connect(&lock_url).await?;
+        sqlx::query("SELECT pg_advisory_lock($1)").bind(SETUP_LOCK).execute(&mut lock).await?;
 
-        let result = Self::create_and_migrate(&admin_url, &name, &mut admin).await;
+        // Not `?`: an early return here would leave the lock to be released by `lock`'s destructor
+        // rather than by the statement below, and a lock whose release is a side effect of a drop
+        // is one nobody can reason about when it is the thing under suspicion.
+        let result = match connect(&admin_url).await {
+            Ok(mut admin) => {
+                let created =
+                    Self::create_and_migrate(&admin_url, &name, &mut admin, migrations).await;
+                let _ignored = admin.close().await;
+                created
+            }
+            Err(error) => Err(error),
+        };
 
         let _ignored =
-            sqlx::query("SELECT pg_advisory_unlock($1)").bind(SETUP_LOCK).execute(&mut admin).await;
-        let _ignored = admin.close().await;
+            sqlx::query("SELECT pg_advisory_unlock($1)").bind(SETUP_LOCK).execute(&mut lock).await;
+        let _ignored = lock.close().await;
 
-        let url = result?;
+        let url = match result {
+            Ok(url) => url,
+            Err(error) => {
+                // The database may already exist: `CREATE DATABASE` succeeded and the migration
+                // then failed. Nothing else will ever hold this name, so if it is not removed here
+                // it is an orphan nobody can attribute — and a week of failed runs fills a cluster
+                // with them. Dropped on the way out rather than left for `Drop`, because the handle
+                // that `Drop` belongs to is never constructed on this path.
+                drop_database(&admin_url, &name).await;
+                return Err(error);
+            }
+        };
         Ok(Self { admin_url, name, url })
     }
 
-    /// Creates the database and applies migrations, with the setup lock already held.
+    /// Creates the database and, unless told otherwise, applies migrations — setup lock held.
     async fn create_and_migrate(
         admin_url: &str,
         name: &str,
         admin: &mut PgConnection,
+        migrations: Migrations,
     ) -> Result<String, HarnessError> {
         // The name is generated from a UUID, never from caller input, so interpolating it is safe —
         // and CREATE DATABASE cannot take a bind parameter anyway.
         exec(admin, format!(r#"CREATE DATABASE "{name}""#)).await?;
 
         let url = swap_database(admin_url, name);
-        let mut conn = connect(&url).await?;
-        let migrated = enclave_db::run_migrations_on(&mut conn).await;
-        let _ignored = conn.close().await;
-        migrated?;
+        if migrations == Migrations::Apply {
+            let mut conn = connect(&url).await?;
+            let migrated = enclave_db::run_migrations_on(&mut conn).await;
+            let _ignored = conn.close().await;
+            migrated?;
+        }
 
         Ok(url)
     }
@@ -356,19 +464,35 @@ impl Drop for TestDb {
                 Ok(runtime) => runtime,
                 Err(_) => return,
             };
-            runtime.block_on(async {
-                if let Ok(mut admin) = connect(&admin_url).await {
-                    let terminate = format!(
-                        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '{name}'"
-                    );
-                    let _ignored = exec(&mut admin, terminate).await;
-                    let _ignored =
-                        exec(&mut admin, format!(r#"DROP DATABASE IF EXISTS "{name}""#)).await;
-                    let _ignored = admin.close().await;
-                }
-            });
+            runtime.block_on(drop_database(&admin_url, &name));
         });
         let _ignored = handle.join();
+    }
+}
+
+/// `DATABASE_URL`, or the error that says how to get one.
+fn admin_url_from_env() -> Result<String, HarnessError> {
+    std::env::var("DATABASE_URL")
+        .ok()
+        .filter(|u| !u.trim().is_empty())
+        .ok_or(HarnessError::NoDatabaseUrl)
+}
+
+/// Best-effort removal of a throwaway database.
+///
+/// Silent about every failure, because both callers are cleanup paths: `Drop`, which cannot report
+/// anything, and the abort path in `TestDb::create`, where the migration error is the one worth
+/// keeping. [`TestDb::cleanup`] is the variant that tells you.
+async fn drop_database(admin_url: &str, name: &str) {
+    if let Ok(mut admin) = connect(admin_url).await {
+        // Terminate stragglers first: a pool that has not finished dropping will otherwise hold the
+        // database open and DROP will fail, leaking a database per test run.
+        let terminate = format!(
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '{name}'"
+        );
+        let _ignored = exec(&mut admin, terminate).await;
+        let _ignored = exec(&mut admin, format!(r#"DROP DATABASE IF EXISTS "{name}""#)).await;
+        let _ignored = admin.close().await;
     }
 }
 

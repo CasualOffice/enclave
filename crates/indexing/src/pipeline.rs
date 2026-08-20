@@ -221,36 +221,41 @@ impl<E: Extractor> Pipeline<E> {
             }
         };
 
-        // An early exit, and **not** the guarantee — measured, not assumed. Removing this block
-        // leaves every test in this module green, because the chunker skips whitespace-only
-        // segments and the `NonZeroU32` gate below then refuses the `Ready`. What this buys is not
-        // correctness but work: nine hundred blank pages are not chunked before being discarded.
-        //
-        // It is kept for that reason and labelled, rather than deleted or left to look load-bearing.
-        // The thing that actually makes READY-with-nothing-in-it unreachable is the type.
-        if document.is_empty() {
-            return Ok(Prepared {
-                outcome: Outcome::NoText(textless(&document)),
-                chunks: Vec::new(),
-            });
-        }
+        Ok(decide(version, &self.chunker, &document))
+    }
+}
 
-        let chunks = self.chunker.chunk(version, &document.segments);
+/// Chunks an already-extracted document and decides what the manifest should say.
+///
+/// Split out of [`Pipeline::prepare`] so there is **one** place the `NonZeroU32` gate lives. OCR
+/// (`crate::ocr`) extracts by a different route — page images through a second extractor — and a
+/// second copy of this decision is how one of the two eventually reaches `READY` over an empty
+/// document while the other still refuses to.
+pub(crate) fn decide(version: VersionId, chunker: &Chunker, document: &TextDocument) -> Prepared {
+    // An early exit, and **not** the guarantee — measured, not assumed. Removing this block leaves
+    // every test in this module green, because the chunker skips whitespace-only segments and the
+    // `NonZeroU32` gate below then refuses the `Ready`. What this buys is not correctness but work:
+    // nine hundred blank pages are not chunked before being discarded.
+    //
+    // It is kept for that reason and labelled, rather than deleted or left to look load-bearing.
+    // The thing that actually makes READY-with-nothing-in-it unreachable is the type.
+    if document.is_empty() {
+        return Prepared { outcome: Outcome::NoText(textless(document)), chunks: Vec::new() };
+    }
 
-        // **This is the guarantee.** `NonZeroU32::new(0)` is `None`, so there is no path from an
-        // empty chunk list to `Outcome::Ready` — not a check that can be reordered away, but the
-        // only constructor the variant has. Verified by deliberate violation: replacing this with
-        // `unwrap_or(NonZeroU32::MIN)` makes `a_document_of_blank_pages_is_never_ready` fail by
-        // name, while removing the `is_empty` block above changes nothing.
-        let produced = u32::try_from(chunks.len()).ok().and_then(NonZeroU32::new);
-        match produced {
-            Some(chunks_produced) => {
-                Ok(Prepared { outcome: Outcome::Ready { chunks: chunks_produced }, chunks })
-            }
-            None => {
-                Ok(Prepared { outcome: Outcome::NoText(textless(&document)), chunks: Vec::new() })
-            }
+    let chunks = chunker.chunk(version, &document.segments);
+
+    // **This is the guarantee.** `NonZeroU32::new(0)` is `None`, so there is no path from an empty
+    // chunk list to `Outcome::Ready` — not a check that can be reordered away, but the only
+    // constructor the variant has. Verified by deliberate violation: replacing this with
+    // `unwrap_or(NonZeroU32::MIN)` makes `a_document_of_blank_pages_is_never_ready` fail by name,
+    // while removing the `is_empty` block above changes nothing.
+    let produced = u32::try_from(chunks.len()).ok().and_then(NonZeroU32::new);
+    match produced {
+        Some(chunks_produced) => {
+            Prepared { outcome: Outcome::Ready { chunks: chunks_produced }, chunks }
         }
+        None => Prepared { outcome: Outcome::NoText(textless(document)), chunks: Vec::new() },
     }
 }
 

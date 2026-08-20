@@ -1,6 +1,6 @@
 # 07 — Search & Indexing
 
-> **Status:** Draft · **Version:** 1.3 · **Owner:** Search Engineering · **Last updated:** 2026-08-21
+> **Status:** Draft · **Version:** 1.5 · **Owner:** Search Engineering · **Last updated:** 2026-08-21
 > **Authoritative for:** the indexing pipeline, Milvus schema, permission-aware retrieval, ACL invalidation, rebuild.
 
 ## 1. Position of the index
@@ -44,7 +44,7 @@ without duplicating chunks: chunk IDs are deterministic,
 
 | Format | Extractor | Notes |
 |---|---|---|
-| PDF | `pdfium`/`pdf-extract` | Per-page text with coordinates; OCR fallback when a page yields no text |
+| PDF | `pdfium`/`pdf-extract` | Per-page text with coordinates. **OCR is a stage, not a fallback** — `plans/M3-DISCOVERY.md` D24 overrode the wording that stood here: a page yielding no text hands `pages_without_text` to OCR as a work list, and if OCR recovers nothing the version is recorded `FAILED`, never `READY` with nothing in it. A scanned PDF that indexes as empty is invisible to search while appearing correctly filed, which is worse than one that visibly failed to ingest |
 | DOCX/PPTX/XLSX | OOXML parser | Headings, slide titles, sheet and range coordinates |
 | TXT/Markdown/HTML | Native | HTML sanitized before extraction |
 | CSV/JSON | Structured reader | Row groups and key paths as chunk boundaries |
@@ -220,6 +220,47 @@ This layer is **mandatory and unconditional**. It is what makes the guarantee, a
 `acl_tokens` may be treated as an optimization. It costs one indexed batch query per search — a
 `WHERE (tenant_id, file_id) IN (...)` against the effective-permission path, typically under 10 ms
 for 200 candidates.
+
+**An absent excerpt and a withheld one are the same value.** A caller who may know a document exists
+but not read it receives `excerpt: null` — exactly what a document with no quotable passage yields.
+Distinguishing them would tell the caller *there is content here you may not see*, which is a fact
+about a document they may not read. The distinction exists once, in the operator-facing
+`enclave_search_postfilter_excerpts_withheld_total` counter, and nowhere in a response.
+
+#### 6.2.1 What an excerpt is
+
+An excerpt is a **verbatim, contiguous substring of the indexed text of one chunk**, containing at
+least one term the query matched on, cut at word boundaries, bounded in length, and marked with `…`
+at whichever end text was elided. If the matched term cannot be located in that chunk by the same
+rule the index matched on, **there is no excerpt**.
+
+That last clause is the design, not a caveat. Both obvious implementations are wrong:
+
+- `ts_headline` over the **indexed expression** — the `regexp_replace(…, '[^[:alnum:]]+', ' ', 'g')`
+  form that `migrations/0012` and `migrations/0013` index and that `crates/search/src/lexical.rs`
+  queries — highlights the right span and returns `Clause 7 2 b`. That is not a sentence any
+  document contains, and a clause number is *made of* its punctuation.
+- `ts_headline` over the **raw text** returns real sentences and is a second tokenization. The
+  default parser reads `clause-7.2(b)` as one indivisible token, which is why the index normalizes
+  first; a `tsquery` term of `clause` therefore matches nothing in the raw text, and `ts_headline`
+  responds by returning **the opening words of the document** — handed to the caller as the passage
+  that answered their query, with no error anywhere.
+
+So the span is located by restating the indexed rule (a term is the lowercase of a maximal
+alphanumeric run; `simple` neither stems nor drops stopwords) and the excerpt is cut from the raw
+text at the located offsets. Where that restatement and PostgreSQL's tokenizer could disagree, the
+result is `null` — the same value the `ContentRead` gate already produces, so the disagreement can
+never become a disclosure.
+
+The window is **not** snapped to sentence boundaries: a sentence end requires knowing the language,
+and `14-I18N-L10N.md` has tenants in many. That is the same argument `migrations/0012` makes for
+choosing `simple` over a stemmer, and it lands the same way — a wrong guess fails silently.
+
+No markup is produced by retrieval. `05-API.md §11`'s `<em>` is the API layer's, applied from
+offsets — interpolating document content into a markup string in the retrieval crate is how stored
+XSS gets delivered.
+
+`crates/search/src/excerpt.rs` is the implementation and carries the same argument at length.
 
 ### 6.3 Layer 3 — active invalidation
 
