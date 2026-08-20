@@ -207,7 +207,7 @@ pub(crate) fn run() -> Result<()> {
     let sources = load_sources(&src, &root)
         .with_context(|| format!("reading Rust sources under {}", src.display()))?;
 
-    let mut report = analyze(&sources)?;
+    let report = analyze(&sources)?;
 
     // Checked before the enforce rule, because the answer for `/metrics` is not "allowlist it".
     if let Some(route) = telemetry_route(&report) {
@@ -233,7 +233,6 @@ pub(crate) fn run() -> Result<()> {
     let separate: Vec<&Route> =
         report.routes.iter().filter(|route| route.file == METRICS_LISTENER).collect();
     let separate_count = separate.len();
-    report.violations.retain(|violation| violation.route.file != METRICS_LISTENER);
 
     println!("policy-routing — every Axum route handler must reach PolicyEngine::enforce");
     println!("  rule: CLAUDE.md rule 1, docs/12-TESTING.md §5, plans/M0-FOUNDATIONS.md ENC-110");
@@ -396,6 +395,13 @@ pub(crate) fn analyze(sources: &[(String, String)]) -> Result<Report> {
     let mut report = Report { routes, ..Report::default() };
 
     for route in &report.routes {
+        // The metrics listener is a different router on a different socket. There is no policy
+        // chain for its handler to reach and no tenant to reach it for, so the enforce rule does
+        // not apply — skipped here rather than in `run` so that this function is the single answer
+        // and a caller cannot get a different verdict by asking directly.
+        if route.file == METRICS_LISTENER {
+            continue;
+        }
         let Some(handler) = route.handler.clone() else {
             report
                 .violations
