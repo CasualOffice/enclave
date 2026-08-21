@@ -612,3 +612,90 @@ async fn a6_a_signed_url_stops_working_at_expiry_and_replays_until_then() {
          control for a URL that cannot be revoked, and it is not being enforced"
     );
 }
+
+// ---------------------------------------------------------------------------
+// From what an operator writes to bytes in a bucket (`ENC-562`).
+// ---------------------------------------------------------------------------
+
+/// The whole chain, end to end: `enclave.yaml` → `ConfigLoader` → `S3Config` → a live store.
+///
+/// This is the assertion that closes `ENC-562`. Everything else in this file starts from an
+/// `S3Config` built in Rust, which proves the *client* works and says nothing about whether a
+/// deployment can reach one — and for three milestones it could not: `enclave-config` modelled no
+/// `storage:` section, so `crates/worker/src/main.rs::object_store` returned `None`, the indexing
+/// pass was never scheduled, and `chunk_text` stayed empty in every real deployment.
+///
+/// So the configuration here is *text*, loaded through the same three layers a binary loads, and
+/// the credentials are `env://` references resolved by the same `SecretRegistry` production uses —
+/// no literal, and no shortcut past the part that was broken.
+///
+/// # Deliberate violation
+///
+/// Reverting `S3Config::from_operator_config` to `S3Config::new(bucket, region, …)` — dropping the
+/// endpoint and the flavor, which is the shape of a conversion that forgets a field — fails here
+/// against MinIO with a DNS or signature error rather than passing quietly, because the round trip
+/// at the end needs every one of them.
+#[tokio::test]
+#[ignore = "requires the dev-stack MinIO and TEST_S3_*; CI runs it with --include-ignored"]
+async fn an_operator_configuration_file_produces_a_working_store() {
+    // A bucket to point the configuration at, created the only way a `BlobStore` cannot.
+    let (fixture_config, _admin, _) = fixture().await;
+    let bucket = fixture_config.bucket.clone();
+    let endpoint = fixture_config.endpoint.clone().expect("the fixture sets an endpoint");
+
+    let yaml = format!(
+        "
+storage:
+  provider: s3
+  s3:
+    bucket: {bucket}
+    region: us-east-1
+    endpoint: {endpoint}
+    flavor: minio
+    path_style: true
+    access_key_id: env://{ACCESS_KEY}
+    secret_access_key: env://{SECRET_KEY}
+    signed_url_ttl: 5m
+    max_signed_url_ttl: 1h
+"
+    );
+
+    let loaded = enclave_config::ConfigLoader::new()
+        .without_env()
+        .with_yaml("enclave.yaml", yaml)
+        .load()
+        .expect("an operator's storage section must load and validate");
+
+    // Resolution reports by field path, at startup, exactly as a binary does — so a wrong Vault
+    // path fails while somebody is watching the deploy rather than at the first upload.
+    let secrets = SecretRegistry::local();
+    let resolved = loaded
+        .resolve_secrets(&secrets)
+        .await
+        .expect("the credential references must resolve through the registry");
+    assert!(
+        resolved.paths().any(|path| path == "storage.s3.secret_access_key"),
+        "the S3 secret must be enrolled by field path: {:?}",
+        resolved.paths().collect::<Vec<_>>()
+    );
+
+    let section = loaded.config().storage.s3.as_ref().expect("provider s3 carries a block");
+    let store = S3BlobStore::connect_and_verify(S3Config::from_operator_config(section), &secrets)
+        .await
+        .expect("the store described by the configuration must connect and be private");
+
+    // Bytes, not a handshake. A `connect` that succeeded against a misconfigured endpoint would
+    // still fail the first real read, which is the failure this test exists to make impossible.
+    let key = store_an_object(&store, b"hello world").await;
+
+    let bytes = store
+        .read_range(key.as_str(), ByteRange::from(0))
+        .await
+        .expect("read the object back")
+        .collect_bounded(1024)
+        .await
+        .expect("the object is small");
+    assert_eq!(&bytes[..], b"hello world");
+
+    store.delete(key.as_str()).await.expect("clean up");
+}

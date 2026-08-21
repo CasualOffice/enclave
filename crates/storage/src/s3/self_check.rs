@@ -21,7 +21,7 @@ impl PublicAccessCheck for S3BlobStore {
         let endpoint = config.endpoint.as_ref().map(ToString::to_string);
         let mut report = ReportBuilder::new(config.bucket.clone(), endpoint);
 
-        if config.flavor.has_aws_public_access_apis() {
+        if crate::s3::config::has_aws_public_access_apis(config.flavor) {
             self.probe_public_access_block(&mut report).await;
             self.probe_bucket_policy_status(&mut report).await;
         }

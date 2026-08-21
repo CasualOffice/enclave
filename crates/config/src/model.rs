@@ -8,10 +8,10 @@
 //! * every field that names a credential is a [`SecretRef`], so an inline value is a type error
 //!   before it is a validation error (CLAUDE.md rule 11).
 //!
-//! Sections not modelled yet (storage, search, embedding, preview, sync, mcp, quotas, identity,
-//! mail) are deliberately *not* rejected: they land in later milestones, and an operator who writes
-//! a complete file today should not be blocked. They are still scanned for inline credentials,
-//! which is the part that matters for security.
+//! Sections not modelled yet (embedding, preview, sync, mcp, quotas, identity, mail) are
+//! deliberately *not* rejected: they land in later milestones, and an operator who writes a
+//! complete file today should not be blocked. They are still scanned for inline credentials, which
+//! is the part that matters for security.
 
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
@@ -55,10 +55,16 @@ impl DeploymentProfile {
 pub struct Config {
     /// Which capability promises this deployment makes.
     pub profile: DeploymentProfile,
-    /// HTTP listener and proxy trust.
+    /// HTTP listener and proxy trust. Read by `enclave-api`; a worker has no such listener.
     pub server: ServerConfig,
+    /// Where each process serves its Prometheus exposition.
+    pub metrics: MetricsConfig,
     /// PostgreSQL — the authoritative store.
     pub database: DatabaseConfig,
+    /// Object storage for versions and renditions.
+    pub storage: StorageConfig,
+    /// The vector store behind hybrid search.
+    pub search: SearchConfig,
     /// Redis, used for caching and rate limiting.
     pub redis: RedisConfig,
     /// NATS JetStream, the outbox destination.
@@ -150,6 +156,19 @@ impl Config {
         push("events.nats_url", self.events.nats_url_ref());
         push("auth.signing_keys.key_ref", self.auth.signing_keys.key_ref.clone());
         push("security.password.pepper", self.security.password.pepper.clone());
+        // Object-storage credentials are enrolled here as well as being read by
+        // `enclave_storage::S3BlobStore::connect`, so that an unresolvable key is reported at
+        // startup, by field path, alongside every other unresolvable reference — rather than as
+        // the first upload's provider error. The mount *paths* above are deliberately not here;
+        // these are genuine credentials and the distinction is argued on `Config::ocr_models`.
+        if let Some(s3) = self.storage.s3.as_ref() {
+            push("storage.s3.access_key_id", Some(s3.access_key_id.clone()));
+            push("storage.s3.secret_access_key", Some(s3.secret_access_key.clone()));
+            push("storage.s3.session_token", s3.session_token.clone());
+        }
+        if let Some(milvus) = self.search.milvus.as_ref() {
+            push("search.milvus.token", milvus.token.clone());
+        }
         refs
     }
 
@@ -205,6 +224,10 @@ pub enum OcrMounts<'a> {
 }
 
 /// HTTP listener, public identity and proxy trust.
+///
+/// **`enclave-api` only.** Nothing here describes the worker, which serves no HTTP API and has no
+/// bind address, public URL or proxies to trust. That asymmetry is why the metrics listener moved
+/// out of this struct and into [`MetricsConfig`] (`ENC-566`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ServerConfig {
@@ -216,24 +239,6 @@ pub struct ServerConfig {
     /// The URL clients reach this deployment on, used for token issuer, cookie domain and links in
     /// mail. `None` means "derive from bind and port", which is only sane in development.
     pub public_url: Option<Url>,
-    /// Port for the metrics listener, or `None` to not serve metrics at all.
-    ///
-    /// **A separate listener, deliberately, and not a route on the API.** The exposition carries
-    /// `tenant_id` labels — which tenants exist, how much each searches, how far behind each one's
-    /// invalidation is. That is customer data in aggregate, and the policy-routing allowlist says in
-    /// its own words that an unauthenticated endpoint "must never include a detail that identifies a
-    /// tenant or a resource".
-    ///
-    /// Putting it on its own port is what lets an operator bind it to a private interface while the
-    /// API faces the world, without either a policy exemption that would be wrong or an
-    /// authentication scheme Prometheus would have to be taught. `None` by default: a deployment
-    /// that has not thought about where this port goes should not have it open.
-    pub metrics_port: Option<u16>,
-
-    /// Address for the metrics listener. Defaults to loopback, and should stay there unless the
-    /// scraper is on another host and the network between them is trusted.
-    pub metrics_bind: IpAddr,
-
     /// Networks whose forwarding headers may be believed, and how many hops each strips.
     ///
     /// Empty by default. An empty list means the peer address is the client address — the only safe
@@ -248,13 +253,91 @@ impl Default for ServerConfig {
         Self {
             bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
             port: 8080,
-            // Off unless a deployment asks for it. The exposition carries tenant labels, so a port
-            // nobody chose to open is a port that should not be open.
-            metrics_port: None,
-            metrics_bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
             public_url: None,
             trusted_proxies: Vec::new(),
         }
+    }
+}
+
+/// Where each process serves its Prometheus exposition (`docs/11-OPERATIONS.md §10.1`).
+///
+/// # Why this is its own section rather than a field on [`ServerConfig`]
+///
+/// It used to be `server.metrics_port`, and both binaries read it. One `enclave.yaml` on one host
+/// therefore asked the API and the worker to bind the *same* socket, and whichever started second
+/// died with `Address already in use` — at start-up, because the bind is a `?` (`ENC-566`). The
+/// monitoring stack had already worked around it: `deploy/monitoring/prometheus.yml` scrapes 9464
+/// for the API and 9465 for the worker, two ports the configuration had no way to express.
+///
+/// `server.*` was also simply the wrong home. A worker serves no HTTP API, so it has no `bind`, no
+/// `public_url` and no `trusted_proxies`; reading its listener out of the API's section made a
+/// worker inherit three fields that mean nothing to it.
+///
+/// # Why one section with two ports rather than two process sections
+///
+/// One [`bind`](Self::bind), because that is the security-relevant field — this exposition carries
+/// `tenant_id` labels and is unauthenticated by design, so which interface it faces must be one
+/// decision and not two that can drift apart. Two ports, named for the process that binds each,
+/// because a single file is read by both processes and the two numbers belong side by side: what
+/// `ENC-566` cost was precisely that nothing in the file showed the two listeners were related.
+///
+/// **Equal ports are not refused.** In a per-pod deployment the API and the worker do not share a
+/// port namespace and `9464` for both is correct (`docs/11-OPERATIONS.md §3.1`). Refusing equality
+/// here would break that deployment to protect the single-host one, so the shape makes the
+/// difference expressible and the operator chooses. On one host, give them different ports.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MetricsConfig {
+    /// Address both listeners bind. Defaults to loopback, and should stay there unless the scraper
+    /// is on another host and the network between them is trusted.
+    ///
+    /// **This is not an authenticated endpoint and never will be.** The exposition carries
+    /// `tenant_id` labels — which tenants exist, how much each searches, how far behind each one's
+    /// invalidation is. That is customer data in aggregate, and the policy-routing allowlist says
+    /// in its own words that an unauthenticated endpoint "must never include a detail that
+    /// identifies a tenant or a resource". A socket of its own is what lets an operator place it on
+    /// a private interface while the API faces the world, without either a policy exemption that
+    /// would be wrong or an authentication scheme Prometheus would have to be taught.
+    pub bind: IpAddr,
+
+    /// Port `enclave-api` serves its exposition on, or `None` to serve none.
+    ///
+    /// `None` by default: a deployment that has not thought about where this port goes should not
+    /// have it open.
+    pub api_port: Option<u16>,
+
+    /// Port `enclave-worker` serves its exposition on, or `None` to serve none.
+    ///
+    /// `None` by default, and the cost of leaving it unset is worth stating: the coverage probe's
+    /// gauges are process-wide statics published by whichever process ran the pass, so a worker
+    /// with no socket publishes them into a registry nothing scrapes. That reads as zero forever,
+    /// which is indistinguishable from healthy, and `SearchIndexCoverageUnreported` cannot clear.
+    pub worker_port: Option<u16>,
+}
+
+impl Default for MetricsConfig {
+    fn default() -> Self {
+        Self {
+            bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            // Off unless a deployment asks for it. The exposition carries tenant labels, so a port
+            // nobody chose to open is a port that should not be open.
+            api_port: None,
+            worker_port: None,
+        }
+    }
+}
+
+impl MetricsConfig {
+    /// The socket `enclave-api` should serve on, if any.
+    #[must_use]
+    pub fn api_addr(&self) -> Option<std::net::SocketAddr> {
+        self.api_port.map(|port| std::net::SocketAddr::new(self.bind, port))
+    }
+
+    /// The socket `enclave-worker` should serve on, if any.
+    #[must_use]
+    pub fn worker_addr(&self) -> Option<std::net::SocketAddr> {
+        self.worker_port.map(|port| std::net::SocketAddr::new(self.bind, port))
     }
 }
 
@@ -267,6 +350,225 @@ pub struct TrustedProxy {
     /// than taking the left-most `X-Forwarded-For` entry is what stops a client from prepending a
     /// forged address.
     pub hops: u8,
+}
+
+/// Object storage for versions and renditions (`docs/08-BYO-INFRA.md §3`).
+///
+/// # Why this section is here and `enclave_storage::S3Config` is not
+///
+/// `enclave-storage` depends on `enclave-config`, so the type an operator writes cannot live in
+/// the crate that builds a client from it without a dependency cycle. Three ways out were on the
+/// table and this is the one taken:
+///
+/// * **Invert the dependency** — `enclave-config` gains `enclave-storage`, and with it
+///   `aws-sdk-s3`. Every crate in the workspace depends on `enclave-config`, so every crate would
+///   compile the S3 SDK to read a password policy. Refused on that alone.
+/// * **Keep the subtree untyped** — a `serde_yaml::Value` handed to `enclave-storage` to
+///   deserialize at composition time. No duplication, and it costs the property this crate is
+///   built around: `ConfigLoader::load` reports *every* problem in one pass, and a typo in
+///   `storage.s3` would instead surface later, one at a time, in a binary's start-up sequence.
+/// * **A config-side struct plus a conversion in `enclave-storage`** — this one, and the same
+///   shape `db_config_from` in `crates/api/src/main.rs` already uses for the database. Its doc
+///   comment states the principle: `config` describes what an operator writes, the provider crate
+///   describes what a client needs, and collapsing them makes every client knob a public
+///   configuration surface.
+///
+/// So [`S3StorageConfig`] is deliberately **smaller** than `enclave_storage::S3Config`. It carries
+/// what an operator decides — which bucket, where, with which credential, and how long a signed URL
+/// may live — and not `multipart_threshold_bytes` or `part_size_bytes`, which are S3 protocol
+/// pacing with no correctness content and are exactly the "every knob becomes configuration" the
+/// separation exists to avoid. The conversion lives in `enclave-storage`, in one place, so the two
+/// shapes meet once; `crates/storage/src/s3/config.rs` holds it and the test that proves the
+/// documented example round-trips.
+///
+/// [`S3Flavor`] is **not** duplicated. It is a word an operator types (`flavor: minio`), and a
+/// vocabulary spelled in two crates is two spellings waiting to disagree, so it is defined here and
+/// re-exported by `enclave-storage`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StorageConfig {
+    /// Which provider this deployment uses.
+    ///
+    /// `none` by default, and the default is a refusal rather than a fallback: with no store
+    /// configured `enclave-worker` does not schedule the indexing pass at all. Pointing a pass at a
+    /// store that cannot answer would be worse than not running one — `enclave_indexing::claim`
+    /// commits before the first byte is read, so every tick would move a batch of manifests into a
+    /// working state and increment the `attempts` budget that quarantines genuinely poisoned
+    /// documents, then fail. A deployment whose only problem was a missing bucket would end up with
+    /// a corpus of files nothing will retry.
+    pub provider: StorageProvider,
+
+    /// The S3-compatible bucket, when [`provider`](Self::provider) is `s3`.
+    ///
+    /// Set without `provider: s3`, or `provider: s3` without this, is refused at startup naming the
+    /// key that is missing — see `enclave_config::validate::check_storage`. Silence in either
+    /// direction is the failure mode `check_mounts` was written for one section along: a
+    /// configuration file that says storage is configured and a deployment that indexes nothing.
+    pub s3: Option<S3StorageConfig>,
+}
+
+/// Which object-storage provider a deployment uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StorageProvider {
+    /// No object storage. The default; see [`StorageConfig::provider`] for why that is a refusal
+    /// and not a degradation.
+    #[default]
+    None,
+    /// Anything speaking the S3 API — AWS S3, MinIO, Ceph, R2, Wasabi, B2. Which one is
+    /// [`S3StorageConfig::flavor`].
+    S3,
+}
+
+/// What an operator writes to point this deployment at one S3-compatible bucket.
+///
+/// Every field that names a credential is a [`SecretRef`], so a YAML file holding a literal key
+/// fails to deserialize — `CLAUDE.md` rule 11 enforced by the type rather than by review. There is
+/// no field here that *can* hold a key.
+///
+/// `deny_unknown_fields`, unlike the sections around it, and for a specific reason: the costly typo
+/// in this block is a silent one. `force_path_style` instead of `path_style` leaves addressing at
+/// its default, which produces a DNS failure against a self-hosted endpoint that reads as a network
+/// problem; `secret_key` instead of `secret_access_key` would be a missing required field, which is
+/// already loud. The strict form makes both loud.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct S3StorageConfig {
+    /// The bucket holding versions and renditions.
+    pub bucket: String,
+
+    /// The region to sign for. Required even against MinIO, which ignores it but still expects the
+    /// signature to be computed over one; `us-east-1` is the conventional answer there.
+    pub region: String,
+
+    /// Endpoint override. Absent uses the provider's AWS endpoint; set it for MinIO, Ceph, R2 and
+    /// anything else self-hosted.
+    #[serde(default)]
+    pub endpoint: Option<Url>,
+
+    /// Path-style addressing (`{endpoint}/{bucket}/{key}`) rather than virtual-host
+    /// (`{bucket}.{endpoint}/{key}`).
+    ///
+    /// Defaults to `true`: virtual-host addressing needs per-bucket DNS, which a self-hosted MinIO
+    /// or Ceph does not have, so the default that works everywhere is path style and AWS
+    /// deployments turn it off.
+    #[serde(default = "default_true")]
+    pub path_style: bool,
+
+    /// Reference to the access key id — `vault://…`, `env://…`. Never a literal.
+    pub access_key_id: SecretRef,
+
+    /// Reference to the secret access key. Never a literal.
+    pub secret_access_key: SecretRef,
+
+    /// Reference to a session token, for deployments using temporary credentials.
+    #[serde(default)]
+    pub session_token: Option<SecretRef>,
+
+    /// Default life of a signed URL, used when a caller does not specify one.
+    ///
+    /// Five minutes: long enough for a browser to start a download on a slow connection, short
+    /// enough that a URL captured from a log or a referrer header is worthless by the time it is
+    /// read. No S3-compatible backend can invalidate a pre-signed URL before it expires, so this
+    /// number *is* the control (`plans/M1-CONTENT-CORE.md` D14).
+    #[serde(default = "default_signed_url_ttl")]
+    pub signed_url_ttl: HumanDuration,
+
+    /// Ceiling on any signed URL, whatever a caller asks for. A TTL above it is refused, never
+    /// clamped.
+    #[serde(default = "default_max_signed_url_ttl")]
+    pub max_signed_url_ttl: HumanDuration,
+
+    /// Which S3-compatible backend this is; selects the startup self-check probes.
+    #[serde(default)]
+    pub flavor: S3Flavor,
+}
+
+/// Which S3-compatible backend a bucket lives on.
+///
+/// Not cosmetic: it selects which public-access self-check probes are even attempted. MinIO does
+/// not implement `GetPublicAccessBlock` or `GetBucketPolicyStatus`, and running them there produces
+/// a page of "not implemented" noise in the startup log that trains an operator to ignore the log.
+///
+/// Defined here rather than in `enclave-storage` because it is a word an operator types; that crate
+/// re-exports it, so `enclave_storage::S3Flavor` remains the name every caller already used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum S3Flavor {
+    /// Amazon S3 itself. Every probe is available.
+    #[default]
+    Aws,
+    /// MinIO. Bucket policy and ACL probes work; the AWS-only ones do not.
+    Minio,
+    /// Anything else speaking the S3 API — Ceph, R2, Wasabi, B2. Only the probes that are part of
+    /// the core API are attempted.
+    Generic,
+}
+
+/// The vector store behind hybrid search (`docs/08-BYO-INFRA.md §10`).
+///
+/// Modelled for the same reason and in the same shape as [`StorageConfig`]: `enclave-search` owns
+/// `MilvusConfig`, which holds an SDK `ConsistencyLevel` and a *resolved* token, and it does not
+/// depend on this crate. The conversion is one function in `crates/worker/src/main.rs`, beside
+/// `db_config_from`.
+///
+/// **The embedding width is not here, and its absence is the point.** `MilvusConfig::dimension` is
+/// fixed when the collection is created, and a mismatch does not error at either end: Milvus
+/// accepts vectors of the width it was made with and the model emits the width it was trained at,
+/// so the symptom is silently degraded retrieval and the correction is re-embedding every chunk of
+/// every tenant (`docs/07-SEARCH-INDEXING.md §9`). A configurable width is a way to write that
+/// mistake down. It is read from `enclave_embeddings::model::ACTIVE.dimension` instead.
+///
+/// The query-side keys `docs/08-BYO-INFRA.md §15` also lists — `default_mode`, `dense`, `sparse`,
+/// `bm25`, `overfetch_factor`, `denylist_degrade_threshold` — are **not** modelled here yet, and
+/// are ignored rather than rejected exactly like the sections that are wholly unmodelled. Both
+/// documents say which keys are read.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SearchConfig {
+    /// Which vector store this deployment uses.
+    ///
+    /// `none` by default, and again a refusal rather than a fallback: with no store the coverage
+    /// probe is not scheduled. A census pointed at a URI nobody configured fails, every tenant
+    /// counts `unreadable`, and the gauges an operator reads report a fleet-wide outage that is
+    /// really a missing configuration key. No series at all is the legible absence, and
+    /// `SearchIndexCoverageUnreported` is written to catch it.
+    pub provider: SearchProvider,
+
+    /// The Milvus endpoint, when [`provider`](Self::provider) is `milvus`. Refused at startup if
+    /// one is set without the other, as with [`StorageConfig::s3`].
+    pub milvus: Option<MilvusSettings>,
+}
+
+/// Which vector store a deployment uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SearchProvider {
+    /// No vector store. Search stays lexical-only and says so; see [`SearchConfig::provider`].
+    #[default]
+    None,
+    /// Milvus, the only implementation there is.
+    Milvus,
+}
+
+/// What an operator writes to point this deployment at a Milvus cluster.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MilvusSettings {
+    /// gRPC endpoint, e.g. `http://milvus:19530`.
+    pub uri: Url,
+
+    /// Reference to the `user:password` token, for a cluster that authenticates. Absent for the
+    /// unauthenticated development stack. A [`SecretRef`], never a literal.
+    #[serde(default)]
+    pub token: Option<SecretRef>,
+
+    /// Collection to read and write. Absent takes the one `docs/07-SEARCH-INDEXING.md §4` names,
+    /// which is what every deployment should use; the key exists so a migration between two
+    /// collections has somewhere to point.
+    #[serde(default)]
+    pub collection: Option<String>,
 }
 
 /// PostgreSQL connection settings.
@@ -776,6 +1078,21 @@ pub enum UnavailablePolicy {
     AllowAndRescan,
 }
 
+const fn default_true() -> bool {
+    true
+}
+
+/// Five minutes; see [`S3StorageConfig::signed_url_ttl`].
+fn default_signed_url_ttl() -> HumanDuration {
+    HumanDuration::from_secs(5 * 60)
+}
+
+/// One hour. The ceiling exists for multipart uploads, whose parts are signed once and used over
+/// the life of the transfer.
+fn default_max_signed_url_ttl() -> HumanDuration {
+    HumanDuration::from_secs(60 * 60)
+}
+
 /// Prefer an explicit reference, otherwise interpret a `*_env` field as `env://NAME`.
 fn env_ref(explicit: Option<&SecretRef>, env_name: Option<&str>) -> Option<SecretRef> {
     if let Some(reference) = explicit {
@@ -806,6 +1123,20 @@ mod tests {
         assert!(config.antivirus.is_enabled());
         assert_eq!(config.antivirus.unavailable_policy, UnavailablePolicy::Hold);
         assert_eq!(config.ocr_mounts(), OcrMounts::Absent);
+
+        // Deny by default for both providers. `enclave-worker` keys off these: with no store it
+        // does not schedule the indexing pass at all, rather than scheduling one whose `claim`
+        // commits before the read that will fail and burns the `attempts` budget on every file it
+        // touches. `None` here is the difference between a legible absence and a poisoned corpus.
+        assert_eq!(config.storage.provider, StorageProvider::None);
+        assert!(config.storage.s3.is_none());
+        assert_eq!(config.search.provider, SearchProvider::None);
+        assert!(config.search.milvus.is_none());
+
+        // The exposition is unauthenticated and carries tenant labels, so a deployment that never
+        // chose a port must not have one open — on either process.
+        assert_eq!(config.metrics.api_port, None);
+        assert_eq!(config.metrics.worker_port, None);
     }
 
     #[test]
@@ -947,6 +1278,227 @@ database:
         assert!(
             config.database.platform_url_ref().is_none(),
             "a deployment that configured no BYPASSRLS role must get None, not the app DSN"
+        );
+    }
+
+    /// The `storage:` block of `docs/08-BYO-INFRA.md §15`, parsed field for field.
+    ///
+    /// The document is authoritative for what an operator writes and this module is only its typed
+    /// form, so a spelling that appears there and not here is a file that documents a key nothing
+    /// reads. That is not hypothetical: `deploy/config/enclave.example.yaml` carried
+    /// `access_key_env`, `secret_key_env` and `force_path_style` for three milestones, and every one
+    /// of them loaded silently because the whole section was ignored.
+    #[test]
+    fn the_documented_storage_section_parses_field_for_field() {
+        let yaml = "
+storage:
+  provider: s3
+  s3:
+    bucket: enclave-content
+    region: eu-west-1
+    endpoint: https://s3.eu-west-1.amazonaws.com
+    flavor: aws
+    path_style: false
+    access_key_id: vault://workspace/s3#access_key_id
+    secret_access_key: vault://workspace/s3#secret_access_key
+    signed_url_ttl: 5m
+    max_signed_url_ttl: 1h
+";
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.storage.provider, StorageProvider::S3);
+
+        let s3 = config.storage.s3.unwrap();
+        assert_eq!(s3.bucket, "enclave-content");
+        assert_eq!(s3.region, "eu-west-1");
+        assert_eq!(s3.endpoint.unwrap().host_str(), Some("s3.eu-west-1.amazonaws.com"));
+        assert_eq!(s3.flavor, S3Flavor::Aws);
+        assert!(!s3.path_style);
+        assert_eq!(s3.signed_url_ttl.as_secs(), 300);
+        assert_eq!(s3.max_signed_url_ttl.as_secs(), 3600);
+    }
+
+    /// An S3 secret access key written as a literal is a **type** error, not a validation one.
+    ///
+    /// `CLAUDE.md` rule 11 enforced by the model rather than by the heuristic scanner: there is no
+    /// field on [`S3StorageConfig`] that can hold a key, so the deserializer refuses before
+    /// `scan_for_inline_secrets` is asked to have an opinion. That matters because the scanner is
+    /// entropy-based and deliberately generous — a short or low-entropy key would slip past it.
+    ///
+    /// Deliberate violation: relaxing either credential field to `String` makes this parse, and the
+    /// test fails by name.
+    #[test]
+    fn a_literal_s3_credential_does_not_deserialize() {
+        let literal = "
+storage:
+  provider: s3
+  s3:
+    bucket: enclave-content
+    region: us-east-1
+    access_key_id: env://S3_ACCESS_KEY_ID
+    secret_access_key: wJalrXUtnFEMIK7MDENGbPxRfiCY
+";
+        let err = serde_yaml::from_str::<Config>(literal).unwrap_err();
+        assert!(err.to_string().contains("scheme"), "got: {err}");
+        assert!(
+            !err.to_string().contains("wJalrXUtnFEMIK"),
+            "the offending value must never be echoed: {err}"
+        );
+
+        // A low-entropy key the scanner would wave through, refused just the same.
+        let short = literal.replace("wJalrXUtnFEMIK7MDENGbPxRfiCY", "minioadmin");
+        assert!(serde_yaml::from_str::<Config>(&short).is_err());
+    }
+
+    /// The costly typo in the `s3:` block is the silent one, so unknown keys are refused there.
+    ///
+    /// `force_path_style` was the real spelling in `deploy/config/enclave.example.yaml`.
+    /// Ignored, it leaves `path_style` at its default and produces a DNS failure against a
+    /// self-hosted endpoint that reads as a network problem — a day of debugging for a key nobody
+    /// parsed.
+    ///
+    /// The *outer* section stays permissive on purpose, which the second half asserts: `§15` also
+    /// documents `storage.profile`, naming a row in the per-tenant `storage_profiles` table that no
+    /// migration creates yet, and an operator's complete file must still load.
+    #[test]
+    fn a_typo_inside_the_s3_block_is_refused_and_an_unmodelled_sibling_is_not() {
+        let typo = "
+storage:
+  provider: s3
+  s3:
+    bucket: enclave-content
+    region: us-east-1
+    force_path_style: true
+    access_key_id: env://S3_ACCESS_KEY_ID
+    secret_access_key: env://S3_SECRET_ACCESS_KEY
+";
+        let err = serde_yaml::from_str::<Config>(typo).unwrap_err();
+        assert!(err.to_string().contains("force_path_style"), "got: {err}");
+
+        let reserved = "
+storage:
+  profile: tenant-default
+  provider: s3
+  s3:
+    bucket: enclave-content
+    region: us-east-1
+    access_key_id: env://S3_ACCESS_KEY_ID
+    secret_access_key: env://S3_SECRET_ACCESS_KEY
+";
+        let config: Config = serde_yaml::from_str(reserved).unwrap();
+        assert_eq!(config.storage.provider, StorageProvider::S3);
+    }
+
+    /// The embedding width is not a key, and writing one is refused rather than ignored.
+    ///
+    /// `MilvusConfig::dimension` is fixed when the collection is created and a mismatch errors at
+    /// neither end — Milvus accepts the width it was made with, the model emits the width it was
+    /// trained at — so a wrong number here is silently degraded retrieval and a fleet-wide
+    /// re-embed to correct. An operator who writes `dimension: 768` must find out at start-up.
+    ///
+    /// Deliberate violation: dropping `deny_unknown_fields` from [`MilvusSettings`] makes this
+    /// parse, and the test fails by name.
+    #[test]
+    fn the_embedding_width_is_not_a_configuration_key() {
+        let yaml = "
+search:
+  provider: milvus
+  milvus:
+    uri: http://milvus:19530
+    dimension: 768
+";
+        let err = serde_yaml::from_str::<Config>(yaml).unwrap_err();
+        assert!(err.to_string().contains("dimension"), "got: {err}");
+    }
+
+    /// The storage and search credentials are enrolled by field path, and nothing else new is.
+    ///
+    /// Enrolment is what makes an unresolvable S3 key a start-up failure that names
+    /// `storage.s3.access_key_id`, rather than a provider error on the first upload. The list is
+    /// asserted whole so that a field added to either section without a `secret_refs` entry — the
+    /// way a credential goes unchecked — fails here.
+    #[test]
+    fn storage_and_search_credentials_are_enrolled_with_their_paths() {
+        let yaml = "
+database:
+  url_env: DATABASE_URL
+storage:
+  provider: s3
+  s3:
+    bucket: enclave-content
+    region: us-east-1
+    access_key_id: env://S3_ACCESS_KEY_ID
+    secret_access_key: vault://workspace/s3#secret
+    session_token: env://S3_SESSION_TOKEN
+search:
+  provider: milvus
+  milvus:
+    uri: http://milvus:19530
+    token: vault://workspace/milvus#token
+";
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let refs = config.secret_refs();
+        let paths: Vec<&str> = refs.iter().map(|(p, _)| p.as_str()).collect();
+        assert_eq!(
+            paths,
+            vec![
+                "database.url",
+                "storage.s3.access_key_id",
+                "storage.s3.secret_access_key",
+                "storage.s3.session_token",
+                "search.milvus.token",
+            ]
+        );
+
+        // The optional halves are optional: absent means absent, never an empty reference that
+        // would fail to resolve and take the process down with it.
+        let minimal: Config = serde_yaml::from_str(
+            "
+storage:
+  provider: s3
+  s3:
+    bucket: b
+    region: r
+    access_key_id: env://A
+    secret_access_key: env://B
+",
+        )
+        .unwrap();
+        let refs = minimal.secret_refs();
+        let paths: Vec<&str> = refs.iter().map(|(p, _)| p.as_str()).collect();
+        assert_eq!(paths, vec!["storage.s3.access_key_id", "storage.s3.secret_access_key"]);
+    }
+
+    /// Both metrics ports are off by default, and they are two fields rather than one.
+    ///
+    /// The default matters as much as the split: the exposition is unauthenticated and carries
+    /// tenant labels, so a deployment that never chose a port must not have one open.
+    #[test]
+    fn the_metrics_listeners_are_two_ports_and_both_are_closed_by_default() {
+        let metrics = MetricsConfig::default();
+        assert_eq!(metrics.api_port, None);
+        assert_eq!(metrics.worker_port, None);
+        assert_eq!(metrics.api_addr(), None);
+        assert_eq!(metrics.worker_addr(), None);
+        assert_eq!(metrics.bind, IpAddr::V4(Ipv4Addr::LOCALHOST));
+
+        let config: Config = serde_yaml::from_str(
+            "
+metrics:
+  bind: 10.0.0.7
+  api_port: 9464
+  worker_port: 9465
+",
+        )
+        .unwrap();
+        assert_eq!(
+            config.metrics.api_addr().unwrap().to_string(),
+            "10.0.0.7:9464",
+            "the API's socket"
+        );
+        assert_eq!(
+            config.metrics.worker_addr().unwrap().to_string(),
+            "10.0.0.7:9465",
+            "the worker's, which used to be the same socket"
         );
     }
 

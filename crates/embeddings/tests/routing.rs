@@ -303,6 +303,26 @@ async fn text_below_the_ceiling_routes_to_the_configured_remote_provider() {
     assert_eq!(local_calls.count(), 0, "below-ceiling text must not be routed local by accident");
 }
 
+#[tokio::test]
+async fn the_model_that_comes_back_is_the_one_that_ran_and_not_the_one_configured_first() {
+    // `index_manifests.embedding_model` is what `docs/07 §3`'s reindex trigger compares, and the
+    // route is per file: with a ceiling in force, two files of the same tenant are embedded by two
+    // different models. A router that reported one of them for both would leave the manifest saying
+    // a reindex is unnecessary for exactly the files a model swap changed.
+    //
+    // Both directions are asserted, because the plausible wrong implementation — "report the local
+    // model, it is the one that matters" — is right half the time and this is the half it is wrong.
+    let (local, _local_calls) = working_local();
+    let (remote, _remote_calls) = working_remote();
+    let router = EmbeddingRouter::new(local, remote, LocalCeiling::at(RESTRICTED));
+
+    let above = router.embed(text(RESTRICTED)).await.expect("local embeds every rank");
+    assert_eq!(above.model().as_str(), "test-local/1", "the local arm reported another model");
+
+    let below = router.embed(text(INTERNAL)).await.expect("below the ceiling");
+    assert_eq!(below.model().as_str(), "hosted-api/1", "the remote arm reported another model");
+}
+
 // ---------------------------------------------------------------------------------------------
 // The ceiling is configuration, not a constant
 // ---------------------------------------------------------------------------------------------

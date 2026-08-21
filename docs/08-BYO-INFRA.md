@@ -1,6 +1,6 @@
 # 08 — BYO Infrastructure & Configuration
 
-> **Status:** Draft · **Version:** 2.3 · **Owner:** Platform Engineering · **Last updated:** 2026-08-22
+> **Status:** Draft · **Version:** 2.4 · **Owner:** Platform Engineering · **Last updated:** 2026-08-22
 > **Authoritative for:** provider traits, BYO infrastructure, configuration model and precedence.
 
 ## 1. Principle
@@ -374,6 +374,14 @@ server:
     - cidr: "10.20.0.0/16"
       hops: 1
 
+# The Prometheus exposition. One section, one bind, and a port per process — `enclave-api` binds
+# `api_port`, `enclave-worker` binds `worker_port`. Both null by default. §10.1 of `11-OPERATIONS.md`
+# is authoritative for where to place them and why the exposition is not a route on the API port.
+metrics:
+  bind: "127.0.0.1"
+  api_port: 9464
+  worker_port: 9465
+
 database:
   url_env: "DATABASE_URL"
   platform_url_env: "DATABASE_PLATFORM_URL"   # BYPASSRLS role; required by the worker only
@@ -388,12 +396,36 @@ events:
   nats_url_env: "NATS_URL"
   stream: "vault"
 
+# `provider` and the block that configures it are written together or not at all; one without the
+# other refuses to start, naming the missing key. `provider: none` is the default and it is a
+# refusal, not a fallback — the indexing pass is then not scheduled at all, which is a legible
+# absence rather than a pass that burns its retry budget against a store that cannot answer.
+# Credentials are references and there is no field here that can hold a literal.
 storage:
-  profile: "tenant-default"
+  provider: "s3"                          # s3 | none
+  s3:
+    bucket: "enclave-content"
+    region: "eu-west-1"
+    endpoint: "https://s3.eu-west-1.amazonaws.com"   # omit for AWS; set for MinIO, Ceph, R2
+    flavor: "aws"                         # aws | minio | generic — selects the self-check probes
+    path_style: false                     # true for anything without per-bucket DNS
+    access_key_id: "vault://workspace/s3#access_key_id"
+    secret_access_key: "vault://workspace/s3#secret_access_key"
+    signed_url_ttl: "5m"
+    max_signed_url_ttl: "1h"
 
+# The embedding width is deliberately not a key here: it is read from
+# `enclave_embeddings::model::ACTIVE.dimension`. It is fixed when the collection is created and a
+# mismatch errors at neither end, so a configurable width is a way to write that mistake down
+# (`07-SEARCH-INDEXING.md §9`).
+#
+# The query-side keys below (`default_mode` through `denylist_degrade_threshold`) are not read yet;
+# they are ignored rather than rejected, like every unmodelled section.
 search:
-  provider: "milvus"
-  endpoint_env: "MILVUS_ENDPOINT"
+  provider: "milvus"                      # milvus | none
+  milvus:
+    uri: "http://milvus:19530"
+    token: "vault://workspace/milvus#token"   # omit for an unauthenticated cluster
   default_mode: "hybrid"
   dense: true
   sparse: true
@@ -467,6 +499,21 @@ ocr_models: "/var/lib/enclave/ocr-models"
 pdfium: "/var/lib/enclave/pdfium/lib"
 
 ```
+
+**`storage:` here is the deployment's store, not a tenant's.** An earlier revision of this section
+read `storage: { profile: "tenant-default" }`, naming a row in the per-tenant `storage_profiles`
+table of `§4`. That table does not exist — no migration creates it — so the key named a row nothing
+could resolve, and the two crates that need a bucket (`enclave-worker` for indexing, `enclave-api`
+for delivery) had nothing to build a client from. The block above is what a deployment-wide store
+looks like; `§4`'s per-tenant override lands with the milestone that creates the table, and will be
+read *in addition to* this, not instead of it.
+
+**`server.metrics_port` and `server.metrics_bind` have moved to the `metrics:` section.** They were
+one key read by both binaries, so a single file asked the API and the worker to bind the same socket
+and whichever started second failed at start-up. An unmigrated file is **refused**, naming the new
+keys, rather than loading with the exposition silently off — metrics nobody serves read as zero
+forever, which is indistinguishable from a healthy system. `server.*` was also the wrong home: a
+worker serves no HTTP API and has no `bind`, `public_url` or `trusted_proxies`.
 
 **`preview.watermark_cache` is deliberately not a setting.** An earlier revision listed it, defaulted
 to `false`. A control expressed as a default is a control somebody can turn off, and there is no
@@ -589,3 +636,10 @@ Security-sensitive configuration changes are versioned, diffable, auditable and 
 configuration never resurrects a rotated credential.
 
 Maker/checker approval may be required per scope (`06-SECURITY-DLP-ACCESS.md §22`).
+
+## 22. Change log
+
+| Version | Date | Change |
+|---|---|---|
+| 2.4 | 2026-08-22 | `§15` gains a modelled `storage:` and `search:` section and a `metrics:` section. `storage.profile: "tenant-default"` is replaced by a deployment-wide `storage.s3` block, because `§4`'s `storage_profiles` table does not exist and the key named a row nothing could resolve (`ENC-562`); `search.milvus` carries the URI and token, and never the embedding width (`ENC-563`). `server.metrics_port` / `server.metrics_bind` move to `metrics.api_port` / `metrics.worker_port` / `metrics.bind` and the old keys are refused at startup — both binaries read the single old key, so one file on one host made the second process to start die with `Address already in use` (`ENC-566`). |
+| 2.3 | 2026-08-22 | Earlier revisions predate this table. |

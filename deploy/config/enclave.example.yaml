@@ -42,19 +42,35 @@ server:
   # believed forwarding header from an untrusted peer lets any client claim any source IP and walk
   # straight through conditional access (`docs/06-SECURITY-DLP-ACCESS.md`).
   trusted_proxies: []
-  # The Prometheus exposition, on a socket of its own. Null disables it entirely, which is the
-  # default: a deployment that has not decided where this port belongs should not have it open.
-  #
-  # It is **not** authenticated and never will be. The exposition carries `tenant_id` labels, so
-  # this port must reach your monitoring and nothing else — a private interface, or loopback with a
-  # sidecar. `docs/11-OPERATIONS.md §10.1` explains why it is not simply a route on 8080 behind the
-  # policy chain. `deploy/monitoring/prometheus.yml` scrapes the value below.
-  metrics_port: 9464
-  metrics_bind: "127.0.0.1"
   # Behind a proxy, this would read:
   # trusted_proxies:
   #   - cidr: "10.20.0.0/16"
   #     hops: 1
+
+# ---------------------------------------------------------------------------------------------
+# The Prometheus exposition, on a socket of its own — one section, two ports.
+# ---------------------------------------------------------------------------------------------
+# `enclave-api` binds `api_port` and `enclave-worker` binds `worker_port`. Two keys because one
+# `enclave.yaml` is read by both processes: they used to share `server.metrics_port`, so on a host
+# running both, whichever started second died with `Address already in use` (`ENC-566`). The two
+# numbers below are the ones `deploy/monitoring/prometheus.yml` scrapes.
+#
+# In a per-pod deployment the two processes do not share a port namespace and the same number for
+# both is correct; nothing refuses that. On one host, give them different ports, as here.
+#
+# Null disables a listener entirely, and that is the default: a deployment that has not decided
+# where this port belongs should not have it open. A worker with no port publishes the coverage
+# probe's gauges into a registry nothing scrapes, which reads as zero forever and is
+# indistinguishable from healthy — `SearchIndexCoverageUnreported` cannot clear.
+#
+# It is **not** authenticated and never will be. The exposition carries `tenant_id` labels, so
+# `bind` must reach your monitoring and nothing else — a private interface, or loopback with a
+# sidecar. `docs/11-OPERATIONS.md §10.1` explains why it is not simply a route on 8080 behind the
+# policy chain.
+metrics:
+  bind: "127.0.0.1"
+  api_port: 9464
+  worker_port: 9465
 
 database:
   # The dev stack's DSN:
@@ -238,35 +254,83 @@ antivirus:
 # than the cores it may use. `docs/11-OPERATIONS.md §3.2` has the numbers.
 
 # ---------------------------------------------------------------------------------------------
-# Sections below are not modelled yet — they land with the milestones that implement them
-# (`docs/08-BYO-INFRA.md §15`). They are ignored today rather than rejected, so that a complete
-# operator file loads unchanged, and they are still scanned for inline credentials.
+# Object storage
 # ---------------------------------------------------------------------------------------------
-
+# `provider: none` is the default and it is a *refusal*, not a fallback: with no store the worker
+# does not schedule the indexing pass, `chunk_text` stays empty and search stays lexical-only. That
+# is deliberate. Pointing the pass at a store that cannot answer would be worse — `claim` commits
+# before the first byte is read, so every tick would move a batch of manifests into a working state
+# and burn the `attempts` budget that quarantines genuinely poisoned documents, then fail.
+#
+# `provider` and the `s3:` block are written together or not at all. One without the other refuses
+# to start, naming the key that is missing, for the same reason the two OCR mounts do: a fully
+# specified bucket that nothing reads is invisible from outside.
+#
+# The credentials are **references**, never values, and there is no field here that can hold a key
+# — `access_key_id` and `secret_access_key` are typed such that a literal does not deserialize.
+# For the dev stack:
+#
+#   export S3_ACCESS_KEY_ID=enclave
+#   export S3_SECRET_ACCESS_KEY=...          # deploy/compose/dev.yml has the value
 storage:
-  profile: "tenant-default"
   provider: "s3"
-  # MinIO from the dev stack.
-  endpoint_env: "S3_ENDPOINT"          # http://localhost:9000
-  region: "us-east-1"
-  bucket: "enclave-content"
-  # Path style, because a MinIO endpoint has no per-bucket DNS.
-  force_path_style: true
-  access_key_env: "S3_ACCESS_KEY_ID"
-  secret_key_env: "S3_SECRET_ACCESS_KEY"
+  s3:
+    bucket: "enclave-content"
+    # SigV4 signs over a region even when MinIO ignores it.
+    region: "us-east-1"
+    # MinIO from the dev stack. Omit for AWS S3, which derives the endpoint from the region.
+    endpoint: "http://localhost:9000"
+    # aws | minio | generic. Selects which public-access self-check probes are attempted: MinIO
+    # implements neither GetPublicAccessBlock nor GetBucketPolicyStatus, and running them there
+    # fills the startup log with "not implemented" until an operator stops reading it.
+    flavor: "minio"
+    # Path style ({endpoint}/{bucket}/{key}), because a MinIO endpoint has no per-bucket DNS. AWS
+    # deployments set this to false. Getting it wrong produces a DNS failure that reads as a
+    # network problem.
+    path_style: true
+    access_key_id: "env://S3_ACCESS_KEY_ID"
+    secret_access_key: "env://S3_SECRET_ACCESS_KEY"
+    # For temporary credentials only:
+    # session_token: "env://S3_SESSION_TOKEN"
+    # No S3-compatible backend can invalidate a pre-signed URL before it expires, so these two
+    # numbers *are* the control. A caller asking for longer than the ceiling is refused, never
+    # clamped (`plans/M1-CONTENT-CORE.md` D14).
+    signed_url_ttl: "5m"
+    max_signed_url_ttl: "1h"
 
+# ---------------------------------------------------------------------------------------------
+# Vector store
+# ---------------------------------------------------------------------------------------------
+# Behind the `search` Compose profile:
+#   docker compose -f deploy/compose/dev.yml --profile search up -d --wait
+#
+# `provider: none` is again a refusal rather than a fallback: with no store the coverage probe is
+# not scheduled and `enclave_search_index_observed_chunks` has no series at all. A census pointed
+# at a URI nobody set would be worse — every tenant would count `unreadable`, and the gauges would
+# report a fleet-wide outage that is really a missing configuration key.
+#
+# **There is no key for the embedding width, deliberately.** It is read from
+# `enclave_embeddings::model::ACTIVE.dimension`. The width is fixed when the collection is created
+# and a mismatch errors at neither end, so the symptom is silently degraded retrieval and the
+# correction is re-embedding every chunk of every tenant (`docs/07-SEARCH-INDEXING.md §9`).
 search:
   provider: "milvus"
-  # Behind the `search` Compose profile; M0 does not use it.
-  endpoint_env: "MILVUS_ENDPOINT"      # http://localhost:19530
-  default_mode: "hybrid"
-  dense: true
-  sparse: true
-  bm25: true
-  # Candidates are over-fetched because the PostgreSQL post-filter removes the ones the caller may
-  # not see. The post-filter is never conditional (CLAUDE.md rule 5).
-  overfetch_factor: 3
-  denylist_degrade_threshold: 10000
+  milvus:
+    uri: "http://localhost:19530"
+    # An authenticating cluster takes a `user:password` reference. The dev stack does not:
+    # token: "vault://workspace/milvus#token"
+    # Absent takes the collection `docs/07-SEARCH-INDEXING.md §4` names, which is what every
+    # deployment should use; the key exists so a migration between two collections can point.
+    # collection: "enclave_chunks"
+
+# ---------------------------------------------------------------------------------------------
+# Sections below are not modelled yet — they land with the milestones that implement them
+# (`docs/08-BYO-INFRA.md §15`). They are ignored today rather than rejected, so that a complete
+# operator file loads unchanged, and they are still scanned for inline credentials. The query-side
+# `search` keys (`default_mode`, `dense`, `sparse`, `bm25`, `overfetch_factor`,
+# `denylist_degrade_threshold`) are in that category too: not read yet, so they are not written
+# above.
+# ---------------------------------------------------------------------------------------------
 
 embedding:
   provider: "local"

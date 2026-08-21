@@ -83,12 +83,14 @@ deferral means antivirus has not finished and re-claiming the same rows immediat
   scoped to a tenant, and every pass takes that list as a parameter; with no credential the process
   would run four loops over nothing while every probe stayed green. Grant it nothing beyond what
   `migrations/0002_rls_policies.sql` already grants `enclave_platform`.
-* **`server.metrics_port`** — the worker binds its **own** metrics socket, on the same key the API
-  uses. They are separate deployments, so the same port number in the same configuration file is one
-  listener per pod and not a conflict. The coverage probe's gauges are process-wide statics
-  published by whichever process runs the pass, so a worker with no `metrics_port` publishes them
-  into a registry nothing scrapes — which reads as zero forever, indistinguishable from healthy.
-  §10.1 covers where to place the port; it applies unchanged to this one.
+* **`metrics.worker_port`** — the worker binds its **own** metrics socket, and it has its own key.
+  It used to read `server.metrics_port`, the key the API also reads: correct for one listener per
+  pod, and fatal on a host running both, where whichever started second died with `Address already
+  in use` (`ENC-566`). Two keys make both deployments expressible, and equal port numbers are still
+  allowed because two pods do not share a port namespace. The coverage probe's gauges are
+  process-wide statics published by whichever process runs the pass, so a worker with no port
+  publishes them into a registry nothing scrapes — which reads as zero forever, indistinguishable
+  from healthy. §10.1 covers where to place the port; it applies unchanged to this one.
 
 **Shutdown.** SIGTERM raises a shared flag; each loop returns at its next boundary — between
 transactions, never inside one — and the process exits when the last of them has. An idle loop is
@@ -419,10 +421,17 @@ upload, or accept a queue and show it honestly in the UI.
 
 ### 10.1 Where the metrics are, and why they are not on the API port
 
-The Prometheus exposition is served on a **listener of its own**, configured by `server.metrics_port`
-and `server.metrics_bind`. It is **off by default** (`metrics_port: null`) and binds to loopback when
-a port is given. `GET /metrics` is the only path it answers; the API port does not serve it at all,
-and a gate refuses any change that puts it there.
+The Prometheus exposition is served on a **listener of its own**, configured by the `metrics:`
+section: `metrics.bind` for the interface both processes face, `metrics.api_port` for `enclave-api`
+and `metrics.worker_port` for `enclave-worker`. Each is **off by default** (`null`) and binds to
+loopback when a port is given. `GET /metrics` is the only path it answers; the API port does not
+serve it at all, and a gate refuses any change that puts it there.
+
+Two ports rather than one because a single `enclave.yaml` is read by both processes, and one shared
+key meant that on a host running both, the second to start died with `Address already in use`.
+A file still carrying `server.metrics_port` or `server.metrics_bind` is **refused at startup**,
+naming the new keys — ignoring them would leave the exposition silently off, and a metric nobody
+serves reads as zero forever.
 
 That is not an inconvenience to route around. The exposition carries `tenant_id` labels — which
 tenants exist, how much each one searches, how far behind each one's invalidation has fallen — so it
@@ -435,9 +444,10 @@ scraping it. **Do not expose it to the internet**, and do not put it behind the 
 the API on the assumption that authentication covers it — there is none, deliberately, because the
 separation is the control.
 
-If a scrape returns connection-refused, the likeliest cause is that `metrics_port` was never set: the
-process logs `metrics_port is unset; no metrics endpoint is served` at debug on start-up, and logs
-`metrics listening` with the address when it is set.
+If a scrape returns connection-refused, the likeliest cause is that the process's port was never set:
+it logs `metrics.api_port is unset; no metrics endpoint is served` (or the worker's louder
+`metrics.worker_port is unset…`) on start-up, and logs `metrics listening` with the address when it
+is set.
 
 ### 10.2 Golden signals
 

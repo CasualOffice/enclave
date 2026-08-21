@@ -35,8 +35,10 @@
 //!
 //! A separate socket lets an operator bind this to a private interface — the default is loopback —
 //! while the API faces the world. That is emphatically *not* authentication, and
-//! `enclave_config::ServerConfig::metrics_port` says so where an operator will read it: this is a
-//! listener they place where they want it, absent unless they ask for it.
+//! `enclave_config::MetricsConfig` says so where an operator will read it: this is a listener they
+//! place where they want it, absent unless they ask for it. It carries a port *per process*
+//! (`api_port`, `worker_port`) rather than one shared with `server:` — `ENC-566`, and the field
+//! documentation has the argument.
 
 use core::future::Future;
 

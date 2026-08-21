@@ -26,20 +26,22 @@
 //! exactly this refusal, and the alternative is discovering it on the first tick, in a log line
 //! nobody is watching at deploy time.
 //!
-//! # What it will not do today, and what that costs
+//! # Which passes run, and what an unconfigured one costs
 //!
-//! `ENC-548` set out to schedule four passes; two of them are scheduled and two are not, and the
-//! reason is the same for both. `enclave-config` does not model a `storage:` or a `search:` section
-//! (`crates/config/src/model.rs` lists both as later milestones), so this binary cannot construct a
-//! `BlobStore` or an `IndexCensus` from what an operator wrote. See [`object_store`] and
-//! [`index_census`], which are where that gap is, and where closing it is one function each.
+//! All four are wired, and two of them are wired to sections an operator may leave out.
+//! `storage.provider: none` means no [`object_store`] and therefore no indexing pass;
+//! `search.provider: none` means no [`index_census`] and therefore no coverage probe. `ENC-562` and
+//! `ENC-563` closed the gap that used to make both unconditional.
 //!
 //! Neither is faked. A pass whose dependency is missing is **not scheduled** — see
 //! `crates/worker/src/schedule.rs` for why an indexing pass pointed at a store that cannot answer is
 //! worse than no indexing pass at all — and `Scheduler::scheduled` is logged at start-up so the
 //! absence is a line an operator reads rather than a graph that never leaves zero.
+//!
+//! A section that *is* written and cannot be honoured is the other case entirely, and the two are
+//! treated differently on purpose: an unreachable bucket refuses this start-up ([`object_store`]),
+//! while an unreachable Milvus does not ([`index_census`]). Each function argues its own side.
 
-use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::Context as _;
@@ -115,9 +117,12 @@ async fn main() -> anyhow::Result<()> {
     // The metrics listener, if one is configured, on its own socket — `ENC-548`. Spawned before the
     // passes so that a scrape arriving during start-up gets counters at zero rather than a refused
     // connection, which are different readings (`crates/observability/src/metrics.rs`).
+    //
+    // `metrics.worker_port`, and the API takes `metrics.api_port`. They used to be one key, so on a
+    // host running both from one file whichever started second died right here with `Address
+    // already in use` (`ENC-566`).
     let stop = Stop::new();
-    if let Some(port) = config.server.metrics_port {
-        let addr = SocketAddr::new(config.server.metrics_bind, port);
+    if let Some(addr) = config.metrics.worker_addr() {
         let listener = tokio::net::TcpListener::bind(addr)
             .await
             .with_context(|| format!("bind metrics listener on {addr}"))?;
@@ -128,17 +133,18 @@ async fn main() -> anyhow::Result<()> {
         }));
     } else {
         tracing::warn!(
-            "metrics_port is unset, so this worker serves no exposition. The coverage probe's \
-             gauges are process-wide and are published here; with no socket they reach nobody and \
-             `SearchIndexCoverageUnreported` cannot clear (docs/11-OPERATIONS.md §5.7 step 5)."
+            "metrics.worker_port is unset, so this worker serves no exposition. The coverage \
+             probe's gauges are process-wide and are published here; with no socket they reach \
+             nobody and `SearchIndexCoverageUnreported` cannot clear (docs/11-OPERATIONS.md §5.7 \
+             step 5)."
         );
     }
 
     let mut scheduler = Scheduler::new(Arc::new(DbTenants::new(db.clone())));
-    if let Some(runner) = index_runner(config, db.clone()).await? {
+    if let Some(runner) = index_runner(config, &registry, db.clone()).await? {
         scheduler = scheduler.with_indexing(runner);
     }
-    if let Some(census) = index_census(config) {
+    if let Some(census) = index_census(config, &secrets)? {
         scheduler = scheduler.with_coverage(census, CoverageFloor::percent(COVERAGE_FLOOR));
     }
 
@@ -169,16 +175,7 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The indexing pass's wiring, or `None` when this deployment cannot express it.
-///
-/// # The gap, stated precisely
-///
-/// `enclave-config` has no `storage:` section — `crates/config/src/model.rs` names it among the
-/// sections that "land in later milestones" — so there is nothing here to build an
-/// [`S3BlobStore`] from. It cannot be added from this side either: `enclave-storage` depends on
-/// `enclave-config`, so the `S3Config` an operator would write cannot be modelled by the crate that
-/// parses it without a dependency cycle. Which shape it takes instead is a decision for whoever
-/// lands `docs/08-BYO-INFRA.md §15`'s storage section, not one to make inside a worker change.
+/// The indexing pass's wiring, or `None` when this deployment configured no object storage.
 ///
 /// # Why `None` rather than [`UnconfiguredBlobStore`](enclave_storage::UnconfiguredBlobStore)
 ///
@@ -193,16 +190,19 @@ async fn main() -> anyhow::Result<()> {
 /// # Errors
 ///
 /// A configured-but-unloadable OCR mount, from [`MountedOcr::from_config`]. That is an outage and is
-/// reported as one; see that function for why it must never read as "no OCR".
+/// reported as one; see that function for why it must never read as "no OCR". Also a `storage:`
+/// section that names a bucket this process cannot reach — see [`object_store`] for why that is an
+/// error rather than a `None`.
 async fn index_runner(
     config: &enclave_config::Config,
+    registry: &enclave_config::SecretRegistry,
     pool: enclave_db::DbPool,
 ) -> anyhow::Result<Option<Arc<dyn IndexRunner>>> {
-    let Some(store) = object_store(config).await? else {
+    let Some(store) = object_store(config, registry).await? else {
         tracing::warn!(
-            "no object storage is configured, so the indexing pass is not scheduled and nothing \
-             will make `chunk_text` non-empty. `enclave-config` does not model a `storage:` section \
-             yet; see crates/worker/src/main.rs::object_store."
+            "no object storage is configured (`storage.provider` is `none`), so the indexing pass \
+             is not scheduled and nothing will make `chunk_text` non-empty. See \
+             crates/worker/src/main.rs::object_store and docs/08-BYO-INFRA.md §15."
         );
         return Ok(None);
     };
@@ -232,34 +232,96 @@ async fn index_runner(
     ))))
 }
 
-/// The object store this deployment configured — today, always none.
+/// The object store this deployment configured, or `None` when it configured none.
 ///
-/// Split out from [`index_runner`] so that closing the gap is one function with one caller rather
-/// than an edit in the middle of a start-up sequence. See [`index_runner`] for the whole argument;
-/// what belongs here is `S3BlobStore::connect(config.storage)` and nothing else.
-#[allow(clippy::unused_async)]
-async fn object_store(_config: &enclave_config::Config) -> anyhow::Result<Option<S3BlobStore>> {
-    Ok(None)
+/// # Why the public-access self-check runs here
+///
+/// [`S3BlobStore::connect_and_verify`] rather than `connect`: a bucket that is readable by the
+/// world is refused, loudly, at start-up. This process only ever *reads* content, so the check buys
+/// nothing for this pass directly — it is run because a worker is very often the first thing
+/// deployed against a new bucket, and a public bucket discovered here is discovered before anybody
+/// uploads to it (`docs/08-BYO-INFRA.md §3`, `crates/storage/src/public_access.rs`).
+///
+/// # Why an unreachable store is an error and not a `None`
+///
+/// The two absences differ, and the difference is whether an operator made a decision.
+/// `provider: none` is a decision, and it produces the documented absence [`index_runner`]
+/// describes: no pass, one warning, `chunk_text` stays empty. A bucket that was named and cannot be
+/// reached is a broken deployment, and starting anyway would leave a worker reporting healthy while
+/// the one thing it was configured to do never happens.
+///
+/// Credentials are dereferenced inside `connect`, from `registry`, at the last moment
+/// (`docs/08-BYO-INFRA.md §6`). They are *also* enrolled in `Config::secret_refs`, so an
+/// unresolvable key has already been reported by field path before this runs.
+async fn object_store(
+    config: &enclave_config::Config,
+    registry: &enclave_config::SecretRegistry,
+) -> anyhow::Result<Option<S3BlobStore>> {
+    let Some(section) = config.storage.s3.as_ref() else { return Ok(None) };
+
+    let store = S3BlobStore::connect_and_verify(
+        enclave_storage::S3Config::from_operator_config(section),
+        registry,
+    )
+    .await
+    .with_context(|| {
+        format!(
+            "connect to the object store named by `storage.s3` (bucket `{}`, region `{}`)",
+            section.bucket, section.region
+        )
+    })?;
+    Ok(Some(store))
 }
 
-/// The vector store's census, for the coverage probe — today, always none.
+/// The vector store's census, for the coverage probe, or `None` when none is configured.
 ///
-/// The same gap as [`object_store`], one section along: `enclave-config` models no `search:` section,
-/// so there is no Milvus URI and no vector dimension to build a `MilvusConfig` from, and
-/// `MilvusIndex` is the only [`IndexCensus`] there is.
+/// `MilvusIndex` is the only [`IndexCensus`] there is, and building one touches nothing — the
+/// handle exists whether or not the store does, so a Milvus that is down degrades the probe rather
+/// than refusing this start-up. That is the opposite of [`object_store`]'s treatment of an
+/// unreachable bucket, deliberately: a census that cannot be taken is a *reported* gap
+/// (`coverage::probe_pass` counts the tenant `unreadable`), whereas an unreadable bucket is a pass
+/// that consumes its retry budget in silence.
 ///
-/// A fabricated default would be worse than the absence and not by a little. A census pointed at a
-/// URI nobody configured fails, `coverage::probe_pass` counts every tenant `unreadable`, and the
-/// gauges an operator reads would say the whole fleet's index cannot be measured — which is what a
-/// store-wide outage looks like. The absence is at least legible: no series at all, which
-/// `SearchIndexCoverageUnreported` is written to catch.
-fn index_census(_config: &enclave_config::Config) -> Option<Arc<dyn IndexCensus>> {
-    tracing::warn!(
-        "no vector store is configured, so the coverage probe is not scheduled and \
-         `enclave_search_index_observed_chunks` will have no series. `enclave-config` does not \
-         model a `search:` section yet; see crates/worker/src/main.rs::index_census."
+/// # The dimension is not configuration
+///
+/// [`enclave_embeddings::model::ACTIVE`] supplies it, and `search:` deliberately has no key for it.
+/// The width is fixed when the collection is created and a mismatch errors at neither end — Milvus
+/// accepts the width it was made with, the model emits the width it was trained at — so the symptom
+/// is silently degraded retrieval and the correction is re-embedding every chunk of every tenant
+/// (`docs/07-SEARCH-INDEXING.md §9`). This is the crate `ENC-533` asks for: one that depends on both
+/// `embeddings` and `search` and can therefore make them agree in one line.
+///
+/// # Errors
+///
+/// A `search.milvus.token` that resolved to something that is not UTF-8.
+fn index_census(
+    config: &enclave_config::Config,
+    secrets: &enclave_config::ResolvedSecrets,
+) -> anyhow::Result<Option<Arc<dyn IndexCensus>>> {
+    let Some(section) = config.search.milvus.as_ref() else {
+        tracing::warn!(
+            "no vector store is configured (`search.provider` is `none`), so the coverage probe is \
+             not scheduled and `enclave_search_index_observed_chunks` will have no series. A \
+             census pointed at a URI nobody set would be worse: every tenant would count \
+             `unreadable` and the gauges would report a fleet-wide outage that is really a missing \
+             configuration key."
+        );
+        return Ok(None);
+    };
+
+    let mut milvus = enclave_search::MilvusConfig::new(
+        section.uri.to_string(),
+        enclave_embeddings::model::ACTIVE.dimension,
     );
-    None
+    if let Some(collection) = section.collection.as_ref() {
+        milvus.collection.clone_from(collection);
+    }
+    if let Some(token) = secrets.get("search.milvus.token") {
+        milvus.token =
+            Some(token.expose_str().context("search.milvus.token is not valid UTF-8")?.to_owned());
+    }
+
+    Ok(Some(Arc::new(enclave_search::MilvusIndex::new(milvus))))
 }
 
 /// Translates the configuration's database section into the `db` crate's own type.

@@ -61,9 +61,9 @@ use ab_glyph::{Font as _, FontRef, PxScale, ScaleFont as _};
 use enclave_core::VersionId;
 use enclave_indexing::{
     BoundedExtractor, ChunkBudget, Chunker, ChunkerVersion, ExtractOutcome, ExtractRequest,
-    Extractor as _, ManifestStatus, OcrExtractor, OcrModels, OcrRetry, Outcome, PageImage,
-    PageImages, PdfTextExtractor, PdfiumLibrary, PdfiumPages, Pipeline, Prepared, Reason, Refusal,
-    RenderBudget, SegmentKind,
+    Extractor as _, ExtractorVersion, ManifestStatus, MediaTypeRouter, OcrExtractor, OcrModels,
+    OcrRetry, Outcome, PageImage, PageImages, PdfTextExtractor, PdfiumLibrary, PdfiumPages,
+    Pipeline, PlainTextExtractor, Prepared, Reason, Refusal, RenderBudget, SegmentKind,
 };
 use image::{ExtendedColorType, ImageEncoder as _, ImageFormat, ImageReader, Rgb, RgbImage};
 
@@ -933,5 +933,125 @@ async fn a_scanned_pdf_of_blank_pages_fails_rather_than_indexing_as_empty() {
         Outcome::NoText(source) => assert_eq!(source.pages_without_text, vec![1, 2]),
         other => panic!("expected the work list to survive, got {other:?}"),
     }
+    assert!(prepared.chunks.is_empty());
+}
+
+// -------------------------------------------------------------------------------------------
+// One deployment, both formats. `ENC-552`.
+// -------------------------------------------------------------------------------------------
+
+/// The version marker a deployment serving text *and* PDF declares for its routing table.
+///
+/// It names every `+`-separated component of both members' own versions, which is what
+/// [`MediaTypeRouter::route`] checks before it accepts a registration. That check is why this
+/// constant is here rather than inside the test: a `pdfium-render` bump makes the router refuse to
+/// build — loudly, at construction — instead of leaving `docs/07 §3`'s reindex trigger comparing a
+/// marker that did not move. `crates/indexing/src/pdf_text.rs` asserts the other half of the same
+/// pairing against `Cargo.lock`.
+const ROUTER: &str = "router/1+text/1+pdf-text/1+pdfium-render-0.9.3";
+
+#[tokio::test]
+#[ignore = "requires a mounted PDFium named by ENCLAVE_PDFIUM; CI runs it with --include-ignored"]
+async fn one_pipeline_extracts_text_and_pdf_and_still_skips_what_nothing_claims() {
+    // **`ENC-552`, and the shape of the blocker it closes.** `Pipeline<E>` holds one extractor, so
+    // before the router a worker configured for `text/plain` answered `SKIPPED` /
+    // `unsupported_media_type` for every PDF in the corpus, and a worker configured for PDF did the
+    // same to every note and README. `ENC-545`'s extractor was proven by the tests above and
+    // unreachable in any deployment that also wanted text files.
+    //
+    // What makes this test the criterion rather than three separate ones is that all three sources
+    // go through **one** `pipeline` value, built once. Two pipelines would prove only what the tests
+    // above already prove.
+    let extractor = BoundedExtractor::new(
+        MediaTypeRouter::new(ExtractorVersion::new(ROUTER))
+            .route(&["text/plain", "text/markdown"], Arc::new(PlainTextExtractor))
+            .expect("the router's marker names text/1")
+            .route(&["application/pdf"], Arc::new(PdfTextExtractor::new(library())))
+            .expect("the router's marker names pdf-text/1 and the parser it pins"),
+    );
+
+    // What `crates/worker` records in `index_manifests.extractor_version`, and what `docs/07 §3`
+    // compares. Read through the wrapper, because that is the object the worker holds.
+    assert_eq!(extractor.extractor_version().as_str(), ROUTER);
+
+    let pipeline = Pipeline::new(extractor, chunker());
+
+    let prepared = pipeline
+        .prepare(
+            VersionId::new_v7(),
+            ExtractRequest {
+                declared_media_type: "text/plain".to_owned(),
+                source: b"Retention policy\n\nRecords are held for seven years.".to_vec(),
+                budget: UNTIMED,
+            },
+        )
+        .await
+        .expect("neither extractor failed");
+
+    assert_eq!(
+        prepared.outcome.status(),
+        ManifestStatus::Ready,
+        "a text file in a deployment that also serves PDFs: {:?}",
+        prepared.outcome
+    );
+    // Which extractor ran, asserted rather than inferred from "something came back". Only
+    // `PlainTextExtractor` produces paragraphs with no page number; only `PdfTextExtractor` produces
+    // pages that name themselves. A router that sent both sources to one extractor fails here.
+    assert!(prepared.chunks.iter().all(|chunk| chunk.kind == SegmentKind::Paragraph));
+    assert!(prepared.chunks.iter().all(|chunk| chunk.coordinates.page_number.is_none()));
+    assert!(
+        prepared.chunks.iter().any(|chunk| chunk.text.contains("seven years")),
+        "the text was not the document's: {:?}",
+        prepared.chunks
+    );
+
+    let prepared = pipeline
+        .prepare(
+            VersionId::new_v7(),
+            ExtractRequest {
+                declared_media_type: "application/pdf".to_owned(),
+                source: typed_pdf(&["QUARTERLY REPORT"]),
+                budget: UNTIMED,
+            },
+        )
+        .await
+        .expect("neither extractor failed");
+
+    assert_eq!(
+        prepared.outcome.status(),
+        ManifestStatus::Ready,
+        "a PDF in the same deployment: {:?}",
+        prepared.outcome
+    );
+    assert!(prepared.chunks.iter().all(|chunk| chunk.kind == SegmentKind::Page));
+    assert_eq!(
+        prepared.chunks.first().and_then(|chunk| chunk.coordinates.page_number),
+        Some(1),
+        "a chunk that cannot name its page is a citation nobody can navigate to"
+    );
+    assert!(
+        prepared.chunks.iter().any(|chunk| chunk.text.contains("QUARTERLY REPORT")),
+        "the text was not the document's: {:?}",
+        prepared.chunks
+    );
+
+    // Deny-by-default survives the router. A type nothing claims is `SKIPPED` on a surface somebody
+    // reads, not `FAILED`, and not fed to whichever parser happens to be registered first.
+    let prepared = pipeline
+        .prepare(
+            VersionId::new_v7(),
+            ExtractRequest {
+                declared_media_type: "application/vnd.openxmlformats-officedocument.\
+                                      wordprocessingml.document"
+                    .to_owned(),
+                source: typed_pdf(&["NOT A DOCX"]),
+                budget: UNTIMED,
+            },
+        )
+        .await
+        .expect("an unrouted type is not an error");
+
+    assert_eq!(prepared.outcome.status(), ManifestStatus::Skipped);
+    assert_eq!(prepared.outcome.reason(), Some(Reason::Unsupported));
     assert!(prepared.chunks.is_empty());
 }

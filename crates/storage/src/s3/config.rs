@@ -8,11 +8,18 @@
 
 use core::time::Duration;
 
-use enclave_config::{HumanDuration, SecretRef};
+use enclave_config::{HumanDuration, S3StorageConfig, SecretRef};
 use serde::Deserialize;
 use url::Url;
 
 use crate::error::StorageError;
+
+/// Re-exported from `enclave-config`, where it is defined.
+///
+/// It is a word an operator types (`flavor: minio`), so it belongs in the crate that models what an
+/// operator writes; a vocabulary spelled in two crates is two spellings waiting to disagree. This
+/// name stays because every caller already imports `enclave_storage::S3Flavor`.
+pub use enclave_config::S3Flavor;
 
 /// AWS's ceiling on a SigV4 pre-signed URL. Requesting more is an error at the provider, so it is
 /// an error here first, with a message that says why.
@@ -25,30 +32,13 @@ pub(crate) const S3_MAX_PART_BYTES: u64 = 5 * 1024 * 1024 * 1024;
 /// S3's maximum number of parts in one multipart upload.
 pub(crate) const S3_MAX_PARTS: u32 = 10_000;
 
-/// Which S3-compatible backend this is.
+/// Whether `GetPublicAccessBlock` and `GetBucketPolicyStatus` exist on this backend.
 ///
-/// Not cosmetic: it selects which self-check probes are even attempted. MinIO does not implement
-/// `GetPublicAccessBlock` or `GetBucketPolicyStatus`, and running them there produces a page of
-/// "not implemented" noise in the startup log that trains an operator to ignore the log.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
-#[serde(rename_all = "snake_case")]
-#[non_exhaustive]
-pub enum S3Flavor {
-    /// Amazon S3 itself. Every probe is available.
-    #[default]
-    Aws,
-    /// MinIO. Bucket policy and ACL probes work; the AWS-only ones do not.
-    Minio,
-    /// Anything else speaking the S3 API — Ceph, R2, Wasabi, B2. Only the probes that are part of
-    /// the core API are attempted.
-    Generic,
-}
-
-impl S3Flavor {
-    /// Whether `GetPublicAccessBlock` and `GetBucketPolicyStatus` exist on this backend.
-    pub(crate) const fn has_aws_public_access_apis(self) -> bool {
-        matches!(self, Self::Aws)
-    }
+/// A free function rather than an inherent method because [`S3Flavor`] is defined in
+/// `enclave-config`. That is the right place for the *word*; which administrative APIs a backend
+/// implements is knowledge this crate owns, and it stays here.
+pub(crate) const fn has_aws_public_access_apis(flavor: S3Flavor) -> bool {
+    matches!(flavor, S3Flavor::Aws)
 }
 
 /// Everything needed to talk to one bucket.
@@ -162,6 +152,40 @@ impl S3Config {
             multipart_threshold_bytes: default_multipart_threshold(),
             part_size_bytes: default_part_size(),
             flavor: S3Flavor::Aws,
+        }
+    }
+
+    /// Builds a client configuration from the `storage.s3` section an operator wrote.
+    ///
+    /// **This is the one place the two shapes meet**, and it is here rather than in each binary's
+    /// `main` because both `enclave-api` and `enclave-worker` need it and a conversion written
+    /// twice is a conversion that drifts once.
+    ///
+    /// [`enclave_config::S3StorageConfig`] is deliberately smaller than this struct — its doc
+    /// comment argues why, and why the alternative of modelling `S3Config` itself in
+    /// `enclave-config` would drag `aws-sdk-s3` into every crate in the workspace. What it does not
+    /// carry is [`multipart_threshold_bytes`](Self::multipart_threshold_bytes) and
+    /// [`part_size_bytes`](Self::part_size_bytes): S3 protocol pacing with no correctness content,
+    /// which take the documented defaults here.
+    ///
+    /// Nothing is resolved by this call. The credential fields stay [`SecretRef`]s and are
+    /// dereferenced inside [`S3BlobStore::connect`](super::S3BlobStore::connect), at the last
+    /// moment (`docs/08-BYO-INFRA.md §6`).
+    #[must_use]
+    pub fn from_operator_config(section: &S3StorageConfig) -> Self {
+        Self {
+            bucket: section.bucket.clone(),
+            region: section.region.clone(),
+            endpoint: section.endpoint.clone(),
+            path_style: section.path_style,
+            access_key_id: section.access_key_id.clone(),
+            secret_access_key: section.secret_access_key.clone(),
+            session_token: section.session_token.clone(),
+            signed_url_ttl: section.signed_url_ttl,
+            max_signed_url_ttl: section.max_signed_url_ttl,
+            multipart_threshold_bytes: default_multipart_threshold(),
+            part_size_bytes: default_part_size(),
+            flavor: section.flavor,
         }
     }
 
@@ -298,6 +322,66 @@ mod tests {
         let mut cfg = config();
         cfg.endpoint = Some("s3://enclave".parse().unwrap());
         assert!(cfg.validate().is_err());
+    }
+
+    /// The `storage.s3` section an operator writes becomes a client configuration that validates.
+    ///
+    /// The whole of `ENC-562` in one assertion: `deploy/config/enclave.example.yaml` used to carry
+    /// a `storage:` block that nothing parsed, so the indexing pass could not be scheduled and
+    /// `chunk_text` stayed empty in every real deployment. This runs the documented text through
+    /// `enclave-config`'s loader — the same three layers a binary uses — and converts it here.
+    ///
+    /// Deliberate violation: changing any of the four transcribed fields in
+    /// [`S3Config::from_operator_config`] to a default fails this by name. Dropping the
+    /// `validate()` call at the end would let a conversion that produced an unusable configuration
+    /// pass, which is why the assertion is not merely "the fields copied across".
+    #[test]
+    fn the_operator_section_becomes_a_client_configuration_that_validates() {
+        let loaded = enclave_config::ConfigLoader::new()
+            .without_env()
+            .with_yaml(
+                "enclave.yaml",
+                "
+storage:
+  provider: s3
+  s3:
+    bucket: enclave-content
+    region: us-east-1
+    endpoint: http://localhost:9000
+    flavor: minio
+    path_style: true
+    access_key_id: env://S3_ACCESS_KEY_ID
+    secret_access_key: vault://workspace/s3#secret_access_key
+    signed_url_ttl: 5m
+    max_signed_url_ttl: 1h
+",
+            )
+            .load()
+            .expect("the documented section loads");
+
+        let section = loaded.config().storage.s3.as_ref().expect("a bucket");
+        let config = S3Config::from_operator_config(section);
+
+        assert_eq!(config.bucket, "enclave-content");
+        assert_eq!(config.region, "us-east-1");
+        assert_eq!(config.endpoint.as_ref().map(url::Url::as_str), Some("http://localhost:9000/"));
+        assert_eq!(config.flavor, S3Flavor::Minio);
+        assert!(config.path_style);
+        assert_eq!(config.signed_url_ttl.as_secs(), 300);
+        assert_eq!(config.max_signed_url_ttl.as_secs(), 3600);
+        assert_eq!(config.access_key_id.to_string(), "env://S3_ACCESS_KEY_ID");
+        assert_eq!(
+            config.secret_access_key.to_string(),
+            "vault://workspace/s3#secret_access_key",
+            "the reference is carried across unresolved; resolution happens in `connect`"
+        );
+
+        // The two knobs the operator surface deliberately omits take this crate's defaults, and
+        // those defaults are inside S3's limits — which is the point of asserting `validate()`
+        // rather than the field values.
+        assert_eq!(config.part_size_bytes, default_part_size());
+        assert_eq!(config.multipart_threshold_bytes, default_multipart_threshold());
+        config.validate().expect("a converted configuration must be usable");
     }
 
     /// The credential fields are `SecretRef`, so a YAML file holding a literal key cannot even

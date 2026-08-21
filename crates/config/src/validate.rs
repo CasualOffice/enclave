@@ -14,7 +14,9 @@ use core::fmt;
 
 use serde_yaml::Value;
 
-use crate::model::{AntivirusProvider, Config, DeploymentProfile, OcrMounts};
+use crate::model::{
+    AntivirusProvider, Config, DeploymentProfile, OcrMounts, SearchProvider, StorageProvider,
+};
 use crate::secret_ref::SecretRef;
 
 /// The kind of a configuration problem — a code rather than a sentence, so callers can branch and
@@ -196,7 +198,119 @@ pub fn validate(config: &Config, raw: &Value) -> Result<(), ValidationReport> {
     report.extend(scan_for_inline_secrets(raw));
     report.extend(check_profile(config));
     report.extend(check_mounts(config));
+    report.extend(check_storage(config));
+    report.extend(check_search(config));
+    report.extend(check_relocated_keys(raw));
     report.into_result()
+}
+
+/// A provider and its settings block are written together or not at all.
+///
+/// The same argument as [`check_mounts`], one section along, and the same failure mode: a
+/// configuration file that says storage is configured and a deployment that indexes nothing.
+///
+/// **`provider: s3` with no `s3:` block** would leave `enclave-worker` with a provider it cannot
+/// construct. Refusing is better than falling back to "no storage", because the operator who wrote
+/// `provider: s3` has said what they want and a silent downgrade answers them with an empty search
+/// index months later.
+///
+/// **An `s3:` block with `provider: none`** — the likelier accident, since `none` is the default and
+/// therefore what an operator gets by forgetting a line — is refused for the same reason in the
+/// other direction. A fully specified bucket that nothing reads is indistinguishable, from outside,
+/// from a bucket nobody configured.
+///
+/// Neither section configured is **not** a problem. That is every deployment today, it is a
+/// documented absence rather than a degradation, and `crates/worker/src/main.rs` logs which passes
+/// it is therefore not scheduling.
+#[must_use]
+pub fn check_storage(config: &Config) -> Vec<Problem> {
+    match (config.storage.provider, config.storage.s3.is_some()) {
+        (StorageProvider::S3, false) => vec![Problem::new(
+            "storage.s3",
+            ProblemKind::InvalidValue,
+            "`storage.provider` is `s3` but there is no `storage.s3` block to build a client from. \
+             Give it `bucket`, `region` and the two credential references, or set `provider: none` \
+             — with `none` the indexing pass is not scheduled and says so at start-up, which is a \
+             legible absence rather than a pass that burns its retry budget against a store that \
+             cannot answer",
+        )],
+        (StorageProvider::None, true) => vec![Problem::new(
+            "storage.provider",
+            ProblemKind::InvalidValue,
+            "a `storage.s3` block is configured but `storage.provider` is `none`, which is the \
+             default and so is also what a missing line looks like. Nothing would read the bucket \
+             and nothing downstream is in a position to report it: set `provider: s3`, or remove \
+             the block",
+        )],
+        _ => Vec::new(),
+    }
+}
+
+/// The vector store's half of [`check_storage`], with the same reasoning.
+#[must_use]
+pub fn check_search(config: &Config) -> Vec<Problem> {
+    match (config.search.provider, config.search.milvus.is_some()) {
+        (SearchProvider::Milvus, false) => vec![Problem::new(
+            "search.milvus",
+            ProblemKind::InvalidValue,
+            "`search.provider` is `milvus` but there is no `search.milvus` block to build a client \
+             from. Give it a `uri`, or set `provider: none`",
+        )],
+        (SearchProvider::None, true) => vec![Problem::new(
+            "search.provider",
+            ProblemKind::InvalidValue,
+            "a `search.milvus` block is configured but `search.provider` is `none`, so the \
+             coverage probe is not scheduled and `enclave_search_index_observed_chunks` has no \
+             series at all. Set `provider: milvus`, or remove the block",
+        )],
+        _ => Vec::new(),
+    }
+}
+
+/// Keys that used to exist and now live somewhere else, refused rather than ignored.
+///
+/// `server.metrics_port` and `server.metrics_bind` moved to `metrics.api_port`,
+/// `metrics.worker_port` and `metrics.bind` (`ENC-566`). Nothing in `Config` rejects an unknown key
+/// under `server:`, by design — an operator's complete file must load — so an unmigrated file would
+/// otherwise load cleanly with the exposition **silently off**, which is the reading that is
+/// indistinguishable from a healthy system with nothing to report.
+///
+/// Checked against the raw tree because the fields are gone from the model, which is the point: a
+/// deprecated field left on the struct is a field something eventually reads.
+#[must_use]
+pub fn check_relocated_keys(raw: &Value) -> Vec<Problem> {
+    const MOVED: &[(&str, &str, &str)] = &[
+        (
+            "metrics_port",
+            "server.metrics_port",
+            "`metrics.api_port` and `metrics.worker_port`. Both binaries read the single old key, \
+             so one `enclave.yaml` on one host asked the API and the worker to bind the same \
+             socket and whichever started second died with `Address already in use` (ENC-566)",
+        ),
+        (
+            "metrics_bind",
+            "server.metrics_bind",
+            "`metrics.bind`, which both listeners share — the interface an unauthenticated, \
+             tenant-labelled exposition faces is one decision, not two that can drift apart",
+        ),
+    ];
+
+    let Some(server) = raw.get("server") else { return Vec::new() };
+    MOVED
+        .iter()
+        .filter(|(key, _, _)| !matches!(server.get(key), None | Some(Value::Null)))
+        .map(|(_, path, moved_to)| {
+            Problem::new(
+                *path,
+                ProblemKind::InvalidValue,
+                format!(
+                    "has moved to {moved_to}. It is refused rather than ignored because an \
+                     ignored key here means the exposition is silently off, and metrics nobody \
+                     serves read as zero forever"
+                ),
+            )
+        })
+        .collect()
 }
 
 /// The two OCR volumes are configured together or not at all (`ENC-546`).
@@ -469,7 +583,9 @@ pub fn check_profile(config: &Config) -> Vec<Problem> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use crate::model::{AntivirusConfig, AuditConfig};
+    use crate::model::{
+        AntivirusConfig, AuditConfig, MilvusSettings, S3StorageConfig, SearchConfig, StorageConfig,
+    };
 
     use super::*;
 
@@ -771,5 +887,99 @@ integrations:
             }
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+    /// A provider and its settings block are written together, in both directions.
+    ///
+    /// Both, because the tempting implementation checks only one — and the direction it would omit
+    /// is the likelier accident: `none` is the default, so `provider` is what a forgotten line looks
+    /// like, and a fully specified bucket that nothing reads is invisible from outside.
+    ///
+    /// Deliberate violation: deleting either arm of `check_storage`'s match makes one iteration of
+    /// this loop fail by name.
+    #[test]
+    fn a_provider_and_its_block_are_written_together_or_not_at_all() {
+        let s3 = || S3StorageConfig {
+            bucket: "b".to_owned(),
+            region: "r".to_owned(),
+            endpoint: None,
+            path_style: true,
+            access_key_id: "env://A".parse().unwrap(),
+            secret_access_key: "env://B".parse().unwrap(),
+            session_token: None,
+            signed_url_ttl: crate::HumanDuration::from_secs(300),
+            max_signed_url_ttl: crate::HumanDuration::from_secs(3600),
+            flavor: crate::model::S3Flavor::Minio,
+        };
+        let milvus = || MilvusSettings {
+            uri: "http://milvus:19530".parse().unwrap(),
+            token: None,
+            collection: None,
+        };
+
+        // `provider` without the block.
+        let named = Config {
+            storage: StorageConfig { provider: StorageProvider::S3, s3: None },
+            search: SearchConfig { provider: SearchProvider::Milvus, milvus: None },
+            ..Config::default()
+        };
+        assert_eq!(check_storage(&named)[0].path, "storage.s3");
+        assert_eq!(check_storage(&named)[0].kind, ProblemKind::InvalidValue);
+        assert_eq!(check_search(&named)[0].path, "search.milvus");
+
+        // The block without `provider` — the likelier accident, since `none` is the default.
+        let orphaned = Config {
+            storage: StorageConfig { provider: StorageProvider::None, s3: Some(s3()) },
+            search: SearchConfig { provider: SearchProvider::None, milvus: Some(milvus()) },
+            ..Config::default()
+        };
+        assert_eq!(check_storage(&orphaned)[0].path, "storage.provider");
+        assert_eq!(check_search(&orphaned)[0].path, "search.provider");
+
+        // Both halves, and neither half, are the two configurations that must pass.
+        let configured = Config {
+            storage: StorageConfig { provider: StorageProvider::S3, s3: Some(s3()) },
+            search: SearchConfig { provider: SearchProvider::Milvus, milvus: Some(milvus()) },
+            ..Config::default()
+        };
+        assert!(check_storage(&configured).is_empty());
+        assert!(check_search(&configured).is_empty());
+        assert!(check_storage(&Config::default()).is_empty(), "no storage is a documented absence");
+        assert!(check_search(&Config::default()).is_empty(), "and so is no vector store");
+    }
+
+    /// The relocated metrics keys are refused, not ignored, and both of them are.
+    ///
+    /// Nothing under `server:` rejects an unknown key, by design, so an unmigrated file would
+    /// otherwise load cleanly with the exposition **silently off** — and a metric nobody serves
+    /// reads as zero forever, which is indistinguishable from a healthy system with nothing to
+    /// report. That is the assertion-about-an-absence this check exists to convert into a message.
+    ///
+    /// Deliberate violation: removing `check_relocated_keys` from `validate`, or emptying its
+    /// `MOVED` table, fails this test by name.
+    #[test]
+    fn the_relocated_metrics_keys_are_refused_rather_than_ignored() {
+        let old = "server:\n  port: 8080\n  metrics_port: 9464\n  metrics_bind: 127.0.0.1\n";
+        let value: Value = serde_yaml::from_str(old).unwrap();
+
+        let problems = check_relocated_keys(&value);
+        let paths: Vec<&str> = problems.iter().map(|p| p.path.as_str()).collect();
+        assert_eq!(paths, vec!["server.metrics_port", "server.metrics_bind"]);
+        assert!(problems[0].detail.contains("metrics.api_port"), "{}", problems[0].detail);
+        assert!(problems[0].detail.contains("metrics.worker_port"), "{}", problems[0].detail);
+        assert!(problems[1].detail.contains("metrics.bind"), "{}", problems[1].detail);
+
+        // Reached through the whole startup path, not just by calling the function directly.
+        let err =
+            crate::ConfigLoader::new().without_env().with_yaml("old.yaml", old).load().unwrap_err();
+        let report = err.report().expect("a validation report");
+        assert_eq!(report.len(), 2, "{report}");
+
+        // The new spelling, and a file with no metrics at all, both pass.
+        assert!(check_relocated_keys(&serde_yaml::from_str("server:\n  port: 8080\n").unwrap())
+            .is_empty());
+        assert!(check_relocated_keys(
+            &serde_yaml::from_str("metrics:\n  api_port: 9464\n").unwrap()
+        )
+        .is_empty());
     }
 }
