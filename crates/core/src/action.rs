@@ -203,6 +203,25 @@ impl Action {
         )
     }
 
+    /// Whether this action puts content, or the means to reach it, outside the tenant.
+    ///
+    /// Defined once here for the same reason [`Self::exposes_content`] is: an external boundary
+    /// that each stage recognises with its own `matches!` is an external boundary one stage
+    /// eventually stops recognising. `plans/M4-GOVERNANCE.md` D27 makes this the condition under
+    /// which missing security facts must fail closed *whatever* the tenant configured, so a
+    /// forgotten variant here is a control that silently stops applying to one sharing path.
+    ///
+    /// External *sharing*, not external *access*: `file.download` by an already-admitted guest is
+    /// content leaving the building too, but it is governed by the download and classification
+    /// controls rather than by the ones that decide whether a link may exist at all.
+    #[must_use]
+    pub const fn is_external_share(&self) -> bool {
+        matches!(
+            self,
+            Self::File(FileAction::ShareExternal) | Self::Share(ShareAction::CreateExternal)
+        )
+    }
+
     /// Whether this action changes state, and therefore must not be served from a cached decision
     /// or run against a read replica.
     #[must_use]
