@@ -45,7 +45,10 @@
 use std::sync::Arc;
 
 use anyhow::Context as _;
-use enclave_indexing::{ChunkBudget, Chunker, ChunkerVersion, PlainTextExtractor};
+use enclave_indexing::{
+    BoundedExtractor, ChunkBudget, Chunker, ChunkerVersion, ExtractorVersion, MediaTypeRouter,
+    PdfTextExtractor, PlainTextExtractor,
+};
 use enclave_preview::RenderBudget;
 use enclave_search::health::{CoverageFloor, IndexCensus};
 use enclave_storage::S3BlobStore;
@@ -217,9 +220,41 @@ async fn index_runner(
         tracing::info!("no OCR volumes are mounted; scanned documents will record FAILED");
     }
 
+    // The routing table this deployment runs, and the marker recorded for everything it indexes.
+    //
+    // `ENC-552`: the marker is a literal here, and `MediaTypeRouter` refuses any registration whose
+    // own version has a `+`-component this string does not name. So bumping `pdf-text/1` without
+    // bumping the marker `docs/07 §3` compares does not silently stop triggering a reindex — the
+    // process refuses to start.
+    //
+    // PDF is registered only when PDFium is mounted. Registering it unconditionally would make a
+    // deployment that never wanted PDF fail to start for want of a volume, and the alternative —
+    // registering it and letting extraction fail — is D24's failure: every PDF a `FAILED` manifest
+    // for a reason that is the deployment's, not the document's.
+    let mut router = MediaTypeRouter::new(ExtractorVersion::new(ROUTER))
+        .route(TEXT_TYPES, Arc::new(PlainTextExtractor))
+        .context("register the plain-text extractor")?;
+
+    if let Some(stage) = ocr.as_ref() {
+        router = router
+            .route(&["application/pdf"], Arc::new(PdfTextExtractor::new(stage.library())))
+            .context("register the PDF text extractor")?;
+        tracing::info!("PDF text extraction is enabled (PDFium is mounted)");
+    } else {
+        tracing::info!(
+            "PDFium is not mounted, so `application/pdf` is routed nowhere and PDFs record \
+             SKIPPED / unsupported_media_type rather than failing"
+        );
+    }
+
     Ok(Some(Arc::new(PipelineRunner::new(
         pool,
-        PlainTextExtractor,
+        // `BoundedExtractor` — `ENC-570`. The wall clock, the input cap, the output cap and D24's
+        // empty-document conversion are applied by this wrapper *from outside* the extractor, and
+        // the shipped worker was passing a bare one: every test in `crates/indexing` runs wrapped,
+        // which is exactly why nothing caught it. A hostile document reaching this process was
+        // parsed under no bound at all.
+        BoundedExtractor::new(router),
         Chunker::new(CHUNKER, ChunkBudget::default()),
         ocr,
         store,
@@ -231,6 +266,17 @@ async fn index_runner(
         INDEX_BATCH,
     ))))
 }
+
+/// The routing marker this deployment records for everything it indexes.
+///
+/// A literal, at the composition root, because `MediaTypeRouter` verifies it rather than composing
+/// it — see `crates/indexing/src/route.rs`. Every `+`-component of every registered extractor's own
+/// version must appear here, so bumping an extractor without bumping this refuses to start rather
+/// than leaving `docs/07 §3`'s reindex trigger comparing an unchanged string.
+const ROUTER: &str = "router/1+text/1+pdf-text/1+pdfium-render-0.9.3";
+
+/// The media types the plain-text extractor is registered for.
+const TEXT_TYPES: &[&str] = &["text/plain", "text/markdown"];
 
 /// The object store this deployment configured, or `None` when it configured none.
 ///
@@ -383,5 +429,39 @@ async fn shutdown_signal() {
     #[cfg(not(unix))]
     {
         let _ignored = tokio::signal::ctrl_c().await;
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    /// The shipped marker names every build it routes to.
+    ///
+    /// This exists because the obvious way to check it — start the binary and read the log — proves
+    /// nothing: the process exits at configuration load long before it reaches the router, which is
+    /// exactly what happened when this was verified by hand. The guard is real; the manual check
+    /// was not.
+    #[test]
+    fn the_shipped_router_marker_names_every_extractor_it_registers() {
+        MediaTypeRouter::new(ExtractorVersion::new(ROUTER))
+            .route(TEXT_TYPES, Arc::new(PlainTextExtractor))
+            .expect("the shipped marker must name the text extractor's build");
+    }
+
+    /// And refuses one it does not name.
+    ///
+    /// The positive control for the test above: without it, that assertion passes for free against
+    /// a router that verified nothing (`docs/12 §1.2`).
+    #[test]
+    fn a_marker_that_does_not_name_a_build_is_refused() {
+        let refused = MediaTypeRouter::new(ExtractorVersion::new("router/1"))
+            .route(TEXT_TYPES, Arc::new(PlainTextExtractor));
+        assert!(
+            refused.is_err(),
+            "a marker naming no extractor build was accepted, so bumping an extractor could \
+             silently stop triggering a reindex"
+        );
     }
 }
