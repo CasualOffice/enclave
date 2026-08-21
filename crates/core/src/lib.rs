@@ -35,7 +35,7 @@
 //! | [`actor`] | Who is calling: [`Actor`], [`ClientType`] |
 //! | [`context`] | [`RequestContext`] and the evidence conditional access evaluates |
 //! | [`action`] | What is being attempted: [`Action`], [`FileAction`], [`ResourceRef`] |
-//! | [`policy`] | [`PolicyDecision`] and [`Obligations`] — both `#[must_use]` |
+//! | [`policy`] | [`PolicyDecision`] and [`Obligations`] — both `#[must_use]` — and the [`SecurityFacts`] a decision is taken against |
 //! | [`error`] | [`Error`], [`ReasonCode`], [`Remediation`], [`Result`] |
 //!
 //! # Two things that are load-bearing rather than stylistic
@@ -155,9 +155,21 @@ pub use id::{
     ChunkId, DeviceId, FileId, GroupId, GuestId, IdParseError, LibraryId, McpClientId, RequestId,
     ServiceAccountId, SessionId, TenantId, UserId, VersionId, WorkspaceId,
 };
-pub use policy::{ClassificationRank, Obligation, Obligations, PolicyDecision};
+pub use policy::{
+    ClassificationRank, DetectorCategory, DetectorCounts, DetectorSetVersion, FactsOutcome,
+    FactsPolicy, FactsSnapshot, FactsStaleness, FactsUnavailable, Obligation, Obligations,
+    PolicyDecision, RiskScore, ScanVersion, SecurityFacts, Severity, UnscannedAllow,
+};
 
 /// Re-exported so that downstream crates can name the raw type at the few boundaries where an
 /// untyped UUID is legitimate (audit rows, database columns) without each of them having to decide
 /// which `uuid` version to depend on.
 pub use uuid::Uuid;
+
+/// Re-exported for the same reason as [`Uuid`], and with the same narrowness of intent.
+///
+/// [`SecurityFacts::scanned`] takes a `DateTime<Utc>`, so every crate that produces facts has to
+/// name the type. Reaching it through `core` means the crate that *defines* the signature and the
+/// crates that *call* it cannot end up on two `chrono` versions — which does not merely warn, it
+/// fails to compile with a message about two identical-looking types.
+pub use chrono::{DateTime, Utc};

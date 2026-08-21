@@ -3,6 +3,36 @@
 //! Security and governance — a policy service in the canonical chain.
 //!
 //! See `docs/02-HLD.md §4` for where this crate sits in the architecture.
+//!
+//! # What is here so far
+//!
+//! | Module | Contents |
+//! |---|---|
+//! | [`detector`] | The shape of a detector: [`Candidate`], [`Verdict`], [`StructuredDetector`], and the linear scan |
+//! | [`checksum`] | Luhn and ISO 7064 MOD 97-10, written out rather than depended on |
+//! | [`builtin`] | The detectors a deployment gets without configuring anything |
+//!
+//! The facts a scan produces — [`enclave_core::SecurityFacts`] and the
+//! [`enclave_core::FactsSnapshot`] the chain threads them through — live in `core`, because they
+//! are vocabulary several stages read rather than anything this crate owns.
+//!
+//! # The two rules this crate is arranged around
+//!
+//! 1. **No regex on the synchronous path** (`plans/M4-GOVERNANCE.md` Q16). Detectors are validated
+//!    by structure and checksum, and [`detector`] has nowhere to put a pattern.
+//! 2. **Counts leave, content does not** (`CLAUDE.md` rule 10). A [`Candidate`] borrows the
+//!    document and redacts itself in `Debug`; a [`ScanReport`] carries numbers.
+
+pub mod builtin;
+pub mod checksum;
+pub mod detector;
+
+pub use builtin::{builtin_set, Iban, PaymentCardNumber, BUILTIN_SET_VERSION};
+pub use checksum::{luhn_valid, mod97};
+pub use detector::{
+    Candidate, CandidateClass, Confidence, DetectorFinding, DetectorId, DetectorSet, ScanReport,
+    StructuredDetector, Verdict, MAX_CANDIDATE_LEN,
+};
 
 use async_trait::async_trait;
 use enclave_core::{Action, DlpService, RequestContext, ResourceRef, Result, StageDecision};
@@ -32,5 +62,107 @@ impl DlpService for DisabledDlp {
         _resource: &ResourceRef,
     ) -> Result<StageDecision> {
         Ok(StageDecision::allow())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // Assertions are the point of a test: a panic here is the failure signal.
+    #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+
+    use enclave_core::{
+        ClassificationRank, DetectorCategory, DetectorSetVersion, FactsOutcome, FactsPolicy,
+        FactsSnapshot, FileAction, FileId, ScanVersion, SecurityFacts, Utc, VersionId,
+    };
+
+    use super::*;
+
+    /// The join this milestone step exists to define: a scan produces counts, the counts become
+    /// facts, and the facts are what a stage decides against.
+    ///
+    /// The interesting property is what does **not** cross that boundary. `CLAUDE.md` rule 10
+    /// forbids DLP match values in audit, and a `SecurityFacts` is the value an audit row is built
+    /// from — so the match value must be absent from it, and absent from its `Debug`.
+    #[test]
+    fn a_scan_becomes_facts_that_carry_counts_and_no_content() {
+        let pan = "4111111111111111";
+        let iban = "GB82WEST12345698765432";
+        let document =
+            format!("Please charge {pan} and remit the balance to {iban} before Friday.");
+
+        let set = builtin_set();
+        let counts = set.scan(&document).counts();
+
+        // The positive control comes first, deliberately: every assertion below is about an
+        // absence, and an absence holds for free against a scanner that found nothing at all.
+        assert_eq!(
+            counts.get(DetectorCategory::Financial),
+            2,
+            "the scan must have found both identifiers, or the redaction proves nothing"
+        );
+
+        let facts = SecurityFacts::scanned(
+            FileId::new_v7(),
+            VersionId::new_v7(),
+            counts,
+            set.version().clone(),
+            ScanVersion::new(1),
+            Utc::now(),
+        );
+
+        let rendered = format!("{facts:?}");
+        assert!(!rendered.contains(pan), "a card number reached a format string: {rendered}");
+        assert!(!rendered.contains(iban), "an IBAN reached a format string: {rendered}");
+        assert!(!rendered.contains("4111"), "a prefix of the card number did: {rendered}");
+        assert!(!rendered.contains("WEST"), "part of the IBAN did: {rendered}");
+
+        // And the second control: the needles are findable in a rendering that does not redact, so
+        // the four misses above are the type carrying no content rather than the search being
+        // wrong. `docs/12 §1.2`.
+        assert!(document.contains(pan));
+        assert!(document.contains(iban));
+        assert!(document.contains("4111"));
+        assert!(document.contains("WEST"));
+
+        // The count did survive, which is the whole point of carrying facts at all.
+        assert!(rendered.contains("financial: 2"), "the count did not survive: {rendered}");
+    }
+
+    /// The set's version is what a fact row is stamped with, and equality with the active set is
+    /// what makes the row usable (`enclave_core::DetectorSetVersion`).
+    #[test]
+    fn facts_stamped_by_the_builtin_set_are_usable_against_that_same_set() {
+        let set = builtin_set();
+        let facts = SecurityFacts::scanned(
+            FileId::new_v7(),
+            VersionId::new_v7(),
+            set.scan("nothing sensitive here").counts(),
+            set.version().clone(),
+            ScanVersion::new(1),
+            Utc::now(),
+        );
+
+        let snapshot = FactsSnapshot::gathered(facts, set.version(), FactsPolicy::fail_closed());
+        assert!(matches!(
+            snapshot.require(Action::File(FileAction::ContentRead), None),
+            FactsOutcome::Facts(_)
+        ));
+
+        // The control: a deployment running a *different* set cannot use them, so the assertion
+        // above is the versions matching rather than `require` handing over whatever it holds.
+        let facts = SecurityFacts::scanned(
+            FileId::new_v7(),
+            VersionId::new_v7(),
+            set.scan("nothing sensitive here").counts(),
+            DetectorSetVersion::new("builtin/2"),
+            ScanVersion::new(1),
+            Utc::now(),
+        );
+        let snapshot = FactsSnapshot::gathered(facts, set.version(), FactsPolicy::fail_closed());
+        assert!(matches!(
+            snapshot
+                .require(Action::File(FileAction::ContentRead), Some(ClassificationRank::new(20))),
+            FactsOutcome::Denied { .. }
+        ));
     }
 }
