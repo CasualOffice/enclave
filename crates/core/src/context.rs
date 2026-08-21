@@ -157,8 +157,18 @@ pub struct NetworkContext {
     /// Names of the administrator-defined trusted zones this address falls inside, e.g.
     /// `["Corporate India", "VPN"]`. An address can be in several; an empty list means untrusted.
     pub zones: Vec<String>,
-    /// Whether the immediate peer was a configured trusted proxy, and therefore whether any
-    /// forwarded address was honoured at all.
+    /// Whether [`source_ip`](Self::source_ip) was *relayed to us* by a trusted proxy rather than
+    /// observed on the socket.
+    ///
+    /// The question this answers is "is this address a claim?", not "is our edge behind a load
+    /// balancer" — the second is a fact about the deployment and no policy can act on it. So a
+    /// trusted proxy that sends no forwarding header yields `false` here: the address in hand is
+    /// then one we saw ourselves, which is strictly better evidence than one we were told.
+    ///
+    /// Populated by `enclave_conditional_access::ProxyTrust::resolve`, which walks the forwarding
+    /// chain hop by hop (`plans/M4-GOVERNANCE.md` D30). Nothing else may set it: a `true` here is
+    /// the assertion that a configured proxy vouched for the address, and there is exactly one
+    /// place equipped to make that assertion honestly.
     pub via_trusted_proxy: bool,
 }
 
@@ -171,6 +181,28 @@ impl NetworkContext {
     pub fn internal() -> Self {
         Self {
             source_ip: IpAddr::V4(core::net::Ipv4Addr::LOCALHOST),
+            country: None,
+            asn: None,
+            zones: Vec::new(),
+            via_trusted_proxy: false,
+        }
+    }
+
+    /// A context for a request whose peer address could not be determined.
+    ///
+    /// Distinct from [`NetworkContext::internal`], and the distinction is worth the extra
+    /// constructor. `internal()` is loopback because the request genuinely originated in this
+    /// process; a request that *arrived over HTTP* with no peer address is a different situation —
+    /// something in the serving stack failed to supply one — and describing it as loopback would
+    /// hand it whatever trust an operator has given `127.0.0.1`.
+    ///
+    /// `0.0.0.0` is the unspecified address: not routable, not a plausible member of any trusted
+    /// zone anyone would write, and it fails every geo and ASN lookup. Every network rule therefore
+    /// refuses it, which is the correct answer to "we do not know where this came from".
+    #[must_use]
+    pub fn unknown() -> Self {
+        Self {
+            source_ip: IpAddr::V4(core::net::Ipv4Addr::UNSPECIFIED),
             country: None,
             asn: None,
             zones: Vec::new(),
@@ -405,6 +437,18 @@ mod tests {
         let net = NetworkContext::internal();
         assert!(!net.is_trusted_zone());
         assert!(!net.in_zone("Corporate India"));
+        assert!(!net.via_trusted_proxy);
+        assert_eq!(net.country, None);
+    }
+
+    #[test]
+    fn an_undeterminable_peer_is_not_described_as_loopback() {
+        // A request that arrived over HTTP without a peer address must not inherit whatever trust
+        // an operator has given 127.0.0.1.
+        let net = NetworkContext::unknown();
+        assert_ne!(net.source_ip, NetworkContext::internal().source_ip);
+        assert!(net.source_ip.is_unspecified());
+        assert!(!net.is_trusted_zone());
         assert!(!net.via_trusted_proxy);
         assert_eq!(net.country, None);
     }

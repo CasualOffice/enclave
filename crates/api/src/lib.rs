@@ -8,6 +8,7 @@
 pub mod auth;
 pub mod content;
 pub mod download;
+pub mod edge;
 pub mod error;
 pub mod health;
 pub mod me;
@@ -22,6 +23,7 @@ use axum::{Extension, Router};
 use enclave_preview::PreviewPipeline;
 use enclave_storage::BlobStore;
 
+pub use edge::Edge;
 pub use state::{unconfigured_stages, ApiState};
 
 /// Builds the router.

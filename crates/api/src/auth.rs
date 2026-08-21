@@ -6,7 +6,7 @@
 
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
-use enclave_core::{DevicePosture, Error, NetworkContext, RequestContext, RequestId};
+use enclave_core::{DevicePosture, Error, RequestContext, RequestId};
 
 use crate::error::ApiError;
 use crate::state::ApiState;
@@ -41,10 +41,11 @@ impl FromRequestParts<ApiState> for Authenticated {
         // could assert its own network origin would make every conditional-access network rule
         // self-certifying.
         //
-        // ENC-13x resolves these properly: the source address from the trusted-proxy chain
-        // (docs/06 §7.3) and posture from the device registry. Until then the context is honest
-        // about knowing neither.
-        let network = NetworkContext::internal();
+        // The network half is now resolved from the real connection (`ENC-583`): the socket peer,
+        // and a forwarded address only where a configured proxy vouched for it hop by hop
+        // (`docs/06 §7.3`). Posture still awaits the device registry, and the context stays honest
+        // about not knowing it — `DevicePosture::Unknown` satisfies no posture requirement.
+        let network = state.edge.network_context(parts);
         let posture = DevicePosture::Unknown;
 
         Ok(Self { ctx: verified.to_request_context(request_id, network, posture) })

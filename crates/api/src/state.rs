@@ -6,6 +6,8 @@ use enclave_auth::{AccessTokenVerifier, KeySet};
 use enclave_core::PolicyEngine;
 use enclave_db::DbPool;
 
+use crate::edge::Edge;
+
 /// Shared, cheaply cloneable application state.
 #[derive(Clone)]
 pub struct ApiState {
@@ -15,6 +17,9 @@ pub struct ApiState {
     pub db: Arc<DbPool>,
     /// Verifies bearer tokens. Holds the public half only.
     pub tokens: Arc<AccessTokenVerifier>,
+    /// Where a request's network origin comes from. The *only* thing that may populate
+    /// `NetworkContext`; see `crates/api/src/edge.rs`.
+    pub edge: Arc<Edge>,
 }
 
 impl std::fmt::Debug for ApiState {
@@ -38,7 +43,21 @@ impl ApiState {
             policy: Arc::new(policy),
             db: Arc::new(db),
             tokens: Arc::new(AccessTokenVerifier::new(issuer, audience, keys)),
+            edge: Arc::new(Edge::untrusting()),
         }
+    }
+
+    /// Supplies the configured edge.
+    ///
+    /// A builder step rather than a constructor argument, and deliberately so: the default is
+    /// [`Edge::untrusting`], which believes no forwarding header. A caller that forgets this gets a
+    /// deployment where every client address is its socket peer — wrong behind a load balancer,
+    /// but wrong in the direction that cannot be exploited. Making it a required argument would
+    /// have the same effect on the binary and would force every test harness to supply one.
+    #[must_use]
+    pub fn with_edge(mut self, edge: Edge) -> Self {
+        self.edge = Arc::new(edge);
+        self
     }
 }
 

@@ -73,6 +73,8 @@ pub struct Config {
     pub auth: AuthConfig,
     /// Password, MFA and fail-closed behaviour.
     pub security: SecurityConfig,
+    /// Named trusted network zones, which conditional-access rules refer to by name.
+    pub conditional_access: ConditionalAccessConfig,
     /// Data-loss prevention.
     pub dlp: DlpConfig,
     /// Audit trail.
@@ -350,6 +352,40 @@ pub struct TrustedProxy {
     /// than taking the left-most `X-Forwarded-For` entry is what stops a client from prepending a
     /// forged address.
     pub hops: u8,
+}
+
+/// Conditional access (`docs/06-SECURITY-DLP-ACCESS.md §7`).
+///
+/// # Why only the zones live here
+///
+/// An administrator writes *rules* in the admin console, against the tenant they administer, and
+/// they are tenant data rather than deployment configuration — one `enclave.yaml` serves every
+/// tenant on a host, so a rule in it would apply to all of them.
+///
+/// Zone *definitions* are the part that is genuinely about the deployment: which networks the
+/// corporate egress, the VPN concentrator and the datacenter actually occupy is a fact about where
+/// this installation runs, and it is the same fact the load balancer and the firewall are
+/// configured with. Naming them here lets a rule say "Corporate India" instead of a prefix, which
+/// is what makes a rule reviewable and what makes renumbering a network one edit instead of many.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ConditionalAccessConfig {
+    /// The named zones. Empty by default: with none defined, every address is outside every zone
+    /// and any rule requiring a trusted network refuses. That is the fail-closed direction — a
+    /// deployment that has not said where its trusted networks are has not got any.
+    pub zones: Vec<NetworkZoneConfig>,
+}
+
+/// One named trusted network zone (`docs/06-SECURITY-DLP-ACCESS.md §7.2`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NetworkZoneConfig {
+    /// The name rules refer to, e.g. `Corporate India`.
+    pub name: String,
+    /// The networks inside it. An empty list contains no address rather than every address: a
+    /// half-written zone must not become one that admits everyone, because the rules naming it are
+    /// the ones that grant access.
+    pub networks: Vec<IpNetwork>,
 }
 
 /// Object storage for versions and renditions (`docs/08-BYO-INFRA.md §3`).
