@@ -1,13 +1,22 @@
 # ROADMAP
 
 > **Milestones, sequencing and exit criteria for Enclave.**
-> Owner: Casual Office · Last updated: 2026-08-18 · Baseline: 2026-09-01
+> Owner: Casual Office · Last updated: 2026-08-21 · Baseline: 2026-09-01
 
 This is the plan we follow. [`TRACKER.md`](TRACKER.md) is what we work from day to day; this document
 says **why the work is in that order, when each milestone completes, and what "complete" means**.
 
 Where the two disagree, the tracker is authoritative for status and this document is authoritative for
 sequencing and exit criteria.
+
+**On the `ENC-nnn` numbers below.** `TRACKER.md §2.3` is authoritative for the ID scheme; this
+document only cites IDs, and cites none that does not exist. Until 2026-08-21 it did: it handed out
+`ENC-200`–`ENC-226` from a phase-blocked scheme that `ENC-154` retired, so a reader following a
+number from a milestone into the tracker found nothing and could not tell whether the work was
+unlogged or already done under a different ID. Nothing was renumbered to fix it — sixty completed
+rows carry their numbers in branch names, commits and merged PRs. Where the real row exists it is
+named; where the step is real and nobody has logged it, it says **_(no row yet)_**, which is a
+checkable statement rather than a number that resolves to nothing (`ENC-500`).
 
 ---
 
@@ -82,13 +91,17 @@ usually does not.
 
 ```text
 ENC-104 db + TenantScoped
-   └─ ENC-105 migration 001 + RLS
+   └─ ENC-105 migration 0001 + RLS
         └─ ENC-109 PolicyEngine::enforce
-             └─ ENC-208 ACL resolution
-                  └─ ENC-215 search post-filter
-                       └─ ENC-224 leakage matrix green
+             └─ ENC-126 ACL resolution
+                  └─ ENC-506 search post-filter + retrieval denylist
+                       └─ M5 leakage matrix §4.1–4.6 green  (no row yet)
                             └─ M5 MVP GA
 ```
+
+The last link has no ID because nothing has been logged for it. `ENC-134` and `ENC-153` filled in
+individual matrix rows as the surfaces they cover landed; **the sweep that takes §4.1–4.6 green as a
+whole is M5 work nobody has written down yet**, and giving it a number here would be inventing one.
 
 Consequences of that shape, which drove the ordering below:
 
@@ -96,7 +109,7 @@ Consequences of that shape, which drove the ordering below:
   that already query the database directly is the single most expensive mistake available here.
 - **The search post-filter is built with the first search, not after it.** It is the mechanism that
   makes index staleness a performance problem instead of a data leak (`docs/07 §6`).
-- **RLS lands in migration 001.** Adding it to fifty existing tables later means auditing fifty
+- **RLS lands in migration 0001.** Adding it to fifty existing tables later means auditing fifty
   tables; adding it first means the CI gate keeps it true for free.
 
 ---
@@ -138,7 +151,9 @@ shock absorber, and it is the first thing consumed when an estimate is wrong.
 **Goal.** A request can traverse the full policy chain against a real database, and CI enforces the
 structural rules that keep it that way.
 
-**Tracker:** ENC-100 … ENC-115 · **Plan:** [`plans/M0-FOUNDATIONS.md`](plans/M0-FOUNDATIONS.md)
+**Tracker:** [`TRACKER.md §4`](TRACKER.md) → *Phase 0 — Foundations* (ENC-100 … ENC-118; the last
+three were found during the milestone and are not in the step list below) ·
+**Plan:** [`plans/M0-FOUNDATIONS.md`](plans/M0-FOUNDATIONS.md)
 
 **Steps, in order**
 
@@ -176,18 +191,23 @@ disable the chain; they default to deny.
 
 **Goal.** Content can be stored and versioned safely. Nothing is readable before it is scanned.
 
-**Tracker:** ENC-200 … ENC-207
+**Tracker:** [`TRACKER.md §4`](TRACKER.md) → *Phase 1 — MVP*, the **Carried from gate G0** and
+**Content** tables (ENC-119 … ENC-136) · **Plan:** [`plans/M1-CONTENT-CORE.md`](plans/M1-CONTENT-CORE.md)
 
 **Steps**
 
-1. Tenancy, users, groups, memberships, invitations (ENC-200).
-2. Local auth end-to-end; OIDC; LDAP bind (ENC-201).
-3. Workspaces and libraries with settings and inheritance flags (ENC-202).
-4. Files and folders: create, rename, reparent, trash, restore, move/copy (ENC-203).
-5. `storage` — S3-compatible `BlobStore`, capability probing, public-access self-check (ENC-204).
-6. Upload: session state machine, multipart, signed URLs, checksum verification (ENC-205).
-7. Versions: immutable rows, atomic commit with outbox and audit, restore (ENC-206).
-8. `antivirus` + ClamAV; **no version reaches `AVAILABLE` without a clean verdict** (ENC-207).
+1. Tenancy, users, groups, memberships (ENC-125). Invitations were not part of it — *(no row yet)*.
+2. Local auth end-to-end (ENC-111, ENC-124). **OIDC and LDAP bind slipped** — `docs/13` specifies
+   them (ENC-010) and no implementation row exists; the earliest logged federation work is SAML in
+   M6 (ENC-300) — *(no row yet)*.
+3. Workspaces and libraries with settings and inheritance flags (ENC-136 for the DDL, ENC-127 for
+   the crate; break-inheritance was reopened by ENC-141).
+4. Files and folders: create, rename, reparent, trash, restore, move/copy (ENC-130), with the read
+   paths and cursor pagination in ENC-133.
+5. `storage` — S3-compatible `BlobStore`, capability probing, public-access self-check (ENC-128).
+6. Upload: session state machine, multipart, signed URLs, checksum verification (ENC-129).
+7. Versions: immutable rows, atomic commit with outbox and audit, restore (ENC-131).
+8. `antivirus` + ClamAV; **no version reaches `AVAILABLE` without a clean verdict** (ENC-132).
 
 **Exit criteria**
 
@@ -203,19 +223,25 @@ disable the chain; they default to deny.
 
 **Goal.** Granular permissions actually work, and preview is genuinely separable from download.
 
-**Tracker:** ENC-208 … ENC-212
+**Tracker:** [`TRACKER.md §3`](TRACKER.md) — M2's rows sit on the active board rather than in a `§4`
+phase table · **Plan:** [`plans/M2-ACCESS-DELIVERY.md`](plans/M2-ACCESS-DELIVERY.md)
 
 **Steps**
 
 1. ACL resolution: inheritance chain, transitive group closure, deny-wins, break-inheritance
-   (ENC-208).
-2. `authorize_many` batch path — required later by search; built now (ENC-208).
-3. Rendition pipeline: sandboxed generation, base cache, per-request watermark composition (ENC-209).
+   (ENC-126; break-inheritance was found to escalate privilege and fixed in ENC-141).
+2. `authorize_many` batch path — required later by search; built now (ENC-126), benchmarked at 200
+   candidates before M3 set its design (ENC-145), and extended to batch *actions* as well as
+   resources once that benchmark inverted the assumption (ENC-167, ENC-175).
+3. Rendition pipeline: sandboxed generation, base cache, per-request watermark composition
+   (ENC-146, ENC-146a; watermark-never-cached is ENC-147).
 4. Preview API with no original URL on the view-only path; download API as `POST` with audit before
-   URL issuance (ENC-209).
-5. Share links: token hashing, password/OTP, expiry, atomic download budget (ENC-210).
-6. Metadata fields, values, content types (ENC-211).
-7. Views + cursor pagination + `capabilities` on every file response (ENC-212).
+   URL issuance (ENC-148, ENC-169).
+5. Share links: token hashing, password/OTP, expiry, atomic download budget (ENC-149, ENC-150).
+6. Metadata fields, values, content types (ENC-151; `content_types` was already in migration 0004 —
+   ENC-165).
+7. Views + cursor pagination + `capabilities` on every file response (saved views ENC-501,
+   `capabilities` ENC-152; cursor pagination landed in M1 with ENC-133).
 
 **Exit criteria**
 
@@ -231,23 +257,28 @@ disable the chain; they default to deny.
 
 **Goal.** Search that cannot leak, and that degrades honestly when its index is unavailable.
 
-**Tracker:** ENC-213 … ENC-216
+**Tracker:** [`TRACKER.md §3`](TRACKER.md) — M3's rows sit on the active board rather than in a `§4`
+phase table · **Plan:** [`plans/M3-DISCOVERY.md`](plans/M3-DISCOVERY.md)
 
 **Steps**
 
-1. Extraction (PDF, OOXML, text) in a sandboxed worker; structure parsing (ENC-213).
+1. Extraction (PDF, OOXML, text) in a sandboxed worker; structure parsing (ENC-510, ENC-511).
 2. **OCR for scanned pages** — engine, language coverage and cost decided rather than assumed
-   (ENC-161). Not a fallback bolted to the end of extraction: scanned PDFs are a large share
+   (ENC-161, answered by ENC-534 and built as ENC-535; ENC-536 is why the weights matter).
+   Not a fallback bolted to the end of extraction: scanned PDFs are a large share
    of what enterprises actually store, and a scanned document that indexes as empty is
    invisible to search while appearing correctly filed, which is worse than one that failed
    to ingest.
-3. Structure-aware chunking with deterministic chunk IDs (ENC-213).
-4. Embedding provider trait + local model; classification routing enforced in code (ENC-213).
-5. Milvus `VectorStore`; collection, indexes, hybrid query (ENC-214).
-6. **Authoritative post-filter with batch authorization and over-fetch** (ENC-215).
-7. Denylist written in the same transaction as the ACL change; invalidation worker; epoch
-   reconciler (ENC-216).
-8. Degraded mode: Milvus down → lexical over PostgreSQL with `degraded: true` (ENC-214).
+3. Structure-aware chunking with deterministic chunk IDs (ENC-513).
+4. Embedding provider trait + local model; classification routing enforced in code (ENC-508;
+   the model and how it ships are ENC-509 and ENC-534).
+5. Milvus `VectorStore`; collection, indexes, hybrid query (ENC-523, ENC-524).
+6. **Authoritative post-filter with batch authorization and over-fetch** (ENC-506; `docs/07 §6.2`
+   was corrected to match the measurement in ENC-505).
+7. Denylist written in the same transaction as the ACL change (ENC-506); invalidation worker and
+   epoch reconciler (ENC-518, ENC-519).
+8. Degraded mode: Milvus down → lexical over PostgreSQL with `degraded: true` (ENC-514, with
+   document content in ENC-515 and the up-but-wrong trigger in ENC-516).
 
 **Exit criteria**
 
@@ -256,7 +287,9 @@ disable the chain; they default to deny.
 - [ ] S5: deliberately over-permissive index candidates are dropped by the post-filter.
 - [ ] S8: `RESTRICTED` text never reaches a non-local embedding provider.
 - [ ] Post-filter drop ratio and denylist size exported as metrics with alerts wired.
-- [ ] A scanned, text-free PDF is searchable by its content (ENC-161).
+- [ ] A scanned, text-free PDF is searchable by its content (ENC-161). **Not met**: OCR landed, and
+      nothing in the tree rasterises a PDF page for it to read (ENC-537). A scanned *image* is
+      searchable today; a scanned *PDF* is not.
 
 **Measured before this milestone starts (`ENC-145`).** `authorize_many` resolves 200 candidates in **p50 7.0 ms** (debug build), and one candidate in 1.4 ms — so the post-filter's cost is ~80% fixed: transaction setup plus three round trips, not candidate count. That inverts the obvious intuition twice over. Raising over-fetch is nearly free; adding a *second* resolution pass costs more than tripling the batch. Whether result disclosure and excerpt disclosure can be answered in one call is therefore a design decision to take before the search path sets, not after (`ENC-167`).
 
@@ -269,15 +302,17 @@ senior reviewer and a written threat walkthrough before merge, not just tests.
 
 **Goal.** A tenant can be told no, for the right reasons, with an audit trail.
 
-**Tracker:** ENC-217 … ENC-220
+**Tracker:** nothing logged yet — M4 has not been broken into rows. Two Phase 2 items already depend
+on it by name (ENC-303 on DLP detectors, ENC-306 on the audit coverage sweep), so these five steps
+are the list those dependencies point at.
 
 **Steps**
 
-1. DLP detectors, `SecurityFacts`, sync evaluation with `facts_unavailable` handling (ENC-217).
-2. DLP modes incl. simulation; obligations returned and enforced as `#[must_use]` (ENC-217).
-3. Conditional access: zones, geo/ASN, trusted-proxy hop handling, effects (ENC-218).
-4. Quotas: transactional enforcement, soft-limit notification, nightly reconciliation (ENC-219).
-5. Audit coverage sweep — every enforcement point, allow and deny (ENC-220).
+1. DLP detectors, `SecurityFacts`, sync evaluation with `facts_unavailable` handling — *(no row yet)*.
+2. DLP modes incl. simulation; obligations returned and enforced as `#[must_use]` — *(no row yet)*.
+3. Conditional access: zones, geo/ASN, trusted-proxy hop handling, effects — *(no row yet)*.
+4. Quotas: transactional enforcement, soft-limit notification, nightly reconciliation — *(no row yet)*.
+5. Audit coverage sweep — every enforcement point, allow and deny — *(no row yet)*.
 
 **Exit criteria**
 
@@ -293,17 +328,22 @@ senior reviewer and a written threat walkthrough before merge, not just tests.
 
 **Goal.** A real team could use this daily. Ship it.
 
-**Tracker:** ENC-221 … ENC-226
+**Tracker:** nothing logged yet — M5 has not been broken into rows. Two Phase 2 items depend on it
+by name (ENC-310 on the web shell, ENC-318 on i18n scaffolding), and it is the milestone gate G1
+decides at, so this list is doing real work despite carrying no IDs.
 
 **Steps**
 
-1. Web shell: navigation, command bar, `⌘K` palette, details panel (ENC-221).
-2. Virtualized file views; upload UX with true states through to `Ready` (ENC-222).
-3. i18n scaffolding, `en-US` catalog, `en-XA`/`en-XB` pseudo-locales in CI (ENC-223).
-4. Leakage matrix §4.1–4.6 implemented and green (ENC-224).
-5. `community` deployment profile, install docs, upgrade path (ENC-225).
-6. Accessibility: axe gate, keyboard flows, screen-reader pass (ENC-226).
-7. Release hardening: load test at budget, chaos pass, restore drill, docs review.
+1. Web shell: navigation, command bar, `⌘K` palette, details panel — *(no row yet)*; the self-hosted
+   typefaces it needs landed early as ENC-135.
+2. Virtualized file views; upload UX with true states through to `Ready` — *(no row yet)*.
+3. i18n scaffolding, `en-US` catalog, `en-XA`/`en-XB` pseudo-locales in CI — *(no row yet)*.
+4. Leakage matrix §4.1–4.6 implemented and green — *(no row yet)*. Rows have been filled in as
+   their surfaces landed (ENC-134 for §4.1/§4.2/§4.8, ENC-153 for A1, A5, A6 and H1–H3); the sweep
+   that takes the whole set green is this step.
+5. `community` deployment profile, install docs, upgrade path — *(no row yet)*.
+6. Accessibility: axe gate, keyboard flows, screen-reader pass — *(no row yet)*.
+7. Release hardening: load test at budget, chaos pass, restore drill, docs review — *(no row yet)*.
 
 **Exit criteria — the MVP gate**
 
@@ -320,7 +360,7 @@ senior reviewer and a written threat walkthrough before merge, not just tests.
 
 ### M6 — Enterprise identity & governance · 8 weeks · Phase 2
 
-**Tracker:** ENC-300 … ENC-306
+**Tracker:** [`TRACKER.md §4`](TRACKER.md) → *Phase 2 — Enterprise V1*: ENC-300 … ENC-306
 
 Federation and the compliance controls enterprises buy for. SAML with XSW/XXE hardening; SCIM with
 the mass-deactivation guard; WebAuthn and step-up; advanced DLP; information barriers; retention,
@@ -339,7 +379,7 @@ records and legal hold; incidents and SIEM forwarding.
 
 ### M7 — AI & BYO infrastructure · 7 weeks · Phase 2 · *overlaps M6*
 
-**Tracker:** ENC-307 … ENC-309, ENC-316
+**Tracker:** [`TRACKER.md §4`](TRACKER.md) → *Phase 2 — Enterprise V1*: ENC-307 … ENC-309, ENC-316
 
 MCP gateway with scopes and classification ceilings; RAG answers with mandatory citations; `LlmProvider`
 with classification routing; BYO storage profiles, Vault, KMS, SMTP, AV; Milvus HA and an exercised
@@ -358,7 +398,7 @@ rebuild runbook.
 
 ### M8 — Delivery surfaces · 8 weeks · Phase 2 · *overlaps M6/M7*
 
-**Tracker:** ENC-310 … ENC-312
+**Tracker:** [`TRACKER.md §4`](TRACKER.md) → *Phase 2 — Enterprise V1*: ENC-310 … ENC-312, plus ENC-160 and ENC-162 on the active board (`§3`)
 
 White-labeling, custom domains with certificate automation, desktop/mobile sync, external editor
 brokering, and the two document surfaces a DMS is expected to have:
@@ -386,7 +426,7 @@ brokering, and the two document surfaces a DMS is expected to have:
 
 **Goal.** An enterprise can bring its existing document estate in, with its history intact.
 
-**Tracker:** ENC-159
+**Tracker:** [`TRACKER.md §3`](TRACKER.md) — ENC-159, on the active board
 
 Added 2026-08-20 rather than planned from the start, and worth saying why: the spec pack described
 a product that stores documents beautifully and had no answer to *"we have four terabytes in
@@ -422,7 +462,7 @@ because every document was written from the inside out.
 
 ### M9 — Workflows & signing · 7 weeks · Phase 2 · *overlaps M8*
 
-**Tracker:** ENC-313 … ENC-315
+**Tracker:** [`TRACKER.md §4`](TRACKER.md) → *Phase 2 — Enterprise V1*: ENC-313 … ENC-315
 
 Workflow engine, approvals, and the signing pipeline through PAdES with TSA and LTV; external
 signature providers.
@@ -439,7 +479,7 @@ signature providers.
 
 ### M10 — Enterprise V1 GA · 5 weeks · Phase 2
 
-**Tracker:** ENC-317 … ENC-319
+**Tracker:** [`TRACKER.md §4`](TRACKER.md) → *Phase 2 — Enterprise V1*: ENC-317 … ENC-319
 
 **Steps.** Full leakage matrix green; HA deployment profile; DR drill; Tier 1 + Tier 2 locales;
 performance at enterprise scale; documentation and runbook completeness; external penetration test;

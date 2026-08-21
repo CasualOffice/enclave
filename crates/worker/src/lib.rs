@@ -15,6 +15,12 @@
 //! stopped suppressing; [`epoch`] marks index manifests whose ACL has moved on so they are rebuilt.
 //! Neither decides what a caller may see.
 //!
+//! [`coverage`] is downstream of everything, because it writes nothing at all: it takes the
+//! index-coverage reading `crates/search/src/health.rs` computes, per tenant, and publishes it, so
+//! that the three rules in `deploy/monitoring/alerts/search.yml` have a producer. Its output is an
+//! operator's, never a caller's — see that module for why the reading is deliberately not stored
+//! anywhere a search could reach it.
+//!
 //! # The failure mode to watch for is not a bug, it is a dependency
 //!
 //! The danger in this crate is not that a sweep is wrong. It is that something downstream starts
@@ -57,6 +63,7 @@
 //! stopped run is a shorter run, not a half-finished one. [`Stop`] is checked at those boundaries
 //! and nowhere else.
 
+pub mod coverage;
 pub mod epoch;
 pub mod error;
 pub mod indexing;

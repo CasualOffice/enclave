@@ -1,6 +1,6 @@
 # 07 — Search & Indexing
 
-> **Status:** Draft · **Version:** 1.5 · **Owner:** Search Engineering · **Last updated:** 2026-08-21
+> **Status:** Draft · **Version:** 1.7 · **Owner:** Search Engineering · **Last updated:** 2026-08-21
 > **Authoritative for:** the indexing pipeline, Milvus schema, permission-aware retrieval, ACL invalidation, rebuild.
 
 ## 1. Position of the index
@@ -229,12 +229,20 @@ about a document they may not read. The distinction exists once, in the operator
 
 #### 6.2.1 What an excerpt is
 
-An excerpt is a **verbatim, contiguous substring of the indexed text of one chunk**, containing at
-least one term the query matched on, cut at word boundaries, bounded in length, and marked with `…`
-at whichever end text was elided. If the matched term cannot be located in that chunk by the same
-rule the index matched on, **there is no excerpt**.
+An excerpt is a **verbatim, contiguous substring of the indexed text of one chunk**, cut at word
+boundaries, bounded in length — **240 characters on both retrieval paths** — and marked with `…` at
+whichever end text was elided. No excerpt is ever assembled, reworded or normalized; the body
+between the marks is the document's own bytes.
 
-That last clause is the design, not a caveat. Both obvious implementations are wrong:
+Which window is quoted is the one thing the two paths do not share, and they cannot:
+
+- **Lexical.** The window contains at least one term the query matched on. If the matched term
+  cannot be located in that chunk by the same rule the index matched on, **there is no excerpt**.
+- **Dense.** A chunk retrieved by embedding similarity has **no matched span** — the caller may not
+  have typed a word occurring in it, and finding documents that do not contain the words you typed
+  is what the dense path is for. The window is therefore the **head** of the chunk.
+
+The lexical path's last clause is the design, not a caveat. Both obvious implementations are wrong:
 
 - `ts_headline` over the **indexed expression** — the `regexp_replace(…, '[^[:alnum:]]+', ' ', 'g')`
   form that `migrations/0012` and `migrations/0013` index and that `crates/search/src/lexical.rs`
@@ -256,9 +264,40 @@ The window is **not** snapped to sentence boundaries: a sentence end requires kn
 and `14-I18N-L10N.md` has tenants in many. That is the same argument `migrations/0012` makes for
 choosing `simple` over a stemmer, and it lands the same way — a wrong guess fails silently.
 
+A head cut is **not** the raw-text `ts_headline` failure above wearing a different name, and the
+difference decides whether it may be shown at all. `ts_headline` returns the opening of the
+*document* when the match was elsewhere in it — a window outside the matched span, presented as the
+matched span. On the dense path the matched unit **is the chunk**: the embedding was computed over
+the whole of it and the whole of it is what scored, so there is no narrower true span for a head cut
+to miss. What a dense excerpt cannot say is *which sentence*, and it does not claim to.
+
+Three alternatives were weighed and rejected (`ENC-538`). Looking for the query's words in the chunk
+and falling back to the head makes the meaning of the field depend on an accident, with nothing in
+the response saying which rule produced a given string — and it is backwards, since dense retrieval
+earns its keep precisely where those words are absent. Returning the whole chunk keeps the size of a
+result dependent on which path answered and relabels that a contract; it is also 64 KB of document
+body in a page of twenty results where 5 KB says the same. Returning nothing on the dense path makes
+a **healthy** search disclose strictly less than a degraded one, inverting the relationship
+`degraded: true` exists to describe.
+
 No markup is produced by retrieval. `05-API.md §11`'s `<em>` is the API layer's, applied from
 offsets — interpolating document content into a markup string in the retrieval crate is how stored
-XSS gets delivered.
+XSS gets delivered. Retrieval **carries** those offsets rather than leaving the API layer to
+re-locate the terms, which would be a third tokenization of document content in the crate that also
+builds the markup string. They exist only on the lexical path: nothing matched *at a position* on the
+dense one, so a dense excerpt arrives unmarked, and the type says which of those two it is holding
+rather than reporting both as an empty list.
+
+The offsets travel **inside** the excerpt value, never beside it. A response carrying `excerpt: null`
+with offsets next to it would say *there is a passage here you may not see*, which is exactly the
+distinction `§6.2` withholds and `12-TESTING.md §4.3` S6 tests; there is no arrangement of the type
+that can disclose one without the other, and the post-filter withholds both with one decision.
+
+An excerpt is a **fragment**, so bidirectional state balanced across a whole document can be
+unbalanced in the quotation: a U+202E opened before the passage and closed after it leaves the
+excerpt with an override that is never terminated, reversing the surrounding interface of a result
+list and not merely the snippet. The remedy is isolation at render (`14-I18N-L10N.md §7`) and **not**
+stripping the characters here, which would break the verbatimness every clause above is built on.
 
 `crates/search/src/excerpt.rs` is the implementation and carries the same argument at length.
 

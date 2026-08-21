@@ -234,6 +234,51 @@ milvus-sdk-rust = "2.6.0"
 ocrs         = "0.12.2"
 rten         = { version = "0.24.0", default-features = false, features = ["rten_format"] }
 
+# pdf page rasterisation
+#
+# `ENC-537`. OCR needs pixels and nothing in this repository turned a PDF page into any, so the
+# exit criterion "a scanned, text-free PDF is searchable by its content" had no implementation to
+# be true of. `crates/indexing/src/pdf.rs` carries the argument for where it runs.
+#
+# **The alternatives, and why they are not here.** `mupdf` is the most capable option and is
+# **AGPL-3.0**: the licence allowlist in `deny.toml` excludes it, and unlike the OCR weights this is
+# a case `cargo deny` would actually catch — worth knowing to be unavailable before somebody reaches
+# for it under deadline. `pdf` and `lopdf` are MIT and are *parsers*: they give a page tree, not
+# pixels, and writing a renderer on top of one is writing a PDF renderer.
+#
+# **The decisive property, as with `ocrs`, is how the native code arrives.** `libloading` is a
+# non-optional dependency and no `-sys` crate appears in the graph, so PDFium is opened with
+# `dlopen` at run time. No `links` key, no C++ toolchain in our build, and nothing to conflict with
+# — the trap that disqualified the Tesseract bindings for OCR. The deployment supplies
+# `libpdfium`, which is the mounted-at-runtime shape the OCR weights (`ENC-535`) and the embedding
+# model (`ENC-534`) already have, so there is one operator story rather than three.
+#
+# **What is being taken on, stated plainly.** PDFium is a large C++ parser — the widest
+# attack-surface class in this product, and the first one in the graph that is not memory-safe. That
+# is not made acceptable by this line; it is made acceptable by where the code runs and by the fact
+# that a deployment which mounts nothing has `NoPageImages`. `plans/M3-THREAT-WALKTHROUGH.md §3` R10
+# records the residual, and D17's out-of-process worker is what closes it.
+#
+# `default-features = false`, then two features back on, for the same reason `image` and `rten` are
+# pinned that way:
+#
+#   * `pdfium_7881` rather than `pdfium_latest`. The feature selects which PDFium exports the
+#     bindings resolve at `dlopen` time, and every one of them is resolved eagerly — so the feature
+#     and the mounted binary are an ABI pair. `pdfium_latest` moves when this crate is upgraded,
+#     which would silently change which binaries load; naming the version means an upgrade is a diff
+#     that also names the binary CI fetches.
+#   * `thread_safe` is not optional in the ordinary sense. PDFium makes no thread-safety guarantee
+#     and its authors recommend against threading it at all; this feature serialises every call
+#     behind a mutex. Extraction runs on `spawn_blocking` threads, so without it the first two
+#     concurrent documents are undefined behaviour in C++.
+#
+# `image_latest` is left **off**, which is the default set's third member. It would add a second
+# `image` edge whose feature set is chosen by this crate rather than by us, and the property
+# `crates/preview/src/raster.rs` asserts — that the enabled decoders and the allowlist are one set —
+# is worth more than the `PdfBitmap::as_image()` convenience. `src/pdf.rs` takes the RGBA buffer and
+# encodes it with the workspace's own `image`.
+pdfium-render = { version = "0.9.3", default-features = false, features = ["pdfium_7881", "thread_safe"] }
+
 # dev
 trybuild     = "1"
 

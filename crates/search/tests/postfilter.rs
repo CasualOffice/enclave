@@ -20,7 +20,7 @@ use chrono::{Duration, Utc};
 use enclave_authorization::PgAclAuthorization;
 use enclave_core::{Actor, FileId, RequestContext, TenantId, UserId};
 use enclave_db::{DbPool, TenantScoped};
-use enclave_search::{denylist, Candidate, PostFilter};
+use enclave_search::{denylist, Candidate, Excerpt, PostFilter};
 use enclave_testing::content::{grant, AclEffect, AclPrincipal, AclScope, Spine};
 use enclave_testing::{Fixtures, TestDb};
 use uuid::Uuid;
@@ -37,7 +37,11 @@ fn ctx(tenant: TenantId, actor: UserId) -> RequestContext {
 }
 
 fn candidate(file: FileId, score: f32) -> Candidate {
-    Candidate { file_id: file, score, excerpt: Some("a snippet of the document".to_owned()) }
+    Candidate {
+        file_id: file,
+        score,
+        excerpt: Some(Excerpt::unlocated("a snippet of the document".to_owned())),
+    }
 }
 
 /// **S5** — the index proposes what the caller may not see, and none of it survives.

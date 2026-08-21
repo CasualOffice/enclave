@@ -23,6 +23,10 @@ async-trait = { workspace = true }
 # argument for what it is allowed to be handed.
 ocrs        = { workspace = true }
 rten        = { workspace = true }
+# The PDF page rasteriser behind `PageImages` (`ENC-537`). OCR needs pixels; `src/pdf.rs` says why
+# it lives here rather than in `enclave-preview`, whose `raster.rs` refuses `PdfSanitized` and
+# continues to. The workspace manifest carries the licence and ABI argument.
+pdfium-render = { workspace = true }
 # The same decoder `enclave-preview` uses, with the same three formats, so a page image and a
 # preview are read by one parser rather than two that agree until one is upgraded. `src/ocr.rs`
 # repeats raster.rs's sniff â header â decide â decode order, which needs

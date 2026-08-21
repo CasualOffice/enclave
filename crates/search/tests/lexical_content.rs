@@ -48,7 +48,7 @@ use enclave_indexing::{
     write_chunks, Chunk, ChunkBudget, Chunker, ChunkerVersion, Coordinates, Segment, SegmentKind,
 };
 use enclave_search::{
-    lexical, Confirmed, DegradedReason, Retrieval, SearchResults, VectorStore,
+    lexical, Confirmed, DegradedReason, Excerpt, Highlights, Retrieval, SearchResults, VectorStore,
     DEFAULT_DENYLIST_LIMIT,
 };
 use enclave_testing::content::Spine;
@@ -202,8 +202,25 @@ fn hit_for(results: &SearchResults, file: FileId) -> &Confirmed {
 }
 
 /// An excerpt with its elision marks removed — the part that claims to be text from the document.
-fn quoted(excerpt: &str) -> &str {
-    excerpt.trim_matches('…')
+fn quoted(excerpt: &Excerpt) -> &str {
+    excerpt.text().trim_matches('…')
+}
+
+/// The substrings an excerpt's offsets select, sliced out of the excerpt itself (`ENC-542`).
+///
+/// Asserted on the substrings rather than on the numbers because the numbers are only ever used to
+/// slice, and a span shifted by a forgotten elision mark is a plausible pair of integers and the
+/// wrong word.
+fn marked(excerpt: &Excerpt) -> Vec<&str> {
+    match excerpt.highlights() {
+        Highlights::Terms(spans) => spans
+            .iter()
+            .map(|span| {
+                excerpt.text().get(span.start..span.end).expect("a span that slices its own text")
+            })
+            .collect(),
+        Highlights::Unlocated => Vec::new(),
+    }
 }
 
 /// Runs the degraded search a caller would get with the vector store down.
@@ -491,15 +508,70 @@ async fn a_content_hit_quotes_the_document_including_the_punctuation_the_index_s
         hit_for(&results, file).excerpt.clone().expect("a content hit carries a quotation");
     assert!(
         body.contains(quoted(&excerpt)),
-        "the excerpt is not text from the document.\n  document: {body:?}\n  excerpt:  {excerpt:?}"
+        "the excerpt is not text from the document.\n  document: {body:?}\n  excerpt:  {shown:?}",
+        shown = excerpt.text()
     );
     assert!(
-        excerpt.to_lowercase().contains("perihelion"),
-        "the excerpt does not contain the word that caused the hit: {excerpt:?}"
+        excerpt.text().to_lowercase().contains("perihelion"),
+        "the excerpt does not contain the word that caused the hit: {shown:?}",
+        shown = excerpt.text()
     );
     assert!(
-        excerpt.contains("7.2(b)"),
-        "the excerpt was cut from the punctuation-stripped form the index matches on: {excerpt:?}"
+        excerpt.text().contains("7.2(b)"),
+        "the excerpt was cut from the punctuation-stripped form the index matches on: {shown:?}",
+        shown = excerpt.text()
+    );
+
+    drop(db);
+}
+
+/// **`ENC-542`** — a content hit carries the offsets of the word that caused it, and they index the
+/// string the caller receives.
+///
+/// `docs/05 §11` shows `<em>` on an excerpt and this crate returns plain text. Closing that means
+/// carrying where the match is, so the API layer can mark up **without tokenizing document content**
+/// a second time — which is the thing `crates/search/src/excerpt.rs` spends its length arguing
+/// against. The unit tests prove the arithmetic; this proves it survives the round trip that
+/// actually runs: PostgreSQL writes the chunk, the query locates the term, the decoder cuts, the
+/// post-filter releases.
+///
+/// The body is deliberately long enough that the window opens with `…`. That mark is three bytes,
+/// and an offset measured against the body instead of against the returned string lands three bytes
+/// early — still on a character boundary, still slicing without error, and selecting the wrong word.
+/// Asserting the *substring* rather than the numbers is what catches it.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL with migrations 0001–0013; CI runs it with --include-ignored"]
+async fn a_content_hit_carries_offsets_that_select_the_word_that_caused_it() {
+    let (db, fixtures, pool) = start().await;
+    let alpha = fixtures.alpha.id;
+    let caller = fixtures.alpha.member;
+    let mut admin = db.connect().await.expect("admin connection");
+
+    let body = "This agreement is made between the parties named in Schedule 1, and the recitals \
+                below record what each of them is bringing to it. Clause 7.2(b) sets out the \
+                perihelion review procedure, and Schedule 4 names the reviewers who must sign it \
+                off before the end of the accounting period in which the review falls due.";
+    let file =
+        file_with_body(&mut admin, alpha, fixtures.alpha.owner, "record-one.txt", body).await;
+    for action in ["file.metadata_read", "file.content_read"] {
+        grant_action(&mut admin, alpha, file, caller, action).await;
+    }
+
+    let results = search(&pool, alpha, caller, "perihelion").await;
+    let excerpt =
+        hit_for(&results, file).excerpt.clone().expect("a content hit carries a quotation");
+
+    assert!(
+        excerpt.text().starts_with('…'),
+        "the fixture produced no leading elision mark, so it cannot catch the offset shift it \
+         exists to catch: {shown:?}",
+        shown = excerpt.text()
+    );
+    assert_eq!(
+        marked(&excerpt),
+        vec!["perihelion"],
+        "the offsets do not select the term the caller typed: {shown:?}",
+        shown = excerpt.text()
     );
 
     drop(db);
@@ -632,11 +704,13 @@ async fn the_quotation_is_cut_from_the_chunk_that_matched_and_not_from_the_first
     assert!(
         closing.contains(quoted(&excerpt)),
         "the excerpt did not come from the chunk that matched.\n  matched: {closing:?}\n  \
-         excerpt: {excerpt:?}"
+         excerpt: {shown:?}",
+        shown = excerpt.text()
     );
     assert!(
-        !excerpt.contains("Schedule 1"),
-        "the excerpt is the opening of the document dressed as the passage that matched: {excerpt:?}"
+        !excerpt.text().contains("Schedule 1"),
+        "the excerpt is the opening of the document dressed as the passage that matched: {shown:?}",
+        shown = excerpt.text()
     );
 
     drop(db);
@@ -681,8 +755,8 @@ async fn a_tie_between_two_matching_chunks_is_broken_the_same_way_every_time() {
     for _ in 0..5 {
         let again = search(&pool, alpha, caller, "tantalum").await;
         assert_eq!(
-            hit_for(&again, file).excerpt.as_deref(),
-            Some(expected.as_str()),
+            hit_for(&again, file).excerpt.as_ref(),
+            Some(&expected),
             "the same query quoted a different passage on a repeat run"
         );
     }

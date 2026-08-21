@@ -98,12 +98,27 @@
 //! as OCR-derived; an individual [`Chunk`] is not, because `migrations/0011` gives a chunk no column
 //! for it. Whether per-chunk provenance is required is a policy question and is still open.
 //!
-//! **What is still missing for the exit criterion.** *"A scanned, text-free PDF is searchable by its
-//! content"* needs each PDF page rendered to pixels, and nothing in this repository renders a PDF
-//! page — `crates/preview/src/raster.rs` refuses `PdfSanitized` because a page tree is a parser
-//! rather than a decoder. [`PageImages`] is the port that would supply them and [`NoPageImages`] is
-//! what a deployment has today: it recovers nothing and the manifest keeps saying `FAILED`. A
-//! scanned page uploaded *as an image* is searchable now; a scanned **PDF** is not.
+//! # Pixels for the OCR path
+//!
+//! [`pdf`] supplies them (`ENC-537`). [`PdfiumPages`] renders a page with PDFium, **mounted at run
+//! time** exactly as the OCR weights and the embedding model are, and [`NoPageImages`] remains what
+//! a deployment that mounted nothing has — so the deny-by-default is unchanged and only a
+//! deployment that opted in runs a C++ parser.
+//!
+//! Two things about it are worth reading before touching either module:
+//!
+//! - **`crates/preview/src/raster.rs` still refuses `PdfSanitized`, and that is not an oversight.**
+//!   Rasterising for OCR and sanitising for a viewer are different jobs with different outputs;
+//!   [`pdf`] sets the two side by side and says what makes the first safe where the second is not.
+//! - **It runs in-process, and D17's sandbox still does not exist.** PDFium is the first
+//!   memory-unsafe parser in this workspace's graph, so the gap between "bounded" and "isolated"
+//!   matters more here than anywhere else it has been admitted. `plans/M3-THREAT-WALKTHROUGH.md §3`
+//!   R10 records it.
+//!
+//! [`PageImages`] gained a third answer to carry this: [`PageImage::Refused`]. A rasteriser that
+//! could only say "rendered" or "no image" would have to report a timeout as an absence, and an
+//! absence is skipped — so a 900-page scan with one hostile page would be `READY` over 899 of them,
+//! which is D24's failure mode arriving through the port built to prevent it.
 //!
 //! [`Refusal::Timeout`]: enclave_preview::Refusal::Timeout
 
@@ -113,6 +128,7 @@ pub mod extract;
 pub mod manifest;
 pub mod model;
 pub mod ocr;
+pub mod pdf;
 pub mod pipeline;
 pub mod store;
 pub mod text;
@@ -126,7 +142,8 @@ pub use manifest::{claim, defer, enqueue, record, start, BuildVersions, Claimed,
 pub use model::{
     Coordinates, ExtractorVersion, Segment, SegmentKind, TextDocument, SEGMENT_OVERHEAD_BYTES,
 };
-pub use ocr::{NoPageImages, OcrExtractor, OcrModels, OcrRetry, PageImages};
+pub use ocr::{NoPageImages, OcrExtractor, OcrModels, OcrRetry, PageImage, PageImages};
+pub use pdf::{PdfiumLibrary, PdfiumPages};
 pub use pipeline::{ManifestStatus, Outcome, Pipeline, Prepared, Reason};
 pub use store::{write_chunks, ChunkWrite};
 pub use text::PlainTextExtractor;

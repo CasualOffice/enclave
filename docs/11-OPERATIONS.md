@@ -1,6 +1,6 @@
 # 11 — Operations
 
-> **Status:** Draft · **Version:** 1.1 · **Owner:** SRE · **Last updated:** 2026-08-21
+> **Status:** Draft · **Version:** 1.2 · **Owner:** SRE · **Last updated:** 2026-08-21
 > **Authoritative for:** SLOs, runbooks, backup/DR, key rotation, migrations, capacity, on-call.
 
 ## 1. Service level objectives
@@ -156,10 +156,10 @@ If a conditional-access misconfiguration locks every administrator out, a break-
 
 ### 5.7 Search metrics quiet, or the drop ratio at zero
 
-Trigger: `SearchPostFilterDropRatioZero`, `SearchPostFilterSilent`, `SearchDenylistSizeUnreported`
-or `MetricsSeriesDropped`.
+Trigger: `SearchPostFilterDropRatioZero`, `SearchPostFilterSilent`, `SearchDenylistSizeUnreported`,
+`SearchIndexCoverageUnreported` or `MetricsSeriesDropped`.
 
-These four share a runbook because they share a shape: the signal stopped, and a stopped signal is
+These five share a runbook because they share a shape: the signal stopped, and a stopped signal is
 worse news than a moving one. §5.2 handles the drop ratio *climbing*, which is the post-filter doing
 its job loudly. This section handles it going quiet, which is what a post-filter that is no longer
 running looks like from the outside — no errors, no latency change, no log line, and results that
@@ -185,7 +185,14 @@ may contain documents the caller cannot see.
      Nothing is calling the recorder that publishes enclave_search_denylist_entries. Both denylist
      alerts are then incapable of firing, and a tenant can sit in degraded search unannounced.
      Restore the call; until then, query retrieval_denylist directly per tenant.
-5. Series dropped at the cardinality cap?
+5. Index coverage gauges absent?
+     enclave_search_index_observed_chunks has no series, so nothing is running the coverage probe
+     pass (crates/worker/src/coverage.rs) — or the process that runs it is not the one serving
+     /metrics. Both index-coverage alerts are then incapable of firing, not merely quiet, and a
+     tenant whose collection was wiped answers searches confidently. Until it is scheduled again,
+     compare a tenant's chunk count in the store against sum(chunk_count) over its READY
+     index_manifests by hand; a store far below that is the rebuild case (§5.1).
+6. Series dropped at the cardinality cap?
      Some tenants are unmonitored. Confirm which by comparing exported tenant_id labels against the
      tenant list, then either raise the cap or aggregate upstream.
 ```
@@ -299,7 +306,8 @@ Alerts that page:
 
 Alerts that ticket rather than page: index lag, rendition queue depth, SMTP retries, LDAP sync
 failures, embedding spend above forecast, no post-filter passes recorded for 30 min, denylist size
-unreported for 1 h, metric series refused at the cardinality cap.
+unreported for 1 h, index coverage unreported for 1 h or unestablished for 2 h, metric series
+refused at the cardinality cap.
 
 **A threshold that can only be crossed upwards is half an alert.** The post-filter drop ratio has two
 of them, and the low one is the one that gets forgotten. A ratio that climbs means the index drifted

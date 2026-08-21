@@ -11,6 +11,19 @@
 //! form: everything, in the permissive direction, with no consequence — and `acl_tokens` never
 //! appear in an expression it emits.
 //!
+//! # The excerpt is cut here, and it is not the chunk
+//!
+//! [`decode`] passes the chunk's `text` through [`crate::excerpt::preview`] rather than through
+//! itself. `ENC-538`: a dense hit has no matched span, so there is no term to centre a window on,
+//! but that is an argument about *which* 240 characters and never about 3 200 of them — which is
+//! what a caller used to get from this path and never from the lexical one. [`crate::excerpt`] holds
+//! the decision and the options it was chosen over.
+//!
+//! The same absence of a matched span is why a candidate from here carries
+//! [`crate::Highlights::Unlocated`] (`ENC-542`): nothing matched *at a position*, so there is
+//! nothing for a renderer to mark, and the variant says that rather than leaving it to be inferred
+//! from an empty list of offsets.
+//!
 //! # Why the filter is a template and not a `format!`
 //!
 //! Milvus filters are an expression language, and the values interpolated into one here are a
@@ -566,7 +579,18 @@ fn decode(results: &SearchResults) -> Result<Vec<Candidate>, SearchError> {
             // A chunk with no text is a legitimate state — a metadata-only update writes scalars
             // and vectors — so an absent excerpt is `None` and not a decode failure. Whether it is
             // *disclosed* is the post-filter's `ContentRead` question, which is asked either way.
-            let excerpt = row.get_str(field::TEXT).ok().map(str::to_owned);
+            //
+            // `ENC-538`. The chunk is **not** passed through as the excerpt. It is up to 3 200
+            // characters of document body, and this used to hand all of it to a caller who would
+            // have received 240 for the same document had the store been down. `excerpt::preview`
+            // cuts the head of it under the same budget, word boundaries and elision marks the
+            // lexical path uses; that module documents why the head, and why not the query's words,
+            // the whole chunk, or nothing. Cut here for the reason `lexical` cuts in its decoder:
+            // nothing past this line ever needs more than what will be shown.
+            //
+            // `ENC-542`: what comes back is `Highlights::Unlocated`, which is the same statement as
+            // the paragraph above made where a caller can act on it.
+            let excerpt = row.get_str(field::TEXT).ok().and_then(crate::excerpt::preview);
 
             candidates.push(Candidate { file_id, score, excerpt });
         }
