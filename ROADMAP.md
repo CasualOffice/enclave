@@ -302,17 +302,17 @@ senior reviewer and a written threat walkthrough before merge, not just tests.
 
 **Goal.** A tenant can be told no, for the right reasons, with an audit trail.
 
-**Tracker:** nothing logged yet — M4 has not been broken into rows. Two Phase 2 items already depend
-on it by name (ENC-303 on DLP detectors, ENC-306 on the audit coverage sweep), so these five steps
-are the list those dependencies point at.
+**Tracker:** `TRACKER.md §3`, `ENC-580`–`ENC-585`, and the plan is
+[`plans/M4-GOVERNANCE.md`](plans/M4-GOVERNANCE.md). Two Phase 2 items depend on this milestone by
+name — `ENC-303` on DLP detectors, `ENC-306` on the audit coverage sweep.
 
 **Steps**
 
-1. DLP detectors, `SecurityFacts`, sync evaluation with `facts_unavailable` handling — *(no row yet)*.
-2. DLP modes incl. simulation; obligations returned and enforced as `#[must_use]` — *(no row yet)*.
-3. Conditional access: zones, geo/ASN, trusted-proxy hop handling, effects — *(no row yet)*.
-4. Quotas: transactional enforcement, soft-limit notification, nightly reconciliation — *(no row yet)*.
-5. Audit coverage sweep — every enforcement point, allow and deny — *(no row yet)*.
+1. DLP detectors, `SecurityFacts`, sync evaluation with `facts_unavailable` handling — `ENC-581`.
+2. DLP modes incl. simulation; obligations returned and enforced as `#[must_use]` — `ENC-582`.
+3. Conditional access: zones, geo/ASN, trusted-proxy hop handling, effects — `ENC-583`.
+4. Quotas: transactional enforcement, soft-limit notification, nightly reconciliation — `ENC-584`.
+5. Audit coverage sweep — every enforcement point, allow and deny — `ENC-585`.
 
 **Exit criteria**
 
