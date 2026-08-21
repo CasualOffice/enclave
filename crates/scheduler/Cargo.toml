@@ -14,9 +14,35 @@ enclave-config = { workspace = true }
 enclave-db = { workspace = true }
 enclave-events = { workspace = true }
 enclave-audit = { workspace = true }
+# `ENC-548`'s reasoning applied to this binary: a scheduled job's only operator surface is what it
+# logs, and `tracing` macros with no subscriber installed reach nobody. A nightly pass that reported
+# drift into a void would be indistinguishable from one that found none.
+enclave-observability = { workspace = true }
+
+# `anyhow` at the binary boundary only (`plans/M0-FOUNDATIONS.md` D2) — start-up failures, where the
+# useful thing is the context chain rather than a variant.
+anyhow    = { workspace = true }
+# The scheduler owns the clock (`time`), the signal handler (`signal`), the shutdown notification
+# (`sync`) and the runtime. That is the whole crate.
+tokio     = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "sync", "time"] }
+tracing   = { workspace = true }
+
+[dev-dependencies]
+# The loop's tests drive a pass that fails, and the cheapest honest failure to construct is a real
+# `DbError` wrapping a real driver error rather than a stand-in that proves the loop handles a shape
+# it will never see.
+sqlx      = { workspace = true }
+# `test-util` gives `#[tokio::test(start_paused = true)]`, which is what lets a *nightly* interval
+# be asserted in milliseconds instead of being tested at some other, shorter interval that nothing
+# ships. `crates/indexing` and `crates/preview` take it for the same reason.
+tokio     = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true
+
+[lib]
+name = "enclave_scheduler"
+path = "src/lib.rs"
 
 [[bin]]
 name = "enclave-scheduler"
