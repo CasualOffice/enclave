@@ -131,7 +131,18 @@ pub fn canonical_bytes(event: &AuditEvent) -> Vec<u8> {
     write_canonical_object(event.detail.as_map(), &mut detail);
     w.bytes(&detail); // 23
 
-    debug_assert_eq!(w.fields, CANONICAL_FIELD_COUNT, "canonical v1 writes a fixed field count");
+    // `assert_eq!`, not `debug_assert_eq!` — `ENC-568`. This is the guard that makes the claim on
+    // `CANONICAL_FIELD_COUNT` true, and `debug_assert` is compiled out in release, so the guard
+    // held only because CI happens to run `cargo test` in debug. A release-mode job would have
+    // removed it silently, and the unit test beside the constant cannot stand in for it: asserting
+    // `CANONICAL_FIELD_COUNT == 23` fires when somebody *changes the constant*, not when somebody
+    // adds a field and forgets to.
+    //
+    // Worth the branch in production, which is one integer comparison against a SHA-256 of the
+    // whole event. A mismatch means these bytes are not canonical v1, so every hash computed from
+    // them is meaningless — and the audit chain is what proves the log has not been edited. Writing
+    // a wrong link into that chain is worse than refusing to write one.
+    assert_eq!(w.fields, CANONICAL_FIELD_COUNT, "canonical v1 writes a fixed field count");
     w.finish()
 }
 
@@ -402,14 +413,17 @@ mod tests {
 
     #[test]
     fn the_field_count_is_what_version_one_declares() {
-        // `canonical_bytes` debug-asserts this; assert it here too so a release-mode run of the
-        // suite still catches a field added without a version bump.
+        // Encode a real event and let the encoder's own assertion do the work, rather than
+        // comparing the constant with itself. `assert_eq!(CANONICAL_FIELD_COUNT, 23)` — which this
+        // test used to end with — fires when somebody edits the constant and says nothing when
+        // somebody adds a field to the encoder, which is the mistake worth catching.
+        let _ = canonical_bytes(&sample_event());
+
+        // And that each write counts exactly one field, so the total above means what it says.
         let mut w = Writer::new();
-        let event = sample_event();
         let before = w.fields;
-        w.uuid(event.id);
+        w.uuid(sample_event().id);
         assert_eq!(w.fields, before + 1, "each write must count exactly one field");
-        assert_eq!(CANONICAL_FIELD_COUNT, 23);
     }
 
     #[test]
