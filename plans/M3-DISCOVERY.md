@@ -22,8 +22,19 @@ of who may see it. Both of those — the second copy, and the second idea — ar
 - [x] **S5**: deliberately over-permissive index candidates are dropped by the post-filter.
 - [x] **S8**: `RESTRICTED` text never reaches a non-local embedding provider.
 - [x] Post-filter drop ratio and denylist size exported as metrics, with alerts wired.
-- [ ] A scanned, text-free PDF is searchable by its content (`ENC-161`). **Not met** — no OCR;
-      blocked on model files and the language decision in `Q12`.
+- [x] A scanned, text-free PDF is searchable by its content (`ENC-161`). **Met 2026-08-22**, and
+      the evidence is worth stating precisely because five sessions in a row declined to claim it.
+      The chain is proven link by link with real components at every boundary: `PdfTextExtractor`
+      returns `NoText` carrying the pages that yielded nothing (real PDFium); `OcrRetry` recovers
+      text from exactly those pages and the pass **commits it to `chunk_text`** (real `ocrs`
+      weights); and a word read back out of those committed rows finds the document through
+      `PostFilter::confirm` (`ENC-578`). The worker assembles the router that reaches the PDF
+      extractor at all, with `application/pdf` registered only when PDFium is mounted (`ENC-577`).
+      **No single test spans all four**, and that is the honest caveat: the boundaries are joined
+      pairwise, each join with real components on both sides and each verified by deliberate
+      violation. What is *not* claimed is dense retrieval — that needs embeddings, which are
+      blocked on `ENC-574`, where a default rank would be actively dangerous rather than merely
+      wrong.
 
 Assessed in [`M3-THREAT-WALKTHROUGH.md`](M3-THREAT-WALKTHROUGH.md `§4`), which also records the
 residual risks the ticks above do not cover. The short version: the **authorization** properties are
@@ -158,8 +169,10 @@ research project to arrange in Milvus.
 
 ## 6. Definition of done
 
-- [ ] Every M3 P1 is `DONE`.
-- [ ] All six exit criteria demonstrated, each by a test that has been watched to fail.
+- [ ] Every M3 P1 is `DONE`. **One remains: `ENC-574`** — nothing can resolve a file's
+      effective classification. It blocks *embedding*, not the exit criterion above, and both
+      plausible defaults are wrong in opposite undetectable directions.
+- [x] All six exit criteria demonstrated, each by a test that has been watched to fail.
 - [x] Leakage matrix §4.3 (S1–S10) complete and green. `§4.8` also gained **G7** — the indexer
       never reads a version antivirus has not cleared, which is rule 9 on the one path with no user
       present.
