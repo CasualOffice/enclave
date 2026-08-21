@@ -1,6 +1,6 @@
 # 06 — Security, DLP & Access Controls
 
-> **Status:** Draft · **Version:** 2.0 · **Owner:** Security Engineering · **Last updated:** 2026-08-18
+> **Status:** Draft · **Version:** 2.1 · **Owner:** Security Engineering · **Last updated:** 2026-08-22
 > **Authoritative for:** threat model, conditional access, DLP, antivirus, renditions, incidents, privileged operations.
 
 ## 1. Security model
@@ -192,6 +192,45 @@ Never trust arbitrary `X-Forwarded-For`. A forwarded address is accepted only wh
 peer is inside a configured trusted-proxy CIDR, and only `hops` entries deep from the right. Anything
 beyond the configured depth is discarded, not merged. Geo/ASN lookups run on the resolved client
 address only.
+
+### 7.4 How matching effects resolve
+
+Added after implementation (`ENC-583`); the rules above did not say what happens when two effects
+match, and the answer turned out to have consequences worth writing down.
+
+**Two rule sets, matched by principal class, never one set with exemptions.** Users and guests are
+matched by rules that can speak about device posture, authentication strength, country and zone.
+Service accounts, MCP clients and `system` are matched by a *separate* set whose vocabulary is
+network allowlists and token binding. A posture rule against a service account is not a rule that is
+skipped — it cannot be expressed. This is what removes the escape clause a single rule set would
+need on every posture rule, and with it the gap a compromised service token would walk through.
+
+`system` is in the machine set and is **not** exempt. A token can assert `typ: "system"`, so an
+exemption for it would be reachable. The consequence is that a machine allowlist which omits
+loopback refuses in-process work — the retention sweep, the outbox publisher — loudly, which is the
+correct direction and is stated here so it is not rediscovered as a bug.
+
+**Most restrictive matching effect wins, and that decides the reason code only.** Denials are
+considered in a fixed severity order — block, require trusted network, require managed device,
+require MFA, preview only, no download, no sync — so two deployments with the same rules in
+different order return the same reason. Obligations are *unioned* across every matching effect: the
+resolution rule chooses which refusal to report and never discards a constraint.
+
+**There is no `ALLOW` effect.** Under most-restrictive-wins an allow can never change an outcome, so
+offering one would let an administrator write an exception, see it accepted, and have it do nothing.
+An exception is written as a narrower condition on the restrictive rule, where it is visible in the
+rule that actually decides.
+
+**Break-glass traverses this stage rather than skipping it.** `11-OPERATIONS.md §5.6` exempts the
+emergency account from IP and zone policy and from nothing else; a skipped stage cannot make that
+distinction and could not be audited, since audit happens inside the policy engine. So the exemption
+is narrow: rules that match *because of where the caller is* stop matching, a trusted-network
+requirement is satisfied, and every other effect applies unchanged. The exemption is conditioned on
+multi-factor authentication, so it cannot be used to avoid the requirement it does not cover.
+
+**An unknown country is outside every geo-fence and inside none.** `country NOT IN [IN]` matches a
+caller whose location cannot be resolved; `country IN [IN]` does not. Both directions read the same
+way: absence of evidence never satisfies a location requirement.
 
 ## 8. DLP detectors
 

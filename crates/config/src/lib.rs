@@ -52,11 +52,12 @@ pub use error::{ConfigError, Result};
 pub use loader::{ConfigLoader, Loaded, ResolvedSecrets, DEFAULT_ENV_PREFIX};
 pub use model::{
     AccessTokenConfig, AntivirusConfig, AntivirusProvider, Argon2Config, AuditConfig, AuthConfig,
-    Config, CookieConfig, DatabaseConfig, DeploymentProfile, DlpConfig, DlpMode, EventsConfig,
-    FailureMode, MetricsConfig, MfaConfig, MilvusSettings, OcrMounts, PasswordConfig, RedisConfig,
-    RefreshTokenConfig, ReuseDetection, S3Flavor, S3StorageConfig, SameSite, SearchConfig,
-    SearchProvider, SecurityConfig, ServerConfig, SigningAlgorithm, SigningKeysConfig,
-    StorageConfig, StorageProvider, TrustedProxy, UnavailablePolicy,
+    ConditionalAccessConfig, Config, CookieConfig, DatabaseConfig, DeploymentProfile, DlpConfig,
+    DlpMode, EventsConfig, FailureMode, MetricsConfig, MfaConfig, MilvusSettings,
+    NetworkZoneConfig, OcrMounts, PasswordConfig, RedisConfig, RefreshTokenConfig, ReuseDetection,
+    S3Flavor, S3StorageConfig, SameSite, SearchConfig, SearchProvider, SecurityConfig,
+    ServerConfig, SigningAlgorithm, SigningKeysConfig, StorageConfig, StorageProvider,
+    TrustedProxy, UnavailablePolicy,
 };
 pub use secret::{
     EnvSecretProvider, FileSecretProvider, ProviderHealth, SecretError, SecretProvider,

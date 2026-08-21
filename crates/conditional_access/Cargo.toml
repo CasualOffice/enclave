@@ -10,7 +10,18 @@ authors.workspace      = true
 
 [dependencies]
 enclave-core = { workspace = true }
+# For `TrustedProxy` and the zone definitions an operator writes. `enclave-config` depends only on
+# `enclave-core`, so a policy service depending on it keeps the dependency pointing inward.
+enclave-config = { workspace = true }
 async-trait  = { workspace = true }
+# CIDR containment for trusted-proxy and zone matching. Already the type `ServerConfig` stores, so
+# using it here avoids a second, hand-rolled prefix comparison over the same configured values.
+ipnetwork    = { workspace = true }
+tracing      = { workspace = true }
+
+[dev-dependencies]
+# `tests/rules.rs` drives the async `ConditionalAccessService` trait the policy engine holds.
+tokio = { workspace = true, features = ["rt", "macros"] }
 
 [lints]
 workspace = true

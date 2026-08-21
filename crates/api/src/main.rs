@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::Context as _;
-use enclave_api::{metrics_listener, router, unconfigured_stages, ApiState, Delivery};
+use enclave_api::{metrics_listener, router, unconfigured_stages, ApiState, Delivery, Edge};
 use enclave_core::PolicyEngine;
 
 #[tokio::main]
@@ -62,13 +62,26 @@ async fn main() -> anyhow::Result<()> {
         audit,
     );
 
+    // The one place a client address is established (`ENC-583`). An empty `server.trusted_proxies`
+    // means the socket peer *is* the client address and `X-Forwarded-For` is not read at all —
+    // correct for a direct deployment and wrong behind a load balancer, so it is said out loud.
+    let edge = Edge::from_config(config);
+    if edge.trusts_no_proxy() {
+        tracing::info!(
+            "server.trusted_proxies is empty: every client address is its socket peer and \
+             X-Forwarded-For is ignored. Behind a reverse proxy, configure it or conditional \
+             access will see the proxy's address on every request"
+        );
+    }
+
     let state = ApiState::new(
         policy,
         db,
         config.auth.access_token.issuer.as_deref().unwrap_or_default(),
         config.auth.access_token.audience.as_str(),
         keys,
-    );
+    )
+    .with_edge(edge);
 
     // Delivery, and the same treatment the policy stages get above. `ENC-170`: the router used to
     // register download and preview without either dependency, so both answered `500` in the binary
@@ -101,10 +114,17 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await.context("bind")?;
     tracing::info!(%addr, "enclave-api listening");
 
-    axum::serve(listener, router(state, delivery))
-        .with_graceful_shutdown(shutdown())
-        .await
-        .context("serve")?;
+    // `into_make_service_with_connect_info`, not a bare router: without it axum attaches no
+    // `ConnectInfo`, `Edge` cannot see a peer address, and every request would resolve to
+    // `NetworkContext::unknown` — which refuses every network rule rather than leaking, but refuses
+    // them for the wrong reason and would be diagnosed as a policy bug.
+    axum::serve(
+        listener,
+        router(state, delivery).into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown())
+    .await
+    .context("serve")?;
     Ok(())
 }
 

@@ -1320,7 +1320,11 @@ name = "enclave-conditional_access"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "enclave-config",
  "enclave-core",
+ "ipnetwork",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
