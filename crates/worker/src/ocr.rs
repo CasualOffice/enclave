@@ -137,6 +137,18 @@ impl MountedOcr {
         }))
     }
 
+    /// The mounted PDFium, so the composition root can build a [`PdfTextExtractor`] over the very
+    /// same library this stage rasterises with.
+    ///
+    /// Handed out rather than mounted twice: `PdfiumLibrary` is a process singleton — `ENC-551`
+    /// records that concurrent work across two PDFium *documents* crashes the process, and the
+    /// `DOCUMENTS` lock that fixes it is per-library. Two libraries would be two locks, which is no
+    /// lock at all.
+    #[must_use]
+    pub fn library(&self) -> Arc<PdfiumLibrary> {
+        Arc::clone(&self.library)
+    }
+
     /// Re-runs OCR over a textless document, reading its pages through PDFium.
     ///
     /// Anything that is not [`Outcome::NoText`] is returned untouched — that is
