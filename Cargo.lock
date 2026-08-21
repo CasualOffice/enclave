@@ -1607,11 +1607,16 @@ dependencies = [
 name = "enclave-scheduler"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "enclave-audit",
  "enclave-config",
  "enclave-core",
  "enclave-db",
  "enclave-events",
+ "enclave-observability",
+ "sqlx",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
