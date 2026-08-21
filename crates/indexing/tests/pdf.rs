@@ -91,6 +91,25 @@ fn models() -> Arc<OcrModels> {
     Arc::new(OcrModels::mounted(&directory).expect("the mounted models load"))
 }
 
+/// `RenderBudget::DEFAULT` with the clock taken off.
+///
+/// The end-to-end OCR tests below rasterise pages and then recognise text on them, and the *only*
+/// thing they assert is our wiring: that a scanned PDF reaches `READY` with its page recorded, and
+/// that a blank one does not. How long `ocrs` takes to do that is the engine's business, and on a
+/// machine slower than the one a test was written on it is nobody's.
+///
+/// It was not hypothetical. `DEFAULT`'s 30-second clock passes here — this suite runs in about 22
+/// seconds locally — and **timed out on CI's runner**, where both tests failed with
+/// `Refused(Timeout)` and read as an OCR defect. A test whose verdict depends on how fast the
+/// machine is will keep doing that, intermittently, and each occurrence teaches somebody that the
+/// OCR path is flaky.
+///
+/// `docs/12 §1.1`: we test our integration, not a third party's speed. The tests that assert the
+/// budget *itself* — input cap, page cap, output cap, the clamp — keep `DEFAULT` and tightened
+/// values, because there the bound is the thing under test.
+const UNTIMED: RenderBudget =
+    RenderBudget { wall_clock: core::time::Duration::from_secs(600), ..RenderBudget::DEFAULT };
+
 fn pages_of(pdf: Vec<u8>, budget: RenderBudget) -> PdfiumPages {
     PdfiumPages::new(library(), pdf, budget)
 }
@@ -558,9 +577,9 @@ async fn a_scanned_text_free_pdf_is_read_back_as_text() {
 
     let retry = OcrRetry::new(
         BoundedExtractor::new(OcrExtractor::new(models())),
-        pages_of(pdf, RenderBudget::DEFAULT),
+        pages_of(pdf, UNTIMED),
         Chunker::new(ChunkerVersion::new("test/1"), ChunkBudget::default()),
-        RenderBudget::DEFAULT,
+        UNTIMED,
     );
 
     // Exactly what a PDF text extractor would hand over: this document yielded no text, and these
@@ -614,9 +633,9 @@ async fn a_scanned_pdf_of_blank_pages_fails_rather_than_indexing_as_empty() {
 
     let retry = OcrRetry::new(
         BoundedExtractor::new(OcrExtractor::new(models())),
-        pages_of(pdf, RenderBudget::DEFAULT),
+        pages_of(pdf, UNTIMED),
         Chunker::new(ChunkerVersion::new("test/1"), ChunkBudget::default()),
-        RenderBudget::DEFAULT,
+        UNTIMED,
     );
 
     let prepared = retry
