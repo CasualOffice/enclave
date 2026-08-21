@@ -22,27 +22,27 @@ enclave-search = { workspace = true }
 enclave-indexing = { workspace = true }
 enclave-preview = { workspace = true }
 enclave-storage = { workspace = true }
+# `ENC-548`: the binary binds its own metrics socket, because a coverage pass scheduled here
+# publishes into a process-wide registry that only `enclave-api` used to expose. The listener moved
+# below both binaries rather than the worker depending on the API, which is backwards.
+enclave-observability = { workspace = true, features = ["exposition"] }
 
+anyhow    = { workspace = true }
+async-trait = { workspace = true }
 chrono    = { workspace = true }
 sqlx      = { workspace = true }
 thiserror = { workspace = true }
+# The scheduler is the reason this is a normal dependency rather than a dev one: it owns the clock
+# (`sleep`), the tasks (`spawn`) and the signal handler (`signal`).
+tokio     = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "sync", "time"] }
 tracing   = { workspace = true }
 uuid      = { workspace = true }
 
 [dev-dependencies]
 enclave-testing = { workspace = true }
-# `tests/coverage.rs` asserts that the probe pass's reading reaches the gauges an operator scrapes.
-# A dev edge only: the pass publishes through `enclave_search::health::probe`, which is where the
-# reading is computed, so nothing in this crate's library half knows the metrics exist.
-enclave-observability = { workspace = true }
-async-trait = { workspace = true }
 futures = { workspace = true }
 bytes = "1"
 url = { workspace = true }
-# `sync` for the mutex that serialises the tests reading those process-wide gauges: the fixture
-# tenant ids are deterministic, so two tests probing `tenant-alpha` at once would read each other's
-# numbers.
-tokio           = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
 
 [lints]
 workspace = true

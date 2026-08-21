@@ -60,6 +60,17 @@ database:
   # The dev stack's DSN:
   #   export DATABASE_URL=postgres://enclave:enclave@localhost:5432/enclave
   url_env: "DATABASE_URL"
+  # The BYPASSRLS role, and the only three things allowed to hold it are the migration runner, the
+  # outbox publisher and the scheduler's tenant enumerator (`plans/M0-FOUNDATIONS.md` D3). Absent
+  # here, deliberately: with nothing set there is no row-level-security bypass anywhere in the
+  # process, and the paths that need one refuse to start rather than falling back to a pool RLS
+  # applies to with no tenant set — which returns zero rows and looks like an empty database.
+  #
+  # `enclave-api` does not need it. **`enclave-worker` refuses to start without it**, because the
+  # query that produces a tenant list cannot itself be scoped to a tenant and every housekeeping
+  # pass takes that list as a parameter (`docs/11-OPERATIONS.md §3.1`).
+  #
+  # platform_url_env: "DATABASE_PLATFORM_URL"
   max_connections: 50
   min_connections: 1
   acquire_timeout: "10s"
@@ -176,6 +187,55 @@ antivirus:
   # HOLD keeps an object in SCANNING until a scanner is reachable — the only value consistent with
   # rule 9. ALLOW_AND_RESCAN trades a malware window for availability and must be chosen.
   unavailable_policy: "HOLD"
+
+# ---------------------------------------------------------------------------------------------
+# Mounted volumes: OCR
+# ---------------------------------------------------------------------------------------------
+# Both keys are absent below, deliberately, and that is a working configuration. With neither, a
+# scanned or image-only document produces no text, its index manifest records FAILED with
+# `no_text_extracted`, and the file is *visibly* unsearchable. That is the intended absence — the
+# outcome to avoid is the other one, a document that indexes as empty while appearing correctly
+# filed, which is invisible to everybody (`plans/M3-DISCOVERY.md` D24).
+#
+# Set both to turn OCR on. **Both or neither**: one without the other refuses to start, naming the
+# missing key. Weights with no rasteriser is a deployment whose configuration says OCR is on and
+# whose scanned PDFs index as empty anyway, and nothing downstream is in a position to report it.
+#
+# These are *paths*, not credentials — the same class as `antivirus.endpoint`. They are plain
+# strings rather than `vault://` references on purpose: a mount point grants access to nothing, and
+# putting a directory name behind a secret provider would make a volume that simply is not attached
+# look like a failed credential fetch.
+#
+# Neither artefact is shipped in the image, for two different reasons:
+#
+#   * the ocrs weights are CC-BY-SA-4.0 — a copyleft *data* licence that `deny.toml`'s
+#     permissive-only allowlist excludes and that `cargo deny` structurally cannot see, because the
+#     crate is permissive and weights are not a crate. You obtain them; we redistribute nothing.
+#   * PDFium is 7 MB of shared object per platform, BSD-3-Clause, that nobody reviews in a diff.
+#
+# Staging them, once, beside the deployment:
+#
+#   mkdir -p /var/lib/enclave/ocr-models
+#   base=https://ocrs-models.s3-accelerate.amazonaws.com
+#   curl -fsSL -o /var/lib/enclave/ocr-models/text-detection.rten   "$base/text-detection.rten"
+#   curl -fsSL -o /var/lib/enclave/ocr-models/text-recognition.rten "$base/text-recognition.rten"
+#
+#   # chromium/7881 is an ABI pair with this build. Not the `pdfium-v8-*` archive: those embed a
+#   # JavaScript engine and enable PDF scripting.
+#   curl -fsSL -o /tmp/pdfium.tgz \
+#     https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F7881/pdfium-linux-x64.tgz
+#   mkdir -p /var/lib/enclave/pdfium && tar -xzf /tmp/pdfium.tgz -C /var/lib/enclave/pdfium
+#
+# Then, here or as `ENCLAVE_OCR_MODELS` / `ENCLAVE_PDFIUM` in the environment — the two spellings
+# name the same field:
+#
+# ocr_models: "/var/lib/enclave/ocr-models"   # holds text-detection.rten and text-recognition.rten
+# pdfium: "/var/lib/enclave/pdfium/lib"       # the directory, not the file
+#
+# One more thing to set when you turn this on, and it is not in this file: `RTEN_NUM_THREADS` in
+# the worker's environment, matched to its CPU limit. The inference runtime starts a thread pool
+# sized from the *host's* core count, which on a limited container is a pool several times larger
+# than the cores it may use. `docs/11-OPERATIONS.md §3.2` has the numbers.
 
 # ---------------------------------------------------------------------------------------------
 # Sections below are not modelled yet — they land with the milestones that implement them

@@ -72,8 +72,8 @@ use async_trait::async_trait;
 use enclave_core::FileId;
 use milvus::v2 as sdk;
 use sdk::prelude::{
-    CollectionSchema, ConnectConfig, ConsistencyLevel, DataType, FieldSchema, IndexParam,
-    IndexType, MetricType, SearchResults, SearchVectors,
+    CollectionSchema, ConnectConfig, ConsistencyLevel, DataType, FieldData, FieldSchema,
+    IndexParam, IndexType, MetricType, SearchResults, SearchVectors,
 };
 use tokio::sync::RwLock;
 
@@ -82,6 +82,7 @@ use crate::error::SearchError;
 use crate::health::IndexCensus;
 use crate::postfilter::Candidate;
 use crate::vector::{field, VectorIndex, VectorQuery, COLLECTION};
+use crate::writer::{ChunkRecord, VectorWriter};
 
 /// HNSW parameters from `docs/07-SEARCH-INDEXING.md §4`.
 const HNSW_M: &str = "32";
@@ -483,6 +484,217 @@ impl IndexCensus for MilvusIndex {
         let response = client.query(request).await.map_err(|error| failed("count", &error))?;
         Ok(response.results().get_row_count())
     }
+}
+
+#[async_trait]
+impl VectorWriter for MilvusIndex {
+    /// Writes a batch with `upsert`, so a re-index replaces its chunks rather than duplicating them.
+    ///
+    /// `insert` would be the obvious call and it is the wrong one: Milvus does **not** enforce
+    /// primary-key uniqueness on an insert, so a retried indexing run — the ordinary case, not the
+    /// exceptional one, because indexing is driven by an at-least-once outbox — writes a second copy
+    /// of every chunk under the same deterministic id. [`crate::writer`] sets out what the orphan
+    /// then costs.
+    ///
+    /// Every record is validated before the connection is touched. A batch is refused as a whole, so
+    /// discovering the bad row after a round trip and a server message this crate discards would
+    /// leave an operator with an operation name and nothing else.
+    async fn upsert_chunks(&self, chunks: &[ChunkRecord]) -> Result<(), SearchError> {
+        if chunks.is_empty() {
+            return Ok(());
+        }
+        for chunk in chunks {
+            chunk.validate(self.config.dimension)?;
+        }
+
+        let client = self
+            .session()
+            .await
+            .ok_or(SearchError::VectorIndex { operation: "connect", retryable: true })?;
+
+        let insert = sdk::request::dml::InsertRequest::builder()
+            .collection_name(self.config.collection.clone())
+            .columns(columns(chunks)?)
+            .build()
+            .map_err(|_| invalid_request("upsert"))?;
+        let request = sdk::request::dml::UpsertRequest::builder()
+            .insert(insert)
+            .build()
+            .map_err(|_| invalid_request("upsert"))?;
+
+        client.upsert(request).await.map_err(|error| failed("upsert", &error))?;
+        Ok(())
+    }
+
+    /// Deletes one file's chunks by expression.
+    ///
+    /// By expression rather than by primary key because the caller does not reliably know the ids:
+    /// an interrupted run, an older chunker version and a superseded version all leave chunks whose
+    /// ids nobody is holding, and a removal that skipped those would leave exactly the orphans
+    /// [`crate::writer`] describes.
+    ///
+    /// The response's `delete_count` is deliberately dropped — see `crate::writer`'s refusal 1.
+    async fn remove_file(
+        &self,
+        tenant: enclave_core::TenantId,
+        file: FileId,
+    ) -> Result<(), SearchError> {
+        let client = self
+            .session()
+            .await
+            .ok_or(SearchError::VectorIndex { operation: "connect", retryable: true })?;
+
+        let (filter, templates) = removal_filter(tenant, file);
+        let request = sdk::request::dml::DeleteRequest::builder()
+            .collection_name(self.config.collection.clone())
+            .filter(filter)
+            .filter_templates(templates)
+            .build()
+            .map_err(|_| invalid_request("delete"))?;
+
+        client.delete(request).await.map_err(|error| failed("delete", &error))?;
+        Ok(())
+    }
+}
+
+/// The removal expression: one tenant's partition, one file, and nothing wider.
+///
+/// A template, not a `format!`, for the reason the module documentation gives about
+/// [`build_filter`] — with the stakes reversed. A widened *search* is caught by the post-filter; a
+/// widened *delete* is not caught by anything, because the thing it destroys is not observed until
+/// somebody searches for a document that is no longer indexed.
+///
+/// Both clauses are load-bearing, in different ways. Without `file_id` the expression removes the
+/// whole tenant's index. Without `tenant_id` it removes the right file — file identifiers are
+/// UUIDs, so it cannot collide across tenants — but Milvus can no longer route to one partition and
+/// the delete scans every tenant's. That is the same cost/safety split `build_filter` documents, and
+/// it is why the assertion below is over the expression rather than over a live two-tenant
+/// collection: the live version could not tell a correct delete from a very expensive one.
+fn removal_filter(
+    tenant: enclave_core::TenantId,
+    file: FileId,
+) -> (String, HashMap<String, serde_json::Value>) {
+    let filter = format!("{} == {{tenant}} and {} == {{file}}", field::TENANT_ID, field::FILE_ID);
+    let templates = HashMap::from([
+        ("tenant".to_owned(), serde_json::Value::from(tenant.to_string())),
+        ("file".to_owned(), serde_json::Value::from(file.to_string())),
+    ]);
+    (filter, templates)
+}
+
+/// Turns a batch of records into the collection's columns, in the collection's order.
+///
+/// Column-based rather than row-based because the SDK validates a column batch against the schema
+/// before it sends it, and because the nullable fields need masks that only exist in this form.
+///
+/// **Every field of [`collection_schema`] appears here exactly once**, and
+/// `every_field_the_collection_defines_is_written` asserts it against that function rather than
+/// against a list written twice. A field added to the schema and forgotten here is rejected by the
+/// server at run time and by nothing earlier — which is `ENC-523`'s lesson about where these
+/// mistakes surface.
+fn columns(chunks: &[ChunkRecord]) -> Result<Vec<FieldData>, SearchError> {
+    Ok(vec![
+        FieldData::varchar(
+            field::CHUNK_ID,
+            chunks.iter().map(|chunk| chunk.chunk_id.to_string()).collect(),
+        ),
+        FieldData::varchar(
+            field::TENANT_ID,
+            chunks.iter().map(|chunk| chunk.tenant.to_string()).collect(),
+        ),
+        FieldData::varchar(
+            field::WORKSPACE_ID,
+            chunks.iter().map(|chunk| chunk.workspace.to_string()).collect(),
+        ),
+        FieldData::varchar(
+            field::LIBRARY_ID,
+            chunks.iter().map(|chunk| chunk.library.to_string()).collect(),
+        ),
+        FieldData::varchar(
+            field::FILE_ID,
+            chunks.iter().map(|chunk| chunk.file.to_string()).collect(),
+        ),
+        FieldData::varchar(
+            field::VERSION_ID,
+            chunks.iter().map(|chunk| chunk.version.to_string()).collect(),
+        ),
+        FieldData::varchar(
+            field::CHUNK_TYPE,
+            chunks.iter().map(|chunk| chunk.chunk_type.clone()).collect(),
+        ),
+        nullable_varchar(field::TITLE, chunks.iter().map(|chunk| chunk.title.as_deref()))?,
+        FieldData::varchar(field::TEXT, chunks.iter().map(|chunk| chunk.text.clone()).collect()),
+        FieldData::float_vector(
+            field::DENSE_VECTOR,
+            chunks.iter().map(|chunk| chunk.dense.clone()).collect(),
+        ),
+        FieldData::sparse_float_vector(
+            field::SPARSE_VECTOR,
+            chunks.iter().map(|chunk| chunk.sparse.clone()).collect(),
+        ),
+        FieldData::int32(
+            field::CLASSIFICATION_RANK,
+            chunks.iter().map(|chunk| chunk.classification_rank.get()).collect(),
+        ),
+        FieldData::array_varchar(
+            field::ACL_TOKENS,
+            chunks.iter().map(|chunk| chunk.acl_tokens.clone()).collect(),
+        ),
+        FieldData::array_varchar(
+            field::BARRIER_TOKENS,
+            chunks.iter().map(|chunk| chunk.barrier_tokens.clone()).collect(),
+        ),
+        FieldData::int64(field::ACL_EPOCH, chunks.iter().map(|chunk| chunk.acl_epoch).collect()),
+        FieldData::varchar(
+            field::MIME_TYPE,
+            chunks.iter().map(|chunk| chunk.mime_type.clone()).collect(),
+        ),
+        nullable_varchar(field::LANGUAGE, chunks.iter().map(|chunk| chunk.language.as_deref()))?,
+        FieldData::int32(
+            field::PAGE_NUMBER,
+            chunks.iter().map(|chunk| chunk.page_number).collect(),
+        ),
+        nullable_varchar(
+            field::SHEET_NAME,
+            chunks.iter().map(|chunk| chunk.sheet_name.as_deref()),
+        )?,
+        nullable_varchar(
+            field::SECTION_PATH,
+            chunks.iter().map(|chunk| chunk.section_path.as_deref()),
+        )?,
+        FieldData::int64(
+            field::MODIFIED_TIMESTAMP,
+            chunks.iter().map(|chunk| chunk.modified.timestamp()).collect(),
+        ),
+    ])
+}
+
+/// A nullable VarChar column: the values that are present, and the mask that says which rows they
+/// belong to.
+///
+/// `ENC-523` is what discovering this contract cost, and the part that is easy to get backwards is
+/// worth repeating: **the values vector holds only the present rows**, so its length equals the
+/// number of `true`s in the mask and *not* the row count. Built here from an iterator of `Option`s
+/// so the two cannot be assembled separately and disagree.
+///
+/// A field that is absent is absent, not `""`. The schema's `varchar` helper documents why: an
+/// empty-string sentinel makes "no sheet name" and "a sheet named nothing" the same value, so a
+/// filter written against one silently matches the other.
+fn nullable_varchar<'a>(
+    name: &'static str,
+    values: impl Iterator<Item = Option<&'a str>>,
+) -> Result<FieldData, SearchError> {
+    let mut present = Vec::new();
+    let mut mask = Vec::new();
+    for value in values {
+        mask.push(value.is_some());
+        if let Some(value) = value {
+            present.push(value.to_owned());
+        }
+    }
+    // Unreachable by construction — the loop above pushes one mask entry per row and one value per
+    // `Some` — so this is the SDK's own invariant restated, not a case a caller can reach.
+    FieldData::varchar(name, present).with_validity(mask).map_err(|_| invalid_request("upsert"))
 }
 
 /// The aggregate output field Milvus recognises. Not a field on the collection, which is why it is
@@ -953,6 +1165,189 @@ mod tests {
         assert!(
             !filter.contains(field::ACL_TOKENS),
             "a health probe has no business naming a permission field"
+        );
+    }
+
+    /// Two records whose optional fields differ, so a nullable column has both a present and an
+    /// absent row in it.
+    ///
+    /// The second row's absences are what make the mask assertions mean anything: against a batch
+    /// where everything is present, a builder that marked every row valid — or that ignored the
+    /// mask entirely — passes.
+    fn batch() -> Vec<crate::writer::ChunkRecord> {
+        let tenant = TenantId::new_v7();
+        let base = crate::writer::ChunkRecord {
+            chunk_id: enclave_core::ChunkId::new_v7(),
+            tenant,
+            workspace: enclave_core::WorkspaceId::new_v7(),
+            library: LibraryId::new_v7(),
+            file: FileId::new_v7(),
+            version: enclave_core::VersionId::new_v7(),
+            chunk_type: "BODY".to_owned(),
+            title: Some("a spreadsheet".to_owned()),
+            text: "a body".to_owned(),
+            dense: vec![0.25; 8],
+            sparse: crate::writer::SparseTerms::from([(3, 1.0)]),
+            classification_rank: ClassificationRank::new(0),
+            acl_tokens: vec!["user:someone".to_owned()],
+            barrier_tokens: Vec::new(),
+            acl_epoch: 7,
+            mime_type: "application/vnd.ms-excel".to_owned(),
+            language: Some("en".to_owned()),
+            page_number: 0,
+            sheet_name: Some("Q3".to_owned()),
+            section_path: Some("/".to_owned()),
+            modified: chrono::Utc::now(),
+        };
+        let bare = crate::writer::ChunkRecord {
+            chunk_id: enclave_core::ChunkId::new_v7(),
+            title: None,
+            language: None,
+            sheet_name: None,
+            section_path: None,
+            ..base.clone()
+        };
+        vec![base, bare]
+    }
+
+    /// The writer fills every field the collection declares, and in the collection's order.
+    ///
+    /// Asserted against [`collection_schema`] rather than against a second hand-written list,
+    /// because two lists is how they drift. A field added to the schema and forgotten in
+    /// [`columns`] is rejected by the server at run time and by nothing earlier — `ENC-523` is the
+    /// session that learned where these mistakes surface, and this is the check that moves the
+    /// discovery onto a machine with no Milvus.
+    #[test]
+    fn every_field_the_collection_defines_is_written() {
+        let written = columns(&batch()).expect("the batch builds");
+        let names: Vec<&str> = written.iter().map(FieldData::name).collect();
+        let schema = collection_schema(8);
+        let declared: Vec<&str> = schema.get_fields().iter().map(FieldSchema::get_name).collect();
+        assert_eq!(
+            names, declared,
+            "the writer and the collection disagree about the fields or their order"
+        );
+    }
+
+    /// Every row of every column, and the same number of them.
+    ///
+    /// The SDK rejects a ragged batch, but only after a round trip and with a message this crate
+    /// discards. A nullable column's own length is its *mask*, which is what makes this assertion
+    /// non-trivial: the values vector is shorter.
+    #[test]
+    fn every_column_carries_one_entry_per_chunk() {
+        let chunks = batch();
+        let written = columns(&chunks).expect("the batch builds");
+        for column in &written {
+            assert_eq!(
+                column.len(),
+                chunks.len(),
+                "`{}` has {} rows against a batch of {}",
+                column.name(),
+                column.len(),
+                chunks.len()
+            );
+        }
+    }
+
+    /// `ENC-523`, encoded: the nullable fields carry a validity mask and the required ones do not.
+    ///
+    /// Both halves matter and they fail differently. A required field given a mask is rejected by
+    /// the server (`the length of valid_data of field(workspace_id) is wrong`, which is the error
+    /// that started `ENC-523`). A nullable field given none is rejected too. And the mask's own
+    /// contract is the part that is easy to get backwards: the values vector holds only the present
+    /// rows, so its length is the number of `true`s and not the row count.
+    #[test]
+    fn only_the_nullable_fields_carry_a_validity_mask_and_it_counts_the_present_rows() {
+        let chunks = batch();
+        let written = columns(&chunks).expect("the batch builds");
+        let schema = collection_schema(8);
+
+        let mut saw_an_absence = false;
+        for column in &written {
+            let declared = schema
+                .get_fields()
+                .iter()
+                .find(|declared| declared.get_name() == column.name())
+                .unwrap_or_else(|| panic!("`{}` is not a field of the collection", column.name()));
+
+            match column.valid_data() {
+                Some(mask) => {
+                    assert!(
+                        declared.is_nullable(),
+                        "`{}` is not nullable but was written with a validity mask, which the \
+                         server refuses",
+                        column.name()
+                    );
+                    let present = mask.iter().filter(|valid| **valid).count();
+                    assert_eq!(
+                        column.inner().len(),
+                        present,
+                        "`{}` supplies {} values against {present} present rows; the values vector \
+                         holds only the present rows",
+                        column.name(),
+                        column.inner().len()
+                    );
+                    saw_an_absence |= mask.contains(&false);
+                }
+                None => assert!(
+                    !declared.is_nullable(),
+                    "`{}` is nullable and was written without a validity mask, which the server \
+                     refuses",
+                    column.name()
+                ),
+            }
+        }
+
+        // The positive control. Without an actually-absent row, every assertion above is satisfied
+        // by a builder that marks everything present — which is the shape `docs/12 §1.2` keeps
+        // catching, and the shape a mask bug would hide behind.
+        assert!(
+            saw_an_absence,
+            "no column has an absent row, so the mask contract was never exercised"
+        );
+    }
+
+    /// A removal names the file. Deleting a tenant's whole index is one missing clause away.
+    ///
+    /// The stakes are not the search's. A widened *search* is caught by the post-filter; a widened
+    /// *delete* is caught by nothing, because what it destroys is only noticed when somebody looks
+    /// for a document that is no longer indexed. So the expression is asserted exactly, not for the
+    /// presence of a substring.
+    #[test]
+    fn a_removal_names_one_tenant_and_one_file_and_nothing_wider() {
+        let tenant = TenantId::new_v7();
+        let file = FileId::new_v7();
+        let (filter, templates) = removal_filter(tenant, file);
+
+        assert_eq!(filter, "tenant_id == {tenant} and file_id == {file}");
+        assert_eq!(
+            templates.get("tenant"),
+            Some(&serde_json::Value::from(tenant.to_string())),
+            "the tenant was interpolated somewhere other than the template binding"
+        );
+        assert_eq!(
+            templates.get("file"),
+            Some(&serde_json::Value::from(file.to_string())),
+            "the file was interpolated somewhere other than the template binding"
+        );
+        assert!(
+            !filter.contains(field::ACL_TOKENS) && !filter.contains(field::BARRIER_TOKENS),
+            "a removal consulted the index about permissions: {filter}"
+        );
+    }
+
+    /// An empty batch is a no-op, and it is not allowed to become a round trip.
+    ///
+    /// The SDK refuses a column batch with no rows (`columns must contain at least one row`), so a
+    /// writer that did not return early would turn "this file extracted to nothing" — a legitimate
+    /// outcome — into a failed indexing run for a document nothing is wrong with.
+    #[test]
+    fn an_empty_batch_builds_no_columns() {
+        let written = columns(&[]).expect("an empty batch is not an error here");
+        assert!(
+            written.iter().all(FieldData::is_empty),
+            "an empty batch produced rows, so the caller's early return is not the only guard"
         );
     }
 

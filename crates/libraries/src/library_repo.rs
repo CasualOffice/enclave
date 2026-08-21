@@ -11,16 +11,25 @@
 //!
 //! [`create`]: LibraryRepository::create
 //!
-//! # There is no slug uniqueness here, and that is not an oversight
+//! # Slug uniqueness is the database's, and it now exists
 //!
-//! `workspaces` has `uq_workspace_slug`; `libraries` has no equivalent index in
-//! `docs/04-DATA-MODEL.md §7` or in migration 0004. Two live libraries in one workspace can
-//! therefore hold the same slug today. This crate does **not** paper over that with a
-//! read-then-write check: such a check is not a constraint — it loses the race it exists to
-//! prevent, and it would advertise a guarantee the database is not making. Slugs are still folded
-//! through [`normalize_slug`] on the way in and on the way out, so the day the index is added it
-//! finds consistent data and can be built without a repair migration. The gap is reported for
-//! amendment rather than hidden.
+//! `uq_library_slug` — `(tenant_id, workspace_id, slug) WHERE deleted_at IS NULL`,
+//! `docs/04-DATA-MODEL.md §10.1`, `migrations/0017_slug_uniqueness.sql`, `ENC-544`. Until that
+//! migration there was no such index and two live libraries in one workspace could hold the same
+//! slug; this crate reported the gap rather than papering over it with a read-then-write check,
+//! because such a check is not a constraint — it loses the race it exists to prevent, and it
+//! advertises a guarantee the database is not making. That reasoning is why the index could be
+//! added without a repair migration: [`normalize_slug`] has folded slugs on the way in and on the
+//! way out throughout, so the data it was built over was already consistent.
+//!
+//! What changes for a caller is one error: [`create`] and [`update`] can now fail with a `23505`
+//! from `uq_library_slug`. Nothing here catches it specially yet — it arrives as
+//! [`LibraryError::Database`], the unclassified route every driver failure takes — and turning it
+//! into a field-level "that name is taken" belongs with the handler that has a form to attach it
+//! to. Distinguishing it here would mean matching on a SQLSTATE and an index name in a repository
+//! that currently classifies nothing, for a message no surface yet renders.
+//!
+//! [`update`]: LibraryRepository::update
 //!
 //! # No authorization
 //!

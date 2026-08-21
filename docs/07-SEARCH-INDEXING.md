@@ -1,6 +1,6 @@
 # 07 — Search & Indexing
 
-> **Status:** Draft · **Version:** 1.7 · **Owner:** Search Engineering · **Last updated:** 2026-08-21
+> **Status:** Draft · **Version:** 1.8 · **Owner:** Search Engineering · **Last updated:** 2026-08-22
 > **Authoritative for:** the indexing pipeline, Milvus schema, permission-aware retrieval, ACL invalidation, rebuild.
 
 ## 1. Position of the index
@@ -56,12 +56,15 @@ lexically searchable by name and metadata.
 ### 2.2 Chunking
 
 Structure-aware, not fixed-size-only. Target 400–800 tokens with ~15% overlap, never crossing a
-table row group, slide or sheet-range boundary. Each chunk keeps its source coordinates
+table row group, slide, page or sheet-range boundary. Each chunk keeps its source coordinates
 (`page_number`, `sheet_name`, `section_path`) so results can deep-link and so RAG answers can cite a
 location a person can actually navigate to.
 
 Chunk types: `document`, `section`, `paragraph`, `table`, `row_group`, `sheet_range`, `slide`,
-`code_block`, `list`.
+`page`, `code_block`, `list`.
+
+`page` is the paginated analogue of `slide` and carries the same boundary claim: a chunk keeps one
+`page_number`, so a chunk merged across a page boundary cites one page for text that is on two.
 
 ### 2.3 Embedding
 

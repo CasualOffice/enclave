@@ -14,6 +14,7 @@
 //! which is the part that matters for security.
 
 use std::net::{IpAddr, Ipv4Addr};
+use std::path::{Path, PathBuf};
 
 use ipnetwork::IpNetwork;
 use serde::{Deserialize, Serialize};
@@ -72,6 +73,61 @@ pub struct Config {
     pub audit: AuditConfig,
     /// Malware scanning.
     pub antivirus: AntivirusConfig,
+
+    /// Directory holding the mounted OCR model weights, or `None` to run no OCR at all.
+    ///
+    /// **What a deployment gets when this is absent:** exactly what every deployment gets today. A
+    /// scanned, text-free document produces no text, the manifest records `FAILED` with
+    /// `no_text_extracted`, and the file is visibly unsearchable rather than invisibly empty. That
+    /// is the documented absence `plans/M3-DISCOVERY.md` D24 asks for, and it is why the default is
+    /// `None` rather than a path that might exist: a deployment that has not staged the weights has
+    /// not decided to run OCR, and inventing a default path for it would turn a decision into a
+    /// filesystem accident.
+    ///
+    /// **Mounted rather than shipped, and the reason is licensing** — `crates/indexing/src/ocr.rs`
+    /// argues it at length. The published `ocrs` weights are CC-BY-SA-4.0, which `deny.toml`'s
+    /// permissive-only allowlist excludes and which `cargo deny` structurally cannot see, because
+    /// the crate is permissive and weights are not a crate. The operator obtains and stages them;
+    /// we redistribute nothing.
+    ///
+    /// **This is a path, not a secret, and therefore deliberately not a
+    /// [`SecretRef`].** CLAUDE.md rule 11 is about *credentials* — a value that grants access to
+    /// something. A mount point grants nothing: it is the same class as `antivirus.endpoint`, which
+    /// is likewise a plain `String` with "not a secret — a host and port" written beside it. Making
+    /// it a `SecretRef` would put a directory name behind a Vault round trip, and would leave
+    /// `secret_refs()` reporting a resolution failure for a filesystem that is simply not mounted.
+    /// It is therefore **not** listed in [`Config::secret_refs`], and that omission is a decision
+    /// rather than an oversight.
+    ///
+    /// **Why this is a top-level key and not `indexing.ocr_models`.** The loader derives an
+    /// environment override from the field path (`crates/config/src/loader.rs`), so a nested field
+    /// would be spelled `ENCLAVE_INDEXING__OCR_MODELS` — while CI's "Fetch the OCR models" step,
+    /// `crates/indexing/tests/ocr.rs` and every runbook already say `ENCLAVE_OCR_MODELS`. Two
+    /// spellings for one directory is the drift this repository keeps finding in other forms: the
+    /// two agree until someone changes one of them, and the symptom is a deployment that believes
+    /// OCR is on. At the top level the two spellings are one spelling.
+    pub ocr_models: Option<PathBuf>,
+
+    /// Directory holding the mounted PDFium shared library, or `None` to rasterise no PDF page.
+    ///
+    /// The directory, not the file: `pdfium-render` derives the platform's library name
+    /// (`libpdfium.so`, `pdfium.dll`, `libpdfium.dylib`) from it, and naming the file here would
+    /// make one configuration file wrong on two of the three platforms.
+    ///
+    /// **What a deployment gets when this is absent:** `NoPageImages`
+    /// (`crates/indexing/src/ocr.rs`) — no page of any PDF is rasterised, so an OCR retry over a
+    /// scanned PDF recovers nothing and the manifest keeps saying `FAILED`. Absent, never refused:
+    /// a deployment that mounted no rasteriser has made no finding about anybody's document.
+    ///
+    /// Mounted rather than vendored for a different reason than the weights: 7 MB of shared object
+    /// per platform, content nobody reviews in a diff, invisible to `cargo deny` because it is not
+    /// a crate. The version is an **ABI pair** with the `pdfium_7881` feature in the workspace
+    /// manifest — `pdfium-render` resolves every export eagerly at `dlopen`, so a mismatched
+    /// library fails loudly at the mount rather than subtly at render.
+    ///
+    /// A path and not a secret, for the reason given on [`ocr_models`](Self::ocr_models); and a
+    /// top-level key so that this field and `ENCLAVE_PDFIUM` are one spelling.
+    pub pdfium: Option<PathBuf>,
 }
 
 impl Config {
@@ -89,12 +145,63 @@ impl Config {
             }
         };
         push("database.url", self.database.url_ref());
+        push("database.platform_url", self.database.platform_url_ref());
         push("redis.url", self.redis.url_ref());
         push("events.nats_url", self.events.nats_url_ref());
         push("auth.signing_keys.key_ref", self.auth.signing_keys.key_ref.clone());
         push("security.password.pepper", self.security.password.pepper.clone());
         refs
     }
+
+    /// What this deployment has staged for OCR over a scanned PDF.
+    ///
+    /// A tri-state rather than an `Option<(…, …)>`, and that is the whole reason this accessor
+    /// exists. Collapsing "neither is set" and "one is set" into one `None` is the shape D24 keeps
+    /// warning about: an operator who mounted the weights and forgot the rasteriser would get
+    /// silence, and every scanned PDF in the corpus would index as empty while the configuration
+    /// file said OCR was on.
+    ///
+    /// Read by [`check_mounts`](crate::validate::check_mounts), which refuses startup on
+    /// [`Incomplete`](OcrMounts::Incomplete), and by the worker that builds the stage. One function
+    /// so the two cannot disagree about what "configured" means.
+    #[must_use]
+    pub fn ocr_mounts(&self) -> OcrMounts<'_> {
+        match (self.ocr_models.as_deref(), self.pdfium.as_deref()) {
+            (None, None) => OcrMounts::Absent,
+            (Some(models), Some(pdfium)) => OcrMounts::Mounted { models, pdfium },
+            (Some(_), None) => OcrMounts::Incomplete { present: "ocr_models", missing: "pdfium" },
+            (None, Some(_)) => OcrMounts::Incomplete { present: "pdfium", missing: "ocr_models" },
+        }
+    }
+}
+
+/// The state of the two volumes OCR over a scanned PDF needs.
+///
+/// See [`Config::ocr_mounts`] for why the middle state is spelled out rather than folded into the
+/// absent one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OcrMounts<'a> {
+    /// Neither volume is configured — the default, and no OCR runs.
+    ///
+    /// Not a degradation to notice: a textless document is recorded `FAILED` with
+    /// `no_text_extracted`, which is a surface somebody reads.
+    Absent,
+    /// Both volumes are configured. The paths have **not** been checked to exist; that happens at
+    /// the mount, which is the only place that can tell "absent" from "present and unloadable".
+    Mounted {
+        /// Directory holding `text-detection.rten` and `text-recognition.rten`.
+        models: &'a Path,
+        /// Directory holding the platform's PDFium shared library.
+        pdfium: &'a Path,
+    },
+    /// One half without the other. Refused at startup — the field names are `&'static str` so a
+    /// message built from them can never carry a configured value.
+    Incomplete {
+        /// The key that was set.
+        present: &'static str,
+        /// The key that was not.
+        missing: &'static str,
+    },
 }
 
 /// HTTP listener, public identity and proxy trust.
@@ -171,6 +278,20 @@ pub struct DatabaseConfig {
     /// The `url_env: DATABASE_URL` spelling used in `docs/08-BYO-INFRA.md §15`, kept so a
     /// documented file loads unchanged. Equivalent to `url: env://DATABASE_URL`.
     pub url_env: Option<String>,
+    /// Reference to the DSN of the **`BYPASSRLS`** role, for the three cross-tenant paths
+    /// `enclave_db::DbPool::platform_connection` names — the migration runner, the outbox
+    /// publisher, and the scheduler's tenant enumerator.
+    ///
+    /// Absent by default, and the default is the safe one: with nothing here there is no
+    /// row-level-security bypass anywhere in the process, and the code paths that need one refuse
+    /// to start rather than falling back. A deployment that runs the worker has to set it, because
+    /// the query producing a tenant list cannot itself be scoped to a tenant.
+    ///
+    /// A `SecretRef` for the same reason `url` is: a DSN embeds a password, and this one's is the
+    /// most valuable in the deployment.
+    pub platform_url: Option<SecretRef>,
+    /// The `platform_url_env: DATABASE_PLATFORM_URL` spelling, matching [`Self::url_env`].
+    pub platform_url_env: Option<String>,
     /// Upper bound on pooled connections.
     pub max_connections: u32,
     /// Connections kept warm.
@@ -189,6 +310,8 @@ impl Default for DatabaseConfig {
         Self {
             url: None,
             url_env: None,
+            platform_url: None,
+            platform_url_env: None,
             max_connections: 50,
             min_connections: 1,
             acquire_timeout: HumanDuration::from_secs(10),
@@ -207,6 +330,17 @@ impl DatabaseConfig {
     #[must_use]
     pub fn url_ref(&self) -> Option<SecretRef> {
         env_ref(self.url.as_ref(), self.url_env.as_deref())
+    }
+
+    /// The effective `BYPASSRLS` DSN reference, or `None` when this deployment configured none.
+    ///
+    /// `None` is a refusal for whoever needs it, never a fallback to [`Self::url_ref`]. Falling
+    /// back would hand a cross-tenant caller a connection that row-level security *does* apply to
+    /// with no tenant context set, which reads as "zero rows everywhere" — an empty tenant list, an
+    /// idle worker, and nothing reporting a problem.
+    #[must_use]
+    pub fn platform_url_ref(&self) -> Option<SecretRef> {
+        env_ref(self.platform_url.as_ref(), self.platform_url_env.as_deref())
     }
 }
 
@@ -671,6 +805,73 @@ mod tests {
         assert!(config.audit.hash_chain);
         assert!(config.antivirus.is_enabled());
         assert_eq!(config.antivirus.unavailable_policy, UnavailablePolicy::Hold);
+        assert_eq!(config.ocr_mounts(), OcrMounts::Absent);
+    }
+
+    #[test]
+    fn the_two_mount_keys_are_spelled_the_way_the_environment_spells_them() {
+        // The whole reason these are top-level keys. The loader derives an environment override
+        // from the field path, so a nested `indexing.ocr_models` would be reachable only as
+        // `ENCLAVE_INDEXING__OCR_MODELS` — while CI's fetch steps, `crates/indexing/tests/{ocr,pdf}.rs`
+        // and the runbook in `docs/11` all say `ENCLAVE_OCR_MODELS` and `ENCLAVE_PDFIUM`. Two
+        // spellings for one directory is the drift; this asserts there is one.
+        //
+        // Deliberate violation: renaming either field, or nesting it under a section, fails this
+        // test by name — the derived path no longer matches the variable CI sets.
+        let loaded = crate::ConfigLoader::new()
+            .with_env([
+                ("ENCLAVE_OCR_MODELS", "/mnt/enclave/ocr-models"),
+                ("ENCLAVE_PDFIUM", "/mnt/enclave/pdfium/lib"),
+            ])
+            .load()
+            .unwrap();
+
+        assert_eq!(
+            loaded.config().ocr_mounts(),
+            OcrMounts::Mounted {
+                models: Path::new("/mnt/enclave/ocr-models"),
+                pdfium: Path::new("/mnt/enclave/pdfium/lib"),
+            }
+        );
+    }
+
+    #[test]
+    fn half_a_mount_is_reported_as_half_a_mount_and_never_as_none() {
+        // The tri-state's reason for existing. Folding this into `Absent` would give an operator who
+        // staged the weights and forgot PDFium exactly the silence D24 is about.
+        let models = Config { ocr_models: Some(PathBuf::from("/mnt/m")), ..Config::default() };
+        assert_eq!(
+            models.ocr_mounts(),
+            OcrMounts::Incomplete { present: "ocr_models", missing: "pdfium" }
+        );
+
+        let pdfium = Config { pdfium: Some(PathBuf::from("/mnt/p")), ..Config::default() };
+        assert_eq!(
+            pdfium.ocr_mounts(),
+            OcrMounts::Incomplete { present: "pdfium", missing: "ocr_models" }
+        );
+    }
+
+    #[test]
+    fn a_mount_path_is_not_treated_as_a_credential() {
+        // The positive control for the classification argued in the field documentation: these are
+        // paths, not secrets, so they are neither `SecretRef`s nor listed in `secret_refs()`, and
+        // the inline-credential scanner must stay quiet on them. If it did not, a perfectly ordinary
+        // configuration file would refuse to start.
+        let yaml = "
+ocr_models: /var/lib/enclave/ocr-models
+pdfium: /var/lib/enclave/pdfium/lib
+database:
+  url_env: DATABASE_URL
+";
+        let loaded =
+            crate::ConfigLoader::new().without_env().with_yaml("t.yaml", yaml).load().unwrap();
+        let refs = loaded.config().secret_refs();
+        assert_eq!(
+            refs.iter().map(|(path, _)| path.as_str()).collect::<Vec<_>>(),
+            vec!["database.url"],
+            "a mount path was enrolled as a secret reference"
+        );
     }
 
     #[test]
@@ -705,6 +906,7 @@ database:
         let yaml = "
 database:
   url_env: DATABASE_URL
+  platform_url_env: DATABASE_PLATFORM_URL
 security:
   password:
     pepper: vault://workspace/password#pepper
@@ -717,7 +919,34 @@ auth:
         let paths: Vec<&str> = refs.iter().map(|(path, _)| path.as_str()).collect();
         assert_eq!(
             paths,
-            vec!["database.url", "auth.signing_keys.key_ref", "security.password.pepper"]
+            vec![
+                "database.url",
+                "database.platform_url",
+                "auth.signing_keys.key_ref",
+                "security.password.pepper"
+            ]
+        );
+    }
+
+    /// The `BYPASSRLS` DSN is a secret, is absent by default, and never borrows the ordinary one.
+    ///
+    /// Three assertions rather than one, because the failure modes differ and only the first is
+    /// caught by the enumeration above. A `platform_url` that fell back to `url` would hand the
+    /// tenant enumerator a pool row-level security applies to, with no tenant context — which
+    /// returns zero rows, so the worker would idle while every health check stayed green.
+    #[test]
+    fn the_platform_dsn_is_absent_by_default_and_never_falls_back() {
+        assert!(DatabaseConfig::default().platform_url_ref().is_none());
+
+        let yaml = "
+database:
+  url_env: DATABASE_URL
+";
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        assert!(config.database.url_ref().is_some(), "the ordinary DSN is set");
+        assert!(
+            config.database.platform_url_ref().is_none(),
+            "a deployment that configured no BYPASSRLS role must get None, not the app DSN"
         );
     }
 

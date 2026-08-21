@@ -47,6 +47,18 @@
 //! document nobody can see. [`text`] gives the argument in full, including why a NUL byte anywhere
 //! refuses the source outright.
 //!
+//! [`PdfTextExtractor`] — `application/pdf`, one [`SegmentKind::Page`] segment per page, through the
+//! same mounted PDFium the rasteriser uses (`ENC-545`). It is the piece that was missing from the
+//! exit criterion: until it existed [`NoExtractor`] answered for PDF, every scanned document was
+//! `SKIPPED` / `unsupported_media_type`, and [`OcrRetry`] — which fires only on [`Outcome::NoText`] —
+//! was unreachable however well it worked.
+//!
+//! Its whole job on that path is the **work list**. A page that yielded nothing becomes an empty
+//! segment carrying its page number, and a document where *every* page did is
+//! [`ExtractOutcome::NoText`] with those numbers in [`TextlessSource::pages_without_text`] — which is
+//! what lets OCR run over three pages of nine hundred. [`pdf_text`] argues the third case, a document
+//! with some text and some scanned pages, and names what it leaves undone.
+//!
 //! # Where the text goes
 //!
 //! [`store`] writes chunk text to PostgreSQL, which is what lets degraded search find a document by
@@ -60,12 +72,17 @@
 //!
 //! # What is deliberately not here
 //!
-//! **No document formats.** PDF and OOXML are a ZIP parser, an XML parser and a page tree, each
-//! with its own bomb, and they need the out-of-process worker of `plans/M2-ACCESS-DELIVERY.md` D17
-//! with the process limits that make a memory bound real. [`NoExtractor`] answers for them, which is
-//! the deny-by-default shape `crates/core`'s policy stages use. A partial implementation would be
-//! worse than a refusal here in a way it is not for previews: a preview that renders half a document
-//! looks wrong, and an index built from half a document looks like the document.
+//! **OOXML.** DOCX, PPTX and XLSX are a ZIP parser and an XML parser, each with its own bomb.
+//! [`NoExtractor`] answers for them, which is the deny-by-default shape `crates/core`'s policy stages
+//! use. A partial implementation would be worse than a refusal here in a way it is not for previews:
+//! a preview that renders half a document looks wrong, and an index built from half a document looks
+//! like the document.
+//!
+//! PDF used to be in that list and is not any more ([`pdf_text`]), which changes the standing of the
+//! sentence above rather than retiring it: the page tree it parses is still the widest attack surface
+//! in the product, still runs in process, and is still only reachable in a deployment that
+//! deliberately mounted PDFium. `plans/M2-ACCESS-DELIVERY.md` D17 is what turns the bounds it applies
+//! into isolation, and it does not exist yet.
 //!
 //! # OCR, and the part of it that is still missing
 //!
@@ -129,6 +146,7 @@ pub mod manifest;
 pub mod model;
 pub mod ocr;
 pub mod pdf;
+pub mod pdf_text;
 pub mod pipeline;
 pub mod store;
 pub mod text;
@@ -144,6 +162,7 @@ pub use model::{
 };
 pub use ocr::{NoPageImages, OcrExtractor, OcrModels, OcrRetry, PageImage, PageImages};
 pub use pdf::{PdfiumLibrary, PdfiumPages};
+pub use pdf_text::PdfTextExtractor;
 pub use pipeline::{ManifestStatus, Outcome, Pipeline, Prepared, Reason};
 pub use store::{write_chunks, ChunkWrite};
 pub use text::PlainTextExtractor;

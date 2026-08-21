@@ -14,7 +14,7 @@ use core::fmt;
 
 use serde_yaml::Value;
 
-use crate::model::{AntivirusProvider, Config, DeploymentProfile};
+use crate::model::{AntivirusProvider, Config, DeploymentProfile, OcrMounts};
 use crate::secret_ref::SecretRef;
 
 /// The kind of a configuration problem — a code rather than a sentence, so callers can branch and
@@ -195,7 +195,50 @@ pub fn validate(config: &Config, raw: &Value) -> Result<(), ValidationReport> {
     let mut report = ValidationReport::new();
     report.extend(scan_for_inline_secrets(raw));
     report.extend(check_profile(config));
+    report.extend(check_mounts(config));
     report.into_result()
+}
+
+/// The two OCR volumes are configured together or not at all (`ENC-546`).
+///
+/// # Why half a mount is a startup failure rather than a warning
+///
+/// OCR over a scanned PDF needs both: weights to recognise text and PDFium to turn a page into
+/// pixels for them to read. A deployment that staged one of the two has a configuration file
+/// saying OCR is on and a corpus of scanned PDFs indexing as empty — which is
+/// `plans/M3-DISCOVERY.md` D24's failure mode reached through configuration rather than through
+/// code. Nothing downstream can report it, either: `NoPageImages` returns `PageImage::Absent` for
+/// every page, correctly, because a deployment with no rasteriser has made no finding about
+/// anybody's document.
+///
+/// A log line at startup is what this check replaces, and it is not enough. The whole of the
+/// problem is that the symptom appears months later on a surface nobody connects to a mount, so the
+/// message has to arrive while somebody is still looking at the configuration.
+///
+/// **Neither mount configured is not a problem**, and deliberately so. That is what every
+/// deployment has today and it is a documented absence, not a degradation: a textless document is
+/// recorded `FAILED` / `no_text_extracted`.
+///
+/// The paths are not checked for existence here. A validator that stats a directory would pass in
+/// CI and fail in a container whose volume attaches a second after the process starts, and it
+/// cannot distinguish "not mounted" from "mounted and holding the wrong files" — which is the
+/// mount's job, and where the message can name what failed to load.
+#[must_use]
+pub fn check_mounts(config: &Config) -> Vec<Problem> {
+    let OcrMounts::Incomplete { present, missing } = config.ocr_mounts() else {
+        return Vec::new();
+    };
+
+    vec![Problem::new(
+        missing,
+        ProblemKind::InvalidValue,
+        format!(
+            "`{present}` is set but `{missing}` is not, and OCR over a scanned PDF needs both: \
+             weights to recognise text and PDFium to render a page for them to read. Set both, or \
+             neither — with neither, a scanned document is recorded FAILED / no_text_extracted \
+             rather than indexed as empty (plans/M3-DISCOVERY.md D24)"
+        ),
+    )]
 }
 
 /// Walk the raw configuration tree looking for credentials written inline.
@@ -639,6 +682,66 @@ integrations:
             };
             assert!(check_profile(&config).is_empty());
         }
+    }
+
+    #[test]
+    fn half_an_ocr_mount_refuses_startup_and_names_the_missing_key() {
+        // `ENC-546`. Both directions, because the tempting implementation checks only one.
+        for (present, missing, config) in [
+            (
+                "ocr_models",
+                "pdfium",
+                Config {
+                    ocr_models: Some(std::path::PathBuf::from("/mnt/ocr")),
+                    ..Config::default()
+                },
+            ),
+            (
+                "pdfium",
+                "ocr_models",
+                Config {
+                    pdfium: Some(std::path::PathBuf::from("/mnt/pdfium")),
+                    ..Config::default()
+                },
+            ),
+        ] {
+            let problems = check_mounts(&config);
+            assert_eq!(problems.len(), 1, "{problems:?}");
+            assert_eq!(problems[0].path, missing, "the report must name the key to add");
+            assert_eq!(problems[0].kind, ProblemKind::InvalidValue);
+            assert!(problems[0].detail.contains(present), "{}", problems[0].detail);
+        }
+    }
+
+    #[test]
+    fn both_mounts_and_neither_mount_are_both_accepted() {
+        // The positive control, and it is load-bearing twice over. Without the `Mounted` case, a
+        // `check_mounts` that refused every configured mount would pass the test above; without the
+        // `Absent` case, one that refused every deployment would.
+        let neither = Config::default();
+        assert!(check_mounts(&neither).is_empty(), "a deployment with no OCR was refused");
+
+        let both = Config {
+            ocr_models: Some(std::path::PathBuf::from("/mnt/ocr")),
+            pdfium: Some(std::path::PathBuf::from("/mnt/pdfium")),
+            ..Config::default()
+        };
+        assert!(check_mounts(&both).is_empty(), "a fully configured deployment was refused");
+    }
+
+    #[test]
+    fn the_mount_check_runs_as_part_of_startup_validation() {
+        // `check_mounts` being correct buys nothing if `validate` does not call it. Asserted through
+        // the loader, which is the path a process actually takes.
+        let err = crate::ConfigLoader::new()
+            .without_env()
+            .with_yaml("t.yaml", "ocr_models: /mnt/enclave/ocr-models\n")
+            .load()
+            .unwrap_err();
+        let report = err.report().expect("a validation report");
+        assert_eq!(report.len(), 1, "{report}");
+        assert_eq!(report.problems()[0].path, "pdfium");
+        assert!(report.has_kind(ProblemKind::InvalidValue));
     }
 
     #[test]

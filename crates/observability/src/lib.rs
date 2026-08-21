@@ -75,6 +75,8 @@ compile_error!(
      the OTLP layer in the binary and pass it to `enclave_observability::init_with_layer`."
 );
 
+#[cfg(feature = "exposition")]
+pub mod exposition;
 pub mod metrics;
 
 use std::fmt;

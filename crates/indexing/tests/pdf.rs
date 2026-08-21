@@ -36,12 +36,21 @@
 //! one JPEG, with no font resource and no text-showing operator anywhere in the file. [`typed_pdf`]
 //! builds its opposite and exists as the positive control for
 //! [`the_scanned_documents_here_really_have_no_text_layer`] — without it, a scanner asserting the
-//! absence of `BT` would pass against a scanner that never finds anything.
+//! absence of `BT` would pass against a scanner that never finds anything. [`pdf_of`] mixes the two,
+//! which is `ENC-545`'s hardest case and a document neither of the previous two builders could
+//! produce.
 //!
-//! What that check does **not** do is ask PDFium whether the text layer is empty, which would be the
-//! stronger statement. Reaching PDFium's text API from here means a PDF *text* extractor, and this
-//! change deliberately does not add one — see the report on `ENC-537` and the note in
-//! `crates/indexing/src/pdf.rs` about what still stands between this and the criterion.
+//! # `ENC-545`: the front half, and what the criterion now runs through
+//!
+//! That source-level check does **not** ask PDFium whether the text layer is empty, which is the
+//! stronger statement. It could not, until `ENC-545`: reaching PDFium's text API means a PDF *text*
+//! extractor, `NoExtractor` answered for `application/pdf`, and every scanned document was `SKIPPED`
+//! before a page was ever rasterised.
+//!
+//! [`PdfTextExtractor`] is that extractor, so the criterion test below no longer hands `OcrRetry` a
+//! work list somebody typed. It runs `Pipeline::prepare` over the real bytes, takes whatever the text
+//! extractor decided, and hands *that* to the retry — which is the wiring the criterion is about, and
+//! the part no previous test in this file covered.
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
@@ -51,9 +60,10 @@ use std::sync::Arc;
 use ab_glyph::{Font as _, FontRef, PxScale, ScaleFont as _};
 use enclave_core::VersionId;
 use enclave_indexing::{
-    BoundedExtractor, ChunkBudget, Chunker, ChunkerVersion, ManifestStatus, OcrExtractor,
-    OcrModels, OcrRetry, Outcome, PageImage, PageImages, PdfiumLibrary, PdfiumPages, Prepared,
-    Refusal, RenderBudget, TextlessSource,
+    BoundedExtractor, ChunkBudget, Chunker, ChunkerVersion, ExtractOutcome, ExtractRequest,
+    Extractor as _, ManifestStatus, OcrExtractor, OcrModels, OcrRetry, Outcome, PageImage,
+    PageImages, PdfTextExtractor, PdfiumLibrary, PdfiumPages, Pipeline, Prepared, Reason, Refusal,
+    RenderBudget, SegmentKind,
 };
 use image::{ExtendedColorType, ImageEncoder as _, ImageFormat, ImageReader, Rgb, RgbImage};
 
@@ -112,6 +122,41 @@ const UNTIMED: RenderBudget =
 
 fn pages_of(pdf: Vec<u8>, budget: RenderBudget) -> PdfiumPages {
     PdfiumPages::new(library(), pdf, budget)
+}
+
+fn chunker() -> Chunker {
+    Chunker::new(ChunkerVersion::new("test/1"), ChunkBudget::default())
+}
+
+/// Runs the text extractor **unwrapped**, which is the only way to see its own bounds answer.
+///
+/// [`BoundedExtractor`] applies the input cap, the page cap and the output cap from outside, and it
+/// applies them *first* — so a budget test run through the wrapper proves the wrapper. That is the
+/// same shadowing `crates/indexing/src/ocr.rs` documents between its size check and `image`'s
+/// `max_alloc`, and it is dodged here the same way: by asking the inner extractor directly.
+///
+/// The pipeline tests below use the wrapped extractor, because there the wrapper is part of the
+/// wiring under test.
+async fn extract(pdf: Vec<u8>, budget: RenderBudget) -> ExtractOutcome {
+    PdfTextExtractor::new(library())
+        .extract(ExtractRequest {
+            declared_media_type: "application/pdf".to_owned(),
+            source: pdf,
+            budget,
+        })
+        .await
+        .expect("no worker failure")
+}
+
+/// The pages a document reported having no text on, or a panic naming what it said instead.
+fn work_list(outcome: &ExtractOutcome) -> Vec<u32> {
+    match outcome {
+        ExtractOutcome::NoText(source) => {
+            assert_eq!(source.media_type, "application/pdf", "the source's type, not the pages'");
+            source.pages_without_text.clone()
+        }
+        other => panic!("expected a textless document, got {other:?}"),
+    }
 }
 
 // -------------------------------------------------------------------------------------------
@@ -196,12 +241,27 @@ fn blank_page() -> Page {
     Page { jpeg, pixels: (width, height), points: (width, height) }
 }
 
-/// A PDF whose pages are images and nothing else. No `/Font`, no `BT`, no `Tj`: a scan.
+/// What one sheet of a built document carries.
 ///
-/// Written with a real cross-reference table rather than relying on PDFium's tolerance for a broken
-/// one, so that a test asserting `SourceUnreadable` for a *truncated* file is asserting something
-/// about the truncation.
-fn scanned_pdf(pages: &[Page]) -> Vec<u8> {
+/// The two arms are the two things a page of a real PDF can be, and `ENC-545` needs a document that
+/// is **both**: a report whose exhibits were scanned in. Before that, the two lived in two builders
+/// that could not be mixed, which is exactly the document neither of them could produce.
+enum Sheet<'a> {
+    /// An image and nothing else. No `/Font`, no `BT`, no `Tj`.
+    Scan(&'a Page),
+    /// Real characters in a base-14 font.
+    Typed(&'a str),
+}
+
+/// A PDF of the given sheets, with a real cross-reference table.
+///
+/// Written with a real table rather than relying on PDFium's tolerance for a broken one, so that a
+/// test asserting `SourceUnreadable` for a *truncated* file is asserting something about the
+/// truncation.
+///
+/// Three objects per page whichever kind it is — page, content, resource — so the numbering does not
+/// depend on the mixture.
+fn pdf_of(sheets: &[Sheet<'_>]) -> Vec<u8> {
     let mut out = Vec::from(*b"%PDF-1.7\n%\xE2\xE3\xCF\xD3\n");
     let mut offsets: Vec<usize> = Vec::new();
 
@@ -213,34 +273,47 @@ fn scanned_pdf(pages: &[Page]) -> Vec<u8> {
     }
 
     let kids: Vec<String> =
-        (0..pages.len()).map(|index| format!("{} 0 R", 3 + index * 3)).collect();
+        (0..sheets.len()).map(|index| format!("{} 0 R", 3 + index * 3)).collect();
     object(&mut out, &mut offsets, 1, b"<< /Type /Catalog /Pages 2 0 R >>");
     object(
         &mut out,
         &mut offsets,
         2,
-        format!("<< /Type /Pages /Kids [{}] /Count {} >>", kids.join(" "), pages.len()).as_bytes(),
+        format!("<< /Type /Pages /Kids [{}] /Count {} >>", kids.join(" "), sheets.len()).as_bytes(),
     );
 
-    for (index, page) in pages.iter().enumerate() {
-        let (page_object, content_object, image_object) =
+    for (index, sheet) in sheets.iter().enumerate() {
+        let (page_object, content_object, resource_object) =
             (3 + index * 3, 4 + index * 3, 5 + index * 3);
-        let (points_width, points_height) = page.points;
+
+        let (media_box, resources, content) = match sheet {
+            Sheet::Scan(page) => {
+                let (points_width, points_height) = page.points;
+                (
+                    format!("[0 0 {points_width} {points_height}]"),
+                    format!("<< /XObject << /Im0 {resource_object} 0 R >> >>"),
+                    // The whole content stream: place the image over the page box. No text operator
+                    // exists.
+                    format!("q\n{points_width} 0 0 {points_height} 0 0 cm\n/Im0 Do\nQ\n"),
+                )
+            }
+            Sheet::Typed(text) => (
+                "[0 0 595 842]".to_owned(),
+                format!("<< /Font << /F1 {resource_object} 0 R >> >>"),
+                format!("BT\n/F1 24 Tf\n72 700 Td\n({text}) Tj\nET\n"),
+            ),
+        };
 
         object(
             &mut out,
             &mut offsets,
             page_object,
             format!(
-                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {points_width} {points_height}] \
-                 /Resources << /XObject << /Im0 {image_object} 0 R >> >> \
+                "<< /Type /Page /Parent 2 0 R /MediaBox {media_box} /Resources {resources} \
                  /Contents {content_object} 0 R >>"
             )
             .as_bytes(),
         );
-
-        // The whole content stream: place the image over the page box. No text operator exists.
-        let content = format!("q\n{points_width} 0 0 {points_height} 0 0 cm\n/Im0 Do\nQ\n");
         object(
             &mut out,
             &mut offsets,
@@ -248,54 +321,40 @@ fn scanned_pdf(pages: &[Page]) -> Vec<u8> {
             format!("<< /Length {} >>\nstream\n{content}endstream", content.len()).as_bytes(),
         );
 
-        let (pixels_width, pixels_height) = page.pixels;
-        let mut image = format!(
-            "<< /Type /XObject /Subtype /Image /Width {pixels_width} /Height {pixels_height} \
-             /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length {} >>\nstream\n",
-            page.jpeg.len()
-        )
-        .into_bytes();
-        image.extend_from_slice(&page.jpeg);
-        image.extend_from_slice(b"\nendstream");
-        object(&mut out, &mut offsets, image_object, &image);
+        match sheet {
+            Sheet::Scan(page) => {
+                let (pixels_width, pixels_height) = page.pixels;
+                let mut image = format!(
+                    "<< /Type /XObject /Subtype /Image /Width {pixels_width} \
+                     /Height {pixels_height} /ColorSpace /DeviceRGB /BitsPerComponent 8 \
+                     /Filter /DCTDecode /Length {} >>\nstream\n",
+                    page.jpeg.len()
+                )
+                .into_bytes();
+                image.extend_from_slice(&page.jpeg);
+                image.extend_from_slice(b"\nendstream");
+                object(&mut out, &mut offsets, resource_object, &image);
+            }
+            Sheet::Typed(_) => object(
+                &mut out,
+                &mut offsets,
+                resource_object,
+                b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+            ),
+        }
     }
 
     trailer(out, &offsets)
 }
 
-/// The opposite document: one page carrying real characters in a base-14 font.
-///
-/// Exists only as the positive control for [`the_scanned_documents_here_really_have_no_text_layer`].
-fn typed_pdf(text: &str) -> Vec<u8> {
-    let mut out = Vec::from(*b"%PDF-1.7\n%\xE2\xE3\xCF\xD3\n");
-    let mut offsets: Vec<usize> = Vec::new();
+/// A PDF whose pages are images and nothing else: a scan.
+fn scanned_pdf(pages: &[Page]) -> Vec<u8> {
+    pdf_of(&pages.iter().map(Sheet::Scan).collect::<Vec<_>>())
+}
 
-    fn object(out: &mut Vec<u8>, offsets: &mut Vec<usize>, number: usize, body: &[u8]) {
-        offsets.push(out.len());
-        out.extend_from_slice(format!("{number} 0 obj\n").as_bytes());
-        out.extend_from_slice(body);
-        out.extend_from_slice(b"\nendobj\n");
-    }
-
-    object(&mut out, &mut offsets, 1, b"<< /Type /Catalog /Pages 2 0 R >>");
-    object(&mut out, &mut offsets, 2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
-    object(
-        &mut out,
-        &mut offsets,
-        3,
-        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] \
-          /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
-    );
-    let content = format!("BT\n/F1 24 Tf\n72 700 Td\n({text}) Tj\nET\n");
-    object(
-        &mut out,
-        &mut offsets,
-        4,
-        format!("<< /Length {} >>\nstream\n{content}endstream", content.len()).as_bytes(),
-    );
-    object(&mut out, &mut offsets, 5, b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>");
-
-    trailer(out, &offsets)
+/// The opposite document: pages carrying real characters in a base-14 font.
+fn typed_pdf(pages: &[&str]) -> Vec<u8> {
+    pdf_of(&pages.iter().copied().map(Sheet::Typed).collect::<Vec<_>>())
 }
 
 fn trailer(mut out: Vec<u8>, offsets: &[usize]) -> Vec<u8> {
@@ -336,7 +395,7 @@ fn the_scanned_documents_here_really_have_no_text_layer() {
     // The positive control is `typed_pdf`, scanned by the same function: without it, every assertion
     // here holds against a scanner that finds nothing in anything.
     let scanned = scanned_pdf(&[page_of_text("INVOICE 2026 TOTAL")]);
-    let typed = typed_pdf("INVOICE 2026 TOTAL");
+    let typed = typed_pdf(&["INVOICE 2026 TOTAL"]);
 
     // The JPEG payload is arbitrary bytes and can contain any two-character sequence by chance, so
     // the operators are looked for in the parts of the file that are not image data: everything
@@ -558,6 +617,193 @@ async fn a_truncated_document_is_a_verdict_and_never_an_error() {
 }
 
 // -------------------------------------------------------------------------------------------
+// The text extractor, against the real library. `ENC-545`.
+// -------------------------------------------------------------------------------------------
+
+#[tokio::test]
+#[ignore = "requires a mounted PDFium named by ENCLAVE_PDFIUM; CI runs it with --include-ignored"]
+async fn a_typed_pdf_yields_one_segment_per_page_that_names_its_page() {
+    // The positive control the whole section rests on: without it, an extractor that found nothing
+    // in anything would satisfy every "this document is textless" assertion below.
+    let outcome = extract(typed_pdf(&["FIRST PAGE", "SECOND PAGE"]), RenderBudget::DEFAULT).await;
+
+    let ExtractOutcome::Extracted(document) = outcome else {
+        panic!("a document with characters in it was reported as {outcome:?}");
+    };
+
+    assert_eq!(document.page_count, Some(2));
+    assert_eq!(document.media_type, "application/pdf");
+    assert_eq!(document.segments.len(), 2, "`docs/07 §2.1`: per-page text");
+    for (index, expected) in ["FIRST PAGE", "SECOND PAGE"].iter().enumerate() {
+        let segment = &document.segments[index];
+        assert_eq!(segment.kind, SegmentKind::Page);
+        assert!(segment.text.contains(expected), "page {} read as {:?}", index + 1, segment.text);
+        assert_eq!(
+            segment.coordinates.page_number,
+            Some(u32::try_from(index).expect("small") + 1),
+            "a segment that cannot name its page is a citation nobody can navigate to"
+        );
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires a mounted PDFium named by ENCLAVE_PDFIUM; CI runs it with --include-ignored"]
+async fn a_scanned_pdf_is_textless_and_hands_ocr_every_page() {
+    // **`ENC-545`.** This is the hand-off the exit criterion was missing: a scan has to come back as
+    // a *textless source naming its pages*, because `OcrRetry` fires on nothing else and rasterises
+    // nothing but what the list names.
+    //
+    // The document is the same one `the_scanned_documents_here_really_have_no_text_layer` proves has
+    // no text layer at the source level; this asks PDFium, which is the stronger statement that file
+    // could not make before.
+    let scanned = scanned_pdf(&[page_of_text("INVOICE"), blank_page(), page_of_text("TOTAL")]);
+
+    let outcome = extract(scanned, RenderBudget::DEFAULT).await;
+
+    assert_eq!(work_list(&outcome), vec![1, 2, 3], "OCR would be asked for the wrong pages");
+}
+
+#[tokio::test]
+#[ignore = "requires a mounted PDFium named by ENCLAVE_PDFIUM; CI runs it with --include-ignored"]
+async fn a_document_with_some_scanned_pages_is_extracted_and_still_names_them() {
+    // The case that is neither of the other two, against the real parser: a report whose exhibit was
+    // scanned in. It is not `NoText` — reporting that would throw the typed pages away, because
+    // `OcrRetry` builds its document from what it recognised and nothing else — and it is not a
+    // refusal, because the document parsed.
+    //
+    // The blank page keeps its number inside the extracted document, which is the information the
+    // outcome cannot carry today and the thing that makes the gap closable. See
+    // `crates/indexing/src/pdf_text.rs` for what is still missing and why it is not smuggled in here.
+    let exhibit = page_of_text("SCANNED EXHIBIT");
+    let mixed = pdf_of(&[
+        Sheet::Typed("QUARTERLY REPORT"),
+        Sheet::Scan(&exhibit),
+        Sheet::Typed("APPENDIX"),
+    ]);
+
+    let outcome = extract(mixed, RenderBudget::DEFAULT).await;
+
+    let ExtractOutcome::Extracted(document) = outcome else {
+        panic!("a document with text on two of three pages was reported as {outcome:?}");
+    };
+    assert!(!document.is_empty());
+
+    let blank: Vec<u32> = document
+        .segments
+        .iter()
+        .filter(|segment| segment.text.is_empty())
+        .filter_map(|segment| segment.coordinates.page_number)
+        .collect();
+    assert_eq!(blank, vec![2], "the scanned page is not identifiable from the extracted document");
+}
+
+#[tokio::test]
+#[ignore = "requires a mounted PDFium named by ENCLAVE_PDFIUM; CI runs it with --include-ignored"]
+async fn two_pages_never_merge_into_one_chunk() {
+    // `SegmentKind::Page` is structural, and this is why. `Coordinates` carries **one** page number
+    // and a chunk takes its coordinates from the first segment that went into it, so a chunker that
+    // merged these two short pages would emit one chunk citing page 1 for text that is on page 2 —
+    // a citation that deep-links to the wrong place, which `crates/indexing/src/model.rs` calls worse
+    // than one that does not deep-link because the reader believes it.
+    //
+    // Both pages are far inside `ChunkBudget::DEFAULT`'s 2 400-character window, so nothing but the
+    // boundary claim keeps them apart.
+    let pipeline =
+        Pipeline::new(BoundedExtractor::new(PdfTextExtractor::new(library())), chunker());
+
+    let prepared = pipeline
+        .prepare(
+            VersionId::new_v7(),
+            ExtractRequest {
+                declared_media_type: "application/pdf".to_owned(),
+                source: typed_pdf(&["FIRST PAGE", "SECOND PAGE"]),
+                budget: RenderBudget::DEFAULT,
+            },
+        )
+        .await
+        .expect("no worker failure");
+
+    assert_eq!(prepared.outcome.status(), ManifestStatus::Ready);
+    assert_eq!(prepared.outcome.chunk_count(), 2, "two pages became {:?}", prepared.chunks);
+    let pages: Vec<Option<u32>> =
+        prepared.chunks.iter().map(|chunk| chunk.coordinates.page_number).collect();
+    assert_eq!(pages, vec![Some(1), Some(2)]);
+}
+
+#[tokio::test]
+#[ignore = "requires a mounted PDFium named by ENCLAVE_PDFIUM; CI runs it with --include-ignored"]
+async fn bytes_that_are_not_a_pdf_are_never_parsed_for_text() {
+    // The sniff, at the other parser. A PNG declared `application/pdf` is refused on its signature
+    // rather than handed to a page tree — `supports` is a routing hint and the content decides.
+    let mut png = Vec::new();
+    RgbImage::from_pixel(4, 4, Rgb([255, 255, 255]))
+        .write_to(&mut std::io::Cursor::new(&mut png), ImageFormat::Png)
+        .expect("encoding");
+
+    assert_eq!(
+        extract(png, RenderBudget::DEFAULT).await,
+        ExtractOutcome::Refused(Refusal::UnsupportedFormat)
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires a mounted PDFium named by ENCLAVE_PDFIUM; CI runs it with --include-ignored"]
+async fn a_source_over_the_input_cap_is_refused_before_the_text_parser_is_entered() {
+    // Asserted against the *unwrapped* extractor, because `BoundedExtractor` applies the same cap
+    // first and a test run through it would prove the wrapper. The refusal is asserted exactly:
+    // `SourceUnreadable` would mean the parser ran and disliked what it found, which is the parse
+    // this cap exists to prevent.
+    let pdf = typed_pdf(&["INVOICE"]);
+    assert!(pdf.len() > 64, "the fixture must exceed the cap for this to assert anything");
+
+    assert_eq!(
+        extract(pdf.clone(), RenderBudget { max_input_bytes: 64, ..RenderBudget::DEFAULT }).await,
+        ExtractOutcome::Refused(Refusal::InputTooLarge)
+    );
+
+    // The positive control: the identical document under the default budget extracts.
+    assert!(matches!(extract(pdf, RenderBudget::DEFAULT).await, ExtractOutcome::Extracted(_)));
+}
+
+#[tokio::test]
+#[ignore = "requires a mounted PDFium named by ENCLAVE_PDFIUM; CI runs it with --include-ignored"]
+async fn a_document_with_more_pages_than_the_budget_allows_extracts_none_of_them() {
+    // The cap that bounds the *document* rather than the page, applied from the page tree's own
+    // count before a single page's text is fetched.
+    let pdf = typed_pdf(&["ONE", "TWO", "THREE"]);
+
+    assert_eq!(
+        extract(pdf.clone(), RenderBudget { max_pages: 2, ..RenderBudget::DEFAULT }).await,
+        ExtractOutcome::Refused(Refusal::TooManyPages)
+    );
+
+    // The positive control: the same document one page inside the cap extracts.
+    assert!(matches!(
+        extract(pdf, RenderBudget { max_pages: 3, ..RenderBudget::DEFAULT }).await,
+        ExtractOutcome::Extracted(_)
+    ));
+}
+
+#[tokio::test]
+#[ignore = "requires a mounted PDFium named by ENCLAVE_PDFIUM; CI runs it with --include-ignored"]
+async fn a_truncated_document_is_a_text_verdict_and_never_an_error() {
+    // D17: a document that will not parse is an answer about the document. As an `IndexingError` the
+    // scheduler would retry it, and a file that reliably fails is a denial-of-service primitive the
+    // moment something is willing to run it again.
+    //
+    // And specifically not `NoText`: a malformed file reported as a scan would spend a rasterisation
+    // and a recognition on every page of something that never parsed.
+    let pdf = typed_pdf(&["INVOICE"]);
+    let truncated = pdf[..pdf.len() / 2].to_vec();
+    assert!(truncated.starts_with(b"%PDF-"), "it must still pass the sniff to reach the parser");
+
+    assert_eq!(
+        extract(truncated, RenderBudget::DEFAULT).await,
+        ExtractOutcome::Refused(Refusal::SourceUnreadable)
+    );
+}
+
+// -------------------------------------------------------------------------------------------
 // The exit criterion.
 // -------------------------------------------------------------------------------------------
 
@@ -565,38 +811,64 @@ async fn a_truncated_document_is_a_verdict_and_never_an_error() {
 #[ignore = "requires a mounted PDFium named by ENCLAVE_PDFIUM and OCR weights named by ENCLAVE_OCR_MODELS; CI runs it with --include-ignored"]
 async fn a_scanned_text_free_pdf_is_read_back_as_text() {
     // **The M3 exit criterion**, end to end from a PDF that carries no characters at all:
-    // page tree → pixels → recognition → chunks, with the page number that makes a citation
-    // navigable.
+    // text extractor → work list → page tree → pixels → recognition → chunks, with the page number
+    // that makes a citation navigable.
     //
-    // What it does not cover, stated at the test rather than in a summary: the work list is
-    // constructed here, and in a running system it would come from a PDF *text* extractor reporting
-    // which pages yielded nothing. No such extractor exists — `NoExtractor` answers for
-    // `application/pdf` — so this proves the rasteriser and the OCR stage, and the wiring in front of
-    // them is still absent. `crates/indexing/src/pdf.rs` and the `ENC-537` report say so too.
+    // `ENC-545` is what lets this start at the beginning. Until it landed the work list was typed
+    // into this test, because `NoExtractor` answered for `application/pdf` and the real pipeline
+    // never reached the rasteriser at all — so the test proved the two halves and not the join.
+    // Nothing below is constructed by hand: `Pipeline::prepare` decides, and whatever it decided is
+    // what the retry is given.
+    let version = VersionId::new_v7();
     let pdf = scanned_pdf(&[page_of_text("INVOICE 2026 TOTAL"), blank_page()]);
+
+    let pipeline =
+        Pipeline::new(BoundedExtractor::new(PdfTextExtractor::new(library())), chunker());
+    let prepared = pipeline
+        .prepare(
+            version,
+            ExtractRequest {
+                declared_media_type: "application/pdf".to_owned(),
+                source: pdf.clone(),
+                budget: UNTIMED,
+            },
+        )
+        .await
+        .expect("the text extractor did not fail");
+
+    // The join, asserted rather than assumed: before `ENC-545` this was `SKIPPED` /
+    // `unsupported_media_type`, which `OcrRetry` passes straight through — so the rest of this test
+    // would have run against an outcome OCR is structurally forbidden to touch.
+    //
+    // **Which mechanism this proves, established by breaking it.** Making the extractor report
+    // `Extracted` over its all-blank document leaves this test green, because `BoundedExtractor`
+    // converts an empty `TextDocument` into `NoText` from outside and derives `1..=page_count` — the
+    // same list, for this document. So what is asserted here is the *wrapped* pipeline's answer.
+    // `a_scanned_pdf_is_textless_and_hands_ocr_every_page` runs the extractor unwrapped and is the
+    // test that fails when the extractor itself stops naming its pages.
+    assert_eq!(
+        prepared.outcome.status(),
+        ManifestStatus::Failed,
+        "a scan that reaches OCR must arrive as NoText: {:?}",
+        prepared.outcome
+    );
+    assert_eq!(prepared.outcome.reason(), Some(Reason::NoText));
+    assert!(
+        matches!(&prepared.outcome, Outcome::NoText(source)
+            if source.pages_without_text == vec![1, 2]),
+        "the work list OCR will rasterise: {:?}",
+        prepared.outcome
+    );
 
     let retry = OcrRetry::new(
         BoundedExtractor::new(OcrExtractor::new(models())),
         pages_of(pdf, UNTIMED),
-        Chunker::new(ChunkerVersion::new("test/1"), ChunkBudget::default()),
+        chunker(),
         UNTIMED,
     );
 
-    // Exactly what a PDF text extractor would hand over: this document yielded no text, and these
-    // are the pages an image pipeline should look at.
-    let prepared = retry
-        .retry(
-            VersionId::new_v7(),
-            Prepared {
-                outcome: Outcome::NoText(TextlessSource {
-                    media_type: "application/pdf".to_owned(),
-                    pages_without_text: vec![1, 2],
-                }),
-                chunks: Vec::new(),
-            },
-        )
-        .await
-        .expect("neither the rasteriser nor the engine failed");
+    let prepared =
+        retry.retry(version, prepared).await.expect("neither the rasteriser nor the engine failed");
 
     assert_eq!(
         prepared.outcome.status(),
@@ -629,28 +901,32 @@ async fn a_scanned_pdf_of_blank_pages_fails_rather_than_indexing_as_empty() {
     //
     // The positive control is the test above: the identical machinery over a page with words on it
     // is `READY`.
+    let version = VersionId::new_v7();
     let pdf = scanned_pdf(&[blank_page(), blank_page()]);
+
+    let pipeline =
+        Pipeline::new(BoundedExtractor::new(PdfTextExtractor::new(library())), chunker());
+    let prepared: Prepared = pipeline
+        .prepare(
+            version,
+            ExtractRequest {
+                declared_media_type: "application/pdf".to_owned(),
+                source: pdf.clone(),
+                budget: UNTIMED,
+            },
+        )
+        .await
+        .expect("the text extractor did not fail");
 
     let retry = OcrRetry::new(
         BoundedExtractor::new(OcrExtractor::new(models())),
         pages_of(pdf, UNTIMED),
-        Chunker::new(ChunkerVersion::new("test/1"), ChunkBudget::default()),
+        chunker(),
         UNTIMED,
     );
 
-    let prepared = retry
-        .retry(
-            VersionId::new_v7(),
-            Prepared {
-                outcome: Outcome::NoText(TextlessSource {
-                    media_type: "application/pdf".to_owned(),
-                    pages_without_text: vec![1, 2],
-                }),
-                chunks: Vec::new(),
-            },
-        )
-        .await
-        .expect("neither the rasteriser nor the engine failed");
+    let prepared =
+        retry.retry(version, prepared).await.expect("neither the rasteriser nor the engine failed");
 
     assert_eq!(prepared.outcome.status(), ManifestStatus::Failed);
     match prepared.outcome {

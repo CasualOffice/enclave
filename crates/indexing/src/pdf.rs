@@ -1,10 +1,15 @@
 //! Rendering a PDF page to pixels, so that OCR has something to read.
 //!
-//! `ENC-537`. This is the last thing standing between the corpus and the M3 exit criterion *"a
-//! scanned, text-free PDF is searchable by its content"*: [`OcrRetry`](crate::OcrRetry) has been
-//! able to re-run OCR over named pages since `ENC-535`, and [`PageImages`] has been the port it asks
-//! for them through, and until now every deployment answered [`NoPageImages`](crate::NoPageImages)
-//! — no pixels, nothing recovered, `FAILED` / `no_text_extracted` forever.
+//! `ENC-537`. [`OcrRetry`](crate::OcrRetry) has been able to re-run OCR over named pages since
+//! `ENC-535`, and [`PageImages`] has been the port it asks for them through, and until this module
+//! every deployment answered [`NoPageImages`](crate::NoPageImages) — no pixels, nothing recovered,
+//! `FAILED` / `no_text_extracted` forever.
+//!
+//! It was written as *"the last thing standing between the corpus and the M3 exit criterion"* and it
+//! was not: `ENC-545` found that nothing extracted `application/pdf` at all, so no document ever
+//! reached [`Outcome::NoText`](crate::Outcome::NoText) and this module was unreachable in a running
+//! pipeline however well it worked. [`crate::pdf_text`] is the piece in front of it, and the
+//! criterion runs through both.
 //!
 //! # Where this runs, and why it is not in `enclave-preview`
 //!
@@ -45,10 +50,13 @@
 //!   Rust, so their worst case is a wrong answer, a panic, or an allocation. PDFium's worst case is
 //!   memory corruption, and memory corruption in-process is the whole worker rather than one
 //!   document.
-//! - The `thread_safe` feature serialises **every** PDFium call in the process behind one mutex,
-//!   because PDFium promises no thread safety at all. So a page engineered to take an hour does not
-//!   merely burn one `spawn_blocking` thread — it blocks every other document's rasterisation in the
-//!   process for that hour. The wall clock below releases the *caller*; it cannot release the mutex.
+//! - PDFium work in this process is **serial**, and more coarsely than the `thread_safe` feature
+//!   makes it. That feature serialises every FFI *call*; [`DOCUMENTS`] serialises every *document*,
+//!   because a call-level lock still lets two threads interleave two documents and PDFium's globals
+//!   are not re-entrant across that — `ENC-545` found it as a crashed process, not as a theory. So a
+//!   page engineered to take an hour does not merely burn one `spawn_blocking` thread: it blocks
+//!   every other document in the process for that hour. The wall clock below releases the *caller*;
+//!   it cannot release the lock.
 //!
 //! Both are recorded as a residual in `plans/M3-THREAT-WALKTHROUGH.md §3` (R10) rather than argued
 //! away, and D17 — a separate process with a memory limit, a CPU limit and a kill switch — is what
@@ -152,7 +160,10 @@ use crate::ocr::{PageImage, PageImages};
 /// [`image::guess_format`] — a closed allowlist checked at a fixed position is a rule an
 /// implementation cannot disagree with us about. The cost is refusing a file with leading junk,
 /// which is a file no scanner produces.
-const PDF_SIGNATURE: &[u8] = b"%PDF-";
+///
+/// `pub(crate)` so that [`crate::pdf_text`] checks the *same* allowlist rather than a copy of it.
+/// Two allowlists over one format is how one of them gets widened by somebody who found the other.
+pub(crate) const PDF_SIGNATURE: &[u8] = b"%PDF-";
 
 /// The nominal resolution a page is rendered at, in dots per inch.
 ///
@@ -242,6 +253,25 @@ impl fmt::Debug for PdfiumLibrary {
 static LIBRARY: OnceLock<Arc<PdfiumLibrary>> = OnceLock::new();
 static MOUNTING: Mutex<()> = Mutex::new(());
 
+/// One document in PDFium at a time, process-wide.
+///
+/// **`pdfium-render`'s `thread_safe` feature is not enough, and the difference cost a crashed test
+/// binary to find** (`ENC-545`). That feature guards each FFI *call* with a mutex; PDFium's own
+/// threading model is coarser than that — a document is loaded, walked and closed by one thread, and
+/// two threads interleaving those sequences share global state the library never made re-entrant.
+/// The font machinery is the part that fires: rasterising image-only pages concurrently is fine for
+/// as long as nobody looks at a `/Font`, and the moment two threads parse text out of two documents
+/// carrying base-14 fonts the process dies with `SIGTRAP`, `SIGABRT` or `SIGSEGV` depending on
+/// timing. That was reproducible five runs out of five and is *not* a test artefact: it is two
+/// indexing jobs on one worker.
+///
+/// So the whole of a document's life — load, every page, drop — happens under this lock. What it
+/// costs is stated plainly in the module documentation and was already true of the wall clock: PDFium
+/// work in this process is serial, and a page engineered to take an hour holds up every other
+/// document for that hour. `plans/M2-ACCESS-DELIVERY.md` D17's separate process is what turns that
+/// from a throughput bound into an isolated one.
+static DOCUMENTS: Mutex<()> = Mutex::new(());
+
 impl PdfiumLibrary {
     /// Loads PDFium from a mounted directory, or returns the already-loaded one.
     ///
@@ -291,6 +321,33 @@ impl PdfiumLibrary {
         // Cannot fail: the cell is empty (checked above) and the lock is held.
         let library = LIBRARY.get_or_init(|| library);
         Ok(Arc::clone(library))
+    }
+
+    /// The bound library, for the other module in this crate that parses a page tree.
+    ///
+    /// `pub(crate)` and not `pub`: a `Pdfium` handed out beyond this crate is an unbounded parser
+    /// with no budget attached, and every caller inside it goes through a type that carries one.
+    ///
+    /// **Every caller must hold [`documents`](Self::documents) for the whole life of the document it
+    /// loads.** There is no way to express that in the type — a `PdfDocument` borrows the `Pdfium`
+    /// and not the guard — so it is a rule with a comment, which is why there are exactly two
+    /// callers and both are in this crate.
+    pub(crate) const fn pdfium(&self) -> &Pdfium {
+        &self.pdfium
+    }
+
+    /// Takes the process-wide document lock. See [`DOCUMENTS`].
+    ///
+    /// Poisoning is **recovered from** rather than propagated, which is the opposite of what
+    /// [`mounted`](Self::mounted) does with `MOUNTING`, and the asymmetry is deliberate. A panic
+    /// while the mount is half-built leaves a library that genuinely cannot be used. A panic while a
+    /// document is open leaves PDFium's globals in a state nobody can characterise either way — and
+    /// the choice is between one hostile file permanently disabling PDF handling for the whole
+    /// process, reported as a fresh verdict about every innocent document after it, or carrying on.
+    /// Carrying on is the lesser failure, and the process limits D17 asks for are what make it a
+    /// bounded one.
+    pub(crate) fn documents() -> std::sync::MutexGuard<'static, ()> {
+        DOCUMENTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
@@ -375,6 +432,10 @@ fn rasterize(library: &PdfiumLibrary, source: &[u8], page: u32, budget: RenderBu
     if source.len() as u64 > budget.max_input_bytes {
         return PageImage::Refused(Refusal::InputTooLarge);
     }
+
+    // One document in PDFium at a time — see `DOCUMENTS`. Taken *after* the sniff and the input cap,
+    // so bytes that were never going to be parsed do not queue behind a document that is being.
+    let _documents = PdfiumLibrary::documents();
 
     // 3. The page tree. This is the parser, and everything below it is inside PDFium.
     let Ok(document) = library.pdfium.load_pdf_from_byte_slice(source, None) else {

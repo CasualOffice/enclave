@@ -1,6 +1,6 @@
 # 08 — BYO Infrastructure & Configuration
 
-> **Status:** Draft · **Version:** 2.1 · **Owner:** Platform Engineering · **Last updated:** 2026-08-20
+> **Status:** Draft · **Version:** 2.3 · **Owner:** Platform Engineering · **Last updated:** 2026-08-22
 > **Authoritative for:** provider traits, BYO infrastructure, configuration model and precedence.
 
 ## 1. Principle
@@ -376,6 +376,7 @@ server:
 
 database:
   url_env: "DATABASE_URL"
+  platform_url_env: "DATABASE_PLATFORM_URL"   # BYPASSRLS role; required by the worker only
   max_connections: 50
   statement_timeout: "30s"
   application_role: "enclave_app"        # non-owner, RLS applies
@@ -457,6 +458,13 @@ preview:
   sandbox: true
   max_pages: 500
   rendition_cache_bytes: 107374182400
+
+# Mounted volumes for OCR. Absent by default, and a working configuration that way: a scanned
+# document then records FAILED / no_text_extracted rather than indexing as empty. Set both or
+# neither — one without the other refuses to start. Paths, not credentials. `11-OPERATIONS.md §3.2`
+# is authoritative for staging them, for the licensing argument, and for RTEN_NUM_THREADS.
+ocr_models: "/var/lib/enclave/ocr-models"
+pdfium: "/var/lib/enclave/pdfium/lib"
 
 ```
 

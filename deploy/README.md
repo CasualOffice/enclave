@@ -83,9 +83,9 @@ the first local run after `compose up` fails with a message naming the variable:
 
 ```sh
 export DATABASE_URL=postgres://enclave:enclave@localhost:5432/enclave
-export ENCLAVE_TEST_S3_ENDPOINT=http://localhost:9000
-export ENCLAVE_TEST_S3_ACCESS_KEY_ID=enclave
-export ENCLAVE_TEST_S3_SECRET_ACCESS_KEY=enclave-dev-secret
+export TEST_S3_ENDPOINT=http://localhost:9000
+export TEST_S3_ACCESS_KEY_ID=enclave
+export TEST_S3_SECRET_ACCESS_KEY=enclave-dev-secret
 
 cargo test --workspace -- --include-ignored --skip a_lost_role_creation_race
 ```
@@ -96,6 +96,37 @@ server of its own.
 
 The values above match `.github/workflows/ci.yml`, which is the file to check if a test passes in CI
 and fails here. Adjust the ports if you set any `ENCLAVE_DEV_*_PORT` override.
+
+### `ENCLAVE_` is reserved — test variables must not use it
+
+**Anything exported as `ENCLAVE_*` is configuration.** `ConfigLoader` reads the whole process
+environment, strips that prefix and merges what is left into the configuration tree
+(`crates/config/src/loader.rs`, `docs/08-BYO-INFRA.md §20`). A variable in that namespace that is not
+a configuration field does not get ignored; it becomes a *field*, and then a startup validator has an
+opinion about it.
+
+These variables were `ENCLAVE_TEST_S3_*` until `ENC-544` (as was `ENCLAVE_TEST_CLAMD_ADDR`, now
+`TEST_CLAMD_ADDR`), and the consequence was concrete:
+`ENCLAVE_TEST_S3_SECRET_ACCESS_KEY` arrived as a field named `test_s3_secret_access_key`, the
+inline-credential scanner classed it as a credential and measured 57 bits of entropy against a 48-bit
+threshold, and **every process started from a shell with the dev variables exported refused to
+start**, naming a field nobody had written. The scanner was correct at every step. The name was the
+mistake, so the name is what changed.
+
+The rule, then: **a variable a *test* or a *tool* reads is named without the `ENCLAVE_` prefix.** If
+you add one, name it `TEST_*` (or anything outside the prefix) — do not teach the loader to skip a
+prefix, because a loader that drops variables silently ignores an override an operator set, which is
+a worse failure than refusing to start. `crates/config/tests/ambient_environment.rs` enforces this by
+loading configuration from the real process environment, so a variable put back into the reserved
+prefix fails CI rather than somebody's next `cargo run`.
+
+`ENCLAVE_DEV_*` — the compose overrides in the table above — sit inside the prefix and are the
+remaining exception. They are read by `docker compose` from a `.env` file or an inline assignment and
+are not normally exported into a shell, so they do not reach a loading process. If you do export one,
+`ENCLAVE_DEV_DB_PASSWORD` and `ENCLAVE_DEV_MINIO_PASSWORD` reach the same scanner by the same route
+and refuse the same way once their value clears the entropy threshold. Prefer
+`ENCLAVE_DEV_MINIO_PORT=9010 docker compose …` over `export`, and treat renaming this family out of
+the prefix as the follow-up it is rather than something to discover during an incident.
 
 **On Apple Silicon**, the antivirus tests cannot run: `clamav/clamav` publishes an amd64 image and
 no arm64 one, so `g1_an_eicar_upload_is_quarantined_and_never_becomes_available` fails for reasons

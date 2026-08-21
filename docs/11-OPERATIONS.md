@@ -1,6 +1,6 @@
 # 11 — Operations
 
-> **Status:** Draft · **Version:** 1.2 · **Owner:** SRE · **Last updated:** 2026-08-21
+> **Status:** Draft · **Version:** 1.4 · **Owner:** SRE · **Last updated:** 2026-08-22
 > **Authoritative for:** SLOs, runbooks, backup/DR, key rotation, migrations, capacity, on-call.
 
 ## 1. Service level objectives
@@ -47,6 +47,164 @@ release always runs against the current schema — this is what makes rollback s
 contract phase never ships in the same release as its expand phase.
 
 Deploys are blocked while a `STALE`-manifest backlog exceeds threshold or a rebuild is mid-alias-flip.
+
+### 3.1 What the worker process runs, and what it needs to run it
+
+`enclave-worker` is one process running four independent loops, each with its own interval and its
+own tenant sweep. What it *will* run is decided at start-up and logged in one line —
+`enclave-worker starting passes=["invalidation", "epoch"]`. **Read that line.** A pass whose
+dependency is absent is not scheduled at all, and the difference between "not scheduled" and
+"scheduled over an empty queue" is invisible on every graph.
+
+| Pass | Interval | Needs | Absent ⇒ |
+|---|---|---|---|
+| Indexing | 5 s when idle, no wait while there is work | PostgreSQL, object storage | not scheduled; `chunk_text` stays empty and search stays lexical-only |
+| Invalidation sweep | 5 min | PostgreSQL | — always scheduled |
+| Epoch reconcile | 1 min | PostgreSQL | — always scheduled |
+| Coverage probe | 1 min | PostgreSQL, the vector store | not scheduled; `enclave_search_index_observed_chunks` has no series (§5.7 step 5) |
+
+Every pass works on the tenant list the process reads once per tick: `ACTIVE` and `READ_ONLY`, never
+`SUSPENDED` or `DELETING`. That follows §12 — suspension pauses background processing — and it has
+one consequence worth knowing before it is diagnosed as a fault: **a suspended tenant's coverage
+gauges stop being refreshed and therefore freeze at their last value rather than disappearing.**
+Suspending a tenant whose index was healthy leaves a healthy-looking series behind it. Read the
+tenant's status before reading its gauges.
+
+The intervals differ because the costs do: the sweep is one `DELETE` per tenant over rows that have
+already stopped suppressing anything, and the coverage probe is a network round trip to the vector
+store per tenant. Indexing is the only pass with a backlog, so it is the only one that goes straight
+round again rather than waiting — but a tick that only *deferred* files counts as idle, because a
+deferral means antivirus has not finished and re-claiming the same rows immediately would spin.
+
+**Two configuration keys the API does not need:**
+
+* **`database.platform_url`** — the DSN of the `BYPASSRLS` role. **The worker refuses to start
+  without it**, and the refusal names it. The query that produces a tenant list cannot itself be
+  scoped to a tenant, and every pass takes that list as a parameter; with no credential the process
+  would run four loops over nothing while every probe stayed green. Grant it nothing beyond what
+  `migrations/0002_rls_policies.sql` already grants `enclave_platform`.
+* **`server.metrics_port`** — the worker binds its **own** metrics socket, on the same key the API
+  uses. They are separate deployments, so the same port number in the same configuration file is one
+  listener per pod and not a conflict. The coverage probe's gauges are process-wide statics
+  published by whichever process runs the pass, so a worker with no `metrics_port` publishes them
+  into a registry nothing scrapes — which reads as zero forever, indistinguishable from healthy.
+  §10.1 covers where to place the port; it applies unchanged to this one.
+
+**Shutdown.** SIGTERM raises a shared flag; each loop returns at its next boundary — between
+transactions, never inside one — and the process exits when the last of them has. An idle loop is
+woken rather than left to wait out its interval, so a worker asleep on the five-minute sweep does
+not consume the grace period and get `SIGKILL`ed part-way through the batch it started next. Give it
+a `terminationGracePeriodSeconds` comfortably above the longest single unit of work, which is one
+tenant's indexing batch — the OCR page budget, not the interval, is what bounds that.
+
+### 3.2 The three mounted volumes, and the worker environment variable beside them
+
+Three artefacts are **staged on volumes and mounted at run time, never baked into the container
+image**. Two of the three affect what the worker can index; the third decides whether it can index
+at all. None of them is a secret — they are paths, and they are configured as plain strings.
+
+| What | Configuration key | Environment | Absent ⇒ |
+|---|---|---|---|
+| Embedding model weights (`BAAI/bge-m3`) | *not yet modelled* | — | the worker **refuses to index** |
+| OCR model weights (`ocrs`) | `ocr_models` | `ENCLAVE_OCR_MODELS` | no OCR; scanned files are `FAILED` |
+| PDFium shared library | `pdfium` | `ENCLAVE_PDFIUM` | no page is rasterised; scanned PDFs are `FAILED` |
+
+The two spellings in each row are the same field: the configuration loader derives the environment
+name from the key, so `ENCLAVE_OCR_MODELS` and `ocr_models:` are one setting and there is no second
+place for them to disagree.
+
+**Why mounted rather than shipped**, because it is asked every time and the answers differ:
+
+* **Embedding weights** — image size. `08-BYO-INFRA.md §18` covers air-gapped installs, where a
+  multi-gigabyte layer on every image pull is a real cost, and a mount lets the model be staged once
+  beside the deployment. Changing models then does not mean rebuilding and re-certifying an image.
+* **OCR weights** — **licensing**, which is the stronger of the two. The published `ocrs` models are
+  CC-BY-SA-4.0, a copyleft data licence. `deny.toml`'s allowlist is permissive-only because Enclave
+  ships as software an enterprise self-hosts, so a copyleft obligation anywhere in the graph becomes
+  a distribution obligation on every one of those customers — and `cargo deny` would never catch
+  this one, because the crate is permissive and the weights are a separate download. Mounting means
+  the operator obtains them and we redistribute nothing.
+* **PDFium** — a binary-artefact problem. 7 MB of shared object per platform (BSD-3-Clause, with
+  permissive third-party libraries), content nobody reviews in a diff, invisible to `cargo deny`
+  because it is not a crate. The release tag is an **ABI pair** with the `pdfium_7881` feature in
+  the workspace manifest; `pdfium-render` resolves every export eagerly at `dlopen`, so a mismatched
+  library fails at the mount rather than subtly at render. Use the `pdfium-*` archives and **not**
+  `pdfium-v8-*`: the V8 builds embed a JavaScript engine and enable PDF scripting, and a page tree
+  is already the widest attack surface in the product without a JIT behind it.
+
+#### What each absence costs
+
+**The embedding model is not optional.** A worker that starts without it refuses to index rather
+than indexing empty vectors — `crates/embeddings` documents three separate guards holding that
+property. A deployment whose model volume failed to attach has an outage, and it looks like one.
+
+**The two OCR volumes are optional and paired.** With neither, a scanned or image-only document
+yields no text, `index_manifests` records `FAILED` with `no_text_extracted`, and the file is
+*visibly* unsearchable. That is a documented absence and it is fine. What is not fine, and what the
+pairing rule exists to prevent, is a deployment that mounted one of the two: its configuration says
+OCR is on, its scanned PDFs index as empty, and nothing anywhere reports the discrepancy. **Setting
+one without the other refuses startup**, naming the key that is missing.
+
+Startup failures to expect, and what each means:
+
+| Message names | Cause |
+|---|---|
+| `pdfium` is set but `ocr_models` is not (or the reverse) | half the pair configured — set both, or neither |
+| the OCR model at `…` could not be loaded | the volume is not attached, or holds the wrong files |
+| PDFium could not be loaded from `…` | the volume is not attached, or the ABI does not match this build |
+| PDFium is already mounted from `…` | the mount path was changed without restarting the process |
+
+The OCR directory must hold `text-detection.rten` and `text-recognition.rten` — the **released**
+weights from `ocrs`'s own `download-models.sh`, not the similarly-named training checkpoints on the
+model card. The checkpoints load and run and produce plausible nonsense, which is a worse failure
+than not loading at all. The PDFium key names the *directory*, not the file; the platform's library
+name is derived from it.
+
+#### `RTEN_NUM_THREADS`, beside the worker's CPU limit
+
+**Set `RTEN_NUM_THREADS` on every worker that has OCR mounted, to the same number as its CPU
+limit.** It is not set by anything in the application, and that is deliberate: a library that
+mutates the process environment does so to every other thread in the process without being asked.
+
+`rten`, the inference runtime under `ocrs`, pulls in `rayon` unconditionally — there is no feature
+that removes it (`ENC-535`). Rayon sizes its pool from the *host's* visible core count, which on a
+container with a fractional CPU limit is a pool several times larger than the cores it may use. The
+symptom is not a crash: it is a worker that spends its quota being throttled and descheduled, so OCR
+latency rises, `RenderBudget`'s wall clock starts expiring, and pages come back `Refused(Timeout)` —
+which reads on every surface as "OCR is broken" rather than "the pool is four times the limit".
+
+```yaml
+# Kubernetes, worker deployment
+resources:
+  limits:
+    cpu: "4"
+    memory: "8Gi"          # RenderBudget.max_memory_bytes is 1 GiB per attempt
+env:
+  - name: RTEN_NUM_THREADS
+    value: "4"             # the cpu limit above, as an integer
+  - name: ENCLAVE_OCR_MODELS
+    value: /var/lib/enclave/ocr-models
+  - name: ENCLAVE_PDFIUM
+    value: /var/lib/enclave/pdfium/lib
+volumeMounts:
+  - { name: ocr-models, mountPath: /var/lib/enclave/ocr-models, readOnly: true }
+  - { name: pdfium,     mountPath: /var/lib/enclave/pdfium,     readOnly: true }
+```
+
+Round a fractional limit **down**, never up: one thread on a `500m` container is correct, and two is
+the problem above in miniature. Mount all three volumes read-only — nothing writes to them, and a
+writable model volume is a way to change what every future extraction produces without changing an
+image.
+
+#### Replacing the weights is a reindex, not a restart
+
+The extractor version string that `docs/07-SEARCH-INDEXING.md §3` compares to decide what needs
+reindexing names the *code*, not the files on the volume. Swapping the mounted models therefore
+changes every future extraction's output while that marker stays still, and nothing detects it.
+**Replacing the weights must be accompanied by a release that bumps the `ocr/N` component of the
+extractor version**, followed by the index rebuild in `§5.1`. Nothing in the type system enforces
+this today; it is recorded here because the operator action and the code change have to travel
+together.
 
 ## 4. Backup and restore
 
@@ -350,7 +508,9 @@ no-op. The dev stack does this in `deploy/compose/init/01-roles.sql`; production
 same step that provisions their credentials. Tracked as `ENC-116`.
 
 **Suspension** — `status = SUSPENDED`: authentication refused, data retained, background processing
-paused, admin export still possible.
+paused, admin export still possible. "Paused" is enforced at the tenant enumerator
+(`enclave_db::active_tenants`), so it covers every worker pass at once rather than each pass
+remembering to check — see §3.1 for the one thing that costs, which is a frozen coverage gauge.
 
 **Export** — a full tenant export produces content plus metadata, ACLs, audit and configuration in a
 documented format, generated asynchronously and delivered as an encrypted archive with a

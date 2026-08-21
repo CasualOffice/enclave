@@ -14,6 +14,9 @@ So this checks two things:
    SECURITY, either fail or silently return nothing.
 2. No compile-time `sqlx::query!` family macros outside the db crate. They bind to a schema at
    build time and encourage handlers to talk to the database directly.
+3. No `platform_connection()` outside the db crate. That accessor hands back a connection RLS does
+   not apply to; its three legitimate callers all live inside `crates/db`, so keeping the call site
+   there keeps one grep a complete list of where tenant isolation is bypassed.
 
 Runtime `sqlx::query(...)` on a caller-supplied `&mut PgConnection` is fine and expected: that is
 what a `TenantScoped` transaction derefs to.
@@ -47,6 +50,21 @@ POOL_EXEC = re.compile(
 
 # Compile-time macros — the `!` is the whole point.
 QUERY_MACRO = re.compile(r"\bsqlx::query(?:_as|_scalar|_file|_file_as|_file_scalar)?!")
+
+# Checking out the BYPASSRLS connection. `DbPool::platform_connection`'s own documentation says it
+# "is on the deny-list of the ENC-110 routing lint" — it was not, until ENC-548 wrote the first real
+# caller and went looking for the gate that was supposed to be guarding it.
+#
+# The rule is *outside crates/db*, not "nowhere": the three legitimate callers (migration runner,
+# outbox publisher, tenant enumerator) are written inside the crate that owns the hatch, so the
+# accessor has no caller anywhere else. That is a stronger and much cheaper property to check than
+# per-caller review, and it is the one that keeps `grep -rn platform_connection crates/` a complete
+# list of the places row-level security is bypassed.
+#
+# A fourth caller is a design decision, and the way to make it is to move the query into
+# `crates/db` beside the other three — where its `WHERE` clause is reviewed once and cannot drift —
+# rather than to add a path here.
+PLATFORM_CONNECTION = re.compile(r"\.platform_connection\s*\(")
 
 
 def strip_comments(src: str) -> str:
@@ -140,6 +158,10 @@ def main() -> int:
                 findings.append((rel, lineno, line.strip(), "query executed against a pool"))
             if QUERY_MACRO.search(line):
                 findings.append((rel, lineno, line.strip(), "compile-time sqlx::query! macro"))
+            if PLATFORM_CONNECTION.search(line):
+                findings.append(
+                    (rel, lineno, line.strip(), "BYPASSRLS connection checked out outside crates/db")
+                )
 
     if not findings:
         print("OK — no query bypasses TenantScoped.")
@@ -151,8 +173,9 @@ def main() -> int:
         print(
             f"::error file={rel},line={lineno},title=GATE FAILED: no raw pool::"
             f"{why}. Open a TenantScoped transaction and run the query on that, so RLS has a "
-            f"tenant. If this is genuinely a cross-tenant platform path, add it to ALLOW in "
-            f".github/scripts/no_raw_pool.py with the reason."
+            f"tenant. If this is genuinely a cross-tenant platform path, write the query in "
+            f"crates/db beside the other three (see enclave_db::active_tenants) rather than "
+            f"adding a path to ALLOW in .github/scripts/no_raw_pool.py."
         )
     print(f"\n{len(findings)} finding(s).")
     return 1

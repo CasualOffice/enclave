@@ -102,10 +102,15 @@ impl DbPool {
     /// 3. **the scheduler's tenant enumerator** — the query that produces the tenant list cannot
     ///    itself be scoped to a tenant.
     ///
-    /// This method is on the deny-list of the ENC-110 routing lint. A call from anywhere other than
-    /// those three fails the build, and adding a fourth caller is a design decision that changes the
-    /// deny-list in the same commit — the deny-list is the review surface, exactly as the handler
-    /// allowlist is for policy enforcement.
+    /// **All three are written inside this crate, and `.github/scripts/no_raw_pool.py` fails CI on a
+    /// call to this method from anywhere else** (`ENC-548`, which wrote the third one and found that
+    /// the lint this paragraph used to claim existed did not). The rule is deliberately "not outside
+    /// `crates/db`" rather than a list of permitted callers: it keeps
+    /// `grep -rn platform_connection crates/` a complete list of where tenant isolation is bypassed,
+    /// and it puts each cross-tenant `WHERE` clause next to the others where one review covers them.
+    ///
+    /// A fourth caller is a design decision, and the way to make it is to write the query here
+    /// beside [`crate::active_tenants`] — not to add a path to the gate.
     ///
     /// Anything a request handler does belongs in [`DbPool::begin`] instead. If a handler appears
     /// to need this, the actual requirement is almost always "resolve a tenant from a host header",

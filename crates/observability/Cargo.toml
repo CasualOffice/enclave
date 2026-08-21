@@ -16,6 +16,10 @@ default = []
 # `opentelemetry-otlp`, `tracing-opentelemetry`) are not yet pinned in the workspace manifest.
 # Until they are, compose an OTLP layer in the binary and hand it to `init_with_layer`.
 otlp = []
+# The Prometheus exposition listener (`src/exposition.rs`). Optional because this crate sits at the
+# bottom of the graph — every other crate depends on it — and only the two processes that bind a
+# metrics socket should oblige the workspace to compile an HTTP server.
+exposition = ["dep:axum", "dep:tokio"]
 
 # `observability` sits beside `core` and `config` at the bottom of the graph
 # (plans/M0-FOUNDATIONS.md D1): it depends on `core` for the vocabulary it records onto spans and
@@ -28,6 +32,16 @@ serde_json         = { workspace = true }
 thiserror          = { workspace = true }
 tracing            = { workspace = true }
 tracing-subscriber = { workspace = true }
+# Both optional and both only for `exposition`; see the feature's comment above.
+axum               = { workspace = true, optional = true }
+tokio              = { workspace = true, optional = true }
+
+[dev-dependencies]
+# `exposition`'s tests need a runtime and a `oneshot` service call. They are `cfg`-gated on the
+# feature rather than run by default: a workspace build unifies features, so `cargo test
+# --workspace` compiles this crate with `exposition` on (both binaries ask for it) and runs them.
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tower = { workspace = true }
 
 [lints]
 workspace = true

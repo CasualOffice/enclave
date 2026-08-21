@@ -48,6 +48,29 @@ pub enum WorkerError {
     #[error("reading object storage failed")]
     Blob(#[from] enclave_storage::StorageError),
 
+    /// A deployment configured one half of the OCR mount pair and not the other (`ENC-546`).
+    ///
+    /// Refused rather than half-built. OCR over a scanned PDF needs both volumes — weights to
+    /// recognise text and PDFium to render a page for them to read — and building the stage with one
+    /// of them would index every scanned document as empty while the configuration file said OCR was
+    /// on, which is `plans/M3-DISCOVERY.md` D24 reached through configuration.
+    ///
+    /// `enclave_config::validate::check_mounts` refuses the same state at startup. This variant is
+    /// the second guard, for a `Config` that never went through the loader.
+    ///
+    /// Both fields are `&'static str`, so this message can only ever name a configuration *key* —
+    /// never the path an operator wrote (`CLAUDE.md` rule 10).
+    #[error(
+        "`{present}` is configured but `{missing}` is not; OCR over a scanned PDF needs both \
+         volumes, so set both or neither"
+    )]
+    IncompleteMount {
+        /// The mount key that was set.
+        present: &'static str,
+        /// The mount key that was not.
+        missing: &'static str,
+    },
+
     /// A stored row could not be interpreted.
     ///
     /// Fixed vocabulary rather than the offending value: these loops read rows written by the
@@ -74,13 +97,20 @@ mod tests {
 
     #[test]
     fn no_variant_can_carry_a_row_value_into_a_log() {
-        // The one variant with interpolated fields is `MalformedRow`, and both of its fields are
-        // `&'static str` — so there is no way to reach `Display` with something an extractor
-        // produced. Asserted rather than trusted because the tempting fix for a debugging session
-        // is to add the value "just while I look at this".
+        // Two variants interpolate fields — `MalformedRow` and `IncompleteMount` — and every one of
+        // those four fields is `&'static str`, so there is no way to reach `Display` with something
+        // an extractor produced or something an operator wrote. Asserted rather than trusted because
+        // the tempting fix for a debugging session is to add the value "just while I look at this".
         let error = WorkerError::MalformedRow { column: "acl_epoch", reason: "not an integer" };
         let shown = error.to_string();
         assert!(shown.contains("acl_epoch"), "{shown}");
         assert!(shown.contains("not an integer"), "{shown}");
+
+        // A mount refusal names the two keys and cannot name the path behind either of them: a
+        // deployment's filesystem layout is not something a log pipeline needs.
+        let error = WorkerError::IncompleteMount { present: "pdfium", missing: "ocr_models" };
+        let shown = error.to_string();
+        assert!(shown.contains("pdfium"), "{shown}");
+        assert!(shown.contains("ocr_models"), "{shown}");
     }
 }

@@ -1,6 +1,6 @@
 # 04 — Data Model
 
-> **Status:** Draft · **Version:** 1.2 · **Owner:** Platform Engineering · **Last updated:** 2026-08-21
+> **Status:** Draft · **Version:** 1.3 · **Owner:** Platform Engineering · **Last updated:** 2026-08-22
 > **Authoritative for:** all PostgreSQL DDL, tenant isolation, quotas. No other document defines schema.
 
 ## 1. Conventions
@@ -367,6 +367,7 @@ CREATE TABLE workspaces (
     UNIQUE (tenant_id, id)
 );
 CREATE UNIQUE INDEX uq_workspace_slug ON workspaces (tenant_id, slug) WHERE deleted_at IS NULL;
+-- Slug uniqueness is a single rule across every table that has a slug; §10.1 states it.
 
 CREATE TABLE workspace_members (
     tenant_id    UUID NOT NULL,
@@ -408,6 +409,8 @@ CREATE TABLE libraries (
     UNIQUE (tenant_id, id),
     FOREIGN KEY (tenant_id, workspace_id) REFERENCES workspaces (tenant_id, id)
 );
+CREATE UNIQUE INDEX uq_library_slug ON libraries (tenant_id, workspace_id, slug)
+    WHERE deleted_at IS NULL;
 
 CREATE TABLE content_types (
     id            UUID PRIMARY KEY,
@@ -652,6 +655,8 @@ CREATE TABLE lists (
     updated_at   TIMESTAMPTZ NOT NULL,
     deleted_at   TIMESTAMPTZ
 );
+CREATE UNIQUE INDEX uq_list_slug ON lists (tenant_id, workspace_id, slug)
+    WHERE deleted_at IS NULL;
 
 CREATE TABLE list_fields (
     id        UUID PRIMARY KEY,
@@ -697,6 +702,8 @@ CREATE TABLE pages (
     modified_at  TIMESTAMPTZ NOT NULL,
     deleted_at   TIMESTAMPTZ
 );
+CREATE UNIQUE INDEX uq_page_slug ON pages (tenant_id, workspace_id, slug)
+    WHERE deleted_at IS NULL;
 
 CREATE TABLE library_views (
     id                UUID PRIMARY KEY,
@@ -721,6 +728,90 @@ CREATE TABLE library_views (
 CREATE UNIQUE INDEX uq_view_default ON library_views (tenant_id, library_id)
     WHERE is_default AND scope <> 'PERSONAL';
 ```
+
+### 10.1 Slugs — one rule, every table that has one
+
+**A slug is a URL segment, and a URL segment addresses exactly one live row inside its container.**
+Every `slug` column in this document is backed by a unique index, partial on `deleted_at IS NULL`,
+keyed on the container the segment is read beneath.
+
+| Table | Index | Container | Defined in |
+|---|---|---|---|
+| `tenants` | `UNIQUE (slug)` — **not** partial | the deployment | §4 |
+| `workspaces` | `uq_workspace_slug (tenant_id, slug) WHERE deleted_at IS NULL` | the tenant | §7 |
+| `libraries` | `uq_library_slug (tenant_id, workspace_id, slug) WHERE deleted_at IS NULL` | the workspace | §7 |
+| `lists` | `uq_list_slug (tenant_id, workspace_id, slug) WHERE deleted_at IS NULL` | the workspace | §10 |
+| `pages` | `uq_page_slug (tenant_id, workspace_id, slug) WHERE deleted_at IS NULL` | the workspace | §10 |
+
+This section exists because the schema did not say this. `workspaces` carried its index from the
+start while `libraries` and `lists` carried nothing, so two of the three disagreed with the third,
+and `migrations/0015_lists.sql` declined to guess — correctly, since making one table stricter than
+the sibling it is copied from, with no document saying so, is a rule invented in a migration rather
+than decided. `migrations/0017_slug_uniqueness.sql` is where the decision below reaches the schema
+(`ENC-544`).
+
+**Why an address rather than a label.** Two live libraries in one workspace holding the slug
+`reports` means one of two things, and neither is acceptable: the path `…/finance/reports` resolves
+to whichever row the query plan happens to return first — silently, differently after a `VACUUM`, and
+with the two rows potentially carrying different ACLs, so *which document you get* becomes a
+scheduling artefact — or the resolver refuses the ambiguity and both rows become unreachable by path
+rather than one. The first is the dangerous one, and it is not something the policy chain can catch:
+every check passes, against the wrong object.
+
+**Would the application notice today?** No, and that is the argument for adding the constraint now
+rather than when the route lands. Nothing in this tree resolves a library, list or page by slug —
+`docs/05-API.md` addresses every container by id and mentions slugs nowhere, and the only
+slug lookup that exists anywhere is `TenantRepository::find_by_slug`. So the duplicate is invisible:
+it is written happily, it lists twice, and nothing complains until the day a path route is added, at
+which point the ambiguity is already in production data and the constraint can only be added behind
+a repair. `crates/libraries/src/library_repo.rs` says the same thing from the other end — it folds
+slugs through `normalize_slug` on the way in and refuses to fake the guarantee with a
+read-then-write check, "so the day the index is added it finds consistent data".
+
+**Why not the other direction.** Dropping `uq_workspace_slug` and calling slugs decorative was the
+alternative, and it would have been one migration instead of two. It is rejected because a
+constraint and its absence are not symmetric: adding one later costs a repair, while removing one
+cannot be undone at all once duplicates exist, since the rows that violate it are by then real
+content with real owners. It also contradicts what the rest of the tree already assumes —
+`crates/db/src/normalize.rs` opens with "lookup keys back unique indexes" and folds case precisely
+so that two writers cannot produce two rows for one name.
+
+**The `deleted_at` predicate is load-bearing.** Every table here soft-deletes. A full unique index
+would let a trashed workspace hold its name against the replacement somebody is creating to replace
+it, which turns "delete it and start again" into an error message naming a row the user cannot see.
+Partial rather than a `UNIQUE` constraint is also forced rather than chosen: PostgreSQL has partial
+unique *indexes* and no partial unique *constraints*.
+
+**`tenants.slug` is the deliberate exception** — a plain `UNIQUE` over live and deleted rows alike. A
+tenant slug is a routing key: it appears in custom-domain resolution (§4, `13-IDENTITY-SSO-SCIM.md`)
+and it is what an old bookmark, an SSO relay-state or a stale mobile client carries. Freeing a
+deleted tenant's slug for reuse would make those resolve into a *different tenant's* deployment,
+which is the one failure this whole document is arranged to prevent. Names are cheap; a
+cross-tenant misroute is not.
+
+**Libraries, lists and pages share a workspace but not a namespace.** They have three separate
+indexes, so one workspace may hold a library, a list and a page all called `reports`. That is only
+sound if the container kind appears in the path — `…/{workspace}/libraries/{slug}` and
+`…/{workspace}/lists/{slug}` — and since `05-API.md` defines no slug route at all today, this is a
+constraint on whatever route is designed later rather than a description of one that exists. Stated
+here so that the later design is a decision made against a written rule instead of a discovery made
+against production data.
+
+**The index is on the stored value; folding happens in Rust.** No slug index calls `lower()`.
+PostgreSQL's `lower()` is collation-dependent and the collation belongs to the database, so a restore
+into a differently-configured cluster would quietly change what collides with what;
+`enclave_db::normalize_slug` folds case and whitespace in the application, on both the write and the
+lookup path, so the stored value and the value looked up come from one code path.
+`crates/db/src/normalize.rs` holds the reasoning. `libraries` is already written through it. `lists`
+and `pages` have no writer yet — whichever crate gains one folds on the way in, and until then there
+is nothing to normalize.
+
+**Adding this to a populated deployment can fail**, with `23505` naming `uq_library_slug` or
+`uq_list_slug`. That is the ambiguity surfacing, not a defect in the migration. The operator repairs
+the data and re-runs; the migration is never edited (forward-only), and the recovery — the query that
+finds the collisions, and why the remedy is to *rename* the newer row rather than soft-delete it —
+is written out at the head of `migrations/0017_slug_uniqueness.sql`, which is where somebody staring
+at a failed deploy will already be looking.
 
 ## 11. Sharing
 
@@ -1311,3 +1402,10 @@ CREATE INDEX idx_jobs_ready ON jobs (state, run_after) WHERE state = 'QUEUED';
 - `audit_events` is partitioned from day one — it is the fastest-growing table in every deployment.
 - Expect roughly 20–60 chunk rows in Milvus per indexed document; Milvus sizing is in
   `11-OPERATIONS.md §9`.
+
+## 20. Change log
+
+| Version | Date | Change |
+|---|---|---|
+| 1.3 | 2026-08-22 | Added §10.1, the slug rule: a slug addresses one live row in its container, so `libraries`, `lists` and `pages` gain partial unique indexes keyed on `(tenant_id, workspace_id, slug)` and `tenants` keeps its non-partial `UNIQUE` as the stated exception. Resolves the disagreement `migrations/0015_lists.sql` recorded (`ENC-544`); `migrations/0017_slug_uniqueness.sql` applies it. |
+| 1.2 | 2026-08-21 | Earlier revisions predate this table. |

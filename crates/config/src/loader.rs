@@ -21,6 +21,18 @@ use crate::secret::{SecretRegistry, SecretValue};
 use crate::validate::{Problem, ProblemKind, ValidationReport};
 
 /// Default prefix for environment overrides.
+///
+/// **This prefix is reserved.** [`ConfigLoader::new`] reads the whole process environment, so every
+/// `ENCLAVE_*` variable becomes a configuration field — including ones nobody meant as
+/// configuration, which then reach the startup validators. `ENCLAVE_TEST_S3_SECRET_ACCESS_KEY`, a
+/// MinIO password the test suite exported, arrived as `test_s3_secret_access_key`, was correctly
+/// classed as an inline credential, and stopped any process launched from a developer's shell from
+/// starting (`ENC-544`). Those variables are now `TEST_S3_*`.
+///
+/// The fix is always to name the variable out of the prefix, never to teach this loader to skip
+/// part of it: a skipped prefix makes the loader *silently drop* an override an operator set, and a
+/// process that starts on the wrong value is worse than one that refuses to start.
+/// `crates/config/tests/ambient_environment.rs` holds the reasoning and the regression test.
 pub const DEFAULT_ENV_PREFIX: &str = "ENCLAVE_";
 
 /// Separator between path segments in an environment variable name.

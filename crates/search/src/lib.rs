@@ -38,6 +38,12 @@
 //! `Vec<Candidate>` `tests/postfilter.rs` builds by hand, into the same
 //! [`SearchResults::confirm`], with no argument that turns the post-filter off.
 //!
+//! [`writer`] is the other half of [`milvus`], and until `ENC-547` it did not exist: the client
+//! could create the collection, search it, count it and ping it, so in a real deployment the vector
+//! index was permanently empty and every dense search returned nothing. It is a separate port from
+//! [`vector::VectorIndex`] on purpose — nothing on it is reachable from a search — and its
+//! documentation carries the ordering rule that makes a removal's claim about the denylist honest.
+//!
 //! # Two things named `VectorStore`, and why only one of them is
 //!
 //! [`degraded::VectorStore`] is a **health state**, not a client. The port a client implements is
@@ -55,6 +61,7 @@ pub mod lexical;
 pub mod milvus;
 pub mod postfilter;
 pub mod vector;
+pub mod writer;
 
 pub use degraded::{
     Cause, DegradedReason, Retrieval, SearchResults, VectorStore, DEFAULT_DENYLIST_LIMIT,
@@ -71,3 +78,4 @@ pub use lexical::LexicalCandidates;
 pub use milvus::{MilvusConfig, MilvusIndex};
 pub use postfilter::{Candidate, Confirmed, DropCounts, PostFilter};
 pub use vector::{Prefilter, VectorIndex, VectorQuery};
+pub use writer::{remove_and_confirm, ChunkRecord, SparseTerms, VectorWriter};
