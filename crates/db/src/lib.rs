@@ -42,6 +42,16 @@
 //!   queries; see `CLAUDE.md`, Rust conventions.
 //! * **No repositories.** Table-shaped access belongs in the domain crate that owns the table.
 //!   This crate owns *how* a connection is obtained, never *what* is asked of it.
+//!
+//!   [`quota`] is the one exception, and it is argued rather than assumed (`ENC-584`). A storage
+//!   quota has no domain crate to belong to: it bounds `crates/uploads`, `crates/versions` and
+//!   `crates/sync` alike, and `docs/02-HLD.md` — authoritative for the crate list — has no crate
+//!   for it. The alternatives were worse in the specific way `plans/M0-FOUNDATIONS.md` D1 forbids:
+//!   putting it in `crates/uploads` makes every other writer depend sideways on a peer domain
+//!   crate, and copying the statement into each makes `plans/M4-GOVERNANCE.md` D31 a convention
+//!   rather than a control — three copies of a `WHERE` clause are three chances for one of them to
+//!   drop the limit. It sits here for the same reason [`tenants::active_tenants`] does: the
+//!   crate below every domain crate is the only place a shared invariant can be written once.
 //! * **No policy checks.** Authorization is `PolicyEngine::enforce`'s job (`docs/03-LLD.md §12`).
 //!   A guard that also made access decisions would be a second, quieter policy chain.
 //! * **No cursor signature.** [`cursor`] binds a listing position to a tenant and a filter set and
@@ -70,6 +80,7 @@ pub mod ids;
 pub mod migrate;
 pub mod normalize;
 pub mod pool;
+pub mod quota;
 pub mod tenant;
 pub mod tenants;
 
@@ -80,6 +91,11 @@ pub use ids::{sql, RowIdExt, Sql, SqlId};
 pub use migrate::{run_migrations, run_migrations_on, MIGRATIONS};
 pub use normalize::normalize_slug;
 pub use pool::{DbPool, PlatformConnection};
+pub use quota::{
+    charge_storage, configure_storage_quota, correct_storage, observe_storage, reconcile_storage,
+    release_storage, storage_quota, Admitted, Charged, Corrected, Enforcement, Observation,
+    Refused, Released, StorageQuota, StorageReconciliation,
+};
 pub use tenant::TenantScoped;
 pub use tenants::active_tenants;
 
