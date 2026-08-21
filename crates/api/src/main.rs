@@ -81,15 +81,20 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // The metrics listener, if one is configured, on its own socket — see `serve_metrics`.
-    if let Some(port) = config.server.metrics_port {
-        let addr = SocketAddr::new(config.server.metrics_bind, port);
+    //
+    // `metrics.api_port`, not `server.metrics_port`: the old key was read by this binary *and* by
+    // the worker, so one `enclave.yaml` on one host asked both to bind the same socket and
+    // whichever started second died here with `Address already in use` (`ENC-566`). An unmigrated
+    // file is refused at load rather than starting with the exposition silently off —
+    // `enclave_config::validate::check_relocated_keys`.
+    if let Some(addr) = config.metrics.api_addr() {
         let listener = tokio::net::TcpListener::bind(addr)
             .await
             .with_context(|| format!("bind metrics listener on {addr}"))?;
         tracing::info!(%addr, "metrics listening");
         tokio::spawn(metrics_listener::serve(listener, shutdown()));
     } else {
-        tracing::debug!("metrics_port is unset; no metrics endpoint is served");
+        tracing::debug!("metrics.api_port is unset; no metrics endpoint is served");
     }
 
     let addr = SocketAddr::new(config.server.bind, config.server.port);

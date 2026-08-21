@@ -53,9 +53,10 @@ pub use loader::{ConfigLoader, Loaded, ResolvedSecrets, DEFAULT_ENV_PREFIX};
 pub use model::{
     AccessTokenConfig, AntivirusConfig, AntivirusProvider, Argon2Config, AuditConfig, AuthConfig,
     Config, CookieConfig, DatabaseConfig, DeploymentProfile, DlpConfig, DlpMode, EventsConfig,
-    FailureMode, MfaConfig, OcrMounts, PasswordConfig, RedisConfig, RefreshTokenConfig,
-    ReuseDetection, SameSite, SecurityConfig, ServerConfig, SigningAlgorithm, SigningKeysConfig,
-    TrustedProxy, UnavailablePolicy,
+    FailureMode, MetricsConfig, MfaConfig, MilvusSettings, OcrMounts, PasswordConfig, RedisConfig,
+    RefreshTokenConfig, ReuseDetection, S3Flavor, S3StorageConfig, SameSite, SearchConfig,
+    SearchProvider, SecurityConfig, ServerConfig, SigningAlgorithm, SigningKeysConfig,
+    StorageConfig, StorageProvider, TrustedProxy, UnavailablePolicy,
 };
 pub use secret::{
     EnvSecretProvider, FileSecretProvider, ProviderHealth, SecretError, SecretProvider,

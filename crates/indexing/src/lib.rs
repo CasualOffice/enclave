@@ -59,6 +59,22 @@
 //! what lets OCR run over three pages of nine hundred. [`pdf_text`] argues the third case, a document
 //! with some text and some scanned pages, and names what it leaves undone.
 //!
+//! # How a deployment gets more than one of them
+//!
+//! [`Pipeline`] holds a single [`Extractor`], which until `ENC-552` meant a worker served plain text
+//! *or* PDF and never both — [`PdfTextExtractor`] was proven by its own tests and unreachable
+//! anywhere that also wanted `text/plain`. [`MediaTypeRouter`] is the table that picks between them,
+//! and it is itself an [`Extractor`], so `Pipeline` is unchanged and a router goes wherever a bare
+//! extractor went.
+//!
+//! It dispatches on [`Extractor::supports`] — the hook that was already consulted before any bytes
+//! reached a parser — and adds no second way for a media type to be decided. Three things about it
+//! are decisions rather than mechanics, and [`route`] argues each: an ambiguous type is refused at
+//! **construction** rather than resolved by declaration order; a type nothing claims stays `SKIPPED`;
+//! and the router's [`ExtractorVersion`] is **declared by the deployment and verified against every
+//! member's**, so a build that bumps an extractor without bumping the marker `docs/07 §3` reindexes
+//! on does not start.
+//!
 //! # Where the text goes
 //!
 //! [`store`] writes chunk text to PostgreSQL, which is what lets degraded search find a document by
@@ -148,6 +164,7 @@ pub mod ocr;
 pub mod pdf;
 pub mod pdf_text;
 pub mod pipeline;
+pub mod route;
 pub mod store;
 pub mod text;
 
@@ -164,6 +181,7 @@ pub use ocr::{NoPageImages, OcrExtractor, OcrModels, OcrRetry, PageImage, PageIm
 pub use pdf::{PdfiumLibrary, PdfiumPages};
 pub use pdf_text::PdfTextExtractor;
 pub use pipeline::{ManifestStatus, Outcome, Pipeline, Prepared, Reason};
+pub use route::{MediaTypeRouter, RouteError};
 pub use store::{write_chunks, ChunkWrite};
 pub use text::PlainTextExtractor;
 

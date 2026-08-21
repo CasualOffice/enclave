@@ -19,6 +19,13 @@ enclave-audit = { workspace = true }
 # lives beside the one every search reads, and two copies of it are two chances for the sweep to
 # lift something the search still considers in force.
 enclave-search = { workspace = true }
+# `ENC-557`/`ENC-533`: the indexing pass is the one place that legitimately depends on both the
+# embedding port and the vector store, which is what lets the collection's dense width be checked
+# against `enclave_embeddings::model::ACTIVE.dimension` at the point a stage is built. Neither
+# `enclave-search` nor `enclave-embeddings` may take that edge on the other — `crates/search`'s
+# `MilvusConfig::dimension` says so at length — because a dependency added to hold a constant is a
+# dependency invented for an assertion.
+enclave-embeddings = { workspace = true }
 enclave-indexing = { workspace = true }
 enclave-preview = { workspace = true }
 enclave-storage = { workspace = true }
@@ -40,6 +47,10 @@ uuid      = { workspace = true }
 
 [dev-dependencies]
 enclave-testing = { workspace = true }
+# `ENC-557`'s last test runs the whole pass against a real collection, and setting `Strong`
+# consistency for a write-then-read is the SDK's own type. `crates/search/tests/vector_write.rs`
+# takes the same dependency for the same reason: the knob is what stops the test sleeping.
+milvus-sdk-rust = { workspace = true }
 futures = { workspace = true }
 bytes = "1"
 url = { workspace = true }

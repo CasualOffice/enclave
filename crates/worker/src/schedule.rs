@@ -81,7 +81,7 @@ use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 use crate::epoch::ReconcilerConfig;
-use crate::indexing::{index_pass, IndexPass};
+use crate::indexing::{index_pass, IndexPass, VectorStage};
 use crate::ocr::MountedOcr;
 use crate::{coverage, epoch, invalidation, Result, Stop, Woke};
 
@@ -184,6 +184,7 @@ pub struct PipelineRunner<E: Extractor, S: BlobStore> {
     pool: DbPool,
     pipeline: Pipeline<E>,
     ocr: Option<MountedOcr>,
+    vectors: Option<VectorStage>,
     store: S,
     extractor: ExtractorVersion,
     chunker: ChunkerVersion,
@@ -200,6 +201,7 @@ impl<E: Extractor, S: BlobStore> fmt::Debug for PipelineRunner<E, S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PipelineRunner")
             .field("ocr", &self.ocr.is_some())
+            .field("vectors", &self.vectors.is_some())
             .field("batch", &self.batch)
             .finish_non_exhaustive()
     }
@@ -236,6 +238,7 @@ impl<E: Extractor, S: BlobStore> PipelineRunner<E, S> {
             pool,
             pipeline: Pipeline::new(extractor, chunker),
             ocr,
+            vectors: None,
             store,
             extractor: versions.0,
             chunker: versions.1,
@@ -243,6 +246,23 @@ impl<E: Extractor, S: BlobStore> PipelineRunner<E, S> {
             budget,
             batch,
         }
+    }
+
+    /// Adds the embedding-and-vector-write stage (`ENC-557`).
+    ///
+    /// A builder method rather than an eleventh parameter of [`PipelineRunner::new`], for the reason
+    /// [`crate::indexing`] gives about `Option`: a deployment with no embedding model and no vector
+    /// store is the ordinary case and must cost nothing, including nothing to write at the call
+    /// site. Without it, this runner does exactly what it did before — text into `chunk_text`, a
+    /// manifest, and an `embedding_model` of `""` that honestly says nothing embedded.
+    ///
+    /// With it, a file that cannot be embedded is not recorded at all. That is the point rather
+    /// than a side effect: a `READY` manifest over an empty collection is the state that makes a
+    /// document filed, visible in the tree and absent from every search.
+    #[must_use]
+    pub fn with_vectors(mut self, stage: VectorStage) -> Self {
+        self.vectors = Some(stage);
+        self
     }
 }
 
@@ -259,6 +279,7 @@ impl<E: Extractor, S: BlobStore> IndexRunner for PipelineRunner<E, S> {
             tenant,
             &self.pipeline,
             self.ocr.as_ref(),
+            self.vectors.as_ref(),
             &self.store,
             versions,
             self.budget,

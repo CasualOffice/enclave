@@ -417,7 +417,10 @@ mod tests {
         // comparing the constant with itself. `assert_eq!(CANONICAL_FIELD_COUNT, 23)` — which this
         // test used to end with — fires when somebody edits the constant and says nothing when
         // somebody adds a field to the encoder, which is the mistake worth catching.
-        let _ = canonical_bytes(&sample_event());
+        // The encoder's own `assert_eq!` is what this exercises; the bytes are checked as well so
+        // the call is not a bare discard of a `#[must_use]` result.
+        let bytes = canonical_bytes(&sample_event());
+        assert!(!bytes.is_empty(), "a canonical encoding is never empty");
 
         // And that each write counts exactly one field, so the total above means what it says.
         let mut w = Writer::new();

@@ -35,10 +35,112 @@
 //! Each of the three is visible in a diff on its own. The point is that no single helpful edit —
 //! not a retry, not a timeout handler, not a circuit breaker — gets past any of them by accident.
 
+use core::fmt;
+
+use async_trait::async_trait;
+
 use crate::error::{EmbeddingError, Result};
 use crate::locality::{Local, Remote};
-use crate::provider::{Embedding, EmbeddingProvider, NoRemoteProvider};
+use crate::provider::{Embedding, EmbeddingProvider, ModelId, NoRemoteProvider};
 use crate::text::{ClassifiedText, LocalCeiling, TextBatch};
+
+/// One batch's vectors, and the model that actually produced them.
+///
+/// # Why the model travels with the vectors
+///
+/// `index_manifests.embedding_model` records which model produced a chunk's vectors, and
+/// `docs/07 §3`'s reindex trigger compares that string to decide what has to be rebuilt. The
+/// indexing worker writes that column, and the only thing that knows the answer is whichever
+/// provider the router just used — which depends on the *rank of this batch*, because a deployment
+/// with a ceiling routes `RESTRICTED` locally and everything below it somewhere else.
+///
+/// So the caller cannot supply the value and the router cannot be asked for it out of band: a
+/// per-file fact answered by a per-deployment accessor would name the local model for a file the
+/// remote provider embedded, and the manifest would then say a reindex is unnecessary for exactly
+/// the files a model swap changed. Returning it with the vectors makes the two inseparable, for the
+/// same reason [`ClassifiedText`] carries its rank rather than taking one beside it.
+///
+/// [`Debug`] is hand-written: a derived one would print the whole vector list, and
+/// [`crate::provider`] explains why an embedding is content in an inconvenient-to-read form
+/// (`CLAUDE.md` rule 10).
+pub struct Embedded {
+    model: ModelId,
+    embeddings: Vec<Embedding>,
+}
+
+impl Embedded {
+    /// Which model produced these vectors, for `index_manifests.embedding_model`.
+    #[must_use]
+    pub const fn model(&self) -> &ModelId {
+        &self.model
+    }
+
+    /// The vectors, one per chunk, in the order the chunks were given.
+    #[must_use]
+    pub fn embeddings(&self) -> &[Embedding] {
+        &self.embeddings
+    }
+
+    /// The vectors, owned, for a caller assembling store records.
+    #[must_use]
+    pub fn into_embeddings(self) -> Vec<Embedding> {
+        self.embeddings
+    }
+
+    /// How many vectors came back.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.embeddings.len()
+    }
+
+    /// Whether the batch was empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.embeddings.is_empty()
+    }
+}
+
+impl fmt::Debug for Embedded {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Embedded")
+            .field("model", &self.model.as_str())
+            .field("vectors", &self.embeddings.len())
+            .finish()
+    }
+}
+
+/// The router with its two provider types erased.
+///
+/// # Why this exists, and why it does not weaken anything
+///
+/// [`EmbeddingRouter`] is generic over both providers, which is what makes the local slot a
+/// *typed* slot ([`crate::locality`]). That is exactly right where a deployment wires its providers
+/// and exactly wrong two crates downstream: the indexing worker holds the router beside an object
+/// store and a pipeline, and threading `L` and `R` through it would make every caller name two
+/// provider types for a stage most deployments do not run — the problem
+/// `enclave_worker::schedule::IndexRunner` already exists to avoid.
+///
+/// Erasing them costs nothing S8 depends on. This trait takes a [`ClassifiedText`], which has no
+/// method that returns its chunks, so an implementation cannot read the text at all except through
+/// [`TextBatch::<Local>::admit`] or [`TextBatch::<Remote>::admit`] — and the second of those still
+/// refuses at and above the ceiling. What is erased is *which providers a router holds*, never the
+/// admission that decides which one may be reached.
+#[async_trait]
+pub trait Embedder: Send + Sync {
+    /// Embeds text through whichever provider its classification permits.
+    ///
+    /// # Errors
+    ///
+    /// Whatever [`EmbeddingRouter::embed`] returns.
+    async fn embed(&self, text: ClassifiedText) -> Result<Embedded>;
+}
+
+#[async_trait]
+impl<L: EmbeddingProvider<Local>, R: EmbeddingProvider<Remote>> Embedder for EmbeddingRouter<L, R> {
+    async fn embed(&self, text: ClassifiedText) -> Result<Embedded> {
+        Self::embed(self, text).await
+    }
+}
 
 /// Sends text to the provider its classification permits.
 ///
@@ -97,6 +199,9 @@ impl<L: EmbeddingProvider<Local>, R: EmbeddingProvider<Remote>> EmbeddingRouter<
 
     /// Embeds text through whichever provider its classification permits.
     ///
+    /// Returns the vectors **and the model that produced them** — see [`Embedded`] for why those
+    /// two cannot be obtained separately.
+    ///
     /// # Errors
     ///
     /// Whatever the chosen provider returned, unaltered, plus
@@ -104,17 +209,23 @@ impl<L: EmbeddingProvider<Local>, R: EmbeddingProvider<Remote>> EmbeddingRouter<
     /// particular [`EmbeddingError::LocalUnavailable`] propagates: indexing waits and retries, it
     /// does not fall back and it does not record the document as indexed
     /// (`plans/M3-DISCOVERY.md` D23).
-    pub async fn embed(&self, text: ClassifiedText) -> Result<Vec<Embedding>> {
+    pub async fn embed(&self, text: ClassifiedText) -> Result<Embedded> {
         let expected = text.chunk_count();
 
         // The whole routing decision. Note that this function performs no comparison: `admit` does,
         // once, and its `Err` — the text handed back unembedded — *is* the above-ceiling case.
-        let embeddings = match TextBatch::<Remote>::admit(text, self.ceiling) {
-            Ok(admitted) => self.remote.embed(admitted).await,
-            Err(above_ceiling) => {
-                embed_local_only(&self.local, TextBatch::<Local>::admit(above_ceiling)).await
-            }
-        }?;
+        //
+        // The model is read from the same arm that embedded, rather than chosen afterwards by a
+        // second look at the rank. A `match` here and an `if` later is two copies of the routing
+        // decision, and the second one is the one that goes stale.
+        let (model, embeddings) = match TextBatch::<Remote>::admit(text, self.ceiling) {
+            Ok(admitted) => (self.remote.model().clone(), self.remote.embed(admitted).await),
+            Err(above_ceiling) => (
+                self.local.model().clone(),
+                embed_local_only(&self.local, TextBatch::<Local>::admit(above_ceiling)).await,
+            ),
+        };
+        let embeddings = embeddings?;
 
         // A provider that returns fewer vectors than it was given chunks has silently dropped part
         // of a document. Storing the short list would attach vectors to the wrong chunk
@@ -122,7 +233,7 @@ impl<L: EmbeddingProvider<Local>, R: EmbeddingProvider<Remote>> EmbeddingRouter<
         // unsearchable under a manifest that says `READY`. Both are the silent absence D23 is
         // about, so the batch fails and indexing retries it whole.
         if embeddings.len() == expected {
-            Ok(embeddings)
+            Ok(Embedded { model, embeddings })
         } else {
             Err(EmbeddingError::IncompleteBatch { expected, returned: embeddings.len() })
         }

@@ -179,6 +179,21 @@ async fn a_file(
     status: &str,
     av_status: &str,
 ) -> (FileId, VersionId) {
+    let (spine, version) = a_file_on_a_spine(conn, tenant, owner, status, av_status).await;
+    (spine.file, version)
+}
+
+/// The same file, with the spine it hangs on.
+///
+/// The vector tests need the workspace and library as well, because those are columns of the store
+/// record and a record naming the wrong library is one the query-time narrowing silently excludes.
+async fn a_file_on_a_spine(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    owner: UserId,
+    status: &str,
+    av_status: &str,
+) -> (Spine, VersionId) {
     let spine = Spine::new(tenant);
     spine.insert(&mut *conn, owner, Utc::now()).await.expect("spine");
 
@@ -202,7 +217,7 @@ async fn a_file(
     .await
     .expect("version");
 
-    (spine.file, VersionId::from(id))
+    (spine, VersionId::from(id))
 }
 
 async fn manifest_status(conn: &mut PgConnection, file: FileId) -> (String, i32) {
@@ -239,6 +254,7 @@ async fn a_clean_version_is_extracted_chunked_and_recorded_ready() {
         &pool,
         alpha,
         &pipeline(),
+        None,
         None,
         store.as_ref(),
         versions(),
@@ -278,6 +294,7 @@ async fn a_version_still_being_scanned_is_deferred_and_never_read() {
         &pool,
         alpha,
         &pipeline(),
+        None,
         None,
         store.as_ref(),
         versions(),
@@ -328,6 +345,7 @@ async fn an_infected_version_is_never_indexed() {
         alpha,
         &pipeline(),
         None,
+        None,
         store.as_ref(),
         versions(),
         RenderBudget::default(),
@@ -358,6 +376,7 @@ async fn a_pass_never_crosses_a_tenant() {
         &pool,
         fixtures.beta.id,
         &pipeline(),
+        None,
         None,
         store.as_ref(),
         versions(),
@@ -466,6 +485,7 @@ async fn a_textless_document_reaches_the_stage_and_its_recovered_text_is_committ
         alpha,
         &textless_pipeline(),
         Some(&stage),
+        None,
         store.as_ref(),
         versions(),
         UNTIMED,
@@ -524,6 +544,7 @@ async fn the_stage_dispatches_on_the_decided_type_not_the_declared_one() {
         alpha,
         &textless_pipeline(),
         Some(&stage),
+        None,
         store.as_ref(),
         versions(),
         UNTIMED,
@@ -560,6 +581,7 @@ async fn with_no_stage_configured_a_textless_document_behaves_exactly_as_it_did_
         &pool,
         alpha,
         &textless_pipeline(),
+        None,
         None,
         store.as_ref(),
         versions(),
@@ -604,6 +626,7 @@ async fn a_document_that_produced_text_is_never_re_read_for_ocr() {
         alpha,
         &pipeline(),
         Some(&stage),
+        None,
         store.as_ref(),
         versions(),
         UNTIMED,
@@ -618,4 +641,657 @@ async fn a_document_that_produced_text_is_never_re_read_for_ocr() {
     assert_eq!(store.reads().len(), 1, "a document that produced text paid for a second read");
 
     drop(db);
+}
+
+// =================================================================================================
+// The vector stage — `ENC-557`
+// =================================================================================================
+//
+// # What these prove, and what `crates/search` already proved
+//
+// `ENC-547` proved that `MilvusIndex` writes and removes what it is given
+// (`crates/search/tests/vector_write.rs`). What was missing was a caller. These assert the wiring:
+// that a `READY` file's chunks are embedded and handed to the store *before* the manifest commits,
+// that the manifest names the model that ran, and — the half that matters more — that a deployment
+// which cannot embed refuses rather than recording a `READY` manifest over an empty collection.
+//
+// # Why the store is a fake in all but the last
+//
+// `docs/12 §1.1`: the property under test is what we hand the store and what we do with what comes
+// back, not whether Milvus ranks well. A fake can be asked "what were you given", which is the
+// question, and it *validates every record exactly as the collection would* — `ChunkRecord::validate`
+// is the same call `MilvusIndex::upsert_chunks` makes, so a record the real collection would reject
+// fails here rather than in a deployment. The last test then runs the whole pass against a real
+// Milvus and reads the chunks back out, because "we called upsert" and "the collection is no longer
+// empty" are different claims and `ENC-557` is about the second.
+
+use enclave_core::ClassificationRank;
+use enclave_embeddings::model::ACTIVE;
+use enclave_embeddings::{
+    Availability, Embedding, EmbeddingError, EmbeddingProvider, EmbeddingRouter, Local,
+    LocalCeiling, ModelId, NoLocalModel, Remote, TextBatch,
+};
+use enclave_search::vector::{VectorIndex, VectorQuery};
+use enclave_search::{
+    ChunkRecord, MilvusConfig, MilvusIndex, Prefilter, SearchError, VectorWriter,
+};
+use enclave_worker::indexing::{FileClassification, UnclassifiedFiles, VectorStage};
+use enclave_worker::WorkerError;
+
+/// `docs/07 §2.3`'s default mapping, as a rank a deployment might assign it.
+const RESTRICTED: ClassificationRank = ClassificationRank::new(40);
+
+/// A classification source that answers, for the deployment that has one.
+///
+/// The counterpart to `UnclassifiedFiles`, and the reason every refusal below is not vacuous: with
+/// this wired, the same pass indexes.
+#[derive(Debug)]
+struct FixedRank(ClassificationRank);
+
+#[async_trait]
+impl FileClassification for FixedRank {
+    async fn effective_rank(
+        &self,
+        _conn: &mut PgConnection,
+        _tenant: TenantId,
+        _file: FileId,
+    ) -> core::result::Result<ClassificationRank, WorkerError> {
+        Ok(self.0)
+    }
+}
+
+/// A local model that answers with vectors of a fixed width, and counts.
+///
+/// A provider rather than an `Embedder`, so the pass runs through the real `EmbeddingRouter` and the
+/// real `TextBatch::<Local>::admit` — the double stands in for the weights, not for the routing.
+#[derive(Debug)]
+struct FixedWidthLocal {
+    width: usize,
+    model: ModelId,
+    calls: Arc<Mutex<Vec<ClassificationRank>>>,
+}
+
+impl FixedWidthLocal {
+    fn new(width: usize) -> (Self, Arc<Mutex<Vec<ClassificationRank>>>) {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        (Self { width, model: ModelId::known("test-local/1"), calls: Arc::clone(&calls) }, calls)
+    }
+}
+
+#[async_trait]
+impl EmbeddingProvider<Local> for FixedWidthLocal {
+    fn model(&self) -> &ModelId {
+        &self.model
+    }
+
+    fn dimensions(&self) -> usize {
+        self.width
+    }
+
+    async fn embed(
+        &self,
+        batch: TextBatch<Local>,
+    ) -> core::result::Result<Vec<Embedding>, EmbeddingError> {
+        self.calls.lock().expect("lock").push(batch.rank());
+        // A constant vector, so the real-Milvus test below can query for it exactly. What is being
+        // measured there is retrieval of a chunk we wrote, not a model's ranking.
+        Ok(batch.texts().iter().map(|_| Embedding::new(vec![0.25_f32; self.width])).collect())
+    }
+
+    async fn availability(&self) -> Availability {
+        Availability::Ready
+    }
+}
+
+/// A remote provider that fails the test on contact.
+///
+/// Present in the router of every test below so that the S8 assertion is about *reaching* a remote
+/// provider rather than about what one answered — `crates/embeddings/tests/routing.rs` explains why
+/// an erroring double would let a fallback pass.
+#[derive(Debug)]
+struct Forbidden;
+
+#[async_trait]
+impl EmbeddingProvider<Remote> for Forbidden {
+    fn model(&self) -> &ModelId {
+        unreachable!("the indexing pass reached a remote embedding provider")
+    }
+
+    fn dimensions(&self) -> usize {
+        unreachable!("the indexing pass reached a remote embedding provider")
+    }
+
+    async fn embed(
+        &self,
+        _batch: TextBatch<Remote>,
+    ) -> core::result::Result<Vec<Embedding>, EmbeddingError> {
+        unreachable!("the indexing pass sent a document's text to a remote embedding provider")
+    }
+
+    async fn availability(&self) -> Availability {
+        Availability::Ready
+    }
+}
+
+/// A vector store that records what it was handed, having first validated it as the collection does.
+#[derive(Debug, Default)]
+struct RecordingWriter {
+    batches: Mutex<Vec<Vec<ChunkRecord>>>,
+    refuse: bool,
+}
+
+impl RecordingWriter {
+    fn refusing() -> Self {
+        Self { batches: Mutex::new(Vec::new()), refuse: true }
+    }
+
+    fn written(&self) -> Vec<ChunkRecord> {
+        self.batches.lock().expect("lock").iter().flatten().cloned().collect()
+    }
+}
+
+#[async_trait]
+impl VectorWriter for RecordingWriter {
+    async fn upsert_chunks(&self, chunks: &[ChunkRecord]) -> core::result::Result<(), SearchError> {
+        if self.refuse {
+            return Err(SearchError::VectorIndex { operation: "upsert", retryable: true });
+        }
+        for chunk in chunks {
+            // The same call `MilvusIndex::upsert_chunks` makes. Without it a fake accepts records
+            // the collection would reject, and a rejected batch is a silently unfindable file.
+            chunk.validate(ACTIVE.dimension)?;
+        }
+        self.batches.lock().expect("lock").push(chunks.to_vec());
+        Ok(())
+    }
+
+    async fn remove_file(
+        &self,
+        _tenant: TenantId,
+        _file: FileId,
+    ) -> core::result::Result<(), SearchError> {
+        unreachable!("the indexing pass never removes a file")
+    }
+}
+
+/// A stage over a working model, a classification source that answers, and a recording store.
+fn working_stage(
+    writer: Arc<RecordingWriter>,
+    ranks: Box<dyn FileClassification>,
+) -> (VectorStage, Arc<Mutex<Vec<ClassificationRank>>>) {
+    let (local, calls) = FixedWidthLocal::new(ACTIVE.dimension as usize);
+    // A *configured* remote provider and a ceiling that would admit ordinary content, so that
+    // "nothing was sent remote" is a fact about the routing rather than about there being nowhere to
+    // send it. `Forbidden` panics on contact.
+    let router = EmbeddingRouter::new(local, Forbidden, LocalCeiling::at(RESTRICTED));
+    let stage = VectorStage::for_collection(
+        Box::new(router),
+        ranks,
+        Box::new(ArcWriter(writer)),
+        ACTIVE.dimension,
+    )
+    .expect("the stage is wired at the active model's width");
+    (stage, calls)
+}
+
+/// Lets a test keep a handle on the writer the stage owns.
+#[derive(Debug)]
+struct ArcWriter(Arc<RecordingWriter>);
+
+#[async_trait]
+impl VectorWriter for ArcWriter {
+    async fn upsert_chunks(&self, chunks: &[ChunkRecord]) -> core::result::Result<(), SearchError> {
+        self.0.upsert_chunks(chunks).await
+    }
+
+    async fn remove_file(
+        &self,
+        tenant: TenantId,
+        file: FileId,
+    ) -> core::result::Result<(), SearchError> {
+        self.0.remove_file(tenant, file).await
+    }
+}
+
+async fn manifest_model(conn: &mut PgConnection, file: FileId) -> String {
+    sqlx::query("SELECT embedding_model FROM index_manifests WHERE file_id = $1")
+        .bind(file.as_uuid())
+        .fetch_one(&mut *conn)
+        .await
+        .expect("manifest")
+        .try_get::<Option<String>, _>("embedding_model")
+        .expect("embedding_model")
+        .unwrap_or_default()
+}
+
+async fn chunk_texts(conn: &mut PgConnection, file: FileId) -> Vec<String> {
+    sqlx::query("SELECT text FROM chunk_text WHERE file_id = $1 ORDER BY ordinal")
+        .bind(file.as_uuid())
+        .fetch_all(&mut *conn)
+        .await
+        .expect("chunk text")
+        .into_iter()
+        .map(|row| row.try_get::<String, _>("text").expect("text"))
+        .collect()
+}
+
+/// The document every test below indexes: long enough to produce more than one chunk would be
+/// nicer, but one chunk is enough to tell written from not-written and keeps the assertions exact.
+const DOCUMENT: &str = "the indemnity clause is on the third page";
+
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL with migrations 0001–0014; CI runs it with --include-ignored"]
+async fn a_ready_file_is_embedded_and_its_chunks_written_to_the_vector_store() {
+    // The positive control for every refusal below, and the assertion `ENC-557` is actually about:
+    // before this, `chunk_text` filled and the collection stayed empty in every real deployment.
+    let (db, fixtures, pool) = start().await;
+    let alpha = fixtures.alpha.id;
+    let mut conn = db.connect().await.expect("connection");
+    let (spine, version) =
+        a_file_on_a_spine(&mut conn, alpha, fixtures.alpha.owner, "AVAILABLE", "CLEAN").await;
+    enqueue(&mut conn, alpha, spine.file, version).await.expect("enqueue");
+
+    let writer = Arc::new(RecordingWriter::default());
+    let (stage, embedded) = working_stage(Arc::clone(&writer), Box::new(FixedRank(RESTRICTED)));
+    let store = Arc::new(RecordingStore::new(DOCUMENT));
+
+    let pass = index_pass(
+        &pool,
+        alpha,
+        &pipeline(),
+        None,
+        Some(&stage),
+        store.as_ref(),
+        versions(),
+        RenderBudget::default(),
+        10,
+        &Stop::new(),
+    )
+    .await
+    .expect("pass");
+
+    assert_eq!(pass.indexed, 1);
+    assert_eq!(pass.embedded, 1, "a READY file's chunks were never embedded");
+    assert_eq!(manifest_status(&mut conn, spine.file).await.0, "READY");
+
+    // The rank that reached the provider is the one the classification source gave, not a constant
+    // chosen by the wiring. A stage that fabricated `PUBLIC` would pass every other assertion here
+    // and would route this document to `Forbidden` under a ceiling that was working correctly.
+    assert_eq!(&*embedded.lock().expect("lock"), &[RESTRICTED]);
+
+    let written = writer.written();
+    let texts = chunk_texts(&mut conn, spine.file).await;
+    assert!(!texts.is_empty(), "READY was recorded over no chunk text");
+    assert_eq!(
+        written.len(),
+        texts.len(),
+        "the store and `chunk_text` disagree about how many chunks this file has"
+    );
+
+    for (record, text) in written.iter().zip(&texts) {
+        // The same chunks went to both stores. A pass that embedded one thing and committed another
+        // would make a search excerpt quote text the document does not contain.
+        assert_eq!(&record.text, text);
+        assert_eq!(record.tenant, alpha);
+        assert_eq!(record.workspace, spine.workspace);
+        assert_eq!(record.library, spine.library);
+        assert_eq!(record.file, spine.file);
+        assert_eq!(record.version, version);
+        assert_eq!(record.classification_rank, RESTRICTED);
+        assert_eq!(record.dense.len(), ACTIVE.dimension as usize);
+        assert_eq!(record.acl_epoch, 1, "`files.acl_revision` did not reach the record");
+        assert_eq!(record.mime_type, "text/plain");
+        assert_eq!(record.title.as_deref(), Some(spine.file.as_uuid().to_string()).as_deref());
+    }
+
+    // And the manifest names the model that ran, which is what `docs/07 §3`'s reindex trigger
+    // compares. `""` here would mean a model swap never triggers a rebuild of these chunks.
+    assert_eq!(manifest_model(&mut conn, spine.file).await, "test-local/1");
+
+    drop(db);
+}
+
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL with migrations 0001–0014; CI runs it with --include-ignored"]
+async fn a_deployment_that_cannot_classify_a_file_refuses_rather_than_guessing_a_rank() {
+    // The gap named rather than papered over. `ClassifiedText::new` requires the file's *effective*
+    // classification and this deployment has no source for one, so the file is not embedded and not
+    // recorded — instead of being embedded under a guessed `PUBLIC`, which would route it to a
+    // hosted endpoint while the ceiling comparison worked perfectly.
+    let (db, fixtures, pool) = start().await;
+    let alpha = fixtures.alpha.id;
+    let mut conn = db.connect().await.expect("connection");
+    let (spine, version) =
+        a_file_on_a_spine(&mut conn, alpha, fixtures.alpha.owner, "AVAILABLE", "CLEAN").await;
+    enqueue(&mut conn, alpha, spine.file, version).await.expect("enqueue");
+
+    let writer = Arc::new(RecordingWriter::default());
+    let (stage, embedded) = working_stage(Arc::clone(&writer), Box::new(UnclassifiedFiles));
+    let store = Arc::new(RecordingStore::new(DOCUMENT));
+
+    let error = index_pass(
+        &pool,
+        alpha,
+        &pipeline(),
+        None,
+        Some(&stage),
+        store.as_ref(),
+        versions(),
+        RenderBudget::default(),
+        10,
+        &Stop::new(),
+    )
+    .await
+    .expect_err("an unclassifiable file must not be embedded");
+    assert!(matches!(error, WorkerError::Unclassified), "{error:?}");
+
+    // Nothing was recorded and nothing was committed. A `READY` manifest here would be the document
+    // that is filed, visible in the tree, and absent from every search.
+    assert_eq!(manifest_status(&mut conn, spine.file).await.0, "EXTRACTING");
+    assert_eq!(chunk_rows(&mut conn, spine.file).await, 0);
+    assert!(writer.written().is_empty(), "a chunk reached the store without a classification");
+    assert!(embedded.lock().expect("lock").is_empty(), "text reached a provider without a rank");
+
+    drop(db);
+}
+
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL with migrations 0001–0014; CI runs it with --include-ignored"]
+async fn a_deployment_with_no_local_model_refuses_rather_than_indexing_nothing() {
+    // The seam this task exists to build. No weights are mounted, so `NoLocalModel` refuses — and
+    // the refusal must stop the file being recorded rather than produce a manifest over an empty
+    // collection. This is `MountedOcr`'s "a failed mount is an outage, never an empty document",
+    // one stage later.
+    let (db, fixtures, pool) = start().await;
+    let alpha = fixtures.alpha.id;
+    let mut conn = db.connect().await.expect("connection");
+    let (spine, version) =
+        a_file_on_a_spine(&mut conn, alpha, fixtures.alpha.owner, "AVAILABLE", "CLEAN").await;
+    enqueue(&mut conn, alpha, spine.file, version).await.expect("enqueue");
+
+    let writer = Arc::new(RecordingWriter::default());
+    let stage = VectorStage::for_collection(
+        Box::new(EmbeddingRouter::air_gapped(NoLocalModel)),
+        Box::new(FixedRank(RESTRICTED)),
+        Box::new(ArcWriter(Arc::clone(&writer))),
+        ACTIVE.dimension,
+    )
+    .expect("wiring a stage does not need a model");
+    let store = Arc::new(RecordingStore::new(DOCUMENT));
+
+    let error = index_pass(
+        &pool,
+        alpha,
+        &pipeline(),
+        None,
+        Some(&stage),
+        store.as_ref(),
+        versions(),
+        RenderBudget::default(),
+        10,
+        &Stop::new(),
+    )
+    .await
+    .expect_err("a deployment with no model must not record an indexed document");
+    assert!(
+        matches!(error, WorkerError::Embedding(EmbeddingError::LocalUnavailable(_))),
+        "{error:?}"
+    );
+
+    assert_eq!(manifest_status(&mut conn, spine.file).await.0, "EXTRACTING");
+    assert_eq!(chunk_rows(&mut conn, spine.file).await, 0);
+    assert!(writer.written().is_empty());
+
+    drop(db);
+}
+
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL with migrations 0001–0014; CI runs it with --include-ignored"]
+async fn a_store_that_refuses_the_batch_leaves_no_manifest_and_no_chunk_text() {
+    // **The ordering assertion.** The store write happens before the transaction commits, so a
+    // store that refuses leaves nothing behind and the file is retried whole.
+    //
+    // Watched to fail against the violation it is about: moving `upsert_chunks` after `tx.commit()`
+    // leaves `READY` and committed chunk text over a collection that refused the batch — the
+    // document search believes it can find and cannot, with no retry, because the manifest says it
+    // is done.
+    let (db, fixtures, pool) = start().await;
+    let alpha = fixtures.alpha.id;
+    let mut conn = db.connect().await.expect("connection");
+    let (spine, version) =
+        a_file_on_a_spine(&mut conn, alpha, fixtures.alpha.owner, "AVAILABLE", "CLEAN").await;
+    enqueue(&mut conn, alpha, spine.file, version).await.expect("enqueue");
+
+    let writer = Arc::new(RecordingWriter::refusing());
+    let (stage, _embedded) = working_stage(Arc::clone(&writer), Box::new(FixedRank(RESTRICTED)));
+    let store = Arc::new(RecordingStore::new(DOCUMENT));
+
+    let error = index_pass(
+        &pool,
+        alpha,
+        &pipeline(),
+        None,
+        Some(&stage),
+        store.as_ref(),
+        versions(),
+        RenderBudget::default(),
+        10,
+        &Stop::new(),
+    )
+    .await
+    .expect_err("a store that refuses the batch must not leave a READY manifest");
+    assert!(matches!(error, WorkerError::Search(_)), "{error:?}");
+
+    assert_eq!(
+        manifest_status(&mut conn, spine.file).await.0,
+        "EXTRACTING",
+        "the manifest completed over a batch the store refused"
+    );
+    assert_eq!(
+        chunk_rows(&mut conn, spine.file).await,
+        0,
+        "chunk text was committed over a batch the store refused"
+    );
+
+    drop(db);
+}
+
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL with migrations 0001–0014; CI runs it with --include-ignored"]
+async fn a_provider_whose_vectors_are_not_the_collections_width_is_refused_before_the_store() {
+    // The per-batch half of `ENC-533`. The collection was created at the active model's width and
+    // the provider is emitting another one, which means it is a different model: re-sending will
+    // fail identically, and writing it would put two widths in one collection.
+    //
+    // Refused before the store rather than by it, so the error names both numbers — `crates/search`
+    // discards a Milvus error's message on purpose (`CLAUDE.md` rule 10), leaving an operator with
+    // `the vector index could not answer "upsert"` and no width at all.
+    let (db, fixtures, pool) = start().await;
+    let alpha = fixtures.alpha.id;
+    let mut conn = db.connect().await.expect("connection");
+    let (spine, version) =
+        a_file_on_a_spine(&mut conn, alpha, fixtures.alpha.owner, "AVAILABLE", "CLEAN").await;
+    enqueue(&mut conn, alpha, spine.file, version).await.expect("enqueue");
+
+    let writer = Arc::new(RecordingWriter::default());
+    let (narrow, _calls) = FixedWidthLocal::new(8);
+    let stage = VectorStage::for_collection(
+        Box::new(EmbeddingRouter::new(narrow, Forbidden, LocalCeiling::at(RESTRICTED))),
+        Box::new(FixedRank(RESTRICTED)),
+        Box::new(ArcWriter(Arc::clone(&writer))),
+        ACTIVE.dimension,
+    )
+    .expect("the collection is the active model's width");
+    let store = Arc::new(RecordingStore::new(DOCUMENT));
+
+    let error = index_pass(
+        &pool,
+        alpha,
+        &pipeline(),
+        None,
+        Some(&stage),
+        store.as_ref(),
+        versions(),
+        RenderBudget::default(),
+        10,
+        &Stop::new(),
+    )
+    .await
+    .expect_err("an 8-wide vector in a 1024-wide collection must not be written");
+    match error {
+        WorkerError::CollectionWidth { collection, model } => {
+            assert_eq!(collection, ACTIVE.dimension);
+            assert_eq!(model, 8);
+        }
+        other => panic!("expected a width refusal naming both numbers, got {other:?}"),
+    }
+
+    assert!(writer.written().is_empty(), "a mis-sized vector reached the store");
+    assert_eq!(manifest_status(&mut conn, spine.file).await.0, "EXTRACTING");
+    assert_eq!(chunk_rows(&mut conn, spine.file).await, 0);
+
+    drop(db);
+}
+
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL with migrations 0001–0014; CI runs it with --include-ignored"]
+async fn a_pass_with_no_stage_indexes_exactly_as_before_and_claims_no_model() {
+    // The other half of the `Option`. A deployment that has configured no embedding model and no
+    // vector store keeps indexing text, and its manifest says `""` — which `BuildVersions`
+    // documents as the honest value for a deployment where nothing has embedded.
+    //
+    // The pair with `a_ready_file_is_embedded_and_its_chunks_written_to_the_vector_store` is the
+    // point: one asserts the column is `test-local/1` when a stage ran, this one that it is empty
+    // when none did. Either alone passes against a manifest writer that ignores the argument.
+    let (db, fixtures, pool) = start().await;
+    let alpha = fixtures.alpha.id;
+    let mut conn = db.connect().await.expect("connection");
+    let (spine, version) =
+        a_file_on_a_spine(&mut conn, alpha, fixtures.alpha.owner, "AVAILABLE", "CLEAN").await;
+    enqueue(&mut conn, alpha, spine.file, version).await.expect("enqueue");
+
+    let store = Arc::new(RecordingStore::new(DOCUMENT));
+    let pass = index_pass(
+        &pool,
+        alpha,
+        &pipeline(),
+        None,
+        None,
+        store.as_ref(),
+        versions(),
+        RenderBudget::default(),
+        10,
+        &Stop::new(),
+    )
+    .await
+    .expect("pass");
+
+    assert_eq!(pass.indexed, 1);
+    assert_eq!(pass.embedded, 0, "a pass with no stage embedded something");
+    assert_eq!(manifest_status(&mut conn, spine.file).await.0, "READY");
+    assert!(chunk_rows(&mut conn, spine.file).await > 0);
+    assert_eq!(manifest_model(&mut conn, spine.file).await, "");
+
+    drop(db);
+}
+
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL and Milvus; CI runs it with --include-ignored"]
+async fn the_pass_fills_a_real_collection_and_the_chunks_come_back_out() {
+    // `ENC-557` end to end. Everything above uses a fake store, which can prove what we handed over
+    // and not that the collection stopped being empty — and "the collection is empty in any real
+    // deployment" is the whole of the row.
+    //
+    // The query vector is the one the double produced, so a miss here is our wiring and never
+    // ranking: `docs/12 §1.1`.
+    let (db, fixtures, pool) = start().await;
+    let alpha = fixtures.alpha.id;
+    let mut conn = db.connect().await.expect("connection");
+    let (spine, version) =
+        a_file_on_a_spine(&mut conn, alpha, fixtures.alpha.owner, "AVAILABLE", "CLEAN").await;
+    enqueue(&mut conn, alpha, spine.file, version).await.expect("enqueue");
+
+    // `ACTIVE.dimension` rather than a literal — `MilvusConfig::dimension` asks the caller building
+    // the collection to read it from there, and this is a caller that can.
+    let mut config = MilvusConfig::new(
+        std::env::var("MILVUS_URI").unwrap_or_else(|_| "http://127.0.0.1:19530".to_owned()),
+        ACTIVE.dimension,
+    );
+    config.collection = format!("enclave_worker_{}", Uuid::now_v7().simple());
+    // Strong, not the production `Bounded`: this writes and immediately reads back, and under a
+    // bounded read that race resolves differently on a loaded machine.
+    config.consistency = milvus_consistency_strong();
+    config.partitions = 2;
+
+    let index = Arc::new(MilvusIndex::new(config));
+    index.ensure_collection().await.expect("create the collection");
+
+    let (local, _calls) = FixedWidthLocal::new(ACTIVE.dimension as usize);
+    let stage = VectorStage::for_collection(
+        Box::new(EmbeddingRouter::new(local, Forbidden, LocalCeiling::at(RESTRICTED))),
+        Box::new(FixedRank(RESTRICTED)),
+        Box::new(SharedIndex(Arc::clone(&index))),
+        ACTIVE.dimension,
+    )
+    .expect("the collection is the active model's width");
+
+    let store = Arc::new(RecordingStore::new(DOCUMENT));
+    let pass = index_pass(
+        &pool,
+        alpha,
+        &pipeline(),
+        None,
+        Some(&stage),
+        store.as_ref(),
+        versions(),
+        RenderBudget::default(),
+        10,
+        &Stop::new(),
+    )
+    .await
+    .expect("pass");
+    assert_eq!(pass.embedded, 1);
+
+    let all = Prefilter::unnarrowed();
+    let candidates = index
+        .candidates(VectorQuery {
+            tenant: alpha,
+            embedding: &vec![0.25_f32; ACTIVE.dimension as usize],
+            budget: 100,
+            prefilter: &all,
+        })
+        .await
+        .expect("query the collection the pass just wrote");
+
+    assert!(
+        candidates.iter().any(|candidate| candidate.file_id == spine.file),
+        "the pass wrote no retrievable chunk: {} candidates",
+        candidates.len()
+    );
+
+    drop(db);
+}
+
+/// The strong consistency level, named here so the test above reads as prose.
+fn milvus_consistency_strong() -> milvus::v2::prelude::ConsistencyLevel {
+    milvus::v2::prelude::ConsistencyLevel::Strong
+}
+
+/// Lets the real-Milvus test keep a handle on the index it also queries.
+#[derive(Debug)]
+struct SharedIndex(Arc<MilvusIndex>);
+
+#[async_trait]
+impl VectorWriter for SharedIndex {
+    async fn upsert_chunks(&self, chunks: &[ChunkRecord]) -> core::result::Result<(), SearchError> {
+        self.0.upsert_chunks(chunks).await
+    }
+
+    async fn remove_file(
+        &self,
+        tenant: TenantId,
+        file: FileId,
+    ) -> core::result::Result<(), SearchError> {
+        self.0.remove_file(tenant, file).await
+    }
 }

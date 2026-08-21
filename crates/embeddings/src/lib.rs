@@ -61,6 +61,21 @@
 //! that comes back short ([`EmbeddingError::IncompleteBatch`]). Three separate ways for a document
 //! to end up indexed-with-nothing, all closed.
 //!
+//! # What comes back, and why the model is part of it
+//!
+//! [`EmbeddingRouter::embed`] returns an [`Embedded`] — the vectors *and* the [`ModelId`] of the
+//! provider that produced them — because the caller writing `index_manifests.embedding_model`
+//! cannot know which arm ran. The route is chosen per batch from the batch's rank, so a deployment
+//! with a ceiling embeds two files of one tenant with two different models, and a manifest that
+//! named the configured local model for both would tell `docs/07 §3`'s reindex trigger that a model
+//! swap changed nothing. The same argument [`ClassifiedText`] makes about a rank, one stage later.
+//!
+//! [`Embedder`] is the same call with both provider types erased, for the crates downstream that
+//! hold a router beside six other things and must not name `L` and `R` to do it. It erases which
+//! providers a router holds and nothing else: its argument is still a [`ClassifiedText`], which has
+//! no method that returns its chunks, so an implementation of it is subject to exactly the
+//! admission above.
+//!
 //! # What is deliberately not here
 //!
 //! **No weights, but the model is now decided.** Q14 is answered — [`model::ACTIVE`] is `bge-m3`
@@ -96,5 +111,5 @@ pub use model::{EmbeddingModel, ACTIVE, DELIVERY};
 pub use provider::{
     Availability, Embedding, EmbeddingProvider, ModelId, NoLocalModel, NoRemoteProvider,
 };
-pub use router::EmbeddingRouter;
+pub use router::{Embedded, Embedder, EmbeddingRouter};
 pub use text::{ClassifiedText, LocalCeiling, TextBatch};

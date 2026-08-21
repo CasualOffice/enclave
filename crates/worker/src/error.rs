@@ -71,6 +71,56 @@ pub enum WorkerError {
         missing: &'static str,
     },
 
+    /// Producing a chunk's vectors failed or was refused (`ENC-557`).
+    ///
+    /// Always transient, by construction: `crates/embeddings/src/error.rs` has no variant meaning
+    /// "this text will not embed", because there is no such text and a final error here is a
+    /// document whose manifest completes with no vectors. So this stops the pass and the file stays
+    /// claimed, exactly as an object-storage outage does — it never becomes a `FAILED` manifest,
+    /// which is a verdict about somebody's document.
+    #[error("embedding a version's chunks failed")]
+    Embedding(#[from] enclave_embeddings::EmbeddingError),
+
+    /// A file's effective classification could not be resolved, so its text was not embedded.
+    ///
+    /// **The deny-by-default answer to a gap, not a failure.** `ClassifiedText::new` requires the
+    /// resource's effective classification — the label after the classification stage has run — and
+    /// this deployment has no classification service and no `classifications` table for a rank to
+    /// come from. Everything downstream of the rank is a faithful consequence of it and nothing
+    /// downstream can detect that it is wrong: a fabricated `PUBLIC` would route a restricted
+    /// document to a hosted endpoint under a ceiling that was working correctly, and a fabricated
+    /// ceiling-height rank would write a `classification_rank` no caller's ceiling admits, which is
+    /// a document that is filed, visible and absent from every search.
+    ///
+    /// So the file is not embedded and not recorded. Carries nothing: which file it was belongs in
+    /// the pass's own span, and the reason is the same for every file in the deployment.
+    #[error(
+        "no classification service is configured, so a file's effective classification cannot be \
+         resolved and its text cannot be routed to an embedding provider"
+    )]
+    Unclassified,
+
+    /// The vector collection's dense width and the active embedding model's disagree (`ENC-533`).
+    ///
+    /// Refused at the point a stage is built rather than at the first write, because the width is
+    /// fixed when the collection is *created*: a mismatch discovered later costs a new collection
+    /// and every chunk of every tenant re-embedded (`docs/07 §9`). It is also refused per batch, for
+    /// a provider whose vectors are not the width its deployment claimed.
+    ///
+    /// Both fields are widths — a configured integer and a compiled-in constant — so this message
+    /// cannot name a path, a row or a document (`CLAUDE.md` rule 10).
+    #[error(
+        "the vector collection is {collection} dimensions wide and the embedding model emits \
+         {model}; a collection's width is fixed at creation, so this is a reindex and not a \
+         configuration edit"
+    )]
+    CollectionWidth {
+        /// What the collection was created with.
+        collection: u32,
+        /// What the model produces.
+        model: u32,
+    },
+
     /// A stored row could not be interpreted.
     ///
     /// Fixed vocabulary rather than the offending value: these loops read rows written by the
