@@ -1776,6 +1776,7 @@ dependencies = [
  "bytes",
  "chrono",
  "enclave-audit",
+ "enclave-authorization",
  "enclave-config",
  "enclave-core",
  "enclave-db",

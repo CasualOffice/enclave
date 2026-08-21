@@ -229,6 +229,40 @@ async fn manifest_status(conn: &mut PgConnection, file: FileId) -> (String, i32)
     (row.try_get("status").expect("status"), row.try_get("attempts").expect("attempts"))
 }
 
+/// Grants the two actions a search hit needs, so the post-filter is not what this test measures.
+///
+/// `MetadataRead` to see the hit at all and `ContentRead` for the excerpt — both, because a test
+/// that granted only the first would pass while proving that the *disclosure* rule works, which is
+/// `crates/search`'s job and already covered there.
+async fn grant_read(conn: &mut PgConnection, tenant: TenantId, file: FileId, caller: UserId) {
+    for action in ["file.metadata_read", "file.content_read"] {
+        sqlx::query(
+            "INSERT INTO acl_entries
+               (id, tenant_id, resource_type, resource_id, principal_type, principal_id, action,
+                effect, granted_by, granted_at)
+             VALUES ($1, $2, 'FILE', $3, 'USER', $4, $5, 'ALLOW', $6, $7)",
+        )
+        .bind(Uuid::now_v7())
+        .bind(tenant.as_uuid())
+        .bind(file.as_uuid())
+        .bind(caller.as_uuid())
+        .bind(action)
+        .bind(Uuid::nil())
+        .bind(Utc::now())
+        .execute(&mut *conn)
+        .await
+        .expect("grant");
+    }
+}
+
+/// A request context for the caller the grants above name.
+fn search_ctx(tenant: TenantId, actor: UserId) -> enclave_core::RequestContext {
+    enclave_core::RequestContext {
+        actor: enclave_core::Actor::User(actor),
+        ..enclave_core::RequestContext::system(tenant)
+    }
+}
+
 async fn chunk_rows(conn: &mut PgConnection, file: FileId) -> i64 {
     sqlx::query("SELECT count(*) AS n FROM chunk_text WHERE file_id = $1")
         .bind(file.as_uuid())
@@ -1294,4 +1328,104 @@ impl VectorWriter for SharedIndex {
     ) -> core::result::Result<(), SearchError> {
         self.0.remove_file(tenant, file).await
     }
+}
+
+/// **The exit criterion's last unjoined boundary**: text an indexing pass committed is text
+/// lexical search finds.
+///
+/// M3 asks that a document be "searchable by its content". Three tests already cover the path in
+/// overlapping segments, each with real components — `crates/indexing/tests/pdf.rs` takes a scanned
+/// PDF through PDFium and `ocrs` to chunks that cite their page, `ocr_mounts.rs` takes a textless
+/// outcome through the mounted stage to committed `chunk_text`, and
+/// `crates/search/tests/lexical_content.rs` takes `chunk_text` to a search hit. What none of them
+/// did was cross the last join in one process: a **pass** writing rows, and a **search** reading
+/// them back.
+///
+/// That join is where an assumption would hide — the pass writing to a shape the search does not
+/// read, or writing under a tenant the search does not scope to — and both would leave every
+/// existing test green.
+///
+/// # Why the query is taken from what was stored
+///
+/// The word searched for is read out of `chunk_text`, not written into this test. Asserting a
+/// literal would make the test a claim about *extraction* — and on the OCR path that is the
+/// engine's accuracy against a platform's font rasterisation, which `ENC-569` removed from a test
+/// for failing on Linux while passing on macOS (`docs/12 §1.1`). What is asserted here is the
+/// property that belongs to us: whatever the pipeline committed is retrievable by searching for it.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL with migrations 0001–0017; CI runs it with --include-ignored"]
+async fn text_an_indexing_pass_committed_is_text_lexical_search_finds() {
+    use enclave_authorization::PgAclAuthorization;
+    use enclave_db::TenantScoped;
+    use enclave_search::degraded::{Retrieval, VectorStore};
+    use enclave_search::{lexical, SearchResults, DEFAULT_DENYLIST_LIMIT};
+
+    let (db, fixtures, pool) = start().await;
+    let alpha = fixtures.alpha.id;
+    let mut conn = db.connect().await.expect("connection");
+    let (spine, version) =
+        a_file_on_a_spine(&mut conn, alpha, fixtures.alpha.owner, "AVAILABLE", "CLEAN").await;
+    enqueue(&mut conn, alpha, spine.file, version).await.expect("enqueue");
+    grant_read(&mut conn, alpha, spine.file, fixtures.alpha.owner).await;
+
+    let store = Arc::new(RecordingStore::new("the perihelion review procedure is annual"));
+    let pass = index_pass(
+        &pool,
+        alpha,
+        &pipeline(),
+        None,
+        None,
+        store.as_ref(),
+        versions(),
+        RenderBudget::default(),
+        10,
+        &Stop::new(),
+    )
+    .await
+    .expect("pass");
+    assert_eq!(pass.indexed, 1, "the pass indexed nothing, so there is nothing to find");
+
+    // The query comes out of the rows the pass wrote, so this asserts retrieval and never
+    // extraction. A word of six characters or more avoids the stop-word-ish noise a one-letter
+    // token would match everywhere.
+    let stored: String = sqlx::query("SELECT text FROM chunk_text WHERE file_id = $1 LIMIT 1")
+        .bind(spine.file.as_uuid())
+        .fetch_one(&mut conn)
+        .await
+        .expect("the pass committed chunk text")
+        .try_get("text")
+        .expect("text");
+    let word = stored
+        .split_whitespace()
+        .find(|w| w.chars().filter(|c| c.is_alphanumeric()).count() >= 6)
+        .expect("the committed text holds a word worth searching for")
+        .trim_matches(|c: char| !c.is_alphanumeric())
+        .to_owned();
+
+    let authorization = PgAclAuthorization::new(pool.clone());
+    let mut tx = TenantScoped::begin(&pool, alpha).await.expect("begin");
+    // `DegradedReason` has no public constructor — it is reachable only through `Retrieval::decide`,
+    // which is what stops a degraded result being fabricated. Obtained the same way the search
+    // crate's own tests obtain it.
+    let reason = match Retrieval::decide(VectorStore::Unreachable, 0, DEFAULT_DENYLIST_LIMIT) {
+        Retrieval::Degraded(reason) => reason,
+        Retrieval::Complete => panic!("an unreachable vector store must degrade"),
+    };
+    let candidates =
+        lexical::candidates(&mut tx, alpha, &word, 20, reason).await.expect("lexical candidates");
+    let results = SearchResults::confirm_degraded(
+        &mut tx,
+        &authorization,
+        &search_ctx(alpha, fixtures.alpha.owner),
+        candidates,
+    )
+    .await
+    .expect("confirm");
+    tx.commit().await.expect("commit");
+
+    assert!(
+        results.hits().iter().any(|hit| hit.file_id == spine.file),
+        "a document the pass indexed was not findable by a word the pass itself stored \
+         (searched {word:?})"
+    );
 }

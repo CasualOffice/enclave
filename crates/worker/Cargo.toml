@@ -47,6 +47,9 @@ uuid      = { workspace = true }
 
 [dev-dependencies]
 enclave-testing = { workspace = true }
+# `ENC-577`'s end-to-end test confirms a search hit through the real post-filter, which needs a real
+# `AuthorizationService`. A dev edge only: the worker never authorizes anything itself.
+enclave-authorization = { workspace = true }
 # `ENC-557`'s last test runs the whole pass against a real collection, and setting `Strong`
 # consistency for a write-then-read is the SDK's own type. `crates/search/tests/vector_write.rs`
 # takes the same dependency for the same reason: the knob is what stops the test sleeping.
