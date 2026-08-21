@@ -94,6 +94,14 @@ pub enum SegmentKind {
     SheetRange,
     /// One slide of a deck.
     Slide,
+    /// One page of a paginated document.
+    ///
+    /// The paginated analogue of [`Slide`](Self::Slide), and structural for the same reason
+    /// (`crate::chunk`): [`Coordinates`] carries **one** page number, so a chunk merged across a
+    /// page boundary cites one page for text that is on two. `docs/07 §2.1` asks a PDF extractor for
+    /// *"per-page text with coordinates"*, and this is the kind that keeps the second half of that
+    /// true after chunking.
+    Page,
     /// A fenced or indented block of code.
     CodeBlock,
     /// An ordered or unordered list.
@@ -116,6 +124,7 @@ impl SegmentKind {
             Self::RowGroup => "row_group",
             Self::SheetRange => "sheet_range",
             Self::Slide => "slide",
+            Self::Page => "page",
             Self::CodeBlock => "code_block",
             Self::List => "list",
         }
@@ -284,6 +293,7 @@ mod tests {
             SegmentKind::RowGroup,
             SegmentKind::SheetRange,
             SegmentKind::Slide,
+            SegmentKind::Page,
             SegmentKind::CodeBlock,
             SegmentKind::List,
         ] {

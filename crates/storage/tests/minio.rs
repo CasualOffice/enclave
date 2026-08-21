@@ -8,15 +8,27 @@
 //! self-check has to work on where the AWS-only APIs do not exist.
 //!
 //! ```text
-//! export ENCLAVE_TEST_S3_ENDPOINT=http://localhost:9000
-//! export ENCLAVE_TEST_S3_ACCESS_KEY_ID=enclave
-//! export ENCLAVE_TEST_S3_SECRET_ACCESS_KEY=…      # matches ENCLAVE_DEV_MINIO_PASSWORD
+//! export TEST_S3_ENDPOINT=http://localhost:9000
+//! export TEST_S3_ACCESS_KEY_ID=enclave
+//! export TEST_S3_SECRET_ACCESS_KEY=…      # whatever the MinIO you point at was started with:
+//!                                         # ENCLAVE_DEV_MINIO_PASSWORD for the compose stack,
+//!                                         # `enclave-dev-secret` for CI's standalone container
 //! cargo test -p enclave-storage --test minio -- --include-ignored
 //! ```
 //!
 //! The credentials are read as `env://` [`SecretRef`]s, not as literals — the same path production
 //! uses, so the test exercises the credential resolution rather than routing around it
 //! (`CLAUDE.md` rule 11).
+//!
+//! # Why the names have no `ENCLAVE_` prefix
+//!
+//! They did until `ENC-544`, and it was a live tripwire. `ENCLAVE_` is `ConfigLoader`'s namespace:
+//! it reads the whole process environment, so `ENCLAVE_TEST_S3_SECRET_ACCESS_KEY` became a
+//! configuration field called `test_s3_secret_access_key`, the inline-credential scanner classed it
+//! as a credential and refused it on entropy, and **any process started from a shell with these
+//! exported would not start**. A test variable is not configuration and must not be named as
+//! though it were. `deploy/README.md` states the rule and
+//! `crates/config/tests/ambient_environment.rs` enforces it.
 //!
 //! # The test that matters
 //!
@@ -54,11 +66,11 @@ use enclave_storage::{
 /// Attached to every `#[ignore]` so the harness is named at the test rather than in a comment
 /// somebody has to go looking for.
 const NEEDS_MINIO: &str =
-    "requires the dev-stack MinIO and ENCLAVE_TEST_S3_*; CI runs it with --include-ignored";
+    "requires the dev-stack MinIO and TEST_S3_*; CI runs it with --include-ignored";
 
-const ENDPOINT: &str = "ENCLAVE_TEST_S3_ENDPOINT";
-const ACCESS_KEY: &str = "ENCLAVE_TEST_S3_ACCESS_KEY_ID";
-const SECRET_KEY: &str = "ENCLAVE_TEST_S3_SECRET_ACCESS_KEY";
+const ENDPOINT: &str = "TEST_S3_ENDPOINT";
+const ACCESS_KEY: &str = "TEST_S3_ACCESS_KEY_ID";
+const SECRET_KEY: &str = "TEST_S3_SECRET_ACCESS_KEY";
 
 /// A configuration pointing at a fresh, empty bucket that this test owns.
 async fn fixture() -> (S3Config, aws_sdk_s3::Client, SecretRegistry) {
@@ -188,7 +200,7 @@ fn direct_url(endpoint: &url::Url, bucket: &str, key: &ObjectKey) -> url::Url {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-#[ignore = "requires the dev-stack MinIO and ENCLAVE_TEST_S3_*; CI runs it with --include-ignored"]
+#[ignore = "requires the dev-stack MinIO and TEST_S3_*; CI runs it with --include-ignored"]
 async fn a_private_bucket_passes_the_self_check() {
     let (config, _admin, secrets) = fixture().await;
     let bucket = config.bucket.clone();
@@ -218,7 +230,7 @@ async fn a_private_bucket_passes_the_self_check() {
 
 /// The test this whole module exists for.
 #[tokio::test]
-#[ignore = "requires the dev-stack MinIO and ENCLAVE_TEST_S3_*; CI runs it with --include-ignored"]
+#[ignore = "requires the dev-stack MinIO and TEST_S3_*; CI runs it with --include-ignored"]
 async fn a_public_bucket_is_refused() {
     let (config, admin, secrets) = fixture().await;
     let bucket = config.bucket.clone();
@@ -257,7 +269,7 @@ async fn a_public_bucket_is_refused() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-#[ignore = "requires the dev-stack MinIO and ENCLAVE_TEST_S3_*; CI runs it with --include-ignored"]
+#[ignore = "requires the dev-stack MinIO and TEST_S3_*; CI runs it with --include-ignored"]
 async fn a_single_shot_upload_round_trips_through_a_pre_signed_url() {
     let (config, _admin, secrets) = fixture().await;
     let store = S3BlobStore::connect_and_verify(config, &secrets).await.expect("connect");
@@ -320,7 +332,7 @@ async fn a_single_shot_upload_round_trips_through_a_pre_signed_url() {
 }
 
 #[tokio::test]
-#[ignore = "requires the dev-stack MinIO and ENCLAVE_TEST_S3_*; CI runs it with --include-ignored"]
+#[ignore = "requires the dev-stack MinIO and TEST_S3_*; CI runs it with --include-ignored"]
 async fn a_multipart_upload_round_trips() {
     let (config, _admin, secrets) = fixture().await;
     let part_size = config.part_size_bytes as usize;
@@ -367,7 +379,7 @@ async fn a_multipart_upload_round_trips() {
 }
 
 #[tokio::test]
-#[ignore = "requires the dev-stack MinIO and ENCLAVE_TEST_S3_*; CI runs it with --include-ignored"]
+#[ignore = "requires the dev-stack MinIO and TEST_S3_*; CI runs it with --include-ignored"]
 async fn completing_before_every_part_is_reported_is_refused() {
     let (config, _admin, secrets) = fixture().await;
     let store = S3BlobStore::connect_and_verify(config, &secrets).await.expect("connect");
@@ -389,7 +401,7 @@ async fn completing_before_every_part_is_reported_is_refused() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-#[ignore = "requires the dev-stack MinIO and ENCLAVE_TEST_S3_*; CI runs it with --include-ignored"]
+#[ignore = "requires the dev-stack MinIO and TEST_S3_*; CI runs it with --include-ignored"]
 async fn capabilities_report_what_minio_actually_does() {
     let (config, _admin, secrets) = fixture().await;
     let max_ttl = config.max_signed_url_ttl.as_duration();
@@ -417,7 +429,7 @@ async fn capabilities_report_what_minio_actually_does() {
 }
 
 #[tokio::test]
-#[ignore = "requires the dev-stack MinIO and ENCLAVE_TEST_S3_*; CI runs it with --include-ignored"]
+#[ignore = "requires the dev-stack MinIO and TEST_S3_*; CI runs it with --include-ignored"]
 async fn a_ttl_above_the_configured_ceiling_is_refused_rather_than_clamped() {
     let (config, _admin, secrets) = fixture().await;
     let store = S3BlobStore::connect_and_verify(config, &secrets).await.expect("connect");
@@ -438,7 +450,7 @@ async fn a_ttl_above_the_configured_ceiling_is_refused_rather_than_clamped() {
 /// Object storage has no row-level security, so the canonical-key check is the equivalent control:
 /// a caller cannot ask the store to sign, read, copy or delete a path of its own choosing.
 #[tokio::test]
-#[ignore = "requires the dev-stack MinIO and ENCLAVE_TEST_S3_*; CI runs it with --include-ignored"]
+#[ignore = "requires the dev-stack MinIO and TEST_S3_*; CI runs it with --include-ignored"]
 async fn a_key_outside_the_canonical_layout_never_reaches_the_provider() {
     let (config, _admin, secrets) = fixture().await;
     let store = S3BlobStore::connect_and_verify(config, &secrets).await.expect("connect");
@@ -462,7 +474,7 @@ async fn a_key_outside_the_canonical_layout_never_reaches_the_provider() {
 /// A bucket that does not exist must fail at construction with a message naming the field to
 /// change, not at the first upload with a signature error hours later.
 #[tokio::test]
-#[ignore = "requires the dev-stack MinIO and ENCLAVE_TEST_S3_*; CI runs it with --include-ignored"]
+#[ignore = "requires the dev-stack MinIO and TEST_S3_*; CI runs it with --include-ignored"]
 async fn a_missing_bucket_fails_at_connect() {
     let (mut config, _admin, secrets) = fixture().await;
     config.bucket = format!("enclave-absent-{}", TenantId::new_v7());
@@ -477,15 +489,15 @@ async fn a_missing_bucket_fails_at_connect() {
 /// The credential path is the production one: `env://` references resolved through
 /// `SecretRegistry`. An unset reference must fail closed, naming the reference and not the value.
 #[tokio::test]
-#[ignore = "requires the dev-stack MinIO and ENCLAVE_TEST_S3_*; CI runs it with --include-ignored"]
+#[ignore = "requires the dev-stack MinIO and TEST_S3_*; CI runs it with --include-ignored"]
 async fn an_unresolvable_credential_reference_fails_closed() {
     let (mut config, _admin, secrets) = fixture().await;
-    config.access_key_id = "env://ENCLAVE_TEST_S3_DEFINITELY_NOT_SET".parse().unwrap();
+    config.access_key_id = "env://TEST_S3_DEFINITELY_NOT_SET".parse().unwrap();
 
     let err = S3BlobStore::connect(config, &secrets).await.expect_err("the reference is unset");
     match err {
         StorageError::Credential { reference, .. } => {
-            assert_eq!(reference, "env://ENCLAVE_TEST_S3_DEFINITELY_NOT_SET");
+            assert_eq!(reference, "env://TEST_S3_DEFINITELY_NOT_SET");
         }
         other => panic!("expected a credential failure, got: {other:?}"),
     }
@@ -505,7 +517,7 @@ async fn an_unresolvable_credential_reference_fails_closed() {
 /// names. The object is confirmed readable *with* a signature first, so the refusal cannot be a
 /// missing object wearing a `403`.
 #[tokio::test]
-#[ignore = "requires the dev-stack MinIO and ENCLAVE_TEST_S3_*; CI runs it with --include-ignored"]
+#[ignore = "requires the dev-stack MinIO and TEST_S3_*; CI runs it with --include-ignored"]
 async fn a5_a_stored_object_is_unreachable_without_a_signature() {
     let (config, _admin, secrets) = fixture().await;
     let bucket = config.bucket.clone();
@@ -565,7 +577,7 @@ async fn a5_a_stored_object_is_unreachable_without_a_signature() {
 /// the last moment, never cached, short TTL) visibly the *only* thing between a captured URL and
 /// the bytes, so a future caller cannot quietly start treating a URL as spent.
 #[tokio::test]
-#[ignore = "requires the dev-stack MinIO and ENCLAVE_TEST_S3_*; CI runs it with --include-ignored"]
+#[ignore = "requires the dev-stack MinIO and TEST_S3_*; CI runs it with --include-ignored"]
 async fn a6_a_signed_url_stops_working_at_expiry_and_replays_until_then() {
     // SigV4 caps a pre-signed URL at seven days but imposes no floor, so seconds is a legitimate
     // TTL and this test costs single digits. It is not shorter because the provider judges expiry

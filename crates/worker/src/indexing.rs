@@ -29,6 +29,31 @@
 //! Files are separate transactions from each other. One document that fails to parse must not roll
 //! back the twenty indexed before it, and each is independently retryable because the manifest
 //! records where it got to.
+//!
+//! # Where OCR joins, and where it does not
+//!
+//! `ENC-546`. [`MountedOcr`](crate::ocr::MountedOcr) is [`Option`]al and threaded through as a
+//! parameter, because "this deployment has no OCR" is the ordinary case and must cost nothing —
+//! not a branch that could be wrong, not a byte re-read, not a call. `None` and today's behaviour
+//! are the same behaviour.
+//!
+//! When it is present, it runs **after** [`Pipeline::prepare`] and **only** on
+//! [`Outcome::NoText`]. Two things about that placement are worth stating, because both are easy to
+//! get subtly wrong:
+//!
+//! 1. **The `NoText` test here is an optimisation, not the guarantee.** `OcrRetry::retry` already
+//!    returns any other outcome untouched, and that is where the rule lives — it is the property
+//!    that stops OCR turning *"this document failed"* into *"this document is empty"*. Deleting the
+//!    test below changes no manifest; it only makes every indexed document pay for a second storage
+//!    read. It is written this way for the same reason `pipeline::decide`'s `is_empty` early exit
+//!    is, and labelled the same way so nobody later mistakes it for the control.
+//! 2. **The bytes are read a second time rather than kept.** The first read is moved into the
+//!    extractor, and cloning it would double a worker's peak residency — up to
+//!    `max_output_bytes` twice, per document in flight — for a copy that is discarded unused on
+//!    every document that produced text. The second read happens only for a document that produced
+//!    none, and goes through the same bounded [`read_bounded`], so nothing is truncated and nothing
+//!    unbounded is held. The cost is one extra `read_range` on the textless path; the alternative is
+//!    a permanent doubling on every path.
 
 use enclave_core::TenantId;
 use enclave_db::DbPool;
@@ -40,6 +65,7 @@ use enclave_preview::RenderBudget;
 use enclave_storage::{BlobStore, ByteRange};
 use tracing::debug;
 
+use crate::ocr::MountedOcr;
 use crate::{Result, Stop, WorkerError};
 
 /// What one pass over a tenant's queue did.
@@ -63,6 +89,14 @@ pub struct IndexPass {
     pub deferred: usize,
     /// Whether the pass returned early because [`Stop`] was raised.
     pub stopped: bool,
+    /// Files whose textless outcome was handed to the OCR stage.
+    ///
+    /// Counted because it is otherwise unobservable, and because it is the number that says whether
+    /// a mount is doing anything: `ocr_attempted` flat at zero on a deployment that mounted the
+    /// volumes means nothing is reaching the stage — which is what a text extractor answering
+    /// `Unsupported` for `application/pdf` looks like from here, and is exactly the gap `ENC-545`
+    /// closes. It is not a success count; a rescued document also increments `indexed`.
+    pub ocr_attempted: usize,
 }
 
 /// Indexes up to `batch` of one tenant's queued files.
@@ -80,6 +114,7 @@ pub async fn index_pass<E: Extractor, S: BlobStore + ?Sized>(
     pool: &DbPool,
     tenant: TenantId,
     pipeline: &Pipeline<E>,
+    ocr: Option<&MountedOcr>,
     store: &S,
     versions: BuildVersions<'_>,
     budget: RenderBudget,
@@ -123,7 +158,18 @@ pub async fn index_pass<E: Extractor, S: BlobStore + ?Sized>(
             budget,
         };
 
-        let prepared = pipeline.prepare(file.version_id, request).await?;
+        let mut prepared = pipeline.prepare(file.version_id, request).await?;
+
+        // The stage, when a deployment mounted one. `matches!` is the optimisation the module
+        // documentation labels: `MountedOcr::retry` returns any other outcome untouched, so removing
+        // it changes no manifest and only makes every document pay the re-read below.
+        if let Some(stage) = ocr {
+            if matches!(prepared.outcome, Outcome::NoText(_)) {
+                outcome.ocr_attempted += 1;
+                let source = read_bounded(store, readable.object_key(), &budget).await?;
+                prepared = stage.retry(file.version_id, prepared, source).await?;
+            }
+        }
 
         if let Outcome::Ready { .. } = prepared.outcome {
             write_chunks(
@@ -153,6 +199,7 @@ pub async fn index_pass<E: Extractor, S: BlobStore + ?Sized>(
         failed = outcome.failed,
         skipped = outcome.skipped,
         deferred = outcome.deferred,
+        ocr_attempted = outcome.ocr_attempted,
         stopped = outcome.stopped,
         "indexing pass complete"
     );
@@ -205,6 +252,26 @@ mod tests {
             skipped: 1,
             deferred: 1,
             stopped: false,
+            ocr_attempted: 0,
+        };
+        assert_eq!(pass.indexed + pass.failed + pass.skipped + pass.deferred, pass.claimed);
+    }
+
+    /// `ocr_attempted` is outside that sum, deliberately.
+    ///
+    /// It is not a fifth disposition — a document handed to OCR still ends up in exactly one of the
+    /// four. Adding it to the total would make the invariant above false for every deployment that
+    /// mounted the volumes, which is the one whose numbers an operator most needs to trust.
+    #[test]
+    fn ocr_attempts_are_not_a_fifth_disposition() {
+        let pass = IndexPass {
+            claimed: 2,
+            indexed: 1,
+            failed: 1,
+            skipped: 0,
+            deferred: 0,
+            stopped: false,
+            ocr_attempted: 2,
         };
         assert_eq!(pass.indexed + pass.failed + pass.skipped + pass.deferred, pass.claimed);
     }

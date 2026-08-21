@@ -71,6 +71,7 @@ pub mod migrate;
 pub mod normalize;
 pub mod pool;
 pub mod tenant;
+pub mod tenants;
 
 pub use config::{ConnectionUrl, DbConfig};
 pub use cursor::{Cursor, FilterFingerprint, InvalidCursor, PageSize};
@@ -80,6 +81,7 @@ pub use migrate::{run_migrations, run_migrations_on, MIGRATIONS};
 pub use normalize::normalize_slug;
 pub use pool::{DbPool, PlatformConnection};
 pub use tenant::TenantScoped;
+pub use tenants::active_tenants;
 
 /// Result alias for this crate's fallible operations.
 ///

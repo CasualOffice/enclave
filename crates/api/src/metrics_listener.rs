@@ -1,64 +1,35 @@
-//! The metrics listener — a socket of its own, serving the Prometheus exposition and nothing else.
+//! The API's metrics listener — the socket, not the exposition.
 //!
 //! `ENC-521` added the metrics themselves and left this gap: `render_prometheus()` existed and
-//! nothing called it, so the scrape target was a 404 and no alert in
+//! nothing called it, so the scrape target was a 404 and no rule in
 //! `deploy/monitoring/alerts/search.yml` could ever fire. A metric nobody serves reads as "zero"
 //! forever, which is indistinguishable from a healthy system.
+//!
+//! # Why the router moved, and why this file stayed
+//!
+//! `ENC-548` moved [`serve`] and [`router`] to
+//! [`enclave_observability::exposition`](enclave_observability::exposition), because the worker
+//! process now publishes gauges too (`crates/worker/src/coverage.rs`) and had no socket of its own —
+//! the same shape as `ENC-521`, one process along. `worker → api` is the wrong direction for a
+//! dependency, so the listener lives beside `render_prometheus`, which is the function it exists to
+//! call. That module holds the argument for why the exposition is a *separate socket* rather than a
+//! route on [`crate::router`]; it has not changed and it is not restated here.
+//!
+//! This module stayed as the API's binding point rather than being deleted, for two reasons. It is
+//! the one file `xtask policy-routing` permits to register `/metrics`, and that exemption is worth
+//! keeping pointed at a file whose whole contents are the metrics listener. And the tests below —
+//! that the API's `/metrics` answers with the exposition content type, and answers nothing else —
+//! are assertions about *this binary's* scrape target, which is what an operator actually curls.
 
-use core::future::Future;
-
-use axum::http::header::CONTENT_TYPE;
-use axum::routing::get;
-use axum::Router;
-use enclave_observability::metrics::{render_prometheus, EXPOSITION_CONTENT_TYPE};
-
-/// Serves `GET /metrics` until `shutdown` resolves.
-///
-/// # Why this is a separate listener and not a route on [`crate::router`]
-///
-/// The exposition carries `tenant_id` labels — which tenants exist, how much each one searches, how
-/// far behind each one's invalidation has fallen. `xtask policy-routing` allows an endpoint to skip
-/// `PolicyEngine::enforce` only when it can say nothing about a tenant, and its note on the `ready`
-/// probe states the bar directly: such a response "must never include a detail that identifies a
-/// tenant or a resource". Metrics fail that bar on purpose — per-tenant series are the point of
-/// them.
-///
-/// Both alternatives are worse. Putting `/metrics` behind the policy chain means Prometheus must
-/// hold a tenant, and there is no tenant a cross-tenant aggregate could honestly claim. Adding it
-/// to the unauthenticated allowlist publishes that data to anyone who can reach the API port.
-///
-/// A separate socket lets an operator bind this to a private interface — the default is loopback —
-/// while the API faces the world. That is emphatically *not* authentication, and
-/// [`ServerConfig::metrics_port`](enclave_config::ServerConfig) says so where an operator will read
-/// it: this is a listener they place where they want it, absent unless they ask for it.
-///
-/// It lives in its own module because `xtask policy-routing` refuses a `/metrics` registration
-/// anywhere else under `crates/api/src`. See that lint for why an allowlist entry was not the
-/// answer.
-pub async fn serve(
-    listener: tokio::net::TcpListener,
-    shutdown: impl Future<Output = ()> + Send + 'static,
-) {
-    // A failure here must not take the API down with it: losing metrics is a degraded deployment,
-    // losing the API is an outage, and the process should not turn the first into the second.
-    if let Err(error) = axum::serve(listener, router()).with_graceful_shutdown(shutdown).await {
-        tracing::error!(%error, "metrics listener stopped");
-    }
-}
-
-/// The router [`serve`] runs, built separately so a test can exercise it without binding a socket.
-pub fn router() -> Router {
-    Router::new().route(
-        "/metrics",
-        get(|| async { ([(CONTENT_TYPE, EXPOSITION_CONTENT_TYPE)], render_prometheus()) }),
-    )
-}
+pub use enclave_observability::exposition::{router, serve};
 
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
     use axum::body::Body;
+    use axum::http::header::CONTENT_TYPE;
     use axum::http::{Request, StatusCode};
+    use enclave_observability::metrics::EXPOSITION_CONTENT_TYPE;
     use tower::ServiceExt as _;
 
     use super::*;

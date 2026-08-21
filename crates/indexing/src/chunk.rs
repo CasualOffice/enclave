@@ -275,6 +275,13 @@ impl Chunker {
 /// too: merging a code block into surrounding prose produces an excerpt in which the code and the
 /// commentary are indistinguishable, and a table merged into a paragraph loses the only thing that
 /// made its rows readable.
+///
+/// [`SegmentKind::Page`] is here for the sharper version of the slide argument (`ENC-545`).
+/// [`Coordinates`] carries **one** `page_number`, and a chunk takes its coordinates from the first
+/// segment that went into it — so merging pages 4 and 5 produces a chunk that cites page 4 for text
+/// a reader will not find there. `crate::model::Coordinates` states the rule this protects: a
+/// citation that deep-links to the wrong page is worse than one that does not deep-link, because the
+/// reader believes it.
 const fn is_structural(kind: SegmentKind) -> bool {
     matches!(
         kind,
@@ -282,6 +289,7 @@ const fn is_structural(kind: SegmentKind) -> bool {
             | SegmentKind::RowGroup
             | SegmentKind::SheetRange
             | SegmentKind::Slide
+            | SegmentKind::Page
             | SegmentKind::CodeBlock
     )
 }

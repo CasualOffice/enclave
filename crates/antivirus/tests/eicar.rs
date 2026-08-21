@@ -37,12 +37,17 @@ use enclave_storage::{ByteStream, StorageError};
 
 /// Attached to every `#[ignore]` so the harness is named at the test rather than in a comment
 /// somebody has to go looking for.
-const NEEDS_CLAMD: &str = "requires a clamd on ENCLAVE_TEST_CLAMD_ADDR (default 127.0.0.1:3310); \
+const NEEDS_CLAMD: &str = "requires a clamd on TEST_CLAMD_ADDR (default 127.0.0.1:3310); \
                            CI starts one and runs this with --include-ignored";
 
 /// Where clamd is. Defaults rather than requiring the variable, so that the CI job needs one new
 /// step and no change to the `env:` block it shares with the database and object-storage tests.
-const ADDRESS_ENV: &str = "ENCLAVE_TEST_CLAMD_ADDR";
+///
+/// No `ENCLAVE_` prefix: that namespace belongs to `ConfigLoader`, which reads the whole process
+/// environment and turns anything in it into a configuration field. This variable was
+/// `ENCLAVE_TEST_CLAMD_ADDR` until `ENC-544` renamed the family; `deploy/README.md` states the rule
+/// and `crates/config/tests/ambient_environment.rs` enforces it.
+const ADDRESS_ENV: &str = "TEST_CLAMD_ADDR";
 const DEFAULT_ADDRESS: &str = "127.0.0.1:3310";
 
 /// A scanner pointed at the daemon, having first confirmed it answers.

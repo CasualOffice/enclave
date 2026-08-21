@@ -1550,11 +1550,14 @@ dependencies = [
 name = "enclave-observability"
 version = "0.1.0"
 dependencies = [
+ "axum",
  "chrono",
  "enclave-core",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
+ "tokio",
+ "tower",
  "tracing",
  "tracing-subscriber",
 ]
@@ -1768,6 +1771,7 @@ dependencies = [
 name = "enclave-worker"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "bytes",
  "chrono",

@@ -63,6 +63,27 @@ pub enum SearchError {
         reason: &'static str,
     },
 
+    /// A chunk cannot be written as the collection is shaped.
+    ///
+    /// Separate from [`SearchError::VectorIndex`] for the same reason
+    /// [`SearchError::VectorCollection`] is: no retry fixes it, and it is not an outage. It is a bug
+    /// in whatever assembled the chunk — a vector from a different model, a value longer than its
+    /// column — and it reads as internal so that an operator is sent to the indexer rather than to
+    /// Milvus's health page.
+    ///
+    /// It exists at all because the server's own rejection names the offending field in a message
+    /// this crate discards (`CLAUDE.md` rule 10, and see [`crate::writer::ChunkRecord::validate`]),
+    /// so without it a refused batch arrives as `the vector index could not answer \`upsert\`` and
+    /// nothing more. A refused batch is a set of files that are silently unfindable, so the row has
+    /// to be identifiable.
+    #[error("the chunk cannot be indexed: `{column}` {reason}")]
+    UnindexableChunk {
+        /// The field that cannot be written, from a fixed set.
+        column: &'static str,
+        /// Why, in fixed vocabulary. Never the value, which is document text or a tenant id.
+        reason: &'static str,
+    },
+
     /// Authorization could not be resolved.
     ///
     /// Propagated, never converted into "this candidate is not visible". A resolver that failed on
@@ -123,6 +144,17 @@ mod tests {
             SearchError::VectorIndex { operation: "search", retryable: true }.into();
         assert!(matches!(error, CoreError::Upstream { dependency: Dependency::Milvus, .. }));
         assert_eq!(error.status_code(), 503);
+    }
+
+    #[test]
+    fn an_unindexable_chunk_is_the_indexers_bug_and_not_milvuss() {
+        // Reporting it as `Upstream { Milvus }` would send an operator to look at the store's
+        // health while an indexing worker quietly refuses every batch it assembles — and a
+        // retryable upstream failure is one a worker would keep retrying, forever, against a chunk
+        // that will be refused identically every time.
+        let error: CoreError =
+            SearchError::UnindexableChunk { column: "dense_vector", reason: "wrong width" }.into();
+        assert!(matches!(error, CoreError::Internal(_)));
     }
 
     #[test]
