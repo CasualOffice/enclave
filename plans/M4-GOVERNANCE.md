@@ -1,6 +1,6 @@
 # M4 — Governance baseline
 
-> **Status:** Draft · **Version:** 1.0 · **Owner:** Engineering · **Last updated:** 2026-08-22
+> **Status:** Draft · **Version:** 1.1 · **Owner:** Engineering · **Last updated:** 2026-08-22
 
 `ROADMAP.md`: *"A tenant can be told no, for the right reasons, with an audit trail."*
 
@@ -42,6 +42,11 @@ absent control, appears in the compliance answer.
 ## 3. Decisions to lock before the design sets
 
 ### D26 — `SecurityFacts` are gathered once per request and passed down
+
+**Q16 is answered and constrains this section: structured detectors only, no regex on the
+synchronous path.** Luhn-checked card numbers, IBANs, national IDs and API-key shapes — validated by
+structure and checksum. A `SecurityFacts` shape built around "detector counts" therefore counts
+*matches of structured detectors*, and nothing in it should assume a pattern or capture groups.
 
 Every stage that needs facts receives the *same* value. No stage re-fetches.
 
@@ -163,7 +168,7 @@ Most-uncertain first, so the expensive discovery happens while there is room to 
 
 | # | Question | Needs deciding by | Owner |
 |---|---|---|---|
-| Q16 | Which detectors ship by default, and are any of them regex over content? A regex engine on the synchronous path is a denial-of-service surface with a long CVE history | Before D26's shape sets | Product + Security |
+| ~~Q16~~ | **Answered 2026-08-22: structured detectors only, no regex on the synchronous path.** Credit-card numbers (Luhn), IBANs, national IDs, API-key shapes — validated by *structure and checksum* rather than by a pattern. A regex engine reading attacker-supplied content synchronously is a denial-of-service surface with a long CVE history, and the failure mode is the bad one: one crafted document stalls every write, arriving as load rather than as a refusal, which is far harder to attribute during an incident. Custom patterns are what enterprise buyers ask for first, so expect the pressure — the answer is a linear-time engine on an *asynchronous* path, never a backtracking one on this path | — | Closed |
 | Q17 | Does `SIMULATION` consume the same rate limits and quotas as `ENFORCE`? Cheaper simulation is D28's failure; identical simulation doubles cost during rollout | Before DLP modes | Platform |
-| Q18 | Quota units — bytes, files, or both, and per workspace or per tenant? `docs/04` models storage bytes; the roadmap says "writes", which is not the same noun | Before quotas | Product |
-| Q19 | Does conditional access apply to service accounts and MCP tokens, which have no interactive session and no device posture? A rule written for humans that silently exempts automation is the gap an attacker looks for | Before conditional access | Security |
+| ~~Q18~~ | **Answered 2026-08-22: storage bytes, per tenant.** Matches what `docs/04` already models and what a customer is billed for — one number per tenant, reconciled nightly against actual object storage. Named limitation, so it is not rediscovered: a byte quota does not bound the metadata and index load a million 1 KB files create, and a file-count limit is the additive fix if that becomes real | — | Closed |
+| ~~Q19~~ | **Answered 2026-08-22: yes, with a separate rule set.** Conditional access evaluates for **every** principal; service accounts and MCP tokens are matched by rules written for them — network allowlists and token binding rather than device posture or MFA. The rejected option is the one that looks simpler: a single rule set means every posture rule needs an escape clause for non-human principals, which is the exemption again, written once per rule instead of once. And an exemption is precisely the gap an attacker looks for — compromise a service token and the zone rules simply do not apply | — | Closed |
