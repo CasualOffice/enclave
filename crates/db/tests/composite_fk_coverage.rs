@@ -140,7 +140,11 @@ async fn every_foreign_key_between_tenant_scoped_tables_carries_tenant_id() {
         // Both sides, not either. A key listing `tenant_id` only on the referencing side still
         // matches a parent row by the remaining columns alone, so the tenant is never compared.
         if carries_source && carries_target {
-            println!("  ok      {source}({}) -> {target}({})", source_columns.join(", "), target_columns.join(", "));
+            println!(
+                "  ok      {source}({}) -> {target}({})",
+                source_columns.join(", "),
+                target_columns.join(", ")
+            );
         } else {
             let side = match (carries_source, carries_target) {
                 (false, false) => "both sides",
