@@ -114,17 +114,15 @@ jobs:
           set -euo pipefail
           RULE='RLS coverage — every table with a tenant_id column has rowsecurity AND forcerowsecurity AND at least one policy (docs/12-TESTING.md §5, CLAUDE.md rule 4)'
           GATE_TEST=crates/db/tests/rls_coverage.rs
+          # ENC-543: this branch used to warn and `exit 0` when the test was missing, so the
+          # check reported **pass**, in green, while inspecting nothing. That is how a rule
+          # CLAUDE.md calls non-negotiable went a milestone unenforced, and how three
+          # single-column foreign keys in the auth tables survived review. The test exists
+          # now, so its absence is a failure: deleting it must break the build rather than
+          # quietly disarming the gate.
           if [ ! -f "$GATE_TEST" ]; then
-            echo "::warning title=GATE PENDING: RLS coverage::${RULE} — NOT ENFORCED YET. ${GATE_TEST} does not exist; it lands with ENC-106. This gate is pending, not passing."
-            {
-              echo "### ⏳ PENDING — RLS coverage"
-              echo ""
-              echo "**Rule:** ${RULE}"
-              echo ""
-              echo "Not enforced yet: \`${GATE_TEST}\` is missing (lands with **ENC-106**)."
-              echo "Until then this gate proves nothing. Do not read its green tick as coverage."
-            } >> "$GITHUB_STEP_SUMMARY"
-            exit 0
+            echo "::error title=GATE MISSING: RLS coverage::${RULE} — ${GATE_TEST} does not exist. A gate whose test is absent must fail, never pass (ENC-543). If it was deliberately removed, remove the job in the same commit and say why."
+            exit 1
           fi
           echo "Enforcing: ${RULE}"
           cargo test -p enclave-db --locked --test rls_coverage -- --include-ignored --nocapture
@@ -296,16 +294,15 @@ jobs:
           set -euo pipefail
           RULE='Composite FKs — every foreign key between tenant-scoped tables carries tenant_id in the constraint (docs/12-TESTING.md §5, CLAUDE.md rule 4)'
           GATE_TEST=crates/db/tests/composite_fk_coverage.rs
+          # ENC-543: this branch used to warn and `exit 0` when the test was missing, so the
+          # check reported **pass**, in green, while inspecting nothing. That is how a rule
+          # CLAUDE.md calls non-negotiable went a milestone unenforced, and how three
+          # single-column foreign keys in the auth tables survived review. The test exists
+          # now, so its absence is a failure: deleting it must break the build rather than
+          # quietly disarming the gate.
           if [ ! -f "$GATE_TEST" ]; then
-            echo "::warning title=GATE PENDING: Composite FKs::${RULE} — NOT ENFORCED YET. ${GATE_TEST} does not exist; it lands with ENC-106. This gate is pending, not passing."
-            {
-              echo "### ⏳ PENDING — Composite FKs"
-              echo ""
-              echo "**Rule:** ${RULE}"
-              echo ""
-              echo "Not enforced yet: \`${GATE_TEST}\` is missing (lands with **ENC-106**)."
-            } >> "$GITHUB_STEP_SUMMARY"
-            exit 0
+            echo "::error title=GATE MISSING: Composite FKs::${RULE} — ${GATE_TEST} does not exist. A gate whose test is absent must fail, never pass (ENC-543). If it was deliberately removed, remove the job in the same commit and say why."
+            exit 1
           fi
           echo "Enforcing: ${RULE}"
           cargo test -p enclave-db --locked --test composite_fk_coverage -- --include-ignored --nocapture
