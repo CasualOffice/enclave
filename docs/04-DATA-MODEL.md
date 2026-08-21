@@ -1,6 +1,6 @@
 # 04 — Data Model
 
-> **Status:** Draft · **Version:** 1.3 · **Owner:** Platform Engineering · **Last updated:** 2026-08-22
+> **Status:** Draft · **Version:** 1.4 · **Owner:** Platform Engineering · **Last updated:** 2026-08-22
 > **Authoritative for:** all PostgreSQL DDL, tenant isolation, quotas. No other document defines schema.
 
 ## 1. Conventions
@@ -34,7 +34,7 @@
 | Audit | `audit_events`, `config_versions` |
 | Search | `index_manifests`, `retrieval_denylist`, `chunk_text` |
 | Delivery | `renditions`, `sync_devices`, `sync_cursors`, `editor_sessions`, `notifications` |
-| Platform | `events_outbox`, `idempotency_keys`, `quotas`, `quota_usage`, `jobs` |
+| Platform | `events_outbox`, `idempotency_keys`, `quotas`, `quota_usage`, `storage_quotas`, `jobs` |
 
 ## 3. Tenant isolation (two independent layers)
 
@@ -1334,6 +1334,76 @@ drift as a metric, since drift indicates a bug in the write path.
 At `soft_limit_pct`, admins are notified and the UI surfaces a banner. At the limit, writes fail with
 `QUOTA_EXCEEDED`; reads, deletes and exports continue, so a full tenant can always recover.
 
+**Neither table above is created yet.** They are the model for the kinds that are not enforced
+in-statement; the one kind that is has its own table, below.
+
+### 16.1 `storage_quotas` — the per-tenant stored-byte quota
+
+The only quota implemented (`ENC-584`, `plans/M4-GOVERNANCE.md` D31 and the answer to its Q18:
+*storage bytes, per tenant*). `migrations/0018_storage_quotas.sql` creates it.
+
+```sql
+CREATE TABLE storage_quotas (
+    tenant_id              UUID PRIMARY KEY REFERENCES tenants (id),
+    limit_bytes            BIGINT NOT NULL CHECK (limit_bytes >= 0),
+    used_bytes             BIGINT NOT NULL DEFAULT 0 CHECK (used_bytes >= 0),
+    overshoot_bytes        BIGINT NOT NULL DEFAULT 0 CHECK (overshoot_bytes >= 0),
+    soft_limit_pct         INT NOT NULL DEFAULT 80
+                           CHECK (soft_limit_pct > 0 AND soft_limit_pct <= 100),
+    enforcement            TEXT NOT NULL DEFAULT 'BLOCK'
+                           CHECK (enforcement IN ('MONITOR','WARN','BLOCK')),
+    soft_limit_notified_at TIMESTAMPTZ,
+    reconciled_at          TIMESTAMPTZ,
+    last_drift_bytes       BIGINT NOT NULL DEFAULT 0,
+    updated_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT storage_quotas_within_budget
+        CHECK (enforcement <> 'BLOCK' OR used_bytes <= limit_bytes + overshoot_bytes)
+);
+```
+
+RLS enabled and forced with a `tenant_isolation` policy, as §3.2 requires. `enclave_app` holds
+`SELECT, INSERT, UPDATE` and **not** `DELETE`: a missing row means *unmetered*, not *refused* — a
+quota is a billing control, and defaulting an unconfigured tenant to zero bytes would make
+provisioning order the difference between a working deployment and a read-only one. That makes
+`DELETE` the shortest statement that switches enforcement off for a tenant, so the application role
+does not hold it, and the nightly job counts rowless tenants so the state is visible.
+
+**Why one table rather than a `quotas` + `quota_usage` pair.** D31 requires a `CHECK (used <= limit)`
+as the backstop behind the charging statement, and **a `CHECK` constraint cannot reference another
+table**. With the limit in one table and the counter in another there is no such constraint to
+write. `STORAGE_BYTES` at `TENANT` scope is exactly one row per tenant with no periods, so putting
+both in one row costs nothing. The pair above remains the model for the kinds a period or a
+non-tenant scope applies to.
+
+**Enforcement is one statement.** The charge is
+`UPDATE storage_quotas SET used_bytes = used_bytes + $n … WHERE tenant_id = $1 AND (enforcement <>
+'BLOCK' OR used_bytes + $n <= limit_bytes) RETURNING …`, run in the same transaction as the
+`file_versions` insert it pays for. A zero-row result is the refusal, exactly as §11's share-link
+counter works. The bound is `limit_bytes` alone; `overshoot_bytes` widens only the `CHECK`.
+
+**`overshoot_bytes` is an acknowledgement, not headroom.** A tenant can legitimately sit above its
+limit — a downgraded plan, or drift reconciliation discovers — and a `CHECK` with no escape would
+make recording that truth impossible, so the nightly job would fail on that tenant every night and
+the real figure would be the one nobody sees. Only the statements that *deliberately* record an
+over-limit state raise it (reconciliation, and a limit or enforcement change); the charging
+statement never touches it, so a charge that escaped its `WHERE` clause still aborts.
+
+**Reconciliation is relative, never absolute.** The nightly job reads `used_bytes` and
+`SUM(file_versions.size_bytes)` in **one statement** — therefore one snapshot, and the charge
+commits in the same transaction as the version row, so the pair is consistent by construction — and
+then applies the difference as `used_bytes = used_bytes + drift` in a second, instantaneous
+statement. Nothing is locked while the sum runs and charges committed in between keep their effect,
+which is what removes the window in which writes would otherwise be refused on a stale figure.
+Assigning the measured figure instead erases them; measuring under a row lock instead blocks every
+charge for the length of the sum.
+
+Every version except `FAILED` counts, including versions of soft-deleted files: bytes in the recycle
+bin are bytes the deployment stores, and excluding them would make the trash an unmetered tier.
+
+**Named limitation** (`plans/M4-GOVERNANCE.md` Q18, recorded so it is not rediscovered): a byte quota
+does not bound the metadata and index load a million 1 KB files create. `FILE_COUNT` is the additive
+fix if that becomes real.
+
 ## 17. Platform
 
 ```sql
@@ -1407,5 +1477,6 @@ CREATE INDEX idx_jobs_ready ON jobs (state, run_after) WHERE state = 'QUEUED';
 
 | Version | Date | Change |
 |---|---|---|
+| 1.4 | 2026-08-22 | Added §16.1, `storage_quotas` — the per-tenant stored-byte quota, and the only quota implemented (`ENC-584`, `plans/M4-GOVERNANCE.md` D31/Q18). One table rather than a `quotas` + `quota_usage` pair because a `CHECK` constraint cannot reference another table and D31 requires one as the backstop behind the charging statement. Records three things the design did not previously state: the bound lives in the charge's `WHERE` clause and a zero-row result is the refusal; `overshoot_bytes` is an acknowledgement of a legitimately over-limit tenant rather than headroom; and nightly reconciliation applies drift *relatively*, which is what removes the window in which a correction would either erase concurrent charges or lock them out. `migrations/0018_storage_quotas.sql` applies it. |
 | 1.3 | 2026-08-22 | Added §10.1, the slug rule: a slug addresses one live row in its container, so `libraries`, `lists` and `pages` gain partial unique indexes keyed on `(tenant_id, workspace_id, slug)` and `tenants` keeps its non-partial `UNIQUE` as the stated exception. Resolves the disagreement `migrations/0015_lists.sql` recorded (`ENC-544`); `migrations/0017_slug_uniqueness.sql` applies it. |
 | 1.2 | 2026-08-21 | Earlier revisions predate this table. |

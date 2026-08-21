@@ -28,7 +28,11 @@ thiserror = { workspace = true }
 tracing   = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+# `sync` and `time` are the storage-quota suite's (`ENC-584`): `Barrier` holds every contender in
+# the read-to-write window until all of them are inside it — the arrangement `docs/12 §4.4` H3
+# records as the difference between a concurrency test and a sequential one wearing `tokio::spawn`
+# — and `timeout` is what turns "the observation holds no lock" from a claim into a measurement.
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
 # Every database-backed test in this crate runs against a throwaway database rather than against
 # whatever `DATABASE_URL` names (`ENC-504`): the structural gates below used to apply migrations to
 # the developer's own dev-stack database, which recorded checksums there and made the next run on

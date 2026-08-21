@@ -1,6 +1,6 @@
 # 12 — Testing & Quality Gates
 
-> **Status:** Draft · **Version:** 1.10 · **Owner:** Engineering · **Last updated:** 2026-08-22
+> **Status:** Draft · **Version:** 1.11 · **Owner:** Engineering · **Last updated:** 2026-08-22
 > **Authoritative for:** test strategy, the security leakage matrix, CI gates, release criteria.
 
 ## 1. Philosophy
@@ -244,6 +244,21 @@ Full rows in `15-WORKFLOWS-AND-SIGNING.md §12`; they run in this suite.
 | U2 | The application role cannot `UPDATE` or `DELETE` `audit_events` |
 | U3 | Hash-chain verification detects a tampered row and reports the first divergence |
 | U4 | Audit records never contain passwords, tokens, refresh cookies or file content |
+
+### 4.11 Quotas and capacity
+
+`plans/M4-GOVERNANCE.md` D31. The same shape as `H3` — the limit in the `WHERE` clause of the
+statement that spends the resource, a zero-row result as the refusal — applied to stored bytes
+instead of share-link downloads. All rows in `crates/db/tests/storage_quota.rs` (`ENC-584`).
+
+| # | Assertion |
+|---|---|
+| Q1 | **Sixteen concurrent charges against a quota with room for one admit exactly one**, and the counter ends *at* the limit rather than above it. Enforced by a single `UPDATE` carrying the limit in its `WHERE` clause; under `READ COMMITTED` a contender whose row moved while it waited re-evaluates that predicate against the new row. Has a **positive control beside it**: the check-then-write shape, written out in the same file and run on the same pool, the same barrier and the same row, must over-issue. `docs/12 §4.4` H3 passed for a milestone against a naive implementation because the harness could only run two transactions at a time, and a concurrency test that has never been shown to *catch* anything is a claim about the harness as much as about the code — if the control ever admits exactly one, `Q1` is proving nothing |
+| Q2 | **Quota exhaustion blocks writes while reads, deletes and exports keep working.** The refusal is asserted **first**, in the same fixture, so the three "not blocked" legs are statements about a demonstrably exhausted quota rather than about one that never engaged (`§1.2`: an assertion about an absence passes for free). The loop closes at the end: after the delete frees room, the charge that was refused three statements earlier is admitted. Structurally reinforced — `Released` has no refusal variant, so "this delete was refused for quota" is not a constructible value, and `release_storage`'s statement is bounded by the tenant and by nothing else. The strictly-over-limit case is covered separately in `Q6`, because under `BLOCK` no charge can take a tenant *past* its limit — only reconciliation can — so a release guarded by `used_bytes <= limit_bytes` passes here and fails there |
+| Q3 | **A charging statement that lost its bound aborts the transaction rather than exceeding the quota.** D31's backstop: `CHECK (enforcement <> 'BLOCK' OR used_bytes <= limit_bytes + overshoot_bytes)`. Asserted by running the mistake — the charge with its `WHERE` clause stripped to the tenant — and requiring SQLSTATE `23514` naming `storage_quotas_within_budget`, with a control charge inside the limit beside it so a constraint that refused every update would not satisfy it |
+| Q4 | **One tenant's exhaustion never refuses another, and neither transaction can see the other's quota row.** Run over `tenant-alpha` and `tenant-beta` with identical limits and identical charges, over the application role rather than the harness superuser. The RLS leg's zero has the same query for the caller's own row beside it as its positive control |
+| Q5 | **The soft limit is announced once, and before anything is refused.** The crossing is decided inside the charging statement, under the row lock, and stamped on the row — so it fires once rather than once per replica and does not fire again after a restart. Asserted at 79%, 80% and 90% with the first refusal after all three, and re-armed by a release back under the threshold. `plans/M4-GOVERNANCE.md §2`: quotas notify before they refuse, which is also why `MONITOR` and `WARN` count without refusing while `BLOCK` refuses the identical charge |
+| Q6 | **Nightly reconciliation corrects drift without a window in which writes are refused on a stale figure.** Two halves. The counter is corrected *relatively* — a charge that commits between the observation and the correction keeps its full effect, and the test names the figure an absolute assignment would have produced. And the observation takes no lock: a charge issued while it is open must complete, with the **control** being the same charge against a reconciler that took `SELECT … FOR UPDATE`, which must time out. Also covers what a genuinely over-limit tenant may still do: record its true figure, and delete its way back under |
 
 ## 5. Structural CI gates
 
