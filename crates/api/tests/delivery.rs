@@ -526,6 +526,50 @@ async fn post_download(app: &Router, bearer: &str, file: FileId) -> Answer {
     send(app, request).await
 }
 
+/// One audit row, reduced to the columns an investigation actually reads.
+///
+/// `policy_refs` and `detail` come back as text rather than as `serde_json::Value` so that two rows
+/// can be compared for equality with `assert_eq!` and the failure message shows what they hold. The
+/// point of the comparison is `ENC-606`: the row for a refusal and the row for a success were
+/// *identical* in these columns, and a test that read them one field at a time never asked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AuditRow {
+    action: String,
+    outcome: String,
+    reason_code: Option<String>,
+    policy_refs: Option<String>,
+    detail: Option<String>,
+}
+
+/// Every audit row for one request, in write order.
+///
+/// Keyed by `request_id` because that is the only thing that pairs the chain's decision with the
+/// handler's — see `crates/api/src/refusal.rs`. An investigator with a user's error envelope has
+/// exactly this id and nothing else.
+async fn rows_for(db: &TestDb, request_id: &str) -> Vec<AuditRow> {
+    use sqlx::Row as _;
+
+    let mut conn = db.connect().await.expect("connect");
+    let rows = sqlx::query(
+        "SELECT action, outcome, reason_code, policy_refs::text AS refs, detail::text AS detail
+         FROM audit_events WHERE request_id = $1::uuid ORDER BY sequence ASC",
+    )
+    .bind(request_id)
+    .fetch_all(&mut conn)
+    .await
+    .expect("read the audit rows for one request");
+
+    rows.iter()
+        .map(|row| AuditRow {
+            action: row.try_get("action").expect("action"),
+            outcome: row.try_get("outcome").expect("outcome"),
+            reason_code: row.try_get("reason_code").expect("reason_code"),
+            policy_refs: row.try_get("refs").expect("policy_refs"),
+            detail: row.try_get("detail").expect("detail"),
+        })
+        .collect()
+}
+
 /// Counts audit rows for one action and outcome.
 async fn audited(db: &TestDb, action: &str, outcome: &str) -> i64 {
     let mut conn = db.connect().await.expect("connect");
@@ -679,8 +723,95 @@ async fn a_no_download_obligation_refuses_before_any_url_is_generated() {
         "an allowed-with-obligations download must still generate no URL, saw {:?}",
         store.touched()
     );
-    // The chain allowed; the handler refused. Both facts are in the log, which is what makes the
-    // obligation's effect auditable rather than merely believed.
+
+    // ---------------------------------------------------------------------------------------
+    // `ENC-606`: the chain allowed and the handler refused, and **both** facts must be in the log.
+    //
+    // The sentence above this assertion used to say exactly that, and it was false: there was one
+    // row and its outcome was `ALLOW`. It had been written, reviewed and merged, and nothing in the
+    // suite disagreed with it because the assertion underneath was a *count* of allows — which the
+    // defect satisfies. So what is asserted here is the pair, and then the thing a count cannot
+    // reach: that the refusal is **distinguishable** from the success beside it.
+    // ---------------------------------------------------------------------------------------
+
+    let refused_request = download.json()["error"]["requestId"]
+        .as_str()
+        .expect("the error envelope carries the request id")
+        .to_owned();
+    let refusal = rows_for(&db, &refused_request).await;
+
+    assert_eq!(
+        refusal.len(),
+        2,
+        "one refused download must leave the chain's decision *and* the handler's: {refusal:#?}"
+    );
+    assert_eq!(refusal[0].outcome, "ALLOW", "the chain allowed, and the row must still say so");
+    assert_eq!(refusal[1].outcome, "DENY", "the refusal is not in the log: {refusal:#?}");
+    assert_eq!(refusal[1].action, "file.download", "the refusal names a different action");
+    assert_eq!(
+        refusal[1].reason_code.as_deref(),
+        Some("PREVIEW_ONLY"),
+        "the auditor and the refused user must be reading the same word; the caller got \
+         PREVIEW_ONLY"
+    );
+    let refs = refusal[1].policy_refs.clone().expect("the refusal names the control that took it");
+    assert!(
+        refs.contains("handler:obligation"),
+        "the row does not say which control refused, so an investigation cannot start from it: \
+         {refs}"
+    );
+    let detail = refusal[1].detail.clone().expect("the refusal carries its detail");
+    assert!(
+        detail.contains("NO_DOWNLOAD") && detail.contains("refused_by"),
+        "the row does not say which obligation could not be discharged: {detail}"
+    );
+    // And never the payload of one. There is no rank here to leak, but the assertion belongs beside
+    // the one above so that an obligation which grows a field cannot quietly start appearing.
+    assert!(
+        !detail.contains("audit request") && !detail.contains(&content.object_key),
+        "the refusal row carries content it must not: {detail}"
+    );
+
+    // The success beside it. The watermark obligation *was* discharged, so one row and no refusal.
+    let served_request = preview
+        .headers
+        .get("x-request-id")
+        .and_then(|value| value.to_str().ok())
+        .expect("a rendition response carries its request id")
+        .to_owned();
+    let success = rows_for(&db, &served_request).await;
+    assert_eq!(success.len(), 1, "a discharged obligation must not leave a refusal: {success:#?}");
+    assert_eq!(success[0].outcome, "ALLOW");
+
+    // **The trap.** Every assertion above is about a row that exists, and every one of them would
+    // hold against a system that wrote a `DENY` row for *both* requests. This is the converse: the
+    // two `ALLOW` rows are still structurally identical — same outcome, no reason, no control —
+    // because the chain genuinely took the same decision in both cases. The `ALLOW` is therefore
+    // not the discriminator and never was, which is precisely why `ENC-606` was invisible to a test
+    // that counted them. The second row is the only thing that tells the two requests apart.
+    assert_eq!(
+        (&refusal[0].outcome, &refusal[0].reason_code, &refusal[0].policy_refs),
+        (&success[0].outcome, &success[0].reason_code, &success[0].policy_refs),
+        "the chain's rows have stopped being identical, so this assertion is no longer testing what \
+         it says: the point is that the ALLOW cannot distinguish a refusal from a success"
+    );
+    assert_ne!(
+        refusal.len(),
+        success.len(),
+        "the refused request and the served one left the same trail"
+    );
+
+    // The query an auditor asked to produce every refusal in a period actually runs.
+    assert_eq!(
+        audited(&db, "file.download", "DENY").await,
+        1,
+        "WHERE outcome = 'DENY' does not return the request that was refused"
+    );
+    assert_eq!(
+        audited(&db, "file.preview", "DENY").await,
+        0,
+        "the preview succeeded; a DENY row for it would make the trail worse, not better"
+    );
     assert_eq!(audited(&db, "file.download", "ALLOW").await, 1);
 }
 

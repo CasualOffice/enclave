@@ -137,6 +137,26 @@ impl SiteKind {
         }
     }
 
+    /// What to do about a site of this kind that is not in an audited position.
+    ///
+    /// Per kind rather than one sentence, because the two answers are genuinely different and the
+    /// wrong one is unhelpful advice at the moment somebody is trying to follow it: "move it into a
+    /// stage" is not what a handler that refuses on an obligation should do — the chain already
+    /// allowed, correctly, and the stage has nothing left to say.
+    pub(crate) const fn remedy(self) -> &'static str {
+        match self {
+            Self::StageRefusal | Self::ErrorRefusal | Self::Conversion => {
+                "take the decision inside a stage (return a StageDecision, which the engine \
+                 records before it returns Err)"
+            }
+            Self::HandlerRefusal => {
+                "construct the `Refused` inside a function that *returns* one — a `satisfy`, an \
+                 eligibility check — and let the handler hand it to `HandlerAudit::refuse`, which \
+                 is what writes the row (ENC-606, ENC-625)"
+            }
+        }
+    }
+
     /// Every kind, so the liveness check cannot silently stop covering one.
     pub(crate) const ALL: [Self; 4] =
         [Self::StageRefusal, Self::ErrorRefusal, Self::Conversion, Self::HandlerRefusal];
@@ -429,14 +449,14 @@ pub(crate) fn decide(sites: &[Site], acknowledged: &[Acknowledged]) -> Result<()
     for site in &unaudited {
         println!(
             "::error file={},line={},title=GATE FAILED: audit coverage::{}() constructs a refusal \
-             with `{}` and returns it to something that is not PolicyEngine::enforce, so no audit \
-             row is written. Fix: take the decision inside a stage (return a StageDecision, which \
-             the engine records), or add an entry to ACKNOWLEDGED in xtask/src/audit_coverage.rs \
-             with the reason and the tracker row that owns the gap.",
+             with `{}` and returns it to something this gate cannot see recording it, so no audit \
+             row is proven. Fix: {}, or add an entry to ACKNOWLEDGED in \
+             xtask/src/audit_coverage.rs with the reason and the tracker row that owns the gap.",
             site.file,
             site.line,
             site.function,
             site.kind.label(),
+            site.kind.remedy(),
         );
     }
     for ack in &stale {
@@ -979,6 +999,111 @@ mod tests {
         decide(&found, &ack).expect("an acknowledged site passes");
     }
 
+    /// The same rule for a handler's refusal, and the reason `ENC-606` cannot come back quietly.
+    ///
+    /// Both halves again, and here the negative half is the one that matters: the fix for `ENC-606`
+    /// introduced a *new* way to refuse, and a gate that classified every `Refused::…` as audited
+    /// would be blessing the construct rather than checking where it is used. A `Refused` built
+    /// inline in a handler is consumed by nothing that records, so it is reported.
+    #[test]
+    fn a_handler_refusal_is_audited_only_when_it_is_returned_to_the_port() {
+        let found = sites(
+            "crates/api/src/files.rs",
+            r#"
+            fn satisfy(obligations: &Obligations) -> Result<(), Refused> {
+                for obligation in obligations {
+                    return Err(Refused::obligation(*obligation));
+                }
+                Ok(())
+            }
+
+            async fn get_file(state: State<ApiState>) -> Result<Json<File>, ApiError> {
+                if ctx.actor.subject_id().is_none() {
+                    return Err(ApiError::new(Refused::actor(code).into(), ctx.request_id));
+                }
+                Ok(Json(state.files.load(&resource).await?))
+            }
+            "#,
+        );
+
+        let audited = find(&found, "satisfy");
+        assert_eq!(audited.kind, SiteKind::HandlerRefusal);
+        assert_eq!(audited.position, Position::AuditedByHandler);
+
+        let inline = find(&found, "get_file");
+        assert_eq!(inline.kind, SiteKind::HandlerRefusal);
+        assert_eq!(
+            inline.position,
+            Position::Unaudited,
+            "a Refused built inline in a handler reaches the client through whatever the handler \
+             does with it, which is not necessarily the audit port"
+        );
+
+        let error = decide(&found, &[]).expect_err("the inline refusal must fail the gate");
+        assert!(
+            error.to_string().contains("1 unaudited refusal site"),
+            "the gate failed for the wrong reason: {error}"
+        );
+    }
+
+    /// The handler port is checked for liveness, exactly as the engine is.
+    ///
+    /// `docs/12-TESTING.md §1.2`: every classification above is an assertion about where a site
+    /// sits, and all of them stay true if the function they assume exists is deleted. A tree with
+    /// `Refused` sites and no `HandlerAudit::refuse` is `ENC-606` re-opened with a green gate.
+    #[test]
+    fn an_inventory_with_no_handler_audit_port_fails_liveness() {
+        // A tree that has one of every kind, and no `refuse()`.
+        let mut found = sites(
+            "crates/api/src/files.rs",
+            r#"
+            fn satisfy(obligations: &Obligations) -> Result<(), Refused> {
+                Err(Refused::obligation(Obligation::NoDownload))
+            }
+            async fn evaluate(&self) -> Result<StageDecision> {
+                Ok(StageDecision::deny(ReasonCode::AccessDenied))
+            }
+            async fn share(&self) -> Result<Link> {
+                let obligations = decision.ensure_allowed()?;
+                Err(Error::denied(ReasonCode::ExternalShareBlocked))
+            }
+            "#,
+        );
+        // The engine's own port, so that this test fails on the *handler* port's absence rather
+        // than on the check above it.
+        found.extend(sites(
+            ENGINE_FILE,
+            r#"
+            impl PolicyEngine {
+                pub async fn enforce(&self) -> Result<PolicyDecision> {
+                    self.audit.record_deny(ctx, action, resource, stage, code).await?;
+                    Err(Error::denied(code))
+                }
+            }
+            "#,
+        ));
+        let error = liveness(&found).expect_err("no handler audit port must fail liveness");
+        assert!(
+            error.to_string().contains("ENC-606"),
+            "the liveness failure must name what it is protecting: {error}"
+        );
+
+        // The positive control: the identical inventory *with* the port passes, which is what
+        // proves the failure above came from the port's absence and not from the rest of it.
+        found.extend(sites(
+            REFUSAL_FILE,
+            r#"
+            impl HandlerAudit {
+                pub async fn refuse(&self, refused: Refused) -> ApiError {
+                    let _ = self.sink.record(event).await;
+                    ApiError::new(Error::denied(refused.code), ctx.request_id)
+                }
+            }
+            "#,
+        ));
+        liveness(&found).expect("an inventory with the port is live");
+    }
+
     /// A refusal hidden in a `macro_rules!` body is still found.
     ///
     /// This is the shape `PolicyEngine::enforce` is actually written in, and the shape a plain AST
@@ -1015,6 +1140,27 @@ mod tests {
         assert!(
             kinds.contains(&SiteKind::Conversion),
             "the ensure_allowed() inside the macro body was not seen: {found:?}"
+        );
+
+        // And the third constructor, which is the one most recently added and therefore the one a
+        // token scanner is most likely to have been left without. The two matchers read one table
+        // (`constructor`) for exactly this reason.
+        let hidden = sites(
+            "crates/api/src/files.rs",
+            r#"
+            async fn get_file(state: State<ApiState>) -> Result<Json<File>, ApiError> {
+                macro_rules! discharge {
+                    ($obligation:expr) => {
+                        return Err(Refused::obligation($obligation))
+                    };
+                }
+                discharge!(Obligation::NoDownload);
+            }
+            "#,
+        );
+        assert!(
+            hidden.iter().any(|site| site.kind == SiteKind::HandlerRefusal),
+            "the Refused:: inside the macro body was not seen: {hidden:?}"
         );
     }
 

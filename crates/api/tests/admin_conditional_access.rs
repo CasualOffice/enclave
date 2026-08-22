@@ -316,6 +316,34 @@ fn admin_token(key: &PrivateSigningKey, tenant: TenantId, user: UserId) -> Strin
     token(key, tenant, user, Acr::MultiFactor, Utc::now())
 }
 
+/// The same rights and the same freshness, held by a **service account**.
+///
+/// Everything about this token is deliberately as strong as `admin_token`'s: `MultiFactor`, issued
+/// now, the same subject. The only difference is `typ`, so that when the request is refused there is
+/// exactly one thing it can be about — which is what makes
+/// `a_machine_principal_cannot_author_a_rule_and_the_attempt_is_on_the_record` name its refusal.
+fn machine_token(key: &PrivateSigningKey, tenant: TenantId, subject: UserId) -> String {
+    let now = Utc::now();
+    let template = TokenTemplate {
+        sub: subject.as_uuid(),
+        tid: tenant.as_uuid(),
+        sid: uuid::Uuid::new_v4(),
+        typ: ActorKind::ServiceAccount,
+        scp: Vec::new(),
+        amr: vec![AuthMethod::Pwd, AuthMethod::Totp],
+        auth_time: now,
+        acr: Acr::MultiFactor,
+        dev: None,
+        cli: ClientType::Web,
+        epoch: 1,
+        max_cls: None,
+    };
+    AccessTokenIssuer::new(ISSUER, AUDIENCE)
+        .issue(key, template, now, chrono::Duration::minutes(10))
+        .expect("issue")
+        .token
+}
+
 /// A rule denying downloads, which no administrative action matches — so it is enforceable from
 /// anywhere, and every test that is not about the lockout check uses it.
 fn download_rule(name: &str, mode: &str) -> serde_json::Value {
@@ -348,6 +376,27 @@ fn denied(decision: &StageDecision) -> Option<ReasonCode> {
         StageOutcome::Deny(code) => Some(*code),
         StageOutcome::Allow => None,
     }
+}
+
+/// Every audit row for one request, in write order, as `(action, outcome, reason, policy_refs)`.
+///
+/// Keyed by `request_id` because that is the only thing that pairs the chain's decision with a
+/// refusal the handler then took — see `crates/api/src/refusal.rs` and `ENC-606`.
+async fn audit_for(db: &TestDb, request_id: &str) -> Vec<(String, String, Option<String>, String)> {
+    let mut conn = db.connect().await.expect("connect");
+    sqlx::query_as::<_, (String, String, Option<String>, Option<String>)>(
+        "SELECT action, outcome, reason_code, policy_refs::text
+         FROM audit_events WHERE request_id = $1::uuid ORDER BY sequence ASC",
+    )
+    .bind(request_id)
+    .fetch_all(&mut conn)
+    .await
+    .expect("read the audit rows for one request")
+    .into_iter()
+    .map(|(action, outcome, reason, refs)| {
+        (action, outcome, reason, refs.unwrap_or_else(|| "null".to_owned()))
+    })
+    .collect()
 }
 
 /// A person in `tenant`, as the chain would see one.
@@ -714,6 +763,135 @@ async fn withdrawal_stops_the_rule_deciding_and_leaves_the_row_behind() {
     let (status, _body) = harness.client.delete(&admin, &id).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(rows(&db).await[0].3, stored[0].3, "the timestamp is written once");
+}
+
+// --- The refusal an investigation starts from ---------------------------------------------------------
+
+/// The authorization stage that lets a machine principal reach the handler.
+///
+/// [`AdminOnly`] refuses anything that is not a `User`, so with it the chain is what stops a service
+/// account and `author()` is never reached — which would make the test below assert the wrong
+/// refusal. This double allows every `Admin` action to every principal, so the *only* thing left to
+/// refuse is the eligibility check inside the handler. That is the arrangement `ENC-619` will bring
+/// about for real, and the reason this test exists now rather than after it.
+#[derive(Debug)]
+struct AnyPrincipalMayAdminister;
+
+#[async_trait]
+impl AuthorizationService for AnyPrincipalMayAdminister {
+    async fn authorize(
+        &self,
+        _ctx: &RequestContext,
+        action: Action,
+        _resource: &ResourceRef,
+    ) -> enclave_core::Result<StageDecision> {
+        if matches!(action, Action::Admin(_)) {
+            Ok(StageDecision::allow())
+        } else {
+            Ok(StageDecision::deny(ReasonCode::AccessDenied))
+        }
+    }
+
+    async fn authorize_many(
+        &self,
+        _ctx: &RequestContext,
+        _action: Action,
+        resources: &[ResourceRef],
+    ) -> enclave_core::Result<Vec<StageDecision>> {
+        Ok(resources.iter().map(|_| StageDecision::deny(ReasonCode::AccessDenied)).collect())
+    }
+}
+
+/// A machine principal's attempt to write a conditional-access rule is refused **and recorded**.
+///
+/// `ENC-606`'s fourteenth site and the one that matters most. `conditional_access_rules.created_by`
+/// is `NOT NULL` onto `users (tenant_id, id)`, so a service account or an MCP client cannot author a
+/// rule; the handler refuses rather than letting the composite foreign key report that as a `500`.
+/// By then the chain has written its `ALLOW` for `admin.manage_policy` — so before `ENC-625` the
+/// audit table recorded *an attempt to change the tenant's access rules* as a success, and the
+/// question **who tried to change the access rules** could not be answered from it.
+///
+/// Paired with a human's identical request against the same fixture, because "the machine was
+/// refused" is true of a surface that refuses every write, and because the pair is what shows the
+/// refusal is *distinguishable* from the success rather than merely present.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL; CI runs it with --include-ignored"]
+async fn a_machine_principal_cannot_author_a_rule_and_the_attempt_is_on_the_record() {
+    let (db, fixtures, pool, harness) = harness().await;
+
+    let policy = PolicyEngine::new(
+        Arc::new(enclave_conditional_access::UnconfiguredConditionalAccess),
+        Arc::new(AnyPrincipalMayAdminister),
+        Arc::new(enclave_information_barriers::UnconfiguredBarriers),
+        Arc::new(enclave_classification::UnconfiguredClassification),
+        Arc::new(enclave_dlp::DisabledDlp),
+        Arc::new(enclave_retention::UnconfiguredRetention),
+        Arc::new(enclave_audit::PgAuditSink::new(pool.clone(), enclave_audit::ChainMode::Enabled)),
+    );
+    let state = ApiState::new(
+        policy,
+        pool.clone(),
+        ISSUER,
+        AUDIENCE,
+        KeySet::new([harness.key.public().clone()]),
+    );
+    let client = Client { app: router(state, enclave_api::Delivery::unconfigured()) };
+
+    // A service account with a fresh second factor, so that neither the chain nor the step-up check
+    // is what refuses. The only thing wrong with this caller is that it is not a person.
+    let machine = machine_token(&harness.key, fixtures.alpha.id, fixtures.alpha.admin);
+    let (status, body) = client.post(&machine, download_rule("no downloads", "SIMULATION")).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "a machine principal authored a rule: {body}");
+    assert_eq!(body["error"]["code"], "ACCESS_DENIED");
+    assert!(rows(&db).await.is_empty(), "and nothing was written");
+
+    let refused_request =
+        body["error"]["requestId"].as_str().expect("the envelope carries a request id").to_owned();
+    let refusal = audit_for(&db, &refused_request).await;
+
+    assert_eq!(
+        refusal.len(),
+        2,
+        "the chain's decision and the handler's must both be on the record: {refusal:#?}"
+    );
+    assert_eq!(
+        refusal[0],
+        ("admin.manage_policy".to_owned(), "ALLOW".to_owned(), None, "null".to_owned()),
+        "the chain allowed, and the row must still say so — the policy did permit this action"
+    );
+    assert_eq!(refusal[1].0, "admin.manage_policy", "the refusal names a different action");
+    assert_eq!(
+        refusal[1].1, "DENY",
+        "an attempt to change the tenant's access rules is recorded as a success: {refusal:#?}"
+    );
+    assert_eq!(
+        refusal[1].2.as_deref(),
+        Some("ACCESS_DENIED"),
+        "the row's reason is not the one the caller was given"
+    );
+    assert!(
+        refusal[1].3.contains("handler:actor"),
+        "the row does not say which control refused, so an investigator has no way to tell this \
+         from an ACL denial: {}",
+        refusal[1].3
+    );
+
+    // The pair. A human's identical request succeeds, leaves one row, and that row is *identical*
+    // to `refusal[0]` — which is exactly why counting `ALLOW`s could never have found this.
+    let admin = admin_token(&harness.key, fixtures.alpha.id, fixtures.alpha.admin);
+    let (status, body) = client.post(&admin, download_rule("no downloads", "SIMULATION")).await;
+    assert_eq!(status, StatusCode::CREATED, "the control did not succeed: {body}");
+
+    let denials: i64 = {
+        let mut conn = db.connect().await.expect("connect");
+        sqlx::query_scalar(
+            "SELECT count(*) FROM audit_events WHERE action = 'admin.manage_policy' AND outcome = 'DENY'",
+        )
+        .fetch_one(&mut conn)
+        .await
+        .expect("count")
+    };
+    assert_eq!(denials, 1, "WHERE outcome = 'DENY' must return the refused attempt and only it");
 }
 
 // --- The controls that sit beside the chain -----------------------------------------------------------

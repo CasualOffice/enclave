@@ -398,6 +398,60 @@ async fn an_allow_produces_a_row_that_carries_its_obligations() {
     );
 }
 
+/// An allow row cannot say whether the operation it permitted then happened.
+///
+/// This is `ENC-606` stated as a property of the chain, and it is the argument for the fix rather
+/// than a complaint about it. `POST /files/{id}/download` on a file carrying `NO_DOWNLOAD` is
+/// allowed by every stage, and the handler then refuses because original bytes cannot honour that
+/// obligation (`CLAUDE.md` rule 8). `GET .../preview` on the same file is allowed and *succeeds*,
+/// with its obligation discharged. Two requests, opposite outcomes — and, in the chain's row, the
+/// same `outcome`, the same absent `reason_code`, the same absent `policy_refs`.
+///
+/// So the fix could not have been "the chain should have denied": it correctly did not, and there is
+/// nothing the chain knows that would distinguish the two. The distinction is only available to the
+/// handler, which is why `enclave_api::refusal` writes a **second** row rather than changing this
+/// one — the more so because this one is inside the hash chain and cannot be changed at all.
+///
+/// Driven twice through the real engine rather than asserted about one row, because the claim is an
+/// *equality between two rows* and a single-row assertion cannot express it.
+#[tokio::test]
+async fn an_allow_row_cannot_say_whether_the_operation_then_happened() {
+    let mut stages = [Configurable::allow(); 6];
+    stages[4] = Configurable::allow_with(Obligation::NoDownload);
+
+    let tenant = TenantId::new_v7();
+    let target = resource(tenant);
+
+    let mut written = Vec::new();
+    for _ in 0..2 {
+        let sink = Arc::new(MemoryAuditSink::default());
+        let _decision = engine(stages, &sink)
+            .enforce(&context(tenant), ACTION, &target)
+            .await
+            .expect("every stage allowed");
+        let events = sink.events().expect("read the recorded events");
+        assert_eq!(events.len(), 1, "an allowed operation produced {} rows", events.len());
+        written.push(events[0].clone());
+    }
+
+    // Imagine the first request refused by its handler and the second served. Nothing here differs.
+    let refused = &written[0];
+    let served = &written[1];
+    assert_eq!(refused.outcome, Outcome::Allow);
+    assert_eq!(
+        (refused.outcome, &refused.reason_code, &refused.policy_refs, &refused.detail),
+        (served.outcome, &served.reason_code, &served.policy_refs, &served.detail),
+        "the two rows have stopped being identical, so this test no longer demonstrates what it \
+         says: an ALLOW row is the same whether the obligation was discharged or refused"
+    );
+
+    // The positive control, so the equality above is not holding because both rows are empty: the
+    // row does carry the obligation, which is the one hint it gives — and a hint about the
+    // *chain*, not about what the surface did with it.
+    let detail = serde_json::to_string(&refused.detail).expect("serialize the row's detail");
+    assert!(detail.contains("NO_DOWNLOAD"), "the row records no obligation at all: {detail}");
+}
+
 /// A run with nothing to refuse still writes, and a run with everything to refuse writes once.
 ///
 /// The liveness half of this file. Both tests above assert about the *contents* of a row, and

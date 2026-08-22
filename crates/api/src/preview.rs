@@ -612,6 +612,40 @@ mod tests {
         );
     }
 
+    /// A watermark must name a person, so a principal that is not one refuses the preview.
+    ///
+    /// The control is the third case: a real user passes, so this is not a check that refuses
+    /// everybody. `ENC-606` is why the refusal is a [`Refused`] rather than an `ApiError` — it fires
+    /// after the chain has allowed, and it has to leave a row saying so.
+    #[test]
+    fn a_principal_with_no_name_cannot_have_a_watermark_stamped_for_them() {
+        let tenant = enclave_core::TenantId::new_v7();
+
+        let system = RequestContext::system(tenant);
+        let refusal = stampable(&system).expect_err("the system actor has no name to stamp");
+        assert_eq!(refusal.code(), ReasonCode::AccessDenied);
+        assert_eq!(
+            refusal.control(),
+            crate::refusal::Control::ObligationDischarge,
+            "the refusal is about an obligation this path could not discharge, and the row must \
+             say which control took it"
+        );
+
+        let mut machine = RequestContext::system(tenant);
+        machine.actor =
+            enclave_core::Actor::ServiceAccount(enclave_core::ServiceAccountId::new_v7());
+        assert_eq!(
+            stampable(&machine).err().map(Refused::code),
+            Some(ReasonCode::AccessDenied),
+            "a service account is not a person either"
+        );
+
+        // The control.
+        let mut person = RequestContext::system(tenant);
+        person.actor = enclave_core::Actor::User(enclave_core::UserId::new_v7());
+        assert!(stampable(&person).is_ok(), "a real viewer must be stampable, or nothing marks");
+    }
+
     #[test]
     fn an_omitted_profile_falls_back_to_the_documented_default() {
         let rendition = validate(&PreviewQuery::default()).expect("no parameters is valid");
