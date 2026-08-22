@@ -15,6 +15,7 @@
 //! | [`mode`] | The five modes of `docs/06 §9`, and the one function that maps a verdict to an effect |
 //! | [`observation`] | What an evaluation leaves behind, and the port it leaves it through |
 //! | [`service`] | [`ModedDlp`] — the `DlpService` the chain holds |
+//! | [`facts`] | [`PgSecurityFacts`] — the `SecurityFactsProvider` that reads `security_facts` |
 //!
 //! The facts a scan produces — [`enclave_core::SecurityFacts`] and the
 //! [`enclave_core::FactsSnapshot`] the chain threads them through — live in `core`, because they
@@ -34,6 +35,7 @@
 pub mod builtin;
 pub mod checksum;
 pub mod detector;
+pub mod facts;
 pub mod mode;
 pub mod observation;
 pub mod policy;
@@ -41,6 +43,7 @@ pub mod service;
 
 pub use builtin::{builtin_set, Iban, PaymentCardNumber, BUILTIN_SET_VERSION};
 pub use checksum::{luhn_valid, mod97};
+pub use facts::PgSecurityFacts;
 pub use detector::{
     Candidate, CandidateClass, Confidence, DetectorFinding, DetectorId, DetectorSet, ScanReport,
     StructuredDetector, Verdict, MAX_CANDIDATE_LEN,

@@ -1389,6 +1389,9 @@ dependencies = [
  "async-trait",
  "enclave-config",
  "enclave-core",
+ "enclave-db",
+ "enclave-testing",
+ "sqlx",
  "tokio",
  "tracing",
 ]
