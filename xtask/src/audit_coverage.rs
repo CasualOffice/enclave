@@ -17,29 +17,43 @@
 //! # What an enforcement point is, mechanically
 //!
 //! A refusal has to be *constructed* before it can be returned, and the workspace's vocabulary has
-//! exactly two constructors for one:
+//! exactly three constructors for one:
 //!
 //! | Construct | Meaning |
 //! |---|---|
 //! | `StageDecision::deny(code)` | a policy stage refuses |
 //! | `Error::denied(code)` / `Error::denied_with(code, remediation)` | a policy refusal as an error |
+//! | `Refused::…(..)` | a handler refuses, after the chain has allowed (`ENC-606`) |
 //!
 //! So *an enforcement point is a call site of one of those*. Nothing else can refuse on policy
 //! grounds without going through one of them, because [`enclave_core::Error::PolicyDenied`]'s
-//! fields are private and `StageOutcome::Deny` is only reachable through `StageDecision::deny`.
+//! fields are private, `StageOutcome::Deny` is only reachable through `StageDecision::deny`, and
+//! `enclave_api::refusal::Refused`'s fields are private with no conversion into either.
 //!
 //! # What "audits" means, mechanically
 //!
-//! `PolicyEngine::enforce` is the only code that calls `PolicyAuditSink::record_deny`. A refusal is
-//! therefore audited exactly when the engine is what turns it into the caller's error. That is
-//! decidable from the *enclosing function's return type*:
+//! Two things record a denial: `PolicyEngine::enforce`, which is the only code that calls
+//! `PolicyAuditSink::record_deny`, and `HandlerAudit::refuse`, which is the only code that can turn
+//! a `Refused` into a client's error. A refusal is audited exactly when one of those is what carries
+//! it to the caller — and that is decidable from the *enclosing function's return type*:
 //!
 //! * a site inside a function returning `StageDecision` (or `Result<StageDecision>`, or
 //!   `Result<Vec<StageDecision>>`) hands its refusal to the engine, which records it before
 //!   returning `Err` — **audited by construction**;
+//! * a site inside a function returning `Refused` hands it to `HandlerAudit::refuse`, which is the
+//!   only thing that can accept one, and which records it before returning the error — **audited
+//!   (handler)**, by exactly the same argument one layer up;
 //! * a site inside `PolicyEngine::enforce` itself writes the row inline — **the engine**;
-//! * anything else returns `Error::PolicyDenied` to a caller that is not the engine, and no row is
+//! * a site inside `HandlerAudit::refuse` is the handler port's own — **audited (handler port)**;
+//! * anything else returns `Error::PolicyDenied` to a caller that is neither, and no row is
 //!   written — **unaudited**.
+//!
+//! # Why the `Refused` matcher is blunt
+//!
+//! Every `Refused::…` path call counts, whatever the member is named, because `Refused` has no
+//! associated function that is not a constructor — the helpers that *return* one, such as
+//! `none_dischargeable`, are free functions for precisely this reason. A matcher keyed to three
+//! remembered names would be escaped by the fourth constructor somebody adds.
 //!
 //! # The hole that classification would otherwise leave, and the third check that closes it
 //!
@@ -78,6 +92,16 @@ const CRATES_DIR: &str = "crates";
 /// The one file that turns a stage's refusal into the caller's error *and* writes the row.
 const ENGINE_FILE: &str = "crates/core/src/engine.rs";
 
+/// The one file that turns a *handler's* refusal into the caller's error *and* writes the row.
+///
+/// `ENC-606`'s fix, and the engine's arrangement repeated one layer up: the type that carries a
+/// handler refusal has private fields and no conversion, so this file is the only place it can
+/// become an `ApiError`, and the row is written before it does.
+const REFUSAL_FILE: &str = "crates/api/src/refusal.rs";
+
+/// The handler port's recording function, which audits inline.
+const RECORD_FN: &str = "refuse";
+
 /// Where [`enclave_core::Error`]'s constructors are defined.
 ///
 /// A `Self::denied(..)` inside the type's own `impl` is the vocabulary being defined, not a
@@ -99,6 +123,8 @@ pub(crate) enum SiteKind {
     ErrorRefusal,
     /// `ensure_allowed()` — a stage decision becomes the caller's error.
     Conversion,
+    /// `Refused::…(..)` — a handler refuses after the chain allowed (`ENC-606`).
+    HandlerRefusal,
 }
 
 impl SiteKind {
@@ -107,11 +133,33 @@ impl SiteKind {
             Self::StageRefusal => "StageDecision::deny",
             Self::ErrorRefusal => "Error::denied",
             Self::Conversion => "ensure_allowed()",
+            Self::HandlerRefusal => "Refused::",
+        }
+    }
+
+    /// What to do about a site of this kind that is not in an audited position.
+    ///
+    /// Per kind rather than one sentence, because the two answers are genuinely different and the
+    /// wrong one is unhelpful advice at the moment somebody is trying to follow it: "move it into a
+    /// stage" is not what a handler that refuses on an obligation should do — the chain already
+    /// allowed, correctly, and the stage has nothing left to say.
+    pub(crate) const fn remedy(self) -> &'static str {
+        match self {
+            Self::StageRefusal | Self::ErrorRefusal | Self::Conversion => {
+                "take the decision inside a stage (return a StageDecision, which the engine \
+                 records before it returns Err)"
+            }
+            Self::HandlerRefusal => {
+                "construct the `Refused` inside a function that *returns* one — a `satisfy`, an \
+                 eligibility check — and let the handler hand it to `HandlerAudit::refuse`, which \
+                 is what writes the row (ENC-606, ENC-625)"
+            }
         }
     }
 
     /// Every kind, so the liveness check cannot silently stop covering one.
-    pub(crate) const ALL: [Self; 3] = [Self::StageRefusal, Self::ErrorRefusal, Self::Conversion];
+    pub(crate) const ALL: [Self; 4] =
+        [Self::StageRefusal, Self::ErrorRefusal, Self::Conversion, Self::HandlerRefusal];
 }
 
 /// Whether the refusal this site constructs reaches a caller through an audited path.
@@ -119,8 +167,13 @@ impl SiteKind {
 pub(crate) enum Position {
     /// The enclosing function returns a `StageDecision`, so the engine records it.
     AuditedByStage,
+    /// The enclosing function returns a `Refused`, so `HandlerAudit::refuse` records it — the only
+    /// thing that can consume one (`ENC-606`).
+    AuditedByHandler,
     /// `PolicyEngine::enforce` — writes the row itself.
     EngineAudits,
+    /// `HandlerAudit::refuse` — writes the row itself, for a refusal taken at the edge.
+    HandlerAudits,
     /// A constructor or conversion definition, not a decision.
     Vocabulary,
     /// Returns `Error::PolicyDenied` to something that is not the engine. No row is written.
@@ -131,7 +184,9 @@ impl Position {
     pub(crate) const fn verdict(self) -> &'static str {
         match self {
             Self::AuditedByStage => "audited (stage)",
+            Self::AuditedByHandler => "audited (handler)",
             Self::EngineAudits => "audited (engine)",
+            Self::HandlerAudits => "audited (handler port)",
             Self::Vocabulary => "vocabulary",
             Self::Unaudited => "UNAUDITED",
         }
@@ -182,15 +237,17 @@ impl Acknowledged {
 ///
 /// **The groups are not equivalent and the comment headings say which is which.** Groups 1 and 2
 /// are legitimate: those refusals happen before a tenant is established, or are the vocabulary's
-/// own converters whose decision is taken at a caller that is itself classified. **Group 3 is a
+/// own converters whose decision is taken at a caller that is itself classified. **Group 3 was a
 /// real `CLAUDE.md` rule 10 defect** — the chain allowed, the handler could not satisfy an
-/// obligation and refused, and the row says `ALLOW`. It was found by this gate on its first run,
-/// it is owned by `ENC-606`, and it is listed here rather than hidden so that it appears in the log
-/// of every pull request until it is fixed. Group 4 is the `ensure_allowed()` conversions, each
-/// provably non-denying.
+/// obligation and refused, and the row said `ALLOW`. It was found by this gate on its first run,
+/// owned by `ENC-606`, and printed in the log of every pull request until `ENC-625` closed it; the
+/// heading is kept, empty, because *how* it emptied is the argument for the staleness check. Group
+/// 4 is the `ensure_allowed()` conversions, each provably non-denying.
 ///
-/// Adding to group 3 is not a way to make this gate green. A new entry there is a new place where
-/// a user is refused and the audit trail does not say so.
+/// **Re-opening group 3 is not a way to make this gate green.** An entry there is a place where a
+/// user is refused and the audit trail does not say so. Since `ENC-625` there is a supported way to
+/// refuse from a handler and be recorded — return an `enclave_api::refusal::Refused` — so a new
+/// group 3 entry means someone chose not to use it.
 ///
 /// A stale entry — one naming a site that no longer constructs a refusal — fails the gate. An
 /// exemption list nobody prunes is how a list of names nobody dares delete gets started.
@@ -237,68 +294,28 @@ pub(crate) const ACKNOWLEDGED: &[Acknowledged] = &[
         function: "require_none",
         kind: SiteKind::ErrorRefusal,
         reason: "`Obligations::require_none` raises the refusal *at its caller* — it is the \
-                 `CLAUDE.md` rule 8 helper for a path that cannot satisfy an obligation. The \
-                 refusal is therefore the caller's, and the caller (crates/api/src/me.rs) is \
-                 acknowledged under ENC-606 with the rest of that class.",
+                 `CLAUDE.md` rule 8 helper for a path that cannot satisfy an obligation, and it \
+                 returns an `Error`, which is a refusal that can reach a client without a row. \
+                 ENC-625 therefore moved every API caller onto `enclave_api::refusal::\
+                 none_dischargeable`, which is the same rule and the same code in a type that has \
+                 to be audited first; `crates/api` no longer calls this. It stays because \
+                 `crates/core` may not depend on the API layer and a domain crate outside the HTTP \
+                 surface — a worker, an MCP tool — still needs the check. A caller of it is an \
+                 unaudited refusal and must be acknowledged in its own right.",
     },
-    // -- Group 3: ENC-606 — the chain allowed, the handler refused, the row says ALLOW ---------
-    Acknowledged {
-        file: "crates/api/src/admin/conditional_access.rs",
-        function: "author",
-        kind: SiteKind::ErrorRefusal,
-        reason: "ENC-606's class, reached from the admin surface rather than the delivery paths. \
-                 `conditional_access_rules.created_by` is NOT NULL onto `users (tenant_id, id)`, \
-                 so a service account, an MCP client or `system` cannot author a rule; refusing \
-                 here is what stops the composite foreign key reporting that as a 500. The chain \
-                 has already written its ALLOW for `admin.manage_policy` by the time this fires, \
-                 so a non-human principal's attempt to write a conditional-access rule is a 403 \
-                 the audit log records as a success. That is precisely the gap ENC-606 owns, and \
-                 it is worth more here than on a download path: an investigation asking who tried \
-                 to change the access rules is the investigation this table exists for.",
-    },
-    Acknowledged {
-        file: "crates/api/src/download.rs",
-        function: "satisfy",
-        kind: SiteKind::ErrorRefusal,
-        reason: "ENC-606. An obligation the download path cannot satisfy (`Watermark`, \
-                 `NoDownload`, an unsupplied justification) is a refusal — correctly, per rule 8 — \
-                 but the chain has already written an ALLOW row by the time it happens. An \
-                 investigator reading audit_events sees an allowed download that never occurred, \
-                 and no record of the refusal at all. Fixing it means an audit sink on `ApiState`, \
-                 which is constructed in crates/api/src/main.rs; ENC-606 owns that.",
-    },
-    Acknowledged {
-        file: "crates/api/src/preview.rs",
-        function: "satisfy",
-        kind: SiteKind::ErrorRefusal,
-        reason: "ENC-606, same defect on the preview path.",
-    },
-    Acknowledged {
-        file: "crates/api/src/preview.rs",
-        function: "viewer_identity",
-        kind: SiteKind::ErrorRefusal,
-        reason: "ENC-606. A watermark obligation the preview path cannot satisfy, because the \
-                 actor is a service account with no name to stamp. Refusing is right; the ALLOW \
-                 row was written before it happened.",
-    },
-    Acknowledged {
-        file: "crates/api/src/preview.rs",
-        function: "mark",
-        kind: SiteKind::ErrorRefusal,
-        reason: "ENC-606. The watermark compositor refusing a media type it cannot mark, or bytes \
-                 it cannot decode. Rule 8 honoured exactly and rule 10 not at all: the caller gets \
-                 a 403 and audit_events holds an ALLOW for the same request.",
-    },
-    Acknowledged {
-        file: "crates/api/src/me.rs",
-        function: "me",
-        kind: SiteKind::ErrorRefusal,
-        reason: "Two refusals in one function, and only the coarser reason can be recorded here \
-                 because the acknowledgement is keyed by function. The `System`-actor guard is \
-                 group 1's case — no subject, so no user a row could be attributed to. The \
-                 `require_none` refusal below it is group 3's: it fires after the chain has \
-                 written its ALLOW row, and is ENC-606.",
-    },
+    // -- Group 3: ENC-606's class, now audited rather than acknowledged ------------------------
+    //
+    // This group is deliberately **empty**, and the emptiness is the record of what changed. It
+    // held six entries covering fourteen sites — five in `download.rs::satisfy`, seven across
+    // `preview.rs`, one in `me.rs::me` and one in `admin/conditional_access.rs::author` — each of
+    // them a refusal the chain had already written an `ALLOW` for. Every one now constructs a
+    // `Refused` instead, in a function that returns one, so it is classified `audited (handler)`
+    // above rather than tolerated here. `ENC-625`.
+    //
+    // The staleness check is what emptied it: the fix made all six entries name sites that no
+    // longer existed, and the gate refused to pass until they were removed. That is the intended
+    // life cycle of an acknowledgement and worth seeing happen once.
+    //
     // -- Group 4: StageDecision consumed by something that is not the engine -------------------
     Acknowledged {
         file: "crates/api/src/content.rs",
@@ -391,6 +408,20 @@ pub(crate) fn liveness(sites: &[Site]) -> Result<()> {
              stopped reading it."
         );
     }
+    // The same check for the handler port, and it earns its place the same way: `ENC-606` was a
+    // whole class of refusal with no row behind it, and the fix is one function. If that function
+    // stops existing — renamed, moved, inlined into a handler — every `Refused` site would still
+    // classify as `audited (handler)` off its return type alone, and the classification would be
+    // describing a path that no longer records anything.
+    if !sites.iter().any(|site| site.position == Position::HandlerAudits) {
+        anyhow::bail!(
+            "audit-coverage: nothing in {REFUSAL_FILE} was classified as the handler port's own \
+             audited refusal. `HandlerAudit::{RECORD_FN}` is the one place a handler's refusal \
+             becomes the caller's error, and the one place it is recorded; if it is no longer \
+             there, `ENC-606` is open again and every site this gate calls `audited (handler)` is \
+             mis-classified."
+        );
+    }
     Ok(())
 }
 
@@ -418,14 +449,14 @@ pub(crate) fn decide(sites: &[Site], acknowledged: &[Acknowledged]) -> Result<()
     for site in &unaudited {
         println!(
             "::error file={},line={},title=GATE FAILED: audit coverage::{}() constructs a refusal \
-             with `{}` and returns it to something that is not PolicyEngine::enforce, so no audit \
-             row is written. Fix: take the decision inside a stage (return a StageDecision, which \
-             the engine records), or add an entry to ACKNOWLEDGED in xtask/src/audit_coverage.rs \
-             with the reason and the tracker row that owns the gap.",
+             with `{}` and returns it to something this gate cannot see recording it, so no audit \
+             row is proven. Fix: {}, or add an entry to ACKNOWLEDGED in \
+             xtask/src/audit_coverage.rs with the reason and the tracker row that owns the gap.",
             site.file,
             site.line,
             site.function,
             site.kind.label(),
+            site.kind.remedy(),
         );
     }
     for ack in &stale {
@@ -521,6 +552,7 @@ pub(crate) fn analyze(sources: &[(String, String)]) -> Result<Vec<Site>> {
             file: display_path.clone(),
             function: Vec::new(),
             returns_stage_decision: Vec::new(),
+            returns_refused: Vec::new(),
             sites: &mut sites,
         };
         visitor.visit_file(&file);
@@ -538,6 +570,8 @@ struct SiteCollector<'a> {
     function: Vec<String>,
     /// Whether each enclosing function's return type mentions `StageDecision`.
     returns_stage_decision: Vec<bool>,
+    /// Whether each enclosing function's return type mentions `Refused`.
+    returns_refused: Vec<bool>,
     sites: &'a mut Vec<Site>,
 }
 
@@ -553,6 +587,11 @@ impl SiteCollector<'_> {
         {
             return Position::AuditedByStage;
         }
+        // The same argument as the line above, one layer up: a `Refused` returned to a caller can
+        // only become that caller's error through `HandlerAudit::refuse`, which records it first.
+        if kind != SiteKind::Conversion && self.returns_refused.last().copied() == Some(true) {
+            return Position::AuditedByHandler;
+        }
         if self.file == ENGINE_FILE {
             if function == ENFORCE_FN {
                 return Position::EngineAudits;
@@ -562,6 +601,11 @@ impl SiteCollector<'_> {
             if function == CONVERSION_FN {
                 return Position::Vocabulary;
             }
+        }
+        // `HandlerAudit::refuse`'s own body, which writes the row and *then* builds the error the
+        // caller receives. Anywhere else in that file is classified by return type like any other.
+        if self.file == REFUSAL_FILE && function == RECORD_FN {
+            return Position::HandlerAudits;
         }
         if self.file == ERROR_FILE {
             return Position::Vocabulary;
@@ -579,10 +623,12 @@ impl SiteCollector<'_> {
     /// Visit a function body with its name and return type pushed onto the stacks.
     fn in_function(&mut self, sig: &syn::Signature, block: &syn::Block) {
         self.function.push(sig.ident.to_string());
-        self.returns_stage_decision.push(mentions_stage_decision(&sig.output));
+        self.returns_stage_decision.push(mentions(&sig.output, "StageDecision"));
+        self.returns_refused.push(mentions(&sig.output, "Refused"));
         syn::visit::visit_block(self, block);
         self.function.pop();
         self.returns_stage_decision.pop();
+        self.returns_refused.pop();
     }
 }
 
@@ -669,12 +715,7 @@ fn scan_tokens(tokens: proc_macro2::TokenStream) -> Vec<(SiteKind, usize)> {
         ) = (a, b, c, d)
         {
             if first.as_char() == ':' && second.as_char() == ':' {
-                let kind = match (owner.to_string().as_str(), member.to_string().as_str()) {
-                    ("Error" | "Self", "denied" | "denied_with") => Some(SiteKind::ErrorRefusal),
-                    ("StageDecision" | "Self", "deny") => Some(SiteKind::StageRefusal),
-                    _ => None,
-                };
-                if let Some(kind) = kind {
+                if let Some(kind) = constructor(&owner.to_string(), &member.to_string()) {
                     found.push((kind, owner.span().start().line));
                 }
             }
@@ -716,41 +757,58 @@ fn refusal_constructor(func: &syn::Expr) -> Option<SiteKind> {
     let mut segments = path.path.segments.iter().rev();
     let last = segments.next()?.ident.to_string();
     let owner = segments.next()?.ident.to_string();
+    constructor(&owner, &last)
+}
 
-    match (owner.as_str(), last.as_str()) {
+/// The one table of refusal constructors, shared by the AST walk and the token scan.
+///
+/// One table rather than two, because the token scan exists to cover `macro_rules!` bodies and a
+/// constructor added to only one of them would be invisible in exactly the place a syntactic gate
+/// is most easily evaded.
+///
+/// `Refused::` matches on the owner alone: the type has no associated function that is not a
+/// constructor — its helpers are free functions for this reason — so listing member names would
+/// only create a fourth name somebody could add without the gate noticing.
+fn constructor(owner: &str, member: &str) -> Option<SiteKind> {
+    match (owner, member) {
         ("Error" | "Self", "denied" | "denied_with") => Some(SiteKind::ErrorRefusal),
         ("StageDecision" | "Self", "deny") => Some(SiteKind::StageRefusal),
+        ("Refused", _) => Some(SiteKind::HandlerRefusal),
         _ => None,
     }
 }
 
-/// Whether a return type mentions `StageDecision` anywhere in it.
+/// Whether a return type mentions a named type anywhere in it.
 ///
-/// Textual on the token stream rather than a structural match, because the type appears in at
+/// Textual on the token stream rather than a structural match, because each type appears in at
 /// least four shapes — `StageDecision`, `Result<StageDecision>`, `Result<Vec<StageDecision>>` and
 /// `Result<StageDecision, Error>` — and a structural match would need extending for each. The
 /// direction of any error here is what makes that acceptable: an over-broad match classifies a
-/// site as audited when it is not, so it is *checked* rather than assumed — the `Conversion` check
-/// is what covers a `StageDecision` that reaches something other than the engine.
-fn mentions_stage_decision(output: &syn::ReturnType) -> bool {
+/// site as audited when it is not, so it is *checked* rather than assumed. For `StageDecision` the
+/// `Conversion` enumeration is that check; for `Refused` it is the type itself — private fields,
+/// no `From`, and one consumer — so there is no `ensure_allowed` equivalent to enumerate.
+fn mentions(output: &syn::ReturnType, name: &str) -> bool {
     match output {
         syn::ReturnType::Default => false,
         syn::ReturnType::Type(_, ty) => {
             let mut found = false;
-            let mut visitor = TypeNames(&mut found);
+            let mut visitor = TypeNames { name, found: &mut found };
             visitor.visit_type(ty);
             found
         }
     }
 }
 
-/// Looks for a `StageDecision` path segment anywhere inside a type.
-struct TypeNames<'a>(&'a mut bool);
+/// Looks for a named path segment anywhere inside a type.
+struct TypeNames<'a> {
+    name: &'a str,
+    found: &'a mut bool,
+}
 
 impl<'ast> Visit<'ast> for TypeNames<'_> {
     fn visit_path_segment(&mut self, node: &'ast syn::PathSegment) {
-        if node.ident == "StageDecision" {
-            *self.0 = true;
+        if node.ident == self.name {
+            *self.found = true;
         }
         syn::visit::visit_path_segment(self, node);
     }
@@ -941,6 +999,111 @@ mod tests {
         decide(&found, &ack).expect("an acknowledged site passes");
     }
 
+    /// The same rule for a handler's refusal, and the reason `ENC-606` cannot come back quietly.
+    ///
+    /// Both halves again, and here the negative half is the one that matters: the fix for `ENC-606`
+    /// introduced a *new* way to refuse, and a gate that classified every `Refused::…` as audited
+    /// would be blessing the construct rather than checking where it is used. A `Refused` built
+    /// inline in a handler is consumed by nothing that records, so it is reported.
+    #[test]
+    fn a_handler_refusal_is_audited_only_when_it_is_returned_to_the_port() {
+        let found = sites(
+            "crates/api/src/files.rs",
+            r#"
+            fn satisfy(obligations: &Obligations) -> Result<(), Refused> {
+                for obligation in obligations {
+                    return Err(Refused::obligation(*obligation));
+                }
+                Ok(())
+            }
+
+            async fn get_file(state: State<ApiState>) -> Result<Json<File>, ApiError> {
+                if ctx.actor.subject_id().is_none() {
+                    return Err(ApiError::new(Refused::actor(code).into(), ctx.request_id));
+                }
+                Ok(Json(state.files.load(&resource).await?))
+            }
+            "#,
+        );
+
+        let audited = find(&found, "satisfy");
+        assert_eq!(audited.kind, SiteKind::HandlerRefusal);
+        assert_eq!(audited.position, Position::AuditedByHandler);
+
+        let inline = find(&found, "get_file");
+        assert_eq!(inline.kind, SiteKind::HandlerRefusal);
+        assert_eq!(
+            inline.position,
+            Position::Unaudited,
+            "a Refused built inline in a handler reaches the client through whatever the handler \
+             does with it, which is not necessarily the audit port"
+        );
+
+        let error = decide(&found, &[]).expect_err("the inline refusal must fail the gate");
+        assert!(
+            error.to_string().contains("1 unaudited refusal site"),
+            "the gate failed for the wrong reason: {error}"
+        );
+    }
+
+    /// The handler port is checked for liveness, exactly as the engine is.
+    ///
+    /// `docs/12-TESTING.md §1.2`: every classification above is an assertion about where a site
+    /// sits, and all of them stay true if the function they assume exists is deleted. A tree with
+    /// `Refused` sites and no `HandlerAudit::refuse` is `ENC-606` re-opened with a green gate.
+    #[test]
+    fn an_inventory_with_no_handler_audit_port_fails_liveness() {
+        // A tree that has one of every kind, and no `refuse()`.
+        let mut found = sites(
+            "crates/api/src/files.rs",
+            r#"
+            fn satisfy(obligations: &Obligations) -> Result<(), Refused> {
+                Err(Refused::obligation(Obligation::NoDownload))
+            }
+            async fn evaluate(&self) -> Result<StageDecision> {
+                Ok(StageDecision::deny(ReasonCode::AccessDenied))
+            }
+            async fn share(&self) -> Result<Link> {
+                let obligations = decision.ensure_allowed()?;
+                Err(Error::denied(ReasonCode::ExternalShareBlocked))
+            }
+            "#,
+        );
+        // The engine's own port, so that this test fails on the *handler* port's absence rather
+        // than on the check above it.
+        found.extend(sites(
+            ENGINE_FILE,
+            r#"
+            impl PolicyEngine {
+                pub async fn enforce(&self) -> Result<PolicyDecision> {
+                    self.audit.record_deny(ctx, action, resource, stage, code).await?;
+                    Err(Error::denied(code))
+                }
+            }
+            "#,
+        ));
+        let error = liveness(&found).expect_err("no handler audit port must fail liveness");
+        assert!(
+            error.to_string().contains("ENC-606"),
+            "the liveness failure must name what it is protecting: {error}"
+        );
+
+        // The positive control: the identical inventory *with* the port passes, which is what
+        // proves the failure above came from the port's absence and not from the rest of it.
+        found.extend(sites(
+            REFUSAL_FILE,
+            r#"
+            impl HandlerAudit {
+                pub async fn refuse(&self, refused: Refused) -> ApiError {
+                    let _ = self.sink.record(event).await;
+                    ApiError::new(Error::denied(refused.code), ctx.request_id)
+                }
+            }
+            "#,
+        ));
+        liveness(&found).expect("an inventory with the port is live");
+    }
+
     /// A refusal hidden in a `macro_rules!` body is still found.
     ///
     /// This is the shape `PolicyEngine::enforce` is actually written in, and the shape a plain AST
@@ -977,6 +1140,27 @@ mod tests {
         assert!(
             kinds.contains(&SiteKind::Conversion),
             "the ensure_allowed() inside the macro body was not seen: {found:?}"
+        );
+
+        // And the third constructor, which is the one most recently added and therefore the one a
+        // token scanner is most likely to have been left without. The two matchers read one table
+        // (`constructor`) for exactly this reason.
+        let hidden = sites(
+            "crates/api/src/files.rs",
+            r#"
+            async fn get_file(state: State<ApiState>) -> Result<Json<File>, ApiError> {
+                macro_rules! discharge {
+                    ($obligation:expr) => {
+                        return Err(Refused::obligation($obligation))
+                    };
+                }
+                discharge!(Obligation::NoDownload);
+            }
+            "#,
+        );
+        assert!(
+            hidden.iter().any(|site| site.kind == SiteKind::HandlerRefusal),
+            "the Refused:: inside the macro body was not seen: {hidden:?}"
         );
     }
 

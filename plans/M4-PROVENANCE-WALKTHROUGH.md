@@ -1,6 +1,6 @@
 # M4 — a provenance walkthrough of one denial
 
-> **Status:** Draft · **Version:** 1.0 · **Owner:** Engineering · **Last updated:** 2026-08-22
+> **Status:** Draft · **Version:** 1.1 · **Owner:** Engineering · **Last updated:** 2026-08-22
 
 `plans/M4-GOVERNANCE.md §6` requires this, and says why it is a *provenance* walkthrough rather
 than a threat one: M3's question was whether anything leaks, and M4's is whether the system refuses
@@ -13,6 +13,12 @@ executed against a live PostgreSQL. Every transcript below is copied from the ru
 
 It is written against the code, not the design. Where the trail is weaker than `CLAUDE.md` rule 10
 implies, that is recorded here rather than smoothed over — and `§4` is the part that matters.
+
+> **Amended 2026-08-22.** The second finding — `ENC-606`, the refusal recorded as `ALLOW` — has since
+> been fixed by `ENC-625`. `§2` is left standing as it was found, because a walkthrough that quietly
+> rewrote its own finding would be worth less than one that records it; `§2.5` is what the same two
+> requests leave behind now, executed the same way. `§2.4`, `§4` and `§5` are corrected in place and
+> say what changed.
 
 ---
 
@@ -105,10 +111,13 @@ a policy decision, and it is in the trail rather than being a side effect of one
 
 ---
 
-## 2. The denial that does not explain itself
+## 2. The denial that did not explain itself
 
 The same walkthrough, on the request `plans/M4-GOVERNANCE.md §6` actually names — *request in, stage
 that refused, **obligation raised**, audit row out*.
+
+`§2.1`–`§2.4` are the finding as it was executed on 2026-08-22, before `ENC-625`. `§2.5` is the same
+two requests after it.
 
 ### 2.1 Request in
 
@@ -142,8 +151,8 @@ seq=2 action=file.preview  outcome=ALLOW reason=None policy_refs=null
       request_id=01a0297b-d19f-7f01-9ee3-b618cc78271f
 ```
 
-**The request that returned `403` is recorded as `ALLOW`.** There is one row for it and its outcome
-is the opposite of what happened. Against the three questions from `§1.3`:
+**The request that returned `403` was recorded as `ALLOW`.** There was one row for it and its
+outcome was the opposite of what happened. Against the three questions from `§1.3`:
 
 | Question | Answer in the table |
 |---|---|
@@ -151,30 +160,80 @@ is the opposite of what happened. Against the three questions from `§1.3`:
 | Why? | `reason_code` is `NULL`. The caller was told `PREVIEW_ONLY`; the table holds no reason at all |
 | By what? | `policy_refs` is `NULL` |
 
-The only trace is `detail.obligations`, and it is a hint rather than a record: it says a restriction
+The only trace was `detail.obligations`, and it is a hint rather than a record: it says a restriction
 was attached to a permitted operation, which is a true statement about the *chain* and says nothing
 about what the *handler* then did with it. The identical row would be written if the download had
 succeeded with the obligation discharged — which is precisely the case on `seq=2`, where the
 watermark obligation **was** discharged and the preview was served. Two rows that are structurally
-identical, describing one refusal and one success.
+identical, describing one refusal and one success. That equality is not incidental and has not been
+removed: it is now asserted directly, because it is the reason the fix had to be a *second* row
+rather than a different first one (`§2.5`).
 
-An operator investigating "this user says they cannot download anything" reads `outcome = ALLOW` and
-concludes the product is working. An auditor asked to produce every refusal in a period runs
-`WHERE outcome = 'DENY'` and this one is not in the result set.
+An operator investigating "this user says they cannot download anything" read `outcome = ALLOW` and
+concluded the product was working. An auditor asked to produce every refusal in a period ran
+`WHERE outcome = 'DENY'` and this one was not in the result set.
 
-### 2.4 The comment in the test that says otherwise
+### 2.4 The comment in the test that said otherwise
 
-`delivery.rs`, immediately above the assertion:
+`delivery.rs`, immediately above the assertion, as it stood when this was written:
 
 > The chain allowed; the handler refused. Both facts are in the log, which is what makes the
 > obligation's effect auditable rather than merely believed.
 >
 > `assert_eq!(audited(&db, "file.download", "ALLOW").await, 1);`
 
-Only the first fact is in the log. The assertion is correct — there is exactly one `ALLOW` row — and
-the sentence above it describes a trail that does not exist. This is worth recording as its own
+Only the first fact was in the log. The assertion was correct — there was exactly one `ALLOW` row —
+and the sentence above it described a trail that did not exist. This is worth recording as its own
 observation: the belief that the refusal was audited had already been written down, reviewed and
-merged. Nothing in the test suite disagreed with it, because no test asked.
+merged. Nothing in the test suite disagreed with it, **because the assertion underneath it was a
+count of allows, which the defect satisfies.**
+
+That is the shape to take from this section rather than the defect itself. The comment was not
+careless; it described what everyone believed and what the design intends. What was missing was an
+assertion that could have been false — and a count of the outcome that *is* written can never be.
+
+### 2.5 What the same two requests leave behind now
+
+`ENC-625`. Same test, same fixture, same command, run after the fix:
+
+```
+seq=1 action=file.download outcome=ALLOW reason=None policy_refs=null
+      detail={"obligations": ["{\"type\":\"NO_DOWNLOAD\"}"]}
+seq=2 action=file.download outcome=DENY  reason=Some("PREVIEW_ONLY")
+      policy_refs=[{"id":null,"kind":"handler:obligation","version":null}]
+      detail={"obligation": "NO_DOWNLOAD", "refused_by": "handler"}
+      -- both rows share one request_id
+seq=3 action=file.preview  outcome=ALLOW reason=None policy_refs=null
+      detail={"obligations": ["{\"type\":\"WATERMARK\"}"]}
+      -- the preview succeeded: one row, and no DENY for its request_id
+```
+
+Four things about that second row, each of them a decision:
+
+* **It is a second row, not an amendment.** The chain's `ALLOW` is not wrong — the policy did allow,
+  and that is the fact an auditor needs in order to see that the restriction came from an obligation
+  rather than from an ACL. Amending is not available in any case: `audit_events` is append-only and
+  hash-linked per tenant, so rewriting `seq=1` would invalidate `event_hash` for every row after it,
+  which is exactly what the chain exists to detect. The integrity property was not weakened to make
+  the fix easier.
+* **The two rows are paired by `request_id` and nothing else.** Neither row asserts anything about
+  the other. Writing "the chain allowed" into the denial row would be a claim about a different row,
+  and a claim about a different row can be wrong.
+* **`policy_refs` says `handler:obligation`.** `policy_refs` is where the chain records the *stage*
+  that refused, so a handler refusal in the same column needs to be unmistakable: an investigator who
+  read `dlp` there would go looking for a DLP rule that refused, and there is none — DLP allowed,
+  with a condition this surface could not meet. The `handler:` prefix cannot collide with any
+  `Stage::as_str()`, and a test asserts the whole vocabulary rather than the two entries it
+  remembers.
+* **`detail` names the obligation's *kind* and never its payload.** `RECLASSIFY`, never the rank it
+  wanted; no matched values, no file content, and no justification text even when a missing
+  justification is the reason for the refusal (`CLAUDE.md` rule 10).
+
+Against the three questions of `§1.3`, the row now answers all three — and the assertion that proves
+it is not "the row exists". It is that the row is **distinguishable** from the success beside it:
+the two `ALLOW` rows above are still structurally identical, deliberately, because the chain took
+the same decision in both cases. `an_allow_row_cannot_say_whether_the_operation_then_happened`
+asserts that equality directly, which is what fixes the shape `§2.4` describes.
 
 ---
 
@@ -204,10 +263,12 @@ inspected no foreign key.
 `ENC-585` therefore lands as two halves, because they fail differently:
 
 * **`cargo run -p xtask -- audit-coverage`** enumerates every site in `crates/*/src` that constructs
-  a refusal — `StageDecision::deny`, `Error::denied`, `Error::denied_with` — and fails on any that
-  returns it to something other than `PolicyEngine::enforce`. This is what found `§2`: five sites in
-  `download.rs::satisfy`, seven across `preview.rs` (`satisfy`, `mark`, `viewer_identity`) and one
-  in `me.rs`. All thirteen are `ENC-606`.
+  a refusal — `StageDecision::deny`, `Error::denied`, `Error::denied_with` and, since `ENC-625`,
+  `Refused::…` — and fails on any that returns it to something other than a recorder. This is what
+  found `§2`: five sites in `download.rs::satisfy`, seven across `preview.rs` (`satisfy`, `mark`,
+  `viewer_identity`) and one in `me.rs`. All thirteen were `ENC-606`, and a fourteenth
+  (`admin/conditional_access.rs::author`) was caught the moment `ENC-603` merged. All fourteen are
+  now classified `audited (handler)` and the acknowledgement group that held them is empty.
 * **`crates/audit/tests/policy_audit_coverage.rs`** drives the real chain into the real record
   format, once per `Stage::ORDER` entry, and asserts the row can answer all three questions from
   `§1.3`. This is what would catch a regression in `§1`.
@@ -222,12 +283,26 @@ Both were verified by doing it.
 
 ## 4. What is not stopped
 
-**An obligation-refusal is not audited** (`ENC-606`). `§2` in full. Thirteen sites across
-`download.rs`, `preview.rs` and `me.rs`. Every one of them is rule 8 being honoured correctly and
-rule 10 not being honoured at all. The fix needs an audit sink reachable from the handler, and
-`ApiState` is assembled in `crates/api/src/main.rs`; `ENC-606` owns it. Until then the sites are in
-`ACKNOWLEDGED` in `xtask/src/audit_coverage.rs`, printed with their reasons in the log of every pull
-request, and the gate fails if a fourteenth appears.
+**~~An obligation-refusal is not audited~~ — fixed by `ENC-625`.** `§2` in full, `§2.5` for what the
+same requests leave now. Fourteen sites across `download.rs`, `preview.rs`, `me.rs` and
+`admin/conditional_access.rs`; every one of them was rule 8 honoured correctly and rule 10 not
+honoured at all. The note here said the fix needed an audit sink reachable from the handler and that
+`ApiState` is assembled in `crates/api/src/main.rs` — **that part was wrong in a useful way**:
+`ApiState::new` already holds the pool, so the sink is built there and `main.rs` needed no change at
+all. What the fix actually turns on is not the sink but the *type*: `Refused` has private fields and
+no conversion into an error, so `HandlerAudit::refuse` is the only thing that can produce one, and it
+records first. Two limits stated rather than implied — deleting the write inside `refuse` leaves the
+static gate green (the same shape as deleting `record_deny` from the chain; verified), so
+`docs/12 §4.10` U7's three tests are what hold it, and the gate's liveness check covers only the
+*existence* of the port.
+
+**A step-up refusal is still not audited** (`ENC-620`). `crates/api/src/admin/conditional_access.rs`
+refuses a privileged mutation that is not backed by recent MFA, after the chain has written its
+`ALLOW` — the same shape as `§2`, and deliberately **not** fixed by `ENC-625`. It is not an
+obligation the handler could not discharge; it is a condition that belongs in the conditional-access
+stage as a `RequireMfa` effect, where it would be audited as the denial it is and where a tenant
+could not weaken it. Routing it through the handler's audit port would record it correctly and would
+also make the wrong home permanent. `ENC-620` is a change to `crates/conditional_access`.
 
 **A pre-authentication refusal is not audited, and should not be.** `crates/api/src/auth.rs` refuses
 a missing or unverifiable bearer token. The audit chain is keyed and sequenced *per tenant*, and at
@@ -271,9 +346,17 @@ refused, obligation raised, audit row out." Both denials were executed rather th
   inside tamper-evident bytes, correlated to the request by `request_id`, and — in the case of the
   `403`-versus-`404` disambiguation — with the second decision that produced the status code
   recorded beside the first.
-* For an **obligation** refusal, it does not. The audit row says `ALLOW`.
+* For an **obligation** refusal, it did not. The audit row said `ALLOW`. Since `ENC-625` it is two
+  rows — the chain's `ALLOW` and the handler's `DENY`, paired by `request_id` — and the trail answers
+  the same three questions (`§2.5`).
 
-The second finding is worth more than the document, which is why it is in `TRACKER.md` as `ENC-606`
-and in the gate's acknowledgement list rather than only here. A walkthrough that had found nothing
-would have been a description of the design; this one disagrees with a comment that had already been
-reviewed and merged.
+The second finding is worth more than the document, which is why it went into `TRACKER.md` as
+`ENC-606` and into the gate's acknowledgement list rather than only here. A walkthrough that had
+found nothing would have been a description of the design; this one disagreed with a comment that had
+already been reviewed and merged.
+
+The lasting part is `§2.4` rather than the defect: the belief was written down, reviewed and merged,
+and the test underneath it **asserted the outcome that was written rather than the one that
+happened**. A count of `ALLOW` rows cannot be false in the presence of an extra `ALLOW` row. That is
+why the fix's own test asserts an *equality between two rows* — the refused request's `ALLOW` and the
+served request's — rather than the presence of the new one.

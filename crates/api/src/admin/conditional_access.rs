@@ -80,6 +80,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::auth::Authenticated;
 use crate::error::{ApiError, Envelope, NO_STORE};
+use crate::refusal::{none_dischargeable, Refused};
 use crate::state::ApiState;
 
 /// How recently a privileged mutation's caller must have authenticated.
@@ -300,7 +301,13 @@ pub async fn create_rule(
     if let Err(envelope) = require_step_up(&ctx) {
         return Ok(envelope.into_response(request_id));
     }
-    let author = author(&ctx).map_err(|error| ApiError::new(error, request_id))?;
+    let author = match author(&ctx) {
+        Ok(author) => author,
+        Err(refused) => {
+            let resource = ResourceRef::tenant(ctx.tenant_id);
+            return Err(state.audit.refuse(&ctx, WRITE_ACTION, &resource, refused).await);
+        }
+    };
 
     let request: RuleRequest = match serde_json::from_slice(&body) {
         Ok(request) => request,
@@ -504,7 +511,17 @@ async fn enforce(state: &ApiState, ctx: &RequestContext, action: Action) -> Resu
     // stage attaches an obligation to an administrative action today, and this path could not
     // satisfy one — there is no rendition to watermark and nowhere to collect a justification — so
     // an obligation arriving here is a refusal (D29, `CLAUDE.md` rule 8).
-    decision.into_obligations().require_none().map_err(|error| ApiError::new(error, ctx.request_id))
+    //
+    // `none_dischargeable` rather than `Obligations::require_none`, for `ENC-606`'s reason: the
+    // chain wrote its `ALLOW` one statement above, so a refusal that reached the caller as a bare
+    // `Error` would be a `403` the audit table records as a success.
+    if let Err(refused) = none_dischargeable(&decision.into_obligations()) {
+        return Err(state
+            .audit
+            .refuse(ctx, action, &ResourceRef::tenant(ctx.tenant_id), refused)
+            .await);
+    }
+    Ok(())
 }
 
 /// Refuses a privileged mutation that is not backed by recent multi-factor authentication.
@@ -555,10 +572,15 @@ fn require_step_up(ctx: &RequestContext) -> Result<(), Envelope> {
 /// `users (tenant_id, id)`, because *"the system" is not an answer to "who locked the finance team
 /// out on Friday"*. A service account, an MCP client or `system` has no row in `users`; rather than
 /// let the foreign key report that as an internal error, the requirement is stated here.
-fn author(ctx: &RequestContext) -> Result<UserId, Error> {
+fn author(ctx: &RequestContext) -> Result<UserId, Refused> {
     match ctx.actor {
         Actor::User(id) => Ok(id),
-        _ => Err(Error::denied(enclave_core::ReasonCode::AccessDenied)),
+        // An actor-eligibility refusal, and the one in `ENC-606`'s class that matters most: by the
+        // time it fires the chain has written its `ALLOW` for `admin.manage_policy`, so before
+        // `ENC-606` a non-human principal's attempt to write a conditional-access rule was recorded
+        // as a success. *Who tried to change the access rules* is the investigation this table
+        // exists for. The caller of this function records the refusal before returning it.
+        _ => Err(Refused::actor(enclave_core::ReasonCode::AccessDenied)),
     }
 }
 
