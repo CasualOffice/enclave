@@ -43,11 +43,11 @@ pub mod service;
 
 pub use builtin::{builtin_set, Iban, PaymentCardNumber, BUILTIN_SET_VERSION};
 pub use checksum::{luhn_valid, mod97};
-pub use facts::PgSecurityFacts;
 pub use detector::{
     Candidate, CandidateClass, Confidence, DetectorFinding, DetectorId, DetectorSet, ScanReport,
     StructuredDetector, Verdict, MAX_CANDIDATE_LEN,
 };
+pub use facts::PgSecurityFacts;
 pub use mode::{DlpMode, Effect};
 pub use observation::{Observation, ObservationSink, TracingObservations};
 pub use policy::{
