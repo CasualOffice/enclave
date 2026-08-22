@@ -445,6 +445,12 @@ cursor: the same set is read on every request in the policy chain, so a tenant w
 page has a per-request cost that matters long before the page envelope does. §6's shape is kept so
 that a cursor can be added without a `v2`.
 
+`PATCH` carries `mode` and nothing else. **A rule's conditions and effect are not editable**:
+changing what a rule refuses is a withdrawal and a new rule, so the text of what was in force during
+any period remains readable, which is the same argument the table makes for having no `DELETE`. An
+edit in place would leave an audit trail saying that a rule changed and no way to see what it said
+before.
+
 `DELETE` is **withdrawal**: the row and its text stay and `deleted_at` is set (`04 §12.1`). A rule's
 history is audit evidence, and the application role holds no `DELETE` on the table. Withdrawing a
 rule that is already withdrawn, that never existed, or that belongs to another tenant are all `404`.

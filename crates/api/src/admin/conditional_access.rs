@@ -317,8 +317,9 @@ pub async fn create_rule(
         return Ok(envelope.into_response(request_id));
     }
 
-    // The row that is stored is the canonical serialization of the decoded rule, never the bytes
-    // that arrived. See the module header: this is what leaves a refused clause nowhere to survive.
+    // The row that is stored is the serialization of the decoded rule, never the bytes that
+    // arrived — so the column holds a value the *type* produced. See the module header for what
+    // that is and is not worth: the refusal itself is `decode_rule`'s, one line above.
     let row = encode_rule(id, &candidate)
         .map_err(|error| ApiError::new(Error::from(error), request_id))?;
 
