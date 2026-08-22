@@ -180,11 +180,17 @@ impl Acknowledged {
 
 /// Every unaudited refusal in the tree, with the reason it is tolerated.
 ///
-/// **Read the second group before adding to it.** The first group is legitimate: those refusals
-/// happen before a tenant is established, and the audit chain is per tenant — there is nothing to
-/// write into and no tenant to attribute it to. The second group is not legitimate. It is a real
-/// `CLAUDE.md` rule 10 defect, found by this gate on its first run, owned by `ENC-606`, and listed
-/// here rather than hidden so that it appears in the log of every pull request until it is fixed.
+/// **The groups are not equivalent and the comment headings say which is which.** Groups 1 and 2
+/// are legitimate: those refusals happen before a tenant is established, or are the vocabulary's
+/// own converters whose decision is taken at a caller that is itself classified. **Group 3 is a
+/// real `CLAUDE.md` rule 10 defect** — the chain allowed, the handler could not satisfy an
+/// obligation and refused, and the row says `ALLOW`. It was found by this gate on its first run,
+/// it is owned by `ENC-606`, and it is listed here rather than hidden so that it appears in the log
+/// of every pull request until it is fixed. Group 4 is the `ensure_allowed()` conversions, each
+/// provably non-denying.
+///
+/// Adding to group 3 is not a way to make this gate green. A new entry there is a new place where
+/// a user is refused and the audit trail does not say so.
 ///
 /// A stale entry — one naming a site that no longer constructs a refusal — fails the gate. An
 /// exemption list nobody prunes is how a list of names nobody dares delete gets started.
@@ -273,10 +279,11 @@ pub(crate) const ACKNOWLEDGED: &[Acknowledged] = &[
         file: "crates/api/src/me.rs",
         function: "me",
         kind: SiteKind::ErrorRefusal,
-        reason: "ENC-606 for the `require_none` refusal, which happens after the chain's ALLOW \
-                 row. The `System`-actor guard above it is group 1's case — no subject, so no \
-                 user to attribute a row to — but the two sit in one function and the coarser \
-                 reason is the honest one to record.",
+        reason: "Two refusals in one function, and only the coarser reason can be recorded here \
+                 because the acknowledgement is keyed by function. The `System`-actor guard is \
+                 group 1's case — no subject, so no user a row could be attributed to. The \
+                 `require_none` refusal below it is group 3's: it fires after the chain has \
+                 written its ALLOW row, and is ENC-606.",
     },
     // -- Group 4: StageDecision consumed by something that is not the engine -------------------
     Acknowledged {
