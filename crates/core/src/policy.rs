@@ -1083,6 +1083,376 @@ impl FactsSnapshot {
     }
 }
 
+/// Where on a resource's chain the label that decided its rank was found.
+///
+/// Carried rather than discarded because "why is this document `RESTRICTED`" has four different
+/// answers and only one of them is fixable by relabelling the document. An administrator told that
+/// the rank came from the workspace goes to the workspace; one told only the number goes looking.
+///
+/// Serializable for the audit row, and — like [`Exposure`] and [`FactsUnavailable`] — deliberately
+/// **not** deserializable. Nothing about where a label came from may arrive from a client.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum LabelSource {
+    /// The resource carries the label itself.
+    Resource,
+    /// A folder above it does.
+    Ancestor,
+    /// The library's default.
+    Library,
+    /// The workspace's default.
+    Workspace,
+}
+
+impl LabelSource {
+    /// The stable form, for audit rows.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Resource => "RESOURCE",
+            Self::Ancestor => "ANCESTOR",
+            Self::Library => "LIBRARY",
+            Self::Workspace => "WORKSPACE",
+        }
+    }
+}
+
+impl std::fmt::Display for LabelSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl Serialize for LabelSource {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+/// A resource's **effective** classification: the rank a label actually put on it, and where.
+///
+/// "Effective" is the whole of `ENC-574`. A file's own `classification_id` is not the answer,
+/// because a document in a `RESTRICTED` folder is restricted whether or not anyone stamped the
+/// document — so the rank is resolved over the chain (`enclave_db::classifications`) and this is
+/// what that resolution produced.
+///
+/// There is no constructor taking a bare rank without a source. That is deliberate: a rank with no
+/// provenance is the shape a constant would arrive in, and a constant is the failure
+/// `enclave_worker::indexing::UnclassifiedFiles` refuses in both directions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct EffectiveClassification {
+    rank: ClassificationRank,
+    source: LabelSource,
+}
+
+impl EffectiveClassification {
+    /// Records a label found on the chain.
+    #[must_use]
+    pub const fn found(rank: ClassificationRank, source: LabelSource) -> Self {
+        Self { rank, source }
+    }
+
+    /// The rank policy compares.
+    #[must_use]
+    pub const fn rank(&self) -> ClassificationRank {
+        self.rank
+    }
+
+    /// Where the label was found.
+    #[must_use]
+    pub const fn source(&self) -> LabelSource {
+        self.source
+    }
+}
+
+/// The tenant's configured answer to "what happens when nothing on a resource's chain carries a
+/// label" (`ENC-574`).
+///
+/// # Why this is a policy and not a default
+///
+/// The row this closes was open because both plausible defaults are wrong in opposite, undetectable
+/// directions. Defaulting an unlabelled file to the lowest rank sends every document to whichever
+/// embedding provider the ceiling admits, with the ceiling comparison working perfectly — S8
+/// defeated through its input. Defaulting it to the highest writes a rank no caller's ceiling
+/// admits, so the document is visible in the tree and absent from every search. Neither is visible
+/// from outside.
+///
+/// So there is no default rank here. There is [`Self::FailClosed`], which refuses and says why, and
+/// there is [`Self::Assume`], in which **the tenant names the rank** an unlabelled resource is
+/// treated as carrying — and every allow taken under it carries an audit obligation, so the choice
+/// leaves a trail rather than becoming invisible.
+///
+/// # Why this type cannot be deserialized
+///
+/// D27, exactly as [`FactsUnavailable`] states it: this is tenant policy, never a per-request
+/// choice, because *"a per-request override is the shape that gets added for 'just this bulk
+/// import' and stays."* It implements [`Serialize`] so an audit row can record which mode was in
+/// force, and implements neither `Deserialize` nor `FromStr`. There is therefore no route from
+/// bytes on the wire to a value of this type — a request cannot carry one even as a field somebody
+/// meant to ignore, because the field would not parse.
+///
+/// Note what the [`Self::Assume`] payload would be if that were not true: a rank, supplied by the
+/// caller, applied to content the caller is about to act on. It is the single most valuable field
+/// an attacker could add to a request body, which is why the enum that carries it is the one that
+/// must not be constructible from input.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum Unlabelled {
+    /// Refuse, and tell the caller the resource has no classification.
+    ///
+    /// The default, here as everywhere in this codebase: a control that could not evaluate has not
+    /// allowed. It is also what every deployment has today —
+    /// `enclave_worker::indexing::UnclassifiedFiles` refuses every document — so this is the
+    /// behaviour being *preserved* rather than a new refusal being introduced.
+    #[default]
+    FailClosed,
+    /// Proceed as though the resource carried this rank, and audit the fact that it did not.
+    ///
+    /// The rank is the tenant's, from configuration. A tenant whose content is overwhelmingly
+    /// internal sets it to their `INTERNAL` rank and gets a working product; a tenant that sets it
+    /// to their `RESTRICTED` rank gets local-only embedding for everything unlabelled. Both are
+    /// legitimate and neither is a guess this codebase made.
+    Assume(ClassificationRank),
+}
+
+impl std::fmt::Display for Unlabelled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::FailClosed => f.write_str("FAIL_CLOSED"),
+            Self::Assume(rank) => write!(f, "ASSUME_RANK({})", rank.get()),
+        }
+    }
+}
+
+impl Serialize for Unlabelled {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
+/// Tenant policy for acting on a resource no label could be resolved for.
+///
+/// One field, from tenant configuration, and no setters — the shape [`FactsPolicy`] uses, and for
+/// the same reason. See [`Unlabelled`] for why there is no field a request could fill in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClassificationPolicy {
+    on_unlabelled: Unlabelled,
+}
+
+impl ClassificationPolicy {
+    /// The only constructor, named for the only legitimate source of the value.
+    #[must_use]
+    pub const fn from_tenant_config(on_unlabelled: Unlabelled) -> Self {
+        Self { on_unlabelled }
+    }
+
+    /// The safe default: refuse without a label.
+    ///
+    /// What a deployment has before its classification configuration is loaded, and what a test
+    /// that does not care about the mode should use.
+    #[must_use]
+    pub const fn fail_closed() -> Self {
+        Self::from_tenant_config(Unlabelled::FailClosed)
+    }
+
+    /// The configured mode, for the audit row that records which policy was in force.
+    #[must_use]
+    pub const fn on_unlabelled(&self) -> Unlabelled {
+        self.on_unlabelled
+    }
+
+    /// Whether an unlabelled resource refuses this attempt whatever the configured mode says.
+    ///
+    /// D27's shape applied to labels, and deliberately **narrower** than
+    /// [`FactsPolicy::is_forced_closed`]. Only [`Action::is_external_share`] is here: putting
+    /// content outside the tenant is the one attempt whose consequence cannot be recalled, so
+    /// doing it to a document nobody has classified is refused even by a tenant that configured
+    /// [`Unlabelled::Assume`].
+    ///
+    /// What is deliberately *not* here is [`Action::exposes_content`]. Forcing every read of every
+    /// unlabelled document closed is the "the product refuses everything, so the label gets
+    /// disabled wholesale" failure this row was open about — a control nobody can leave switched on
+    /// is a control nobody has.
+    ///
+    /// [`Action::alters_existing_share`] is absent for a different reason: it is only half a
+    /// question, and its other half is the resource's [`Exposure`], which this type is not given.
+    /// `FactsPolicy` pairs the two because the snapshot carries the exposure; nothing here does,
+    /// and inventing an answer for the missing half is how a control starts firing on the wrong
+    /// requests. It is `ENC-658`.
+    #[must_use]
+    pub fn is_forced_closed(&self, action: Action) -> bool {
+        action.is_external_share()
+    }
+}
+
+/// The evidence an allow taken on an *assumed* rank must leave behind.
+///
+/// `#[must_use]` for the reason [`UnscannedAllow`] is: an assumption without the audit event is an
+/// ordinary allow that nobody can find afterwards, and the trail is the entire difference between
+/// [`Unlabelled::Assume`] and having picked a default in the source. Dropping this value deletes
+/// that difference.
+#[must_use = "this rank was assumed, not read: without the audit event, an unlabelled resource was \
+              treated as classified and nothing records that it was not"]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AssumedClassification {
+    rank: ClassificationRank,
+}
+
+impl AssumedClassification {
+    /// The rank the tenant's policy named.
+    ///
+    /// Note the return type: a bare [`ClassificationRank`] and never an
+    /// [`EffectiveClassification`], because an assumed rank has no [`LabelSource`] and inventing
+    /// one would make an assumption indistinguishable from a reading in the audit trail.
+    #[must_use]
+    pub const fn rank(&self) -> ClassificationRank {
+        self.rank
+    }
+}
+
+/// What a caller may do about one attempt, given the label the chain could resolve.
+///
+/// Three arms and no fourth, exactly as [`FactsOutcome`] has: there is no "carry on with a
+/// reasonable number". The `match` is exhaustive at every call site, so a caller that gains a new
+/// way to be unlabelled cannot silently take the allow path with a constant.
+#[must_use = "a classification outcome decides whether the caller proceeds on a resolved rank, \
+              refuses, or proceeds on an assumed rank and must audit"]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClassificationOutcome {
+    /// A label was found on the resource or above it. Act on this rank.
+    Labelled(EffectiveClassification),
+    /// Nothing on the chain carries a label, and this attempt fails closed.
+    Denied {
+        /// The stable code the caller may be told.
+        code: ReasonCode,
+        /// What they can do about it.
+        remediation: Remediation,
+    },
+    /// Nothing carries a label, and the tenant's policy names a rank to proceed on. Discharge the
+    /// obligation.
+    Assumed(AssumedClassification),
+}
+
+impl ClassificationOutcome {
+    /// The denial, when this outcome is one.
+    ///
+    /// A convenience for a caller that translates straight into the chain's error type. The
+    /// exhaustive `match` stays available and is what a caller with something to record wants.
+    #[must_use]
+    pub fn into_denial(self) -> Option<Error> {
+        match self {
+            Self::Denied { code, remediation } => Some(Error::denied_with(code, remediation)),
+            Self::Labelled(_) | Self::Assumed(_) => None,
+        }
+    }
+}
+
+/// What the resolver read about a resource's classification, and the policy that says what an
+/// absence means.
+///
+/// # Why the absence is a state and not a number
+///
+/// `ENC-574` sat open because *"both plausible defaults are wrong in opposite, undetectable
+/// directions"*. The way out is the one M4 already took for `facts_unavailable`: stop choosing.
+/// [`Self::unlabelled`] is a constructor, so "nothing on this chain carries a label" is a value the
+/// type system carries from the query that discovered it to the caller that has to act on it, and
+/// [`ClassificationOutcome`] is `#[must_use]` with no arm a caller can mistake for a rank.
+///
+/// # The two doors, and why there are two rather than one
+///
+/// [`Self::require`] is for a request: an [`Action`] is being attempted, so the mandatory
+/// escalation in [`ClassificationPolicy::is_forced_closed`] applies. [`Self::require_for_indexing`]
+/// is for the asynchronous pipeline, which is not a request and has no `Action` to escalate on —
+/// nobody is attempting anything, a document is being embedded. Passing a borrowed `Action` there
+/// to satisfy one signature would make the audit trail claim a user did something they did not.
+///
+/// Both delegate to one body, so the two doors cannot answer differently about the configured mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClassificationResolution {
+    effective: Option<EffectiveClassification>,
+    policy: ClassificationPolicy,
+}
+
+impl ClassificationResolution {
+    /// Records a label resolved from the resource's chain.
+    #[must_use]
+    pub const fn resolved(
+        policy: ClassificationPolicy,
+        effective: EffectiveClassification,
+    ) -> Self {
+        Self { effective: Some(effective), policy }
+    }
+
+    /// Records that nothing on the resource's chain carries a label.
+    ///
+    /// Not an error and not a rank. What it *means* is [`Self::policy`]'s to decide.
+    #[must_use]
+    pub const fn unlabelled(policy: ClassificationPolicy) -> Self {
+        Self { effective: None, policy }
+    }
+
+    /// The label that was read, if one was.
+    #[must_use]
+    pub const fn effective(&self) -> Option<EffectiveClassification> {
+        self.effective
+    }
+
+    /// The rank that was **read**, for [`ResourceState`] and the escalations that compare against
+    /// it.
+    ///
+    /// Deliberately the read rank and never the assumed one. `ResourceState::new`'s contract is
+    /// that `None` means the resource genuinely has no label; handing it an assumed rank would make
+    /// `FactsPolicy::is_forced_closed` fire on a document whose `RESTRICTED`-ness this codebase
+    /// inferred rather than read, which is the same untraceable substitution the whole of
+    /// [`Unlabelled`] exists to prevent.
+    #[must_use]
+    pub fn rank(&self) -> Option<ClassificationRank> {
+        self.effective.map(|effective| effective.rank())
+    }
+
+    /// The tenant policy this resolution was taken under.
+    #[must_use]
+    pub const fn policy(&self) -> ClassificationPolicy {
+        self.policy
+    }
+
+    /// The label, or what the tenant's policy says to do without one, for an attempted action.
+    pub fn require(&self, action: Action) -> ClassificationOutcome {
+        self.decide(self.policy.is_forced_closed(action))
+    }
+
+    /// The label, or what the tenant's policy says to do without one, for the indexing pipeline.
+    ///
+    /// No mandatory escalation, and that is the argued half. Embedding an unlabelled document is
+    /// not the unrecallable act external sharing is: the rank the tenant assumed is written into
+    /// the collection *and* routes the provider, so a tenant that assumes a high rank gets
+    /// local-only embedding rather than a leak. The escalation that matters on this path is the
+    /// ceiling comparison `crates/embeddings` already enforces, and it works on an assumed rank
+    /// exactly as it works on a read one.
+    pub fn require_for_indexing(&self) -> ClassificationOutcome {
+        self.decide(false)
+    }
+
+    /// The one body both doors use.
+    fn decide(&self, forced: bool) -> ClassificationOutcome {
+        if let Some(effective) = self.effective {
+            return ClassificationOutcome::Labelled(effective);
+        }
+
+        match self.policy.on_unlabelled() {
+            Unlabelled::Assume(rank) if !forced => {
+                ClassificationOutcome::Assumed(AssumedClassification { rank })
+            }
+            // `CLASSIFICATION_CEILING` with `CONTACT_ADMINISTRATOR` rather than its default
+            // `REQUEST_ACCESS`: the caller's access is not the problem and asking the owner for
+            // more of it will not help. The resource has no label, and only an administrator can
+            // give it one.
+            Unlabelled::FailClosed | Unlabelled::Assume(_) => ClassificationOutcome::Denied {
+                code: ReasonCode::ClassificationCeiling,
+                remediation: Remediation::ContactAdministrator,
+            },
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     // Assertions are the point of a test: a panic here is the failure signal, not a

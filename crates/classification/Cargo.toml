@@ -10,7 +10,19 @@ authors.workspace      = true
 
 [dependencies]
 enclave-core = { workspace = true }
+enclave-db   = { workspace = true }
 async-trait  = { workspace = true }
+sqlx         = { workspace = true }
+
+[dev-dependencies]
+# `tests/effective_classification.rs` drives a pool and the async policy chain, so it needs a
+# multi-threaded runtime.
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }
+# A throwaway PostgreSQL and the seeded `tenant-alpha`/`tenant-beta` pair. `docs/12 §3`: beta exists
+# so a cross-tenant assertion has a realistic counterpart rather than passing because the other
+# tenant's rows were named differently. A **dev**-dependency: `enclave-testing` takes this crate as
+# one of its own, and Cargo permits that cycle only because both edges are dev edges.
+enclave-testing = { workspace = true }
 
 [lints]
 workspace = true
