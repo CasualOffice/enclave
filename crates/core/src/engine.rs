@@ -34,7 +34,7 @@ use async_trait::async_trait;
 use crate::action::{Action, ResourceRef};
 use crate::context::RequestContext;
 use crate::error::{Error, ReasonCode, Result};
-use crate::policy::{Obligations, PolicyDecision};
+use crate::policy::{FactsSnapshot, Obligations, PolicyDecision};
 
 /// What a single stage concluded.
 ///
@@ -224,18 +224,59 @@ pub trait ClassificationService: Send + Sync + std::fmt::Debug {
 /// Data-loss prevention.
 #[async_trait]
 pub trait DlpService: Send + Sync + std::fmt::Debug {
-    /// Evaluates DLP policy for this action on this resource.
+    /// Evaluates DLP policy for this action on this resource, against the facts the engine
+    /// gathered for it.
+    ///
+    /// # Why the snapshot is a parameter and not something an implementation fetches
+    ///
+    /// D26 (`plans/M4-GOVERNANCE.md`). An implementation holding its own reader could observe
+    /// *different* facts from the stage before it — a scan completing mid-chain — and the request
+    /// would then be decided against two views of one document, with the audit row recording one
+    /// of them. Taking the value as an argument is what makes that unwriteable rather than merely
+    /// discouraged: there is no provider on this trait to call twice.
     ///
     /// # Errors
     ///
-    /// Evaluation failures. When security facts are missing, implementations follow the tenant's
-    /// `facts_unavailable` setting rather than defaulting to allow (`docs/06 §12`).
+    /// Evaluation failures. When security facts are missing, implementations route through
+    /// [`FactsSnapshot::require`] rather than defaulting to allow (`docs/06 §12`).
     async fn evaluate(
         &self,
         ctx: &RequestContext,
         action: Action,
         resource: &ResourceRef,
+        facts: &FactsSnapshot,
     ) -> Result<StageDecision>;
+}
+
+/// Where the chain's [`FactsSnapshot`] comes from.
+///
+/// The second port in this module, and it exists for the reason [`PolicyAuditSink`] does: reading
+/// `security_facts` is a database concern, `core` owns no I/O, and the dependency has to keep
+/// pointing inward.
+///
+/// **Called exactly once per [`PolicyEngine::enforce`]**, before any stage runs. That is D26 in the
+/// one place it can be enforced rather than asserted — a stage receives a `&FactsSnapshot` and has
+/// nothing to call a second time.
+#[async_trait]
+pub trait SecurityFactsProvider: Send + Sync + std::fmt::Debug {
+    /// Reads everything the chain will need to know about this resource's content, once.
+    ///
+    /// `action` is supplied so an implementation can skip the read entirely for actions no policy
+    /// inspects content for — a tenant-administration call has no version to have facts about. It
+    /// is *not* a licence to vary the answer by action: two actions on one resource in one request
+    /// must not see different facts.
+    ///
+    /// # Errors
+    ///
+    /// Read failures. A failure is not "no facts": returning [`FactsSnapshot::missing`] on a
+    /// database error would convert an outage into a policy answer, and under `FAIL_OPEN_AUDIT`
+    /// that answer is *allow*. Propagate instead.
+    async fn gather(
+        &self,
+        ctx: &RequestContext,
+        action: Action,
+        resource: &ResourceRef,
+    ) -> Result<FactsSnapshot>;
 }
 
 /// Retention, records and legal hold.
@@ -358,6 +399,7 @@ pub struct PolicyEngine {
     dlp: std::sync::Arc<dyn DlpService>,
     retention: std::sync::Arc<dyn RetentionService>,
     audit: std::sync::Arc<dyn PolicyAuditSink>,
+    facts: std::sync::Arc<dyn SecurityFactsProvider>,
 }
 
 impl PolicyEngine {
@@ -366,6 +408,9 @@ impl PolicyEngine {
     /// Every service is required. There is no builder with optional stages, because a chain with a
     /// stage left out compiles just as happily as one with all of them and fails only in the
     /// situation the stage existed for.
+    ///
+    /// The facts provider is the exception, and [`Self::with_facts`] says why: unlike a stage, its
+    /// default cannot allow anything.
     pub fn new(
         conditional_access: std::sync::Arc<dyn ConditionalAccessService>,
         authorization: std::sync::Arc<dyn AuthorizationService>,
@@ -375,7 +420,31 @@ impl PolicyEngine {
         retention: std::sync::Arc<dyn RetentionService>,
         audit: std::sync::Arc<dyn PolicyAuditSink>,
     ) -> Self {
-        Self { conditional_access, authorization, barriers, classification, dlp, retention, audit }
+        Self {
+            conditional_access,
+            authorization,
+            barriers,
+            classification,
+            dlp,
+            retention,
+            audit,
+            facts: std::sync::Arc::new(stub::NoSecurityFacts),
+        }
+    }
+
+    /// Supplies the reader that gathers [`FactsSnapshot`]s.
+    ///
+    /// A builder step rather than an eighth constructor argument, and for the same reason
+    /// `ApiState::with_edge` is one: the default is safe in the direction that cannot be exploited.
+    /// [`stub::NoSecurityFacts`] reports every resource as unscanned under [`FactsPolicy`]'s
+    /// fail-closed default, so a deployment that forgets this call runs a DLP stage that refuses
+    /// every rule it cannot evaluate rather than one that waves it through.
+    ///
+    /// [`FactsPolicy`]: crate::policy::FactsPolicy
+    #[must_use]
+    pub fn with_facts(mut self, facts: std::sync::Arc<dyn SecurityFactsProvider>) -> Self {
+        self.facts = facts;
+        self
     }
 
     /// The authorization stage this engine will actually consult.
@@ -435,6 +504,16 @@ impl PolicyEngine {
             return Err(Error::NotFound);
         }
 
+        // D26, at the single point it can be structural. Facts enter the request here — once,
+        // before any stage runs — and every stage that needs them receives *this* value.
+        //
+        // Gathering before the first stage rather than just before DLP is deliberate: it makes the
+        // fetch point independent of control flow, so no stage can be the first to see facts and
+        // no reordering can change which facts a decision was taken against. The cost is a read on
+        // a request a later stage will deny, which is the price of a decision that can be
+        // reconstructed from its audit row.
+        let facts = self.facts.gather(ctx, action, resource).await?;
+
         let mut obligations = Obligations::none();
 
         macro_rules! stage {
@@ -452,7 +531,7 @@ impl PolicyEngine {
         stage!(Stage::Authorization, self.authorization.authorize(ctx, action, resource));
         stage!(Stage::Barriers, self.barriers.evaluate(ctx, resource));
         stage!(Stage::Classification, self.classification.evaluate(ctx, action, resource));
-        stage!(Stage::Dlp, self.dlp.evaluate(ctx, action, resource));
+        stage!(Stage::Dlp, self.dlp.evaluate(ctx, action, resource, &facts));
         stage!(Stage::Retention, self.retention.evaluate(ctx, action, resource));
 
         self.audit.record_allow(ctx, action, resource, &obligations).await?;
@@ -468,9 +547,11 @@ impl PolicyEngine {
 pub mod stub {
     use super::{
         async_trait, Action, AuthorizationService, BarrierService, ClassificationService,
-        ConditionalAccessService, DlpService, Obligations, PolicyAuditSink, ReasonCode,
-        RequestContext, ResourceRef, Result, RetentionService, Stage, StageDecision,
+        ConditionalAccessService, DlpService, FactsSnapshot, Obligations, PolicyAuditSink,
+        ReasonCode, RequestContext, ResourceRef, Result, RetentionService, SecurityFactsProvider,
+        Stage, StageDecision,
     };
+    use crate::policy::{Exposure, FactsPolicy, ResourceState};
 
     /// Refuses everything, for every stage.
     #[derive(Debug, Clone, Copy, Default)]
@@ -543,8 +624,37 @@ pub mod stub {
             _ctx: &RequestContext,
             _action: Action,
             _resource: &ResourceRef,
+            _facts: &FactsSnapshot,
         ) -> Result<StageDecision> {
             Ok(StageDecision::deny(ReasonCode::DlpBlocked))
+        }
+    }
+
+    /// Reports every resource as unscanned, under the fail-closed default.
+    ///
+    /// The honest state of a deployment whose `security_facts` rows nothing writes yet, rather than
+    /// a stand-in for one: no scanner has run, so no version has facts, and a policy that needs
+    /// them cannot be evaluated. What that *means* is then the tenant's `facts_unavailable` policy
+    /// to say — and the default it is asked under here is `FAIL_CLOSED`.
+    ///
+    /// Note which direction the default leans. A provider that answered "facts, all counts zero"
+    /// would be the dangerous stub: every DLP rule would evaluate cleanly and permit, and nothing
+    /// would report an error. Reporting *absence* makes the same deployment refuse, which is loud.
+    #[derive(Debug, Clone, Copy, Default)]
+    pub struct NoSecurityFacts;
+
+    #[async_trait]
+    impl SecurityFactsProvider for NoSecurityFacts {
+        async fn gather(
+            &self,
+            _ctx: &RequestContext,
+            _action: Action,
+            _resource: &ResourceRef,
+        ) -> Result<FactsSnapshot> {
+            Ok(FactsSnapshot::missing(
+                FactsPolicy::fail_closed(),
+                ResourceState::new(Exposure::Internal, None),
+            ))
         }
     }
 
@@ -597,13 +707,14 @@ mod tests {
     // Assertions are the point of a test; the workspace warns on these in non-test code.
     #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
+    use core::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
     use super::stub::DiscardingAuditSink;
     use super::*;
     use crate::action::{FileAction, ResourceKind};
     use crate::id::TenantId;
-    use crate::policy::Obligation;
+    use crate::policy::{Exposure, FactsPolicy, FactsStaleness, Obligation, ResourceState};
 
     /// A stage that records that it ran, then returns whatever it was told to.
     #[derive(Debug, Clone)]
@@ -715,6 +826,7 @@ mod tests {
             _: &RequestContext,
             _: Action,
             _: &ResourceRef,
+            _: &FactsSnapshot,
         ) -> Result<StageDecision> {
             Ok(self.run())
         }
@@ -965,6 +1077,203 @@ mod tests {
         let error =
             engine.enforce(&ctx(tenant), ACTION, &resource(tenant)).await.expect_err("must deny");
         assert!(matches!(error, Error::PolicyDenied { .. }), "{error:?}");
+    }
+
+    /// D26 — facts enter the request once, before any stage, and the DLP stage decides against
+    /// *that* value.
+    ///
+    /// The count is the assertion. A chain where each stage fetched its own would still allow the
+    /// same requests and still audit them; what it would lose is the property that the row records
+    /// the facts the decision was taken against. That is not observable from the outcome, so it
+    /// has to be observed from the call.
+    #[tokio::test]
+    async fn security_facts_are_gathered_exactly_once_per_request() {
+        /// Counts `gather` calls and stamps each snapshot with a distinguishable exposure.
+        #[derive(Debug, Default)]
+        struct CountingFacts {
+            calls: AtomicUsize,
+        }
+
+        #[async_trait]
+        impl SecurityFactsProvider for CountingFacts {
+            async fn gather(
+                &self,
+                _: &RequestContext,
+                _: Action,
+                _: &ResourceRef,
+            ) -> Result<FactsSnapshot> {
+                let _previous = self.calls.fetch_add(1, Ordering::SeqCst);
+                Ok(FactsSnapshot::missing(
+                    FactsPolicy::fail_closed(),
+                    ResourceState::new(Exposure::External, None),
+                ))
+            }
+        }
+
+        /// Records what the DLP stage was handed, so "the same value" is checked rather than
+        /// assumed.
+        #[derive(Debug, Default)]
+        struct FactsWatchingDlp {
+            seen: Mutex<Vec<Exposure>>,
+        }
+
+        #[async_trait]
+        impl DlpService for FactsWatchingDlp {
+            async fn evaluate(
+                &self,
+                _: &RequestContext,
+                _: Action,
+                _: &ResourceRef,
+                facts: &FactsSnapshot,
+            ) -> Result<StageDecision> {
+                self.seen.lock().expect("dlp log").push(facts.exposure());
+                Ok(StageDecision::allow())
+            }
+        }
+
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let provider = Arc::new(CountingFacts::default());
+        let dlp = Arc::new(FactsWatchingDlp::default());
+        let engine = PolicyEngine::new(
+            Spy::allow(Stage::ConditionalAccess, &log),
+            Spy::allow(Stage::Authorization, &log),
+            Spy::allow(Stage::Barriers, &log),
+            Spy::allow(Stage::Classification, &log),
+            Arc::clone(&dlp) as Arc<dyn DlpService>,
+            Spy::allow(Stage::Retention, &log),
+            Arc::new(DiscardingAuditSink),
+        )
+        .with_facts(Arc::clone(&provider) as Arc<dyn SecurityFactsProvider>);
+
+        let tenant = TenantId::new_v7();
+        let decision =
+            engine.enforce(&ctx(tenant), ACTION, &resource(tenant)).await.expect("allow");
+        assert!(decision.obligations().is_empty());
+
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 1, "facts were read more than once");
+        assert_eq!(
+            *dlp.seen.lock().expect("dlp log"),
+            vec![Exposure::External],
+            "the DLP stage did not receive the snapshot the engine gathered"
+        );
+
+        // A second request reads again — the snapshot is per request, not a cache. Without this
+        // the count above would also pass against a provider consulted once per *process*, which
+        // would be a decision taken against last week's facts.
+        let decision =
+            engine.enforce(&ctx(tenant), ACTION, &resource(tenant)).await.expect("allow");
+        assert!(decision.obligations().is_empty());
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+    }
+
+    /// A cross-tenant attempt must not read the other tenant's facts on its way to `404`.
+    #[tokio::test]
+    async fn a_cross_tenant_attempt_never_reaches_the_facts_reader() {
+        #[derive(Debug)]
+        struct NeverCalled;
+
+        #[async_trait]
+        impl SecurityFactsProvider for NeverCalled {
+            async fn gather(
+                &self,
+                _: &RequestContext,
+                _: Action,
+                _: &ResourceRef,
+            ) -> Result<FactsSnapshot> {
+                panic!("facts were read for a resource in another tenant")
+            }
+        }
+
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let engine = all_allow(&log, Arc::new(DiscardingAuditSink))
+            .with_facts(Arc::new(NeverCalled) as Arc<dyn SecurityFactsProvider>);
+
+        let error = engine
+            .enforce(&ctx(TenantId::new_v7()), ACTION, &resource(TenantId::new_v7()))
+            .await
+            .expect_err("must refuse");
+        assert!(matches!(error, Error::NotFound), "{error:?}");
+    }
+
+    /// A facts read that *failed* is not a facts read that found nothing.
+    ///
+    /// Collapsing the two would turn a database outage into a policy answer — and under
+    /// `FAIL_OPEN_AUDIT` that answer is *allow*, which is an outage that silently disables DLP.
+    #[tokio::test]
+    async fn a_facts_read_failure_is_propagated_rather_than_read_as_no_facts() {
+        #[derive(Debug)]
+        struct Broken;
+
+        #[async_trait]
+        impl SecurityFactsProvider for Broken {
+            async fn gather(
+                &self,
+                _: &RequestContext,
+                _: Action,
+                _: &ResourceRef,
+            ) -> Result<FactsSnapshot> {
+                Err(Error::Upstream {
+                    dependency: crate::error::Dependency::Postgres,
+                    retryable: true,
+                })
+            }
+        }
+
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let audit = Arc::new(RecordingAudit::default());
+        let engine = all_allow(&log, Arc::clone(&audit) as Arc<dyn PolicyAuditSink>)
+            .with_facts(Arc::new(Broken) as Arc<dyn SecurityFactsProvider>);
+
+        let tenant = TenantId::new_v7();
+        let error =
+            engine.enforce(&ctx(tenant), ACTION, &resource(tenant)).await.expect_err("must fail");
+        assert!(matches!(error, Error::Upstream { .. }), "rewritten: {error:?}");
+        assert!(log.lock().expect("log").is_empty(), "a stage ran on facts that could not be read");
+        assert!(audit.denials.lock().expect("audit").is_empty(), "a failure was audited as a deny");
+        assert!(
+            audit.allows.lock().expect("audit").is_empty(),
+            "a failure was audited as an allow"
+        );
+    }
+
+    /// The default provider fails closed rather than reporting a clean document.
+    #[tokio::test]
+    async fn an_engine_built_without_a_facts_reader_reports_the_resource_as_unscanned() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::new(Mutex::new(Vec::new()));
+
+        #[derive(Debug)]
+        struct Recording(Arc<Mutex<Vec<FactsStaleness>>>);
+
+        #[async_trait]
+        impl DlpService for Recording {
+            async fn evaluate(
+                &self,
+                _: &RequestContext,
+                _: Action,
+                _: &ResourceRef,
+                facts: &FactsSnapshot,
+            ) -> Result<StageDecision> {
+                self.0.lock().expect("log").push(facts.staleness());
+                Ok(StageDecision::allow())
+            }
+        }
+
+        let engine = PolicyEngine::new(
+            Spy::allow(Stage::ConditionalAccess, &log),
+            Spy::allow(Stage::Authorization, &log),
+            Spy::allow(Stage::Barriers, &log),
+            Spy::allow(Stage::Classification, &log),
+            Arc::new(Recording(Arc::clone(&seen))),
+            Spy::allow(Stage::Retention, &log),
+            Arc::new(DiscardingAuditSink),
+        );
+
+        let tenant = TenantId::new_v7();
+        let decision =
+            engine.enforce(&ctx(tenant), ACTION, &resource(tenant)).await.expect("allow");
+        assert!(decision.obligations().is_empty());
+        assert_eq!(*seen.lock().expect("log"), vec![FactsStaleness::Missing]);
     }
 
     #[test]

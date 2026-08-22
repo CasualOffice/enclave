@@ -222,6 +222,25 @@ impl Action {
         )
     }
 
+    /// Whether this action changes the terms of an *existing* share — its expiry, its permission
+    /// or its password.
+    ///
+    /// The companion to [`Self::is_external_share`], and `ENC-588` is why there are two. That one
+    /// recognises the actions that *create* external exposure, which is a property of the action
+    /// alone. This one recognises the action that can *broaden* exposure that already exists,
+    /// which is only half the question — the other half is whether the share in hand is external,
+    /// a property of the resource. `FactsPolicy::is_forced_closed` pairs them; neither is a
+    /// control on its own.
+    ///
+    /// `Revoke` is deliberately absent. Revoking *reduces* exposure, and a tenant that cannot
+    /// revoke an external link over unscanned content is left holding the link — the shape D31
+    /// names for a delete refused on a quota, reached by a different road. `Read` is absent
+    /// because inspecting a share changes nothing about who can reach it.
+    #[must_use]
+    pub const fn alters_existing_share(&self) -> bool {
+        matches!(self, Self::Share(ShareAction::Update))
+    }
+
     /// Whether this action changes state, and therefore must not be served from a cached decision
     /// or run against a read replica.
     #[must_use]

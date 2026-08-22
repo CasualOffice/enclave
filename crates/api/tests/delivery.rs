@@ -45,9 +45,9 @@ use enclave_api::{download, preview, ApiState};
 use enclave_auth::{AccessTokenIssuer, Acr, AuthMethod, KeySet, PrivateSigningKey, TokenTemplate};
 use enclave_authorization::PgAclAuthorization;
 use enclave_core::{
-    Action, ClientType, DlpService, FileAction, FileId, LibraryId, Obligation, Obligations,
-    PolicyEngine, RequestContext, ResourceRef, Result as CoreResult, StageDecision, TenantId,
-    UserId, VersionId, WorkspaceId,
+    Action, ClientType, DlpService, FactsSnapshot, FileAction, FileId, LibraryId, Obligation,
+    Obligations, PolicyEngine, RequestContext, ResourceRef, Result as CoreResult, StageDecision,
+    TenantId, UserId, VersionId, WorkspaceId,
 };
 use enclave_preview::{Delivery, PreviewPipeline};
 use enclave_storage::{
@@ -171,6 +171,7 @@ impl DlpService for ObligingDlp {
         _ctx: &RequestContext,
         action: Action,
         _resource: &ResourceRef,
+        _facts: &FactsSnapshot,
     ) -> CoreResult<StageDecision> {
         let mut obligations = Obligations::none();
         match action {

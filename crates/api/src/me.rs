@@ -65,12 +65,16 @@ pub async fn me(
         .map_err(|error| ApiError::new(error, request_id))?;
 
     // `PolicyDecision` is #[must_use]; consuming it here is what proves nothing was dropped.
+    //
+    // No stage attaches an obligation to reading your own record today, and this path has no way to
+    // satisfy one if it did — there is no rendition to watermark and nowhere to collect a
+    // justification. So an obligation arriving here is a refusal (D29, `CLAUDE.md` rule 8).
+    //
+    // This was a `debug_assert!` until `ENC-582`, which is to say it was nothing at all in the
+    // build that ships: release compiled the check out and served the response with the obligation
+    // dropped. `ENC-544` was the same defect in the audit crate's field-count guard.
     let obligations = decision.into_obligations();
-    debug_assert!(
-        obligations.is_empty(),
-        "no stage attaches an obligation to reading your own record yet; if one does, it must be \
-         satisfied here rather than ignored"
-    );
+    obligations.require_none().map_err(|error| ApiError::new(error, request_id))?;
 
     let mut tx = state
         .db

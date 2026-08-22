@@ -1380,7 +1380,10 @@ name = "enclave-dlp"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "enclave-config",
  "enclave-core",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

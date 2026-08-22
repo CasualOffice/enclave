@@ -54,9 +54,12 @@
 //! * A1, A2 — `crates/preview` is a skeleton, so there is no rendition to return instead of an
 //!   original and no export/print/copy path to deny independently.
 //! * H1–H6 — `crates/sharing` is a skeleton.
-//! * D1–D8 — the DLP, classification and retention stages are the `Disabled`/`Unconfigured`
-//!   implementations. A test of `ENFORCE` versus `SIMULATION` would be a test of a mode that has no
-//!   second value.
+//! * D5–D8 — the classification and retention stages are still `Unconfigured`, and `crates/incidents`
+//!   is a skeleton. **D1–D4 are no longer here**: `ENC-582` gave DLP its five modes, and the tests
+//!   live in `crates/dlp/tests/modes.rs`, driven through the real `PolicyEngine` with every other
+//!   stage allowing. They are not database-backed and do not belong in this file — what they assert
+//!   is the chain's decision, not a row's visibility. The obligation half of D4 that *is* about a
+//!   real surface is in `crates/api/tests/delivery.rs`.
 //! * K1–K10 — `crates/auth` is real, and its token rules are unit-tested inside it. The matrix form
 //!   wants them asserted *through an authenticated request*, which needs endpoints that do not
 //!   exist yet; `crates/api/tests/me.rs` is the one that does.

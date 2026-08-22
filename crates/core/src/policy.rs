@@ -118,6 +118,30 @@ impl Obligation {
     pub const fn blocks_until_satisfied(&self) -> bool {
         matches!(self, Self::RequireJustification | Self::RequireApproval)
     }
+
+    /// The denial a path that *cannot* satisfy this obligation must return.
+    ///
+    /// D29 (`plans/M4-GOVERNANCE.md`): an obligation is satisfied or the operation fails, and there
+    /// is no third outcome. Every path therefore needs an answer to "what if I cannot do this", and
+    /// the answer must not be invented per call site — two handlers refusing the same
+    /// unsatisfiable obligation with two different codes is a client that cannot offer a coherent
+    /// next step.
+    ///
+    /// The codes are chosen so the caller learns what to *do*, not what we could not do:
+    /// `DLP_JUSTIFICATION_REQUIRED` and `DLP_APPROVAL_REQUIRED` name the missing input, and
+    /// `PREVIEW_ONLY` says the file is reachable by another route. `ACCESS_DENIED` is the residue
+    /// for obligations that shape a *response* — meeting one of those on a path with no response to
+    /// shape means the stage and the surface disagree about what is happening, which is not
+    /// something to advise a caller about.
+    #[must_use]
+    pub const fn unsatisfied_code(&self) -> ReasonCode {
+        match self {
+            Self::RequireJustification => ReasonCode::DlpJustificationRequired,
+            Self::RequireApproval => ReasonCode::DlpApprovalRequired,
+            Self::Watermark | Self::NoDownload => ReasonCode::PreviewOnly,
+            Self::ReadOnly | Self::NoSync | Self::Reclassify { .. } => ReasonCode::AccessDenied,
+        }
+    }
 }
 
 /// The obligations accumulated across the stages of one policy evaluation.
@@ -210,6 +234,30 @@ impl Obligations {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
+    }
+
+    /// Refuses when this path was handed an obligation it has no way to satisfy.
+    ///
+    /// For the call sites — a listing, a self-read — where *no* obligation is satisfiable, so the
+    /// exhaustive `match` a delivery path writes would have one arm and it would be a refusal.
+    ///
+    /// # Why this exists rather than a `debug_assert!`
+    ///
+    /// Three handlers asserted `obligations.is_empty()` with `debug_assert!`, which is compiled out
+    /// of a release build: the release binary dropped the obligation and served the response. That
+    /// is precisely D29's third outcome, and precisely the defect `ENC-544` found in the audit
+    /// crate's field-count guard — a guard that only ran where nobody was looking. A check that
+    /// protects a control has to be a check in the build that ships.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::PolicyDenied`] carrying [`Obligation::unsatisfied_code`] for the first outstanding
+    /// obligation.
+    pub fn require_none(&self) -> Result<(), Error> {
+        match self.0.first() {
+            None => Ok(()),
+            Some(obligation) => Err(Error::denied(obligation.unsatisfied_code())),
+        }
     }
 }
 
@@ -681,6 +729,117 @@ impl Serialize for FactsUnavailable {
     }
 }
 
+/// Whether the resource an action targets is *already* reachable from outside the tenant.
+///
+/// # Why this exists (`ENC-588`)
+///
+/// D27 makes `FAIL_CLOSED` mandatory for external sharing at any classification, and
+/// [`Action::is_external_share`] can only recognise the two actions that *create* external
+/// exposure. `ShareAction::Update` — change expiry, permission or password on an existing share —
+/// is not among them and cannot be: whether that share is external is a property of the
+/// **resource**. So under `FAIL_OPEN_AUDIT`, removing the password from an existing external link
+/// over unscanned content was permitted, while creating that same link would have been denied.
+///
+/// The narrow reading — the content was already exposed, so nothing new is — does not hold.
+/// Broadening a permission or dropping a password increases the exposure of a document nobody has
+/// scanned.
+///
+/// # Why it lives on the snapshot rather than on `require`
+///
+/// [`FactsSnapshot`] is the value gathered once, at the single point facts enter the request
+/// (D26). Putting the resource's exposure there means two stages cannot answer the question
+/// differently, and no caller can omit it — whereas a `require` parameter defaulting to
+/// [`Exposure::Internal`] would be silently permissive exactly when it was forgotten.
+///
+/// Serializable for the audit row, and deliberately **not** deserializable, for the same reason
+/// [`FactsUnavailable`] is not: there must be no route from bytes on the wire to a value that
+/// relaxes an escalation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Exposure {
+    /// Reachable only inside the tenant.
+    Internal,
+    /// Already reachable from outside it — the resource is an external share, or one exists over
+    /// it.
+    External,
+}
+
+impl Exposure {
+    /// The stable form, for audit rows.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Internal => "INTERNAL",
+            Self::External => "EXTERNAL",
+        }
+    }
+
+    /// Whether the resource already reaches outside the tenant.
+    #[must_use]
+    pub const fn is_external(self) -> bool {
+        matches!(self, Self::External)
+    }
+}
+
+impl std::fmt::Display for Exposure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl Serialize for Exposure {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+/// What the chain knows about the **resource** rather than about its content.
+///
+/// [`SecurityFacts`] is what a *scan* concluded, and a scan may not have run. This is what is true
+/// of the resource whether or not one has: the label it carries and how far it already reaches.
+/// Both are read in the same breath as the facts, so they are as of the same instant (D26).
+///
+/// # Why the classification is here and not a parameter of [`FactsSnapshot::require`]
+///
+/// `ENC-591`. D27 makes `FAIL_CLOSED` mandatory *for `RESTRICTED`*, and the rank the escalation
+/// compares against was originally supplied by the caller. The only caller is the DLP stage, which
+/// has no label of its own to offer — so where a scan had not completed it had nothing to pass,
+/// and the rank arrived as `None`. That left the escalation dead in exactly the case it exists
+/// for: an unscanned `RESTRICTED` document under `FAIL_OPEN_AUDIT` was permitted, because the
+/// evidence that it was `RESTRICTED` was expected to come from the scan that had not happened.
+///
+/// A resource's label does not depend on a scan. Reading it beside the facts, and taking it from
+/// the snapshot rather than from an argument, is what makes the escalation fire on a document
+/// nobody has looked at yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResourceState {
+    exposure: Exposure,
+    classification: Option<ClassificationRank>,
+}
+
+impl ResourceState {
+    /// Records what was read about the resource.
+    ///
+    /// `classification` is the label the resource carries *now*, from the classification tables —
+    /// not the one a scan resolved. `None` means the resource genuinely has no label, which is
+    /// itself a fact and not a missing read.
+    #[must_use]
+    pub const fn new(exposure: Exposure, classification: Option<ClassificationRank>) -> Self {
+        Self { exposure, classification }
+    }
+
+    /// How far the resource already reaches.
+    #[must_use]
+    pub const fn exposure(&self) -> Exposure {
+        self.exposure
+    }
+
+    /// The label the resource carries.
+    #[must_use]
+    pub const fn classification(&self) -> Option<ClassificationRank> {
+        self.classification
+    }
+}
+
 /// Tenant policy for evaluating without usable facts.
 ///
 /// Two fields, both from tenant configuration, and no setters. See [`FactsUnavailable`] for why
@@ -727,9 +886,22 @@ impl FactsPolicy {
     /// sharing at *any* classification. Both are cases where allowing an unscanned action puts
     /// content somewhere it cannot be recalled from — outside the tenant, or in front of the
     /// caller the label exists to keep it away from.
+    ///
+    /// "External sharing" is two questions, not one, and `ENC-588` is the second of them.
+    /// [`Action::is_external_share`] recognises the actions that *create* exposure;
+    /// [`Action::alters_existing_share`] paired with [`Exposure::External`] recognises the ones
+    /// that *broaden* it. Neither implies the other, and the second needs the resource — which is
+    /// why the exposure travels on the snapshot.
     #[must_use]
-    pub fn is_forced_closed(&self, action: Action, rank: Option<ClassificationRank>) -> bool {
-        action.is_external_share() || rank.is_some_and(|r| r >= self.restricted_at)
+    pub fn is_forced_closed(
+        &self,
+        action: Action,
+        rank: Option<ClassificationRank>,
+        exposure: Exposure,
+    ) -> bool {
+        action.is_external_share()
+            || (exposure.is_external() && action.alters_existing_share())
+            || rank.is_some_and(|r| r >= self.restricted_at)
     }
 }
 
@@ -823,28 +995,34 @@ pub struct FactsSnapshot {
     facts: Option<SecurityFacts>,
     staleness: FactsStaleness,
     policy: FactsPolicy,
+    resource: ResourceState,
 }
 
 impl FactsSnapshot {
     /// Records facts read at the start of a request, against the detector set active now.
+    ///
+    /// [`ResourceState`] is read in the same breath and for the same reason: its two fields are
+    /// what the mandatory escalations compare against, and gathering them anywhere else would
+    /// reintroduce the second read D26 exists to forbid.
     #[must_use]
     pub fn gathered(
         facts: SecurityFacts,
         active_set: &DetectorSetVersion,
         policy: FactsPolicy,
+        resource: ResourceState,
     ) -> Self {
         let staleness = if facts.detector_set() == active_set {
             FactsStaleness::Fresh
         } else {
             FactsStaleness::StaleDetectorSet
         };
-        Self { facts: Some(facts), staleness, policy }
+        Self { facts: Some(facts), staleness, policy, resource }
     }
 
     /// Records that the resource has no facts — unscanned, or a scan still running.
     #[must_use]
-    pub const fn missing(policy: FactsPolicy) -> Self {
-        Self { facts: None, staleness: FactsStaleness::Missing, policy }
+    pub const fn missing(policy: FactsPolicy, resource: ResourceState) -> Self {
+        Self { facts: None, staleness: FactsStaleness::Missing, policy, resource }
     }
 
     /// Why the facts are or are not usable, for the audit row.
@@ -859,18 +1037,36 @@ impl FactsSnapshot {
         self.policy
     }
 
+    /// What was read about the resource itself — its label and its reach.
+    #[must_use]
+    pub const fn resource(&self) -> ResourceState {
+        self.resource
+    }
+
+    /// Whether the resource already reaches outside the tenant.
+    #[must_use]
+    pub const fn exposure(&self) -> Exposure {
+        self.resource.exposure()
+    }
+
     /// The facts, or what the tenant's policy says to do without them.
     ///
-    /// `action` and `rank` are properties of the attempt, not choices about how to treat it: there
-    /// is no parameter here through which a caller could ask for a different failure mode. See
-    /// [`FactsUnavailable`].
-    pub fn require(&self, action: Action, rank: Option<ClassificationRank>) -> FactsOutcome<'_> {
+    /// `action` is a property of the attempt, not a choice about how to treat it: there is no
+    /// parameter here through which a caller could ask for a different failure mode. See
+    /// [`FactsUnavailable`]. The other two inputs the escalations need — the resource's label and
+    /// whether it is already externally exposed — are not parameters either; they were settled
+    /// when the snapshot was gathered, so a stage cannot supply a rank of its own and a stage that
+    /// forgets one cannot exist.
+    pub fn require(&self, action: Action) -> FactsOutcome<'_> {
         if let Some(facts) = self.facts.as_ref().filter(|_| self.staleness.is_usable()) {
             return FactsOutcome::Facts(facts);
         }
 
-        let fail_closed = self.policy.is_forced_closed(action, rank)
-            || self.policy.on_unavailable() == FactsUnavailable::FailClosed;
+        let fail_closed = self.policy.is_forced_closed(
+            action,
+            self.resource.classification(),
+            self.resource.exposure(),
+        ) || self.policy.on_unavailable() == FactsUnavailable::FailClosed;
 
         if fail_closed {
             // `DLP_BLOCKED` with `RETRY_LATER` rather than its default `REQUEST_EXCEPTION`: the
@@ -1067,16 +1263,28 @@ mod tests {
     const READ: Action = Action::File(FileAction::ContentRead);
     const EXTERNAL: Action = Action::File(FileAction::ShareExternal);
 
+    /// An unclassified resource that reaches nowhere — the neutral case, so a test that is about
+    /// something else does not accidentally assert the escalations as well.
+    fn plain() -> ResourceState {
+        ResourceState::new(Exposure::Internal, None)
+    }
+
+    /// An internal resource carrying a label.
+    fn labelled(rank: ClassificationRank) -> ResourceState {
+        ResourceState::new(Exposure::Internal, Some(rank))
+    }
+
     #[test]
     fn facts_from_the_active_detector_set_are_the_ones_a_stage_gets() {
         let snapshot = FactsSnapshot::gathered(
             facts(ACTIVE_SET),
             &DetectorSetVersion::new(ACTIVE_SET),
             policy(FactsUnavailable::FailClosed),
+            plain(),
         );
 
         assert_eq!(snapshot.staleness(), FactsStaleness::Fresh);
-        match snapshot.require(READ, None) {
+        match snapshot.require(READ) {
             FactsOutcome::Facts(facts) => {
                 assert_eq!(facts.counts().get(DetectorCategory::Financial), 3);
             }
@@ -1094,6 +1302,7 @@ mod tests {
                 facts(other),
                 &DetectorSetVersion::new(ACTIVE_SET),
                 policy(FactsUnavailable::FailClosed),
+                plain(),
             );
             assert_eq!(
                 snapshot.staleness(),
@@ -1101,7 +1310,7 @@ mod tests {
                 "{other:?} is not the active set and its facts are not usable"
             );
             assert!(
-                matches!(snapshot.require(READ, None), FactsOutcome::Denied { .. }),
+                matches!(snapshot.require(READ), FactsOutcome::Denied { .. }),
                 "stale facts reached a decision for set {other:?}"
             );
         }
@@ -1112,8 +1321,9 @@ mod tests {
             facts(ACTIVE_SET),
             &DetectorSetVersion::new(ACTIVE_SET),
             policy(FactsUnavailable::FailClosed),
+            plain(),
         );
-        assert!(matches!(snapshot.require(READ, None), FactsOutcome::Facts(_)));
+        assert!(matches!(snapshot.require(READ), FactsOutcome::Facts(_)));
     }
 
     /// D27, and the half of it that is not the tenant's to choose.
@@ -1123,27 +1333,30 @@ mod tests {
     /// holds only under the mode that would have denied anyway is not a rule.
     #[test]
     fn restricted_content_and_external_sharing_fail_closed_in_either_mode() {
-        let restricted = Some(ClassificationRank::RESTRICTED);
-        let internal = Some(ClassificationRank::new(20));
+        let internal = ClassificationRank::new(20);
 
         for mode in [FactsUnavailable::FailClosed, FactsUnavailable::FailOpenAudit] {
-            let snapshot = FactsSnapshot::missing(policy(mode));
-
+            let restricted_doc =
+                FactsSnapshot::missing(policy(mode), labelled(ClassificationRank::RESTRICTED));
             assert!(
-                matches!(snapshot.require(READ, restricted), FactsOutcome::Denied { .. }),
+                matches!(restricted_doc.require(READ), FactsOutcome::Denied { .. }),
                 "RESTRICTED content was served without facts under {mode}"
             );
+
+            let internal_doc = FactsSnapshot::missing(policy(mode), labelled(internal));
             assert!(
-                matches!(snapshot.require(EXTERNAL, internal), FactsOutcome::Denied { .. }),
+                matches!(internal_doc.require(EXTERNAL), FactsOutcome::Denied { .. }),
                 "an INTERNAL file was shared externally without facts under {mode}"
             );
+
+            let unlabelled = FactsSnapshot::missing(policy(mode), plain());
             assert!(
-                matches!(snapshot.require(EXTERNAL, None), FactsOutcome::Denied { .. }),
+                matches!(unlabelled.require(EXTERNAL), FactsOutcome::Denied { .. }),
                 "an unclassified file was shared externally without facts under {mode}"
             );
             assert!(
                 matches!(
-                    snapshot.require(Action::Share(ShareAction::CreateExternal), None),
+                    unlabelled.require(Action::Share(ShareAction::CreateExternal)),
                     FactsOutcome::Denied { .. }
                 ),
                 "an external share link was created without facts under {mode}"
@@ -1154,8 +1367,9 @@ mod tests {
         // `docs/12 §1.2`: an assertion about a denial passes for free against a policy that denies
         // everything, and this whole test would then be proving nothing about the escalations.
         // `FAIL_OPEN_AUDIT` must genuinely fail open for an internal read.
-        let snapshot = FactsSnapshot::missing(policy(FactsUnavailable::FailOpenAudit));
-        match snapshot.require(READ, internal) {
+        let snapshot =
+            FactsSnapshot::missing(policy(FactsUnavailable::FailOpenAudit), labelled(internal));
+        match snapshot.require(READ) {
             FactsOutcome::Unscanned(allow) => {
                 assert_eq!(allow.action(), READ);
                 assert_eq!(allow.staleness(), FactsStaleness::Missing);
@@ -1167,15 +1381,150 @@ mod tests {
         }
     }
 
+    /// `ENC-588` — the escalation must reach a share that is *already* external.
+    ///
+    /// Creating an external link over unscanned content was always denied, because
+    /// `Action::is_external_share` recognises the actions that create exposure. **Updating** one —
+    /// dropping its password, widening its permission, pushing its expiry out — was not, because
+    /// whether the share is external is a fact about the resource and `require` was never given
+    /// one. Under `FAIL_OPEN_AUDIT` that made the weaker operation the permitted one.
+    ///
+    /// The two controls are what make this more than "everything is denied": the *same* update
+    /// against an internal share still fails open, and revoking the external share still fails
+    /// open — a tenant that cannot revoke a link over unscanned content is left holding the link.
+    #[test]
+    fn updating_a_share_that_is_already_external_fails_closed() {
+        const UPDATE: Action = Action::Share(ShareAction::Update);
+        const REVOKE: Action = Action::Share(ShareAction::Revoke);
+        let internal = ClassificationRank::new(20);
+        let open = policy(FactsUnavailable::FailOpenAudit);
+
+        let external =
+            FactsSnapshot::missing(open, ResourceState::new(Exposure::External, Some(internal)));
+        assert!(
+            matches!(external.require(UPDATE), FactsOutcome::Denied { .. }),
+            "the password was dropped from an external link over content nobody has scanned"
+        );
+        let unlabelled_external =
+            FactsSnapshot::missing(open, ResourceState::new(Exposure::External, None));
+        assert!(
+            matches!(unlabelled_external.require(UPDATE), FactsOutcome::Denied { .. }),
+            "an unclassified file's external link was widened without facts"
+        );
+
+        // Control 1: the same action on an internal share is governed by the configured mode, so
+        // the denial above is the *exposure* and not the action.
+        let internal_share = FactsSnapshot::missing(open, labelled(internal));
+        assert!(
+            matches!(internal_share.require(UPDATE), FactsOutcome::Unscanned(_)),
+            "an internal share update was denied, so the escalation above proves nothing"
+        );
+
+        // Control 2: revocation reduces exposure and must stay available, or a tenant cannot undo
+        // the link it is being refused permission to change.
+        assert!(
+            matches!(external.require(REVOKE), FactsOutcome::Unscanned(_)),
+            "revoking an external link over unscanned content was refused, which strands the link"
+        );
+
+        // Control 3: the mandatory half still holds — `FAIL_CLOSED` denies the internal update
+        // too, so control 1 is the mode rather than the predicate.
+        let closed =
+            FactsSnapshot::missing(policy(FactsUnavailable::FailClosed), labelled(internal));
+        assert!(matches!(closed.require(UPDATE), FactsOutcome::Denied { .. }));
+    }
+
+    /// `ENC-591` — the `RESTRICTED` escalation must fire on a document *no scan has run over*.
+    ///
+    /// That is the only case it exists for. The rank used to be an argument, the DLP stage was the
+    /// only caller, and it had nothing to pass when the scan had not completed — so the escalation
+    /// was asked about `None` precisely when it mattered. A label is a property of the resource
+    /// and does not wait for a scanner.
+    ///
+    /// The control is the rank one below the boundary: it fails *open*, so the two denials are the
+    /// comparison working rather than a snapshot that refuses everything unscanned.
+    #[test]
+    fn an_unscanned_restricted_document_fails_closed_without_the_scan_that_would_prove_it() {
+        let open = policy(FactsUnavailable::FailOpenAudit);
+
+        let restricted = FactsSnapshot::missing(open, labelled(ClassificationRank::RESTRICTED));
+        assert!(
+            matches!(restricted.require(READ), FactsOutcome::Denied { .. }),
+            "an unscanned RESTRICTED document was read under FAIL_OPEN_AUDIT"
+        );
+        assert_eq!(restricted.resource().classification(), Some(ClassificationRank::RESTRICTED));
+
+        let above = FactsSnapshot::missing(open, labelled(ClassificationRank::new(60)));
+        assert!(matches!(above.require(READ), FactsOutcome::Denied { .. }));
+
+        let below = FactsSnapshot::missing(open, labelled(ClassificationRank::new(49)));
+        assert!(
+            matches!(below.require(READ), FactsOutcome::Unscanned(_)),
+            "a document below the boundary was denied, so the boundary is a blanket"
+        );
+    }
+
+    /// The resource's state is settled where the facts are, so no stage can supply its own answer.
+    #[test]
+    fn resource_state_travels_with_the_snapshot_and_is_reported_for_audit() {
+        let snapshot = FactsSnapshot::missing(
+            policy(FactsUnavailable::FailOpenAudit),
+            ResourceState::new(Exposure::External, Some(ClassificationRank::new(30))),
+        );
+        assert_eq!(snapshot.exposure(), Exposure::External);
+        assert_eq!(snapshot.resource().classification(), Some(ClassificationRank::new(30)));
+        assert_eq!(serde_json::to_string(&Exposure::External).expect("serialize"), "\"EXTERNAL\"");
+        assert_eq!(serde_json::to_string(&Exposure::Internal).expect("serialize"), "\"INTERNAL\"");
+
+        let gathered = FactsSnapshot::gathered(
+            facts(ACTIVE_SET),
+            &DetectorSetVersion::new(ACTIVE_SET),
+            FactsPolicy::fail_closed(),
+            ResourceState::new(Exposure::External, None),
+        );
+        assert_eq!(gathered.exposure(), Exposure::External);
+    }
+
+    /// D29 — a path with no way to satisfy an obligation refuses, in *release* as well as debug.
+    ///
+    /// The positive control is the empty set: `require_none` must not simply refuse everything, or
+    /// the three call sites it replaced would refuse every listing and every self-read.
+    #[test]
+    fn an_obligation_reaching_a_path_that_cannot_satisfy_it_is_a_denial() {
+        assert!(Obligations::none().require_none().is_ok(), "an unconditional allow must proceed");
+
+        for (obligation, expected) in [
+            (Obligation::RequireJustification, ReasonCode::DlpJustificationRequired),
+            (Obligation::RequireApproval, ReasonCode::DlpApprovalRequired),
+            (Obligation::Watermark, ReasonCode::PreviewOnly),
+            (Obligation::NoDownload, ReasonCode::PreviewOnly),
+            (Obligation::ReadOnly, ReasonCode::AccessDenied),
+            (Obligation::NoSync, ReasonCode::AccessDenied),
+            (Obligation::Reclassify { to: ClassificationRank::new(40) }, ReasonCode::AccessDenied),
+        ] {
+            let set: Obligations = [obligation].into_iter().collect();
+            let error = set.require_none().expect_err("an outstanding obligation must refuse");
+            match error {
+                Error::PolicyDenied { code, .. } => assert_eq!(
+                    code, expected,
+                    "{obligation:?} refused with the wrong code, so a client cannot offer the \
+                     right next step"
+                ),
+                other => panic!("{obligation:?} produced {other:?} rather than a denial"),
+            }
+            assert_eq!(obligation.unsatisfied_code(), expected);
+        }
+    }
+
     #[test]
     fn the_configured_mode_decides_everything_the_escalations_do_not() {
-        let internal = Some(ClassificationRank::new(20));
+        let internal = labelled(ClassificationRank::new(20));
 
-        let closed = FactsSnapshot::missing(policy(FactsUnavailable::FailClosed));
-        assert!(matches!(closed.require(READ, internal), FactsOutcome::Denied { .. }));
+        let closed = FactsSnapshot::missing(policy(FactsUnavailable::FailClosed), internal);
+        assert!(matches!(closed.require(READ), FactsOutcome::Denied { .. }));
 
-        let open = FactsSnapshot::missing(policy(FactsUnavailable::FailOpenAudit));
-        assert!(matches!(open.require(READ, internal), FactsOutcome::Unscanned(_)));
+        let open = FactsSnapshot::missing(policy(FactsUnavailable::FailOpenAudit), internal);
+        assert!(matches!(open.require(READ), FactsOutcome::Unscanned(_)));
     }
 
     #[test]
@@ -1185,28 +1534,22 @@ mod tests {
             FactsUnavailable::FailOpenAudit,
             ClassificationRank::new(30),
         );
-        let snapshot = FactsSnapshot::missing(tenant);
+        let at = FactsSnapshot::missing(tenant, labelled(ClassificationRank::new(30)));
+        assert!(matches!(at.require(READ), FactsOutcome::Denied { .. }));
 
-        assert!(matches!(
-            snapshot.require(READ, Some(ClassificationRank::new(30))),
-            FactsOutcome::Denied { .. }
-        ));
-        assert!(matches!(
-            snapshot.require(READ, Some(ClassificationRank::new(40))),
-            FactsOutcome::Denied { .. }
-        ));
+        let above = FactsSnapshot::missing(tenant, labelled(ClassificationRank::new(40)));
+        assert!(matches!(above.require(READ), FactsOutcome::Denied { .. }));
+
         // Below the line, the configured mode applies — the boundary is a boundary and not a
         // blanket.
-        assert!(matches!(
-            snapshot.require(READ, Some(ClassificationRank::new(29))),
-            FactsOutcome::Unscanned(_)
-        ));
+        let below = FactsSnapshot::missing(tenant, labelled(ClassificationRank::new(29)));
+        assert!(matches!(below.require(READ), FactsOutcome::Unscanned(_)));
     }
 
     #[test]
     fn a_fail_closed_denial_says_retry_rather_than_ask_for_an_exception() {
-        let snapshot = FactsSnapshot::missing(FactsPolicy::fail_closed());
-        let denial = snapshot.require(READ, None).into_denial().expect("fail-closed denies");
+        let snapshot = FactsSnapshot::missing(FactsPolicy::fail_closed(), plain());
+        let denial = snapshot.require(READ).into_denial().expect("fail-closed denies");
 
         match denial {
             Error::PolicyDenied { code, remediation } => {
@@ -1223,14 +1566,15 @@ mod tests {
 
         // The control: the other two outcomes are not denials, so `into_denial` is reading the
         // variant rather than answering `Some` to everything.
-        let open = FactsSnapshot::missing(policy(FactsUnavailable::FailOpenAudit));
-        assert!(open.require(READ, None).into_denial().is_none());
+        let open = FactsSnapshot::missing(policy(FactsUnavailable::FailOpenAudit), plain());
+        assert!(open.require(READ).into_denial().is_none());
         let fresh = FactsSnapshot::gathered(
             facts(ACTIVE_SET),
             &DetectorSetVersion::new(ACTIVE_SET),
             FactsPolicy::fail_closed(),
+            plain(),
         );
-        assert!(fresh.require(READ, None).into_denial().is_none());
+        assert!(fresh.require(READ).into_denial().is_none());
     }
 
     #[test]
@@ -1238,8 +1582,16 @@ mod tests {
         assert_eq!(FactsUnavailable::default(), FactsUnavailable::FailClosed);
         let default = FactsPolicy::fail_closed();
         assert_eq!(default.on_unavailable(), FactsUnavailable::FailClosed);
-        assert!(default.is_forced_closed(READ, Some(ClassificationRank::RESTRICTED)));
-        assert!(!default.is_forced_closed(READ, Some(ClassificationRank::new(20))));
+        assert!(default.is_forced_closed(
+            READ,
+            Some(ClassificationRank::RESTRICTED),
+            Exposure::Internal
+        ));
+        assert!(!default.is_forced_closed(
+            READ,
+            Some(ClassificationRank::new(20)),
+            Exposure::Internal
+        ));
     }
 
     #[test]
