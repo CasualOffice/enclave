@@ -45,8 +45,10 @@
 //! Every one of them happens *after* `PolicyEngine::enforce` has allowed and written its row, so
 //! until `ENC-606` the audit trail said `ALLOW` for a request that received `403`. Each now returns
 //! a [`Refused`], whose only conversion into an error is
-//! [`crate::refusal::HandlerAudit::refuse`] — which writes the second row first. Four sites:
-//! [`satisfy`]'s three blocking arms, [`stampable`], and [`mark`]'s three.
+//! [`crate::refusal::HandlerAudit::refuse`] — which writes the second row first. Seven refusal
+//! paths in three functions: [`satisfy`]'s three blocking arms, [`stampable`], and [`mark`]'s
+//! three, which share one constructor because they are one fact — this rendition cannot carry the
+//! mark the obligation requires.
 //!
 use core::str::FromStr as _;
 
