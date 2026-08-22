@@ -100,8 +100,6 @@
 //! channel this deployment has (`ENC-645`), and it is never written to a column: `file_versions` has
 //! no place for it.
 
-use core::fmt;
-
 use chrono::{DateTime, Utc};
 use enclave_antivirus::{
     decide, AntivirusError, AntivirusScanner, EngineInfo, Incident, ScanHint, ScanOutcome,
@@ -685,17 +683,6 @@ fn raise(tenant: TenantId, item: &Due, incident: &Incident) {
         notify_security = incident.notify_security,
         "antivirus incident"
     );
-}
-
-impl fmt::Display for AvPass {
-    /// One line for an operator, in the order the questions get asked.
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "considered {} cleared {} flagged {} quarantined {} held {} errored {}",
-            self.considered, self.cleared, self.flagged, self.quarantined, self.held, self.errored
-        )
-    }
 }
 
 #[cfg(test)]
