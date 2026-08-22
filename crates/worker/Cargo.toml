@@ -31,6 +31,16 @@ enclave-embeddings = { workspace = true }
 # provider that *reads* the table, and a domain crate that also owned a background pass would need
 # the pool, the object store and the clock. The scanner is composition, so it lives here.
 enclave-dlp = { workspace = true }
+# `ENC-641`: the antivirus pass. `crates/antivirus` holds the scanners and `decide` — `docs/06 §6.2`
+# as a pure function — and had no caller in any binary, so `av_status` never moved and no version in
+# a real deployment ever became readable. The edge is this way round for the reason the DLP one is:
+# the crate owns the engine and the rules, and the *pass* needs a pool, an object store and a clock,
+# which is composition and lives here.
+enclave-antivirus = { workspace = true }
+# The `file_versions` vocabularies, whose own test reads them out of migration 0006's `CHECK`
+# constraints — so the statuses this pass writes cannot drift from the ones the column accepts — and
+# `READABLE_PREDICATE`, which the clean transition is asserted against rather than against a literal.
+enclave-versions = { workspace = true }
 enclave-indexing = { workspace = true }
 enclave-preview = { workspace = true }
 enclave-storage = { workspace = true }

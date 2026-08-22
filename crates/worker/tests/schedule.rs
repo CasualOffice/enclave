@@ -38,6 +38,7 @@ use enclave_worker::{Result, Stop};
 /// Ticks fast enough that nothing waits, and raises the signal itself.
 const IMPATIENT: Cadence = Cadence {
     indexing_idle: Duration::ZERO,
+    antivirus_idle: Duration::ZERO,
     scan_idle: Duration::ZERO,
     invalidation: Duration::ZERO,
     epoch: Duration::ZERO,

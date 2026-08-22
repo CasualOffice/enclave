@@ -1297,6 +1297,10 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "enclave-core",
+ "enclave-db",
+ "enclave-testing",
+ "sqlx",
+ "tokio",
 ]
 
 [[package]]
@@ -1801,6 +1805,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "chrono",
+ "enclave-antivirus",
  "enclave-audit",
  "enclave-authorization",
  "enclave-config",
@@ -1815,6 +1820,7 @@ dependencies = [
  "enclave-search",
  "enclave-storage",
  "enclave-testing",
+ "enclave-versions",
  "futures",
  "milvus-sdk-rust",
  "sqlx",

@@ -21,8 +21,8 @@
 //! ```
 
 use enclave_core::id::{
-    ChunkId, DeviceId, FileId, GroupId, GuestId, LibraryId, McpClientId, RequestId,
-    ServiceAccountId, SessionId, TenantId, UserId, VersionId, WorkspaceId,
+    ChunkId, ClassificationId, DeviceId, FileId, GroupId, GuestId, LibraryId, McpClientId,
+    RequestId, ServiceAccountId, SessionId, TenantId, UserId, VersionId, WorkspaceId,
 };
 use sqlx::encode::IsNull;
 use sqlx::error::BoxDynError;
@@ -77,6 +77,7 @@ impl_sql_id!(
     FileId,
     VersionId,
     ChunkId,
+    ClassificationId,
     DeviceId,
     SessionId,
     RequestId,

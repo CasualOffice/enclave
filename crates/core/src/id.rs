@@ -180,6 +180,19 @@ define_id! {
 }
 
 define_id! {
+    /// One label in a tenant's classification set (`ENC-574`).
+    ///
+    /// The *identifier* is what `files.classification_id` and the three `default_classification_id`
+    /// columns hold; the *ordinal* policy compares is
+    /// [`ClassificationRank`](crate::ClassificationRank), and the two are deliberately different
+    /// types. A label is tenant vocabulary — one tenant's `CONFIDENTIAL` is another's
+    /// `INTERNAL_RESTRICTED` — so an id is meaningless across tenants and unorderable within one,
+    /// while a rank is orderable and means nothing without the tenant whose scale it is on. Making
+    /// them one type is how a rank ends up in a foreign key or an id ends up in a `>=`.
+    ClassificationId
+}
+
+define_id! {
     /// A registered device. Bound into access tokens (`dev` claim) and required for sync and
     /// editor clients, so device posture can be evaluated per request.
     DeviceId
@@ -252,6 +265,7 @@ mod tests {
             FileId,
             VersionId,
             ChunkId,
+            ClassificationId,
             DeviceId,
             SessionId,
             RequestId,

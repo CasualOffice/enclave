@@ -165,12 +165,21 @@ P1 rows remain open, and none of them weakens a criterion — but a reader who t
 mean "an operator can use this" would be wrong in a specific way, so it is stated here rather than
 left to be discovered.
 
-**`ENC-641` — `enclave-antivirus` has no caller in any binary, so `av_status` never moves.** Every
-version this product writes starts `SCANNING` with `av_status = 'PENDING'`, and `readable_version`
-requires `AVAILABLE AND CLEAN`. Nothing performs the transition. Rule 9 holds perfectly in the
-direction that matters — no read path serves unscanned content — and holds *absolutely*, because
-nothing ever becomes scanned. Found by `ENC-613` going to look for the antivirus job an earlier
-report had described, and discovering it did not exist.
+*Updated 2026-08-22: the first of the three is closed and its successor named, because the pattern is
+what matters here — each of these rows is a capability built in full and driven by nothing, and the
+only reason they are visible at all is that somebody went looking for a caller.*
+
+**~~`ENC-641`~~ — closed 2026-08-22.** `enclave-antivirus` had no caller in any binary, so every
+version this product wrote started `SCANNING` with `av_status = 'PENDING'` and stayed there, while
+`readable_version` requires `AVAILABLE AND CLEAN`. Rule 9 held in the direction that mattered and held
+*absolutely*, because nothing ever became scanned. `crates/worker/src/antivirus.rs` performs the
+transition, and leakage row `G12` is the positive control this section had been missing: *an upload
+becomes readable when antivirus clears it, and only then*.
+
+**`ENC-643` replaces it as the open link, one crate over**, and is stated here rather than left to be
+found the same way: `enclave_indexing::enqueue` has no caller either, so a version now becomes
+readable and the *index* queue is still empty. The DLP scan is unaffected — its queue is a query over
+`file_versions` — so `§2`'s chain is complete end to end and search's is not.
 
 **`ENC-619` — no deployment authorizes an administrative action**, so the conditional-access admin
 surface is closed in the binary. Fails closed, which is the right direction and not a usable one.
