@@ -572,11 +572,14 @@ async fn verdict_for<S: BlobStore + ?Sized>(
         Ok(stream) => stream,
         Err(error) => {
             // The key is derived from a file name and a file name is content (rule 10), so the
-            // version identifies the row and the key never appears.
+            // version identifies the row and neither the key nor `StorageError`'s message — which
+            // carries the key — is interpolated. `missing` distinguishes "the object is not there"
+            // from "the store would not answer", which are the same verdict and different
+            // incidents.
             warn!(
                 version = %item.version,
-                retryable = matches!(error, StorageError::NotFound { .. }).then_some(false),
-                "a version's bytes could not be read for scanning"
+                missing = matches!(error, StorageError::NotFound { .. }),
+                "a version's bytes could not be read, so it is recorded ERROR and not re-offered"
             );
             return Ok(ScanVerdict::Error { retryable: false });
         }
