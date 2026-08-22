@@ -18,6 +18,22 @@
 //! bypasses row-level security, and a cross-tenant assertion run as one proves nothing (PR #22,
 //! `ENC-124`).
 //!
+//! # Which mechanism `one_tenants_facts_never_decide_another_tenants_request` proves
+//!
+//! Recorded because two deliberate breaks did **not** fail it, which `docs/12 §1.2` says is a
+//! finding rather than a shrug. Removing `enclave_db::security_facts`'s `tenant_id = $1` predicate
+//! leaves it green, and so does removing that predicate *and* weakening this table's row-level
+//! security to `USING (true)` — because a fact row is reached through two lookups, not one. The
+//! resource is resolved to a version first, through `files`, and that read is still scoped; the
+//! keys it yields are globally unique, so a load that has lost its own tenant predicate is still
+//! looking up identifiers that only exist in the tenant that asked.
+//!
+//! So this test proves *isolation of the path*, not any single predicate. It is not vacuous: with
+//! the predicates removed from **both** statements and the `files` policy weakened as well, it
+//! fails with *"alpha's fact row was readable from a tenant-beta request: left: Fresh, right:
+//! Missing"*. The individual predicates are held by `enclave_db::security_facts`'s own
+//! `every_statement_is_scoped_to_one_tenant`, which fails on the first break alone.
+//!
 //! Ignored by default because they need a live PostgreSQL. CI runs them with `--include-ignored`;
 //! locally, start `deploy/compose/dev.yml` and set `DATABASE_URL`.
 

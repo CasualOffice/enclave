@@ -413,7 +413,12 @@ mod tests {
     /// share becomes editable and nothing errors.
     #[test]
     fn the_exposure_predicate_walks_upwards_and_ignores_dead_links() {
-        assert!(EXPOSURE_SQL.contains("RECURSIVE"), "a link on a parent folder exposes the file");
+        // The recursive **term**, not the `WITH RECURSIVE` keyword. Asserting the keyword is what
+        // this test did first, and deleting the whole `UNION ALL` branch left it green — the walk
+        // was gone and the string it looked for was still there. `docs/12 §1.2`: a break that fails
+        // nothing means the test proves something other than its name.
+        assert!(EXPOSURE_SQL.contains("UNION ALL"), "a link on a parent folder exposes the file");
+        assert!(EXPOSURE_SQL.contains("JOIN ancestry"), "the walk has to reach the parent");
         assert!(EXPOSURE_SQL.contains("LIBRARY"), "a library-wide link exposes the file");
         assert!(EXPOSURE_SQL.contains("revoked_at IS NULL"), "a revoked link reaches nobody");
         assert!(EXPOSURE_SQL.contains("expires_at IS NULL OR"), "an expired link reaches nobody");
