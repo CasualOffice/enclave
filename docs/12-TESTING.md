@@ -1,6 +1,6 @@
 # 12 — Testing & Quality Gates
 
-> **Status:** Draft · **Version:** 1.12 · **Owner:** Engineering · **Last updated:** 2026-08-22
+> **Status:** Draft · **Version:** 1.13 · **Owner:** Engineering · **Last updated:** 2026-08-22
 > **Authoritative for:** test strategy, the security leakage matrix, CI gates, release criteria.
 
 ## 1. Philosophy
@@ -240,10 +240,12 @@ Full rows in `15-WORKFLOWS-AND-SIGNING.md §12`; they run in this suite.
 
 | # | Assertion |
 |---|---|
-| U1 | Every allow and every deny in the matrix produces an audit event |
+| U1 | **Every allow and every deny in the matrix produces an audit event, and the row can explain the denial.** Counting rows is not enough — `ENC-585`'s walkthrough found a request that returned `403 PREVIEW_ONLY` and left exactly one row saying `ALLOW`, which satisfies a count. So the assertion is on the row's *contents*: `outcome`, the `reason_code` the caller was given, and the stage in `policy_refs`, which is inside the hashed bytes. Driven through the real `PolicyEngine` into the real record format, in a loop over `Stage::ORDER`, so a stage added to the chain without an audit call fails by name — and adding one changes `PolicyEngine::new`'s arity, so the loop cannot silently skip it. `the_sink_is_actually_written_to` is the liveness half: every other assertion here is about a row's contents and would pass for free against a chain that wrote none. Verified by deleting `record_deny` from the chain (four tests fail, naming the stage) and by dropping `policy_refs.push(stage)` from the sink — which leaves `enclave-core`'s 81 unit tests green, because they assert against a mock that *receives* a `Stage` rather than against a record that carries one. `crates/audit/tests/policy_audit_coverage.rs` (`ENC-585`) |
 | U2 | The application role cannot `UPDATE` or `DELETE` `audit_events` |
 | U3 | Hash-chain verification detects a tampered row and reports the first divergence |
 | U4 | Audit records never contain passwords, tokens, refresh cookies or file content |
+| U5 | **Every site in the workspace that constructs a refusal does so where the policy engine records it.** `CLAUDE.md` rule 10 for denials, enumerated rather than sampled: an enforcement point is a call site of `StageDecision::deny`, `Error::denied` or `Error::denied_with` — nothing else can refuse on policy grounds, because `Error::PolicyDenied`'s fields are private and `StageOutcome::Deny` is only reachable through `StageDecision::deny`. A site inside a function returning `StageDecision` hands its refusal to `PolicyEngine::enforce`, which records it before returning `Err`; anything else must be in `ACKNOWLEDGED` with a reason and the tracker row that owns the gap, printed on every run, and a **stale** entry fails the gate too. The `ensure_allowed()` enumeration is what keeps 'audited by construction' true: it is the public conversion from a stage's decision into the caller's error, and a `StageDecision` consumed by anything but the engine is a denial with no row behind it. Liveness is not optional here and earned itself on the first run — it failed, because `enforce` takes every denial inside a `macro_rules!` body an AST walk never enters. `xtask/src/audit_coverage.rs` (`ENC-585`) |
+| U6 | **An audit write failure fails the operation it describes.** Rule 10's other half: an unaudited action must not be treated as having happened. Asserted on both paths, because a chain that propagated the failure for allows and swallowed it for denials would pass a one-sided test — and the denial path is the one an incident depends on. `crates/audit/tests/policy_audit_coverage.rs` (`ENC-585`) |
 
 ### 4.11 Conditional access
 
@@ -308,6 +310,7 @@ Assertions about the codebase itself, not its behavior:
 | Grant coverage | `enclave_app` can reach every tenant-scoped table, still cannot `UPDATE`/`DELETE` `audit_events` or its partitions, and holds neither `SUPERUSER` nor `BYPASSRLS`. The RLS gate cannot see any of this: it checks the policy, not whether the role it applies to can use the table — the gap that let a cross-tenant read return `200` in PR #22 |
 | Composite FKs | Every FK between tenant-scoped tables includes `tenant_id` |
 | Policy routing | Every Axum route handler reaches `PolicyEngine::enforce` (verified by a call-graph lint) |
+| Audit coverage | Every site that constructs a refusal does so where `PolicyEngine::enforce` records it, and the row it writes names the stage that refused. Two halves in one job, because they fail differently: deleting `record_deny` from the chain leaves the lint green, and dropping the stage attribution leaves both the lint and `enclave-core`'s own tests green |
 | No raw pool | No `sqlx::query*` outside the `db` crate bypasses `TenantScoped` |
 | Obligations | `PolicyDecision` is `#[must_use]`; no `let _ =` discards it |
 | Secrets | No literal credential patterns in configuration files or fixtures |
