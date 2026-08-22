@@ -20,6 +20,12 @@
 //! So this pass sits beside indexing, reads content the same way, and — like it — cannot hold up an
 //! upload, because nothing on a write path waits for either.
 //!
+//! Not `crates/scheduler`, whose remit (`docs/02 §4`) does name "rescan/reindex scheduling": that
+//! crate owns a *cadence* and deliberately owns nothing else, so that its loops can be proven with
+//! no database anywhere. This pass needs the object store, the extractor and the OCR mounts, which
+//! are exactly what `crates/worker/src/main.rs` composes — and putting it there would mean either
+//! moving that composition or giving a second binary a copy of it.
+//!
 //! # Extraction is reused, not rebuilt
 //!
 //! The detectors read text. `crates/indexing` already turns bytes into text, under
