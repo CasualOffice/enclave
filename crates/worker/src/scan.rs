@@ -718,6 +718,36 @@ mod tests {
         assert_eq!(facts.scan_version(), SCAN_VERSION);
     }
 
+    /// The severity that reaches the **row** is `None` for a clean document.
+    ///
+    /// Distinct from `a_report_that_fired_nothing_attaches_no_severity`, which tests
+    /// [`max_severity`] in isolation — and the distinction is a finding rather than thoroughness.
+    /// Rewriting `facts_from` to attach `Severity::Low` whenever [`max_severity`] answered `None`
+    /// failed **no test at all**: the unit test still saw the honest `None`, and every integration
+    /// test asserts on counts. A clean document would then carry `LOW`, and
+    /// `Condition::SeverityAtLeast(Low)` would hold for every scanned version in the tenant.
+    ///
+    /// Both legs, so this cannot pass against a `facts_from` that attaches no severity ever.
+    #[test]
+    fn a_clean_documents_row_carries_no_severity_and_a_dirty_ones_does() {
+        let set = enclave_dlp::builtin_set();
+        let (file, version) = (enclave_core::FileId::new_v7(), VersionId::new_v7());
+
+        let clean = set.scan("The quarterly review is on Tuesday at 14:30 in room 4111.");
+        let facts = facts_from(&[clean], file, version, &set);
+        assert_eq!(facts.max_severity(), None, "a clean document was given a severity");
+
+        let found = set.scan("Please charge 4111111111111111 for the balance.");
+        let facts = facts_from(&[found], file, version, &set);
+        assert_eq!(facts.max_severity(), Some(Severity::High));
+
+        // And the risk score is `RiskScore::ZERO` in both, which is a **gap** rather than a
+        // measurement — nothing here computes a composite signal, so a rule written against
+        // `Condition::RiskAtLeast` never fires (`ENC-639`). Pinned so that whoever closes it has to
+        // change this line and notice the row it belongs to.
+        assert_eq!(facts.risk_score(), RiskScore::ZERO);
+    }
+
     /// Every reason a version goes unscanned has its own label, and none of them is a message.
     #[test]
     fn every_unscannable_reason_has_a_distinct_fixed_label() {
