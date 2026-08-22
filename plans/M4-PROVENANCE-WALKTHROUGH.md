@@ -92,7 +92,7 @@ and it is the field that a mock-based test cannot prove is present — see `§3`
 Rows 2 and 3 share a `request_id`. One HTTP request produced **two** chain evaluations, and the
 second is why the caller received `403` rather than `404`.
 
-`crates/api/src/download.rs::sharpen` exists because the chain deliberately collapses *explicitly
+`crates/api/src/download.rs::conceal_if_not_visible` exists because the chain deliberately collapses *explicitly
 denied* and *never granted* into one `ACCESS_DENIED`, and that code alone tells a caller nothing
 about whether the resource exists. So the edge asks one further question **through the same chain
 and nothing else**: may this caller read the file's metadata? Row 3 says yes, so the caller already

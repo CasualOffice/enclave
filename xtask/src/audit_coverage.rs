@@ -16,8 +16,8 @@
 //!
 //! # What an enforcement point is, mechanically
 //!
-//! A refusal has to be *constructed* before it can be returned, and there are exactly three
-//! constructors in the workspace's vocabulary:
+//! A refusal has to be *constructed* before it can be returned, and the workspace's vocabulary has
+//! exactly two constructors for one:
 //!
 //! | Construct | Meaning |
 //! |---|---|

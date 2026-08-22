@@ -154,13 +154,18 @@ Most-uncertain first, so the expensive discovery happens while there is room to 
 - [ ] Every M4 P1 is `DONE`.
 - [ ] All four exit criteria demonstrated, each by a test that has been watched to fail.
 - [ ] Leakage matrix `§4` D-rows complete and green, and the H-rows quotas touch.
-- [ ] The audit coverage sweep exists as a **gate**, not a document (D32).
+- [x] The audit coverage sweep exists as a **gate**, not a document (D32). `ENC-585`:
+      `xtask audit-coverage` enumerates every refusal-constructing site and fails on the unaudited
+      ones; `crates/audit/tests/policy_audit_coverage.rs` asserts the row can explain the denial.
 - [ ] `docs/06` updated where implementation taught something the design did not say — and *only*
       there; it is authoritative and this plan is not.
-- [ ] A written walkthrough of one denial end to end: request in, stage that refused, obligation
+- [x] A written walkthrough of one denial end to end: request in, stage that refused, obligation
       raised, audit row out. The roadmap asks M3 for a threat walkthrough; the equivalent here is a
       *provenance* walkthrough, because "for the right reasons, with an audit trail" is a claim
       about explainability rather than about leakage.
+      `plans/M4-PROVENANCE-WALKTHROUGH.md` — two denials, both executed against a live database.
+      The obligation one is the finding: it returns `403 PREVIEW_ONLY` and the audit row says
+      `ALLOW` (`ENC-606`).
 
 ---
 
