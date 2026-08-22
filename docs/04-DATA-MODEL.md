@@ -1332,6 +1332,17 @@ every ancestor folder's, its library's `default_classification_id` and its works
   where a tenant-wide `RESTRICTED` folder sits and `Ok(None)` means *unlabelled*, which a tenant
   configured to assume a rank would proceed on.
 
+One reinterpretation is recorded rather than left implicit. §7 names the library and workspace
+columns `default_classification_id`, which reads as *the label new content is created with*. The
+resolver treats them as **floors on the whole subtree**, not as creation-time defaults. A
+creation-time default is a value that has to be copied onto every row at write time to mean
+anything, and a copy that is not made — by an import, a sync client, a workflow — is content the
+tenant believes is labelled and that resolves as unlabelled. Reading the column at resolution time
+makes it true for content that already exists, and for content written by a path nobody has updated
+yet. `content_types.default_classification_id` keeps the creation-time reading and takes no part in
+the walk, because a content type is not a container: a file does not sit *inside* one, so there is
+no subtree for it to be a floor over.
+
 **An unlabelled resource has no rank, and what that means is tenant policy.** `Ok(None)` is not
 `PUBLIC` and not the highest defined label: `enclave_core::Unlabelled` is `FAIL_CLOSED` by default
 or `Assume(rank)` with the rank named by the tenant, and — like `FactsUnavailable`, and for D27's
