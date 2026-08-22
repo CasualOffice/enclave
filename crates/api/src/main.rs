@@ -21,18 +21,16 @@ async fn main() -> anyhow::Result<()> {
     enclave_observability::init(&Default::default()).context("initialise tracing")?;
 
     // The DLP posture is settled here, before the banner, because the banner reports it (`ENC-594`).
-    // Two independent parts: the **mode**, which comes from configuration and decides whether a
-    // conclusion is acted on, and the **rules**, which decide what is concluded and have no storage
-    // yet — `ENC-615`. A mode without rules governs nothing, and the banner says so rather than
-    // announcing a control that is on.
+    // Two independent parts, and only one of them is a deployment-wide fact: the **mode** comes
+    // from configuration and decides whether a conclusion is acted on, and the **rules** decide what
+    // is concluded and are now each tenant's own rows (`ENC-615`, `migrations/0021_dlp_rules.sql`).
     let dlp_mode = enclave_dlp::DlpMode::from(config.dlp.default_mode);
-    let dlp_rules = enclave_dlp::RuleSet::empty();
 
     // Loud, once, at start-up. A deployment running with five of six stages permitting everything
     // looks identical from the outside to one carefully allowing each request, and the difference
     // matters enormously. `docs/12-TESTING.md §5` has CI proving the gates; this is the equivalent
     // for an operator standing in front of a running process.
-    let unenforcing = unenforcing_stages(dlp_mode, dlp_rules.len());
+    let unenforcing = unenforcing_stages(dlp_mode);
     for stage in &unenforcing {
         tracing::warn!(stage = stage.as_str(), "policy stage is not enforcing");
     }
@@ -81,21 +79,34 @@ async fn main() -> anyhow::Result<()> {
          the cache TTL"
     );
 
-    // DLP runs in the mode the tenant's configuration names (`ENC-594`), replacing `DisabledDlp` as
-    // the only option. `DisabledDlp` stays reachable and is what `DISABLED` builds: it is one of
-    // `docs/06 §9`'s five modes and a posture a tenant may legitimately run, not a placeholder —
-    // and a deployment that wants DLP off should not have to name a rule set and a sink to say so.
+    // DLP runs in the mode configuration names (`ENC-594`), over each tenant's **stored** rules
+    // (`ENC-615`). It replaces `ModedDlp` over `RuleSet::empty()`, which evaluated a rule set with
+    // nothing in it — so `RuleSet::evaluate` returned `NotGoverned` for every action and `ENFORCE`
+    // refused exactly as much as `DISABLED` did.
     //
-    // Every other mode gets `ModedDlp`, which evaluates identically in all four and differs only in
-    // what it does about the verdict (D28). The observation sink is the `tracing` one, which is
-    // what can be written without inventing a schema; `ENC-593` is the queryable record
-    // `docs/06 §9`'s simulate-before-enforce gate actually needs.
+    // `DisabledDlp` stays reachable and is what `DISABLED` builds: it is one of `docs/06 §9`'s five
+    // modes and a posture a tenant may legitimately run, not a placeholder — and a deployment that
+    // wants DLP off should not have to name a sink, or open a transaction per request to read rules
+    // it will not evaluate.
+    //
+    // Every other mode gets `TenantDlp`, which evaluates identically in all four and differs only
+    // in what it does about the verdict (D28) — the mode is held beside the rules and never inside
+    // them, which is what keeps `RuleSet::evaluate` unable to see it. The observation sink is the
+    // `tracing` one, which is what can be written without inventing a schema; `ENC-593` is the
+    // queryable record `docs/06 §9`'s simulate-before-enforce gate actually needs.
     let dlp: Arc<dyn enclave_core::DlpService> = if dlp_mode.evaluates() {
-        Arc::new(enclave_dlp::ModedDlp::new(
+        let stage = enclave_dlp::TenantDlp::new(
+            db.clone(),
             dlp_mode,
-            dlp_rules,
             Arc::new(enclave_dlp::TracingObservations),
-        ))
+        );
+        tracing::info!(
+            dlp_mode = dlp_mode.as_str(),
+            cache_ttl_secs = stage.cache_ttl().as_secs(),
+            "DLP is reading tenant rules from dlp_rules; a newly written rule applies everywhere \
+             within the cache TTL, and a tenant with no rules has nothing for this mode to refuse"
+        );
+        Arc::new(stage)
     } else {
         Arc::new(enclave_dlp::DisabledDlp)
     };
@@ -217,22 +228,31 @@ const DLP_STAGE: &str = "dlp";
 ///
 /// # What "unenforcing" means for DLP, which is not the same as "disabled"
 ///
-/// The entry is replaced rather than simply dropped, because the honest answer has three parts and
-/// the fixed string only says one of them. A stage that **cannot refuse anything** is announced,
-/// and there are two ways to be in that state:
+/// The entry is replaced rather than simply dropped, because a mode that evaluates is not the same
+/// as a mode that can refuse. A stage that **cannot refuse anything** is announced: `DISABLED`
+/// inspects nothing, and `MONITOR`, `SIMULATION` and `WARN` are rungs of `docs/06 §9`'s rollout
+/// ladder that deliberately never refuse. An operator who set `WARN` and saw no entry here would
+/// reasonably conclude that content inspection was blocking.
 ///
-///   * the mode does not enforce — `DISABLED` inspects nothing, and `MONITOR`, `SIMULATION` and
-///     `WARN` are rungs of `docs/06 §9`'s rollout ladder that deliberately never refuse;
-///   * no rule is in force, in which case the mode is irrelevant: `RuleSet::evaluate` returns
-///     `NotGoverned` for every action, so `ENFORCE` over an empty set refuses exactly as much as
-///     `DISABLED` does — nothing.
+/// # What this banner stopped being able to say when rules became rows (`ENC-615`)
 ///
-/// The second is the state every deployment is in today (`ENC-615`: rules have no storage), which
-/// is precisely why it is reported rather than assumed away. An operator who set `ENFORCE` and saw
-/// no entry in this banner would reasonably conclude that content inspection was refusing things.
-fn unenforcing_stages(dlp_mode: enclave_dlp::DlpMode, dlp_rules: usize) -> Vec<String> {
-    let dlp_refuses = dlp_mode.enforces() && dlp_rules > 0;
-
+/// It used to take a rule count, because there was exactly one rule set — `RuleSet::empty()` — and
+/// `ENFORCE` over an empty set refuses exactly as much as `DISABLED` does. That count no longer
+/// exists as a start-up fact: rules are **tenant data**, so "how many rules are in force" has one
+/// answer per tenant and a host serves thousands.
+///
+/// It is not merely expensive to compute, it is unavailable **by construction**, which is the more
+/// useful way to say it: `dlp_rules` has row-level security forced and its policy reads
+/// `app.tenant_id`, and `enclave_app` is not `BYPASSRLS`. A cross-tenant count would have to run
+/// with no tenant context, where `current_setting('app.tenant_id')::uuid` raises. The one role this
+/// binary has cannot ask the question, and that is the same property every isolation test in the
+/// workspace depends on.
+///
+/// So the banner reports what a deployment-wide fact can support — the mode — and the per-tenant
+/// half is stated in the `tracing::info!` beside the wiring instead: a tenant with no stored rule
+/// has nothing for `ENFORCE` to refuse. That is the same posture conditional access has had since
+/// `ENC-590`, where a tenant with no rules is likewise not a start-up condition.
+fn unenforcing_stages(dlp_mode: enclave_dlp::DlpMode) -> Vec<String> {
     let mut stages: Vec<String> = unconfigured_stages()
         .iter()
         .filter(|stage| {
@@ -241,10 +261,10 @@ fn unenforcing_stages(dlp_mode: enclave_dlp::DlpMode, dlp_rules: usize) -> Vec<S
         .map(|stage| (*stage).to_owned())
         .collect();
 
-    if !dlp_refuses {
+    if !dlp_mode.enforces() {
         let posture =
             if dlp_mode.evaluates() { "evaluates, refuses nothing" } else { "inspects nothing" };
-        stages.push(format!("{DLP_STAGE} ({dlp_mode}, {dlp_rules} rules — {posture})"));
+        stages.push(format!("{DLP_STAGE} ({dlp_mode} — {posture})"));
     }
     stages
 }
@@ -301,13 +321,10 @@ mod tests {
     /// `dyn ConditionalAccessService` the engine holds.
     use enclave_dlp::DlpMode;
 
-    /// One rule is enough to make a rule set non-empty, and the count is all this banner reads.
-    const ONE_RULE: usize = 1;
-
     #[test]
     fn the_conditional_access_stage_is_no_longer_unconfigured() {
         let before = unconfigured_stages();
-        let after = unenforcing_stages(DlpMode::Disabled, 0);
+        let after = unenforcing_stages(DlpMode::Disabled);
 
         assert!(
             before.iter().any(|stage| stage.starts_with(CONDITIONAL_ACCESS_STAGE)),
@@ -324,13 +341,17 @@ mod tests {
         assert!(after.iter().any(|stage| stage.starts_with("classification")));
     }
 
-    /// The DLP entry is now **computed** rather than fixed, and the banner has to be able to say
-    /// all three of the states a wired stage can be in (`ENC-594`).
+    /// The DLP entry is **computed** rather than fixed, and the banner has to be able to say each
+    /// of the states a wired stage can be in (`ENC-594`, `ENC-615`).
     ///
     /// `docs/12 §1.2`: "dlp is not in the list" is an assertion about an absence and holds for free
     /// against a filter that removed every entry, so the disappearance is asserted alongside the
-    /// two cases where the entry must still be there, and against a list that still names the
-    /// genuinely unconfigured stages.
+    /// cases where the entry must still be there, and against a list that still names the genuinely
+    /// unconfigured stages.
+    ///
+    /// The rule count this used to take is gone with `ENC-615`: rules are tenant data now, so
+    /// "how many rules are in force" is a per-tenant question the one role this binary holds cannot
+    /// even ask across tenants. See `unenforcing_stages`.
     #[test]
     fn the_dlp_entry_says_whether_the_configured_mode_can_refuse_anything() {
         assert!(
@@ -339,39 +360,33 @@ mod tests {
              computed entry below would be a second dlp line rather than a replacement"
         );
 
-        // Enforcing, with a rule to enforce: the one state in which the stage can refuse, and the
-        // only one where it drops out of the banner.
-        let enforcing = unenforcing_stages(DlpMode::Enforce, ONE_RULE);
+        // Enforcing: the one mode in which the stage can refuse, and the only one where it drops
+        // out of the banner. Whether it *does* refuse a given tenant is that tenant's rules.
+        let enforcing = unenforcing_stages(DlpMode::Enforce);
         assert!(
             !enforcing.iter().any(|stage| stage.starts_with(DLP_STAGE)),
-            "ENFORCE over a non-empty rule set refuses things and must not be announced as \
-             unenforcing: {enforcing:?}"
+            "ENFORCE reads each tenant's stored rules and must not be announced as unenforcing: \
+             {enforcing:?}"
         );
         // The control for that absence: the stages that really are stubs are still announced.
         assert!(enforcing.iter().any(|stage| stage.starts_with("retention")));
 
-        // Enforcing over nothing. The mode says refuse, the rule set has nothing to refuse, and an
-        // operator who read only the mode would believe content inspection was blocking.
-        let no_rules = unenforcing_stages(DlpMode::Enforce, 0);
-        let entry = no_rules
-            .iter()
-            .find(|stage| stage.starts_with(DLP_STAGE))
-            .expect("ENFORCE with no rules refuses nothing and must be announced");
-        assert!(entry.contains("ENFORCE"), "the banner names the mode actually running: {entry}");
-        assert!(entry.contains("0 rules"), "and why it refuses nothing: {entry}");
-
-        // A rung of the rollout ladder: rules exist and are evaluated, and none of them can refuse.
-        let monitoring = unenforcing_stages(DlpMode::Monitor, ONE_RULE);
-        let entry = monitoring
-            .iter()
-            .find(|stage| stage.starts_with(DLP_STAGE))
-            .expect("MONITOR records and never refuses, however many rules are in force");
-        assert!(entry.contains("MONITOR"), "{entry}");
-        assert!(entry.contains("evaluates"), "MONITOR does inspect content: {entry}");
+        // The three rungs of the rollout ladder that evaluate and never refuse. Each must be named
+        // by the mode actually running, because "DLP is on" is what an operator concludes from a
+        // silent banner.
+        for mode in [DlpMode::Monitor, DlpMode::Simulation, DlpMode::Warn] {
+            let stages = unenforcing_stages(mode);
+            let entry =
+                stages.iter().find(|stage| stage.starts_with(DLP_STAGE)).unwrap_or_else(|| {
+                    panic!("{mode} records and never refuses, and must be announced")
+                });
+            assert!(entry.contains(mode.as_str()), "{entry}");
+            assert!(entry.contains("evaluates"), "{mode} does inspect content: {entry}");
+        }
 
         // And `DISABLED`, which is a real mode rather than the absence of one — it must be
         // distinguishable in the banner from a mode that evaluates and declines to act.
-        let disabled = unenforcing_stages(DlpMode::Disabled, ONE_RULE);
+        let disabled = unenforcing_stages(DlpMode::Disabled);
         let entry = disabled
             .iter()
             .find(|stage| stage.starts_with(DLP_STAGE))

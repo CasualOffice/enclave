@@ -59,6 +59,12 @@
 //!   database access through [`TenantScoped`], no `sqlx::query!` in a domain crate — so the
 //!   statements live here and hold no opinion about what a rule means: the module handles strings
 //!   and JSON text, and the crate that owns the rule types owns their vocabulary.
+//!
+//!   [`dlp`] is the third, and takes the second's argument unchanged (`ENC-615`): a DLP rule is
+//!   tenant data, `crates/dlp` owns what one *means*, and this module owns only how one is written
+//!   down. It handles strings, numbers and JSON text and knows nothing about detectors — which is
+//!   what keeps Q16's "no pattern anywhere on the synchronous path" a property of one crate rather
+//!   than of two that have to agree.
 //! * **No policy checks.** Authorization is `PolicyEngine::enforce`'s job (`docs/03-LLD.md §12`).
 //!   A guard that also made access decisions would be a second, quieter policy chain.
 //! * **No cursor signature.** [`cursor`] binds a listing position to a tenant and a filter set and
@@ -83,6 +89,7 @@
 pub mod conditional_access;
 pub mod config;
 pub mod cursor;
+pub mod dlp;
 pub mod error;
 pub mod ids;
 pub mod migrate;
@@ -98,6 +105,7 @@ pub use conditional_access::{
 };
 pub use config::{ConnectionUrl, DbConfig};
 pub use cursor::{Cursor, FilterFingerprint, InvalidCursor, PageSize};
+pub use dlp::{insert_dlp_rule, load_dlp_rules, withdraw_dlp_rule, DlpRuleId, DlpRuleRow};
 pub use error::DbError;
 pub use ids::{sql, RowIdExt, Sql, SqlId};
 pub use migrate::{run_migrations, run_migrations_on, MIGRATIONS};
