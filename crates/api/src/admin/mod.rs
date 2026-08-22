@@ -18,3 +18,4 @@
 //! `CLAUDE.md` rule 1 requires and as `cargo run -p xtask -- policy-routing` checks.
 
 pub mod conditional_access;
+pub mod dlp;

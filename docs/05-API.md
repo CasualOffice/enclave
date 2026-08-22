@@ -1,6 +1,6 @@
 # 05 — API Surface
 
-> **Status:** Draft · **Version:** 1.3 · **Owner:** Platform Engineering · **Last updated:** 2026-08-22
+> **Status:** Draft · **Version:** 1.4 · **Owner:** Platform Engineering · **Last updated:** 2026-08-22
 > **Authoritative for:** REST contracts, error model, pagination, idempotency, versioning, rate limits.
 
 ## 1. Principles
@@ -388,6 +388,22 @@ configured step-up window (default 15 minutes) for any privileged mutation liste
 Simulation endpoints (`/admin/*/simulate`) accept a proposed policy plus a sample set or a historical
 time range and return the decisions that *would* have been made, with no side effects.
 
+**Who is authorized.** Every route here runs `PolicyEngine::enforce` with an `admin.*` action against
+the **tenant** — never against the object being edited, which would make the decision an oracle for
+that object's existence. The authorization stage answers it from the caller's administrative grants,
+and the grants a deployment can express today are one role: `users.is_admin`, the tenant's global
+administrator, which holds every `admin.*` action (`ENC-619`). The narrower administrator personas of
+`01-PRD.md §4` — an Identity Administrator who may not change DLP, an Auditor who may read the log
+and change nothing — need `role_assignments`, which `04-DATA-MODEL.md §2` lists and `§9` has no DDL
+for; until then those callers are refused like anyone else. Which action each route uses is not
+cosmetic: `06-SECURITY-DLP-ACCESS.md §22` separates *changing conditional access* from *changing
+branding*, so policy surfaces authorize as `admin.manage_policy` and configuration surfaces as
+`admin.write_config`, and the two must not be answered by one question.
+
+A principal that is not a directory user — a service account, an MCP client, a guest — is never an
+administrator, and a suspended, deprovisioned or deleted one holds nothing from the moment the row
+says so, whatever its outstanding token still claims.
+
 ### 14.1 Conditional-access rules
 
 Implemented `ENC-603`. The path is `/admin/conditional-access/**rules**`, not the `policies` the map
@@ -487,6 +503,120 @@ that denies the network an administrator is on cannot be undone through the prod
 (`plans/M4-GOVERNANCE.md §5`), and break-glass is deliberately *not* honoured by this check: the
 question is whether an ordinary session would be refused. Any rule may be written and rehearsed; the
 way to enforce one is from a session it allows.
+
+### 14.2 DLP rules
+
+Implemented `ENC-633`. The path is `/admin/dlp/**rules**`, not the `policies` the map above lists,
+for `§14.1`'s reason one stage over: `04-DATA-MODEL.md §12.3` records which of the documented
+columns were deliberately not created, and a path naming a resource whose fields are ignored is a
+path an operator tunes in vain. `06-SECURITY-DLP-ACCESS.md §8`–`§10` is authoritative for what a
+rule means; this section is the contract only.
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/admin/dlp/rules` | The tenant's live rules, in evaluation order |
+| `POST` | `/admin/dlp/rules` | Write one |
+| `DELETE` | `/admin/dlp/rules/{id}` | Withdraw it |
+
+```http
+POST /api/v1/admin/dlp/rules
+Content-Type: application/json
+
+{
+  "name": "No external sharing of payment data",
+  "priority": 100,
+  "scope": ["external_sharing"],
+  "conditions": [
+    { "category_at_least": { "category": "FINANCIAL", "count": 1 } }
+  ],
+  "action": "BLOCK"
+}
+```
+
+- **`scope` and `conditions` are the stored vocabulary, `snake_case`**, carried verbatim and decoded
+  by the same function the policy chain runs on every request. A second spelling at the edge would be
+  a second vocabulary that can drift, and the drift would be silent.
+- **`conditions` is closed, and that is Q16.** Every condition is a comparison against a count, a
+  rank, a severity or a score; there is no variant a **pattern** could occupy, so no regex reaches
+  the synchronous path. A document naming one is refused **naming the clause** — including a pattern
+  smuggled *inside* an otherwise valid clause, which a lenient decoder drops in silence. A rule is
+  never trimmed to the clauses that parsed: one that lost a condition matches more requests than its
+  author wrote, and one that lost a scope governs fewer.
+- **`scope` may not be empty.** An empty scope governs *nothing* — the permissive reading is how a
+  mis-migrated row becomes a tenant-wide block — so a rule with one would be stored, listed, and
+  never fire.
+- **`conditions: []` is legitimate** and means "whenever the action is governed".
+- **`action` has no `ALLOW`.** `06 §10` lists it; the evaluator does not implement it. Its demand is
+  nothing, and the verdict scans *past* a rule demanding nothing to the next one that refuses — so an
+  `ALLOW` written above a `BLOCK` fires, changes nothing, and the caller is refused anyway. It is
+  refused with that reason in `details[].detail`. Write the exception as a narrower scope or
+  condition on the restrictive rule.
+- **`reclassifyTo` belongs to `RECLASSIFY` and to no other action**, in both directions.
+- **`priority` is zero or greater and defaults to `100`.** It decides which reason code a refused
+  caller sees when two rules refuse, and the order fired rules are recorded in. It does *not* decide
+  whether a rule fires: no action suppresses a later one.
+- **There is no `mode` field, and a body carrying one is rejected.** A DLP rule has no per-rule mode
+  by construction — `plans/M4-GOVERNANCE.md` D28 keeps `SIMULATION` and `ENFORCE` from diverging by
+  giving the evaluator no mode argument — so the mode is deployment configuration. A body field
+  accepted and ignored would be an administrator believing a rule rehearses while it decides.
+
+The response is the stored rule, and it carries the rule's **name**; no error ever does. It also
+carries `decodes` (and `decodeError` when false), which is `true` for anything written through this
+API and can be `false` for a row written by a repair script: a rule that no longer decodes fails
+every request in the tenant, and this list is where an administrator would find out which one to
+withdraw — see the caveat below.
+
+`GET` returns the whole live set with `page: { "nextCursor": null, "hasMore": false }`, for §14.1's
+reason: the same set is loaded on every request in the policy chain.
+
+**There is no `PATCH`.** §14.1 has one because a conditional-access rule carries a mode and a rollout
+step; this one has neither. A rule's scope, conditions, action and priority are not editable at all:
+changing what a rule refuses is a withdrawal and a new rule, so the text of what was in force during
+any period stays readable.
+
+`DELETE` is **withdrawal**: the row and its text stay and `deleted_at` is set (`04 §12.3`). The
+application role holds no `DELETE` on the table, and here the reason is stronger than "history is
+evidence" — `06 §9` refuses enforcement of a policy that has never been simulated, and that gate is a
+query over observation history that *names a rule*. A deleted rule is one whose rehearsal cannot be
+found. Withdrawing a rule that is already withdrawn, that never existed, or that belongs to another
+tenant are all `404`.
+
+There is no `Idempotency-Key` on the create. A live rule's name is unique within its tenant — and the
+name **is** the rule's identity to the evaluator — so a replayed create is refused as a collision
+rather than duplicated; the name is reusable once the rule holding it has been withdrawn.
+
+| Status | When |
+|---|---|
+| `201` | Created. `Location` names the rule |
+| `204` | Withdrawn |
+| `400` | `VALIDATION_FAILED` — one entry in `details`, naming the field |
+| `403` | `ACCESS_DENIED` from the chain, or `STEP_UP_REQUIRED` |
+| `404` | Unknown, already withdrawn, or another tenant's — deliberately indistinguishable |
+| `409` | `RULE_NAME_IN_USE` |
+| `422` | `RULE_WOULD_GOVERN_ITS_OWN_WITHDRAWAL` (see below) |
+
+**Writing and withdrawing require recent multi-factor authentication** — the rule at the top of §14,
+for the privileged mutation `06 §22` calls *disabling or weakening DLP*; a rule that is not written
+is a refusal that does not happen. Reading does not.
+
+**A rule may not govern the action that would withdraw it.** `422
+RULE_WOULD_GOVERN_ITS_OWN_WITHDRAWAL` is returned when the scope covers `admin.manage_policy` —
+which `["any"]` does, and so does naming the action outright. This is not the same check §14.1 makes,
+and it is stricter for two reasons. The DLP stage runs on administrative actions like any other, and
+an administrative call is made *against the tenant*, which has no content and therefore no security
+facts: whether a rule fires is decided **after** whether it governs, so a governed administrative
+action is refused outright under `facts_unavailable: FAIL_CLOSED` whatever the rule's conditions say.
+And there is no rehearsal to write it into — a DLP rule has no per-rule mode — and no session it
+decides differently for, because DLP conditions are about the resource rather than the principal. One
+such rule therefore refuses every administrative request in the tenant, including the one that would
+withdraw it, and the way back is a database session. Scope a rule to `exposes_content`,
+`external_sharing`, or the exact actions it is about.
+
+**One caveat this surface does not fix.** A stored rule that no longer decodes fails the *whole* rule
+set, and the chain runs before this handler — so in a tenant holding such a row, `GET` answers `500`
+and the list that would identify the row cannot be reached. The handler decodes each row
+individually and would report it; the stage above it is what fails. `ENC-651`, and the same shape as
+`ENC-623` one stage over.
 
 ## 15. MCP
 

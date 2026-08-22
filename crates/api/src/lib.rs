@@ -20,7 +20,7 @@ pub mod state;
 
 use std::sync::Arc;
 
-use axum::routing::{get, patch, post};
+use axum::routing::{delete, get, patch, post};
 use axum::{Extension, Router};
 use enclave_preview::PreviewPipeline;
 use enclave_storage::BlobStore;
@@ -134,6 +134,10 @@ pub fn router(state: ApiState, delivery: Delivery) -> Router {
             patch(admin::conditional_access::change_rule_mode)
                 .delete(admin::conditional_access::withdraw_rule),
         )
+        // DLP rules (docs/05-API.md §14.2). There is no `PATCH`: a DLP rule carries no mode, which
+        // is D28's structural guarantee rather than an omission — see `admin/dlp.rs`.
+        .route("/api/v1/admin/dlp/rules", get(admin::dlp::list_rules).post(admin::dlp::create_rule))
+        .route("/api/v1/admin/dlp/rules/{id}", delete(admin::dlp::withdraw_rule))
         // Operational probes. On the policy-routing allowlist: no tenant, no actor, no resource.
         .route("/health/live", get(health::live))
         .route("/health/ready", get(health::ready))
