@@ -31,7 +31,7 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use chrono::{Duration, Utc};
 use enclave_core::{FileId, LibraryId, TenantId, UserId, WorkspaceId};
-use enclave_db::{sql, DbPool, TenantScoped};
+use enclave_db::{configure_storage_quota, sql, DbPool, Enforcement, TenantScoped};
 use enclave_libraries::{ExternalSharing, LibraryRepository, LibrarySettings, VersioningMode};
 use enclave_storage::{
     BlobStore, ByteRange, ByteStream, CompletedPart, MultipartLimits, ObjectKey, ObjectMeta,
@@ -1096,6 +1096,223 @@ async fn a_five_gigabyte_upload_is_completed_without_the_api_touching_a_byte() {
     // `CLAUDE.md` rule 9 still applies at this size: the row stops at SCANNING.
     let mut conn = db.connect().await.expect("connect");
     assert_eq!(stored_state(&mut conn, &id.to_string()).await, "SCANNING");
+
+    pool.close().await;
+    drop(db);
+}
+
+// ---------------------------------------------------------------------------------------------
+// The reserve-time quota preflight — `ENC-589`, `docs/12-TESTING.md §4.12` Q9.
+//
+// `docs/05-API.md §8` and `docs/10-SYNC-AND-EDITING.md §5` both ask for a quota answer *before* a
+// URL is issued, so a device does not spend gigabytes to be told no at commit. What they ask for is
+// bandwidth, not capacity — and `crates/uploads/src/quota.rs` says at length why this read is not
+// the enforcement. The second test below is the one that makes that visible rather than merely
+// documented.
+// ---------------------------------------------------------------------------------------------
+
+/// Writes a quota row for `tenant`, over the application role and in its own transaction.
+async fn set_quota(pool: &DbPool, tenant: TenantId, limit: u64, mode: Enforcement) {
+    let mut tx = TenantScoped::begin(pool, tenant).await.expect("begin");
+    configure_storage_quota(&mut tx, limit, 80, mode).await.expect("configure the quota");
+    tx.commit().await.expect("commit");
+}
+
+/// An upload that cannot fit is refused, and the store is never asked for a URL.
+///
+/// The control is in the same fixture and runs after: an upload that *does* fit is issued and the
+/// store *is* called once. Without it, "the store was not contacted" holds against a `create` that
+/// refuses everything, and `docs/12 §1.2` names that shape as the one that passes for free.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL and migrations 0006 and 0018; CI runs it with --include-ignored"]
+async fn an_upload_with_no_headroom_is_refused_before_any_url_is_issued() {
+    let (db, fixtures, pool) = start().await;
+    let alpha = fixtures.alpha.id;
+    let store = RecordingStore::default();
+    set_quota(&pool, alpha, 1_024, Enforcement::Block).await;
+
+    let mut tx = TenantScoped::begin(&pool, alpha).await.expect("begin");
+    let (_workspace, library_id) =
+        library(&mut tx, alpha, fixtures.alpha.owner, "contracts", None).await;
+    // Well above the declared sizes, so the per-file ceiling cannot be what refuses either one.
+    let limits = UploadLimits::unrestricted_up_to(1024 * 1024);
+
+    let refused = UploadService::create(
+        &mut tx,
+        &store,
+        alpha,
+        &upload(library_id, fixtures.alpha.owner, "too-big.pdf", 4_096),
+        &limits,
+        Duration::hours(24),
+        Utc::now(),
+    )
+    .await
+    .unwrap_err();
+
+    assert!(
+        matches!(refused, UploadError::StorageQuotaExceeded { limit_bytes: 1_024 }),
+        "got: {refused:?}"
+    );
+    assert!(
+        store.created().is_empty(),
+        "a rejected upload must never consume bandwidth (docs/05-API.md §8)"
+    );
+    // And it renders as a quota refusal rather than a server error.
+    assert_eq!(
+        enclave_core::Error::from(UploadError::StorageQuotaExceeded { limit_bytes: 1_024 })
+            .status_code(),
+        403
+    );
+
+    // The control: the same library, the same limits, a size that fits.
+    let issued = UploadService::create(
+        &mut tx,
+        &store,
+        alpha,
+        &upload(library_id, fixtures.alpha.owner, "fits.pdf", 512),
+        &limits,
+        Duration::hours(24),
+        Utc::now(),
+    )
+    .await
+    .expect("an upload inside the headroom is issued");
+    tx.commit().await.expect("commit");
+
+    assert_eq!(store.created().len(), 1, "and that one did reach the store");
+    assert_eq!(issued.session.record().declared_size, Some(512));
+
+    pool.close().await;
+    drop(db);
+}
+
+/// **A preflight pass is not a reservation, and this is where that decision is visible.**
+///
+/// Two sessions that each fit the remaining headroom are both issued, even though together they
+/// exceed it. That is the cost of charging at version commit rather than at reservation, and it is
+/// deliberate: `storage_quotas` has one counter and no reservation column, and a charge raised
+/// against a staged object has no `file_versions` row for the nightly reconciliation to measure —
+/// so it would be subtracted as drift on the first pass.
+///
+/// What bounds the tenant is the charge at commit, which is asserted in
+/// `crates/versions/tests/versions.rs`. If this test ever starts failing because the second session
+/// is refused, someone has made the preflight binding, and that is a change to which statement
+/// enforces the quota — `plans/M4-GOVERNANCE.md` D31 — rather than a bug fix.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL and migrations 0006 and 0018; CI runs it with --include-ignored"]
+async fn two_sessions_that_each_fit_the_headroom_are_both_issued() {
+    let (db, fixtures, pool) = start().await;
+    let alpha = fixtures.alpha.id;
+    let store = RecordingStore::default();
+    set_quota(&pool, alpha, 4_096, Enforcement::Block).await;
+
+    let mut tx = TenantScoped::begin(&pool, alpha).await.expect("begin");
+    let (_workspace, library_id) =
+        library(&mut tx, alpha, fixtures.alpha.owner, "contracts", None).await;
+    let limits = UploadLimits::unrestricted_up_to(1024 * 1024);
+
+    for name in ["first.pdf", "second.pdf"] {
+        let issued = UploadService::create(
+            &mut tx,
+            &store,
+            alpha,
+            &upload(library_id, fixtures.alpha.owner, name, 3_000),
+            &limits,
+            Duration::hours(24),
+            Utc::now(),
+        )
+        .await
+        .expect("each declared size fits the headroom on its own");
+        assert_eq!(issued.session.record().declared_size, Some(3_000));
+    }
+
+    // Third, at a size that cannot fit however the race goes — so the preflight is shown to be
+    // engaged at all, rather than inert.
+    let refused = UploadService::create(
+        &mut tx,
+        &store,
+        alpha,
+        &upload(library_id, fixtures.alpha.owner, "third.pdf", 8_192),
+        &limits,
+        Duration::hours(24),
+        Utc::now(),
+    )
+    .await
+    .unwrap_err();
+    tx.commit().await.expect("commit");
+
+    assert!(matches!(refused, UploadError::StorageQuotaExceeded { .. }), "got: {refused:?}");
+    assert_eq!(store.created().len(), 2, "6 000 bytes of sessions against 4 096 of quota");
+
+    pool.close().await;
+    drop(db);
+}
+
+/// `MONITOR` and an absent quota row never refuse a session; `BLOCK` refuses the identical one.
+///
+/// The refusal is asserted first, so the two "not refused" legs are statements about a preflight
+/// that demonstrably engages. `tenant-beta` carries the unmetered case, with the same library name
+/// and the same declared size as alpha's refusal.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL and migrations 0006 and 0018; CI runs it with --include-ignored"]
+async fn monitor_and_unmetered_tenants_are_never_refused_at_creation() {
+    let (db, fixtures, pool) = start().await;
+    let (alpha, beta) = (fixtures.alpha.id, fixtures.beta.id);
+    let store = RecordingStore::default();
+    let limits = UploadLimits::unrestricted_up_to(1024 * 1024);
+
+    set_quota(&pool, alpha, 1_024, Enforcement::Block).await;
+    let mut tx = TenantScoped::begin(&pool, alpha).await.expect("begin");
+    let (_workspace, alpha_library) =
+        library(&mut tx, alpha, fixtures.alpha.owner, "contracts", None).await;
+    let refused = UploadService::create(
+        &mut tx,
+        &store,
+        alpha,
+        &upload(alpha_library, fixtures.alpha.owner, "brief.pdf", 4_096),
+        &limits,
+        Duration::hours(24),
+        Utc::now(),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(refused, UploadError::StorageQuotaExceeded { .. }), "got: {refused:?}");
+
+    // Same tenant, same size, enforcement lowered: counted, never refused.
+    set_quota(&pool, alpha, 1_024, Enforcement::Monitor).await;
+    let monitored = UploadService::create(
+        &mut tx,
+        &store,
+        alpha,
+        &upload(alpha_library, fixtures.alpha.owner, "monitored.pdf", 4_096),
+        &limits,
+        Duration::hours(24),
+        Utc::now(),
+    )
+    .await
+    .expect("MONITOR promises not to refuse");
+    assert_eq!(monitored.session.record().declared_size, Some(4_096));
+    tx.commit().await.expect("commit");
+
+    // And a tenant with no quota row at all is unmetered rather than refused: provisioning order
+    // must not be the difference between a working deployment and a read-only one.
+    let mut tx = TenantScoped::begin(&pool, beta).await.expect("begin");
+    let (_workspace, beta_library) =
+        library(&mut tx, beta, fixtures.beta.owner, "contracts", None).await;
+    let unmetered = UploadService::create(
+        &mut tx,
+        &store,
+        beta,
+        &upload(beta_library, fixtures.beta.owner, "brief.pdf", 4_096),
+        &limits,
+        Duration::hours(24),
+        Utc::now(),
+    )
+    .await
+    .expect("an unconfigured tenant is unmetered");
+    assert_eq!(unmetered.session.record().declared_size, Some(4_096));
+    tx.commit().await.expect("commit");
+
+    assert_eq!(store.created().len(), 2, "one refusal, two issues");
 
     pool.close().await;
     drop(db);

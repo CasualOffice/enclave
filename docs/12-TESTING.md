@@ -1,6 +1,6 @@
 # 12 — Testing & Quality Gates
 
-> **Status:** Draft · **Version:** 1.11 · **Owner:** Engineering · **Last updated:** 2026-08-22
+> **Status:** Draft · **Version:** 1.12 · **Owner:** Engineering · **Last updated:** 2026-08-22
 > **Authoritative for:** test strategy, the security leakage matrix, CI gates, release criteria.
 
 ## 1. Philosophy
@@ -261,7 +261,14 @@ Full rows in `15-WORKFLOWS-AND-SIGNING.md §12`; they run in this suite.
 
 `plans/M4-GOVERNANCE.md` D31. The same shape as `H3` — the limit in the `WHERE` clause of the
 statement that spends the resource, a zero-row result as the refusal — applied to stored bytes
-instead of share-link downloads. All rows in `crates/db/tests/storage_quota.rs` (`ENC-584`).
+instead of share-link downloads.
+
+`Q1`–`Q6` are the statement (`crates/db/tests/storage_quota.rs`, `ENC-584`). `Q7`–`Q11` are the
+*wiring* (`ENC-589`), and they exist because the two are separable in exactly the way §2 of the
+plan is about: `ENC-584` shipped a correct charge that nothing called, and a control that is
+switched off is indistinguishable from an absent one except in the compliance answer. So the
+question `Q7`–`Q11` ask is not "does the statement refuse" but "does the real write path reach it,
+in the real transaction, before the row it pays for" (`§1.1`).
 
 | # | Assertion |
 |---|---|
@@ -271,6 +278,17 @@ instead of share-link downloads. All rows in `crates/db/tests/storage_quota.rs` 
 | Q4 | **One tenant's exhaustion never refuses another, and neither transaction can see the other's quota row.** Run over `tenant-alpha` and `tenant-beta` with identical limits and identical charges, over the application role rather than the harness superuser. The RLS leg's zero has the same query for the caller's own row beside it as its positive control |
 | Q5 | **The soft limit is announced once, and before anything is refused.** The crossing is decided inside the charging statement, under the row lock, and stamped on the row — so it fires once rather than once per replica and does not fire again after a restart. Asserted at 79%, 80% and 90% with the first refusal after all three, and re-armed by a release back under the threshold. `plans/M4-GOVERNANCE.md §2`: quotas notify before they refuse, which is also why `MONITOR` and `WARN` count without refusing while `BLOCK` refuses the identical charge |
 | Q6 | **Nightly reconciliation corrects drift without a window in which writes are refused on a stale figure.** Two halves. The counter is corrected *relatively* — a charge that commits between the observation and the correction keeps its full effect, and the test names the figure an absolute assignment would have produced. And the observation takes no lock: a charge issued while it is open must complete, with the **control** being the same charge against a reconciler that took `SELECT … FOR UPDATE`, which must time out. Also covers what a genuinely over-limit tenant may still do: record its true figure, and delete its way back under |
+| Q7 | **A version commit over the quota is refused and stores nothing; the identical commit under a quota with room stores everything.** The row, the `file.version.created` outbox row, the audit row, the file's `revision` bump and the counter are counted together as one `Footprint`, and the refusal leg asserts that value is *unchanged*. That is five assertions about an absence, so **the control runs first and is asserted in full** — without it the whole test passes against a commit path that writes none of them (`§1.2`). The refusal itself is `VersionsError::StorageQuotaExceeded`, rendering `403` `QUOTA_EXCEEDED` with the limit: quota exhaustion is not a server error. `crates/versions/tests/versions.rs` (`ENC-589`) |
+| Q8 | **The charge and the write it pays for share one transaction, proved from both sides.** The charge is read back *inside* the commit's own transaction — that read is the positive control, and without it "the counter did not move" is satisfied by a path that never charges — and the transaction is then rolled back, after which the counter is zero and no version survives. Beside it, a real post-charge failure: a duplicate `object_key` refused by `uq_version_object`, the statement immediately after the charge, must leave the counter exactly where the preceding successful commit left it. A counter that kept that charge is drift the nightly job would spend the night undoing, and `ENC-584`'s reconciliation would be correcting a divergence the write path manufactured. `crates/versions/tests/versions.rs` (`ENC-589`) |
+| Q9 | **The reserve-time preflight refuses before a URL is issued, and admits nothing.** `docs/05-API.md §8` and `10-SYNC-AND-EDITING.md §5` require a quota answer before the client spends bandwidth; `UploadService::create` gives one, and the store is asserted never to have been called — with the control, an upload that fits, issued and reaching the store once, in the same fixture. The **second** test is the one that makes the design visible rather than documented: two sessions that each fit the same headroom are *both* issued, because a pass is not a reservation. `Preflight` has no admitting variant, so "the quota admitted this upload" is not a constructible value and the binding decision stays the single statement at commit. `crates/uploads/tests/sessions.rs` (`ENC-589`) |
+| Q10 | **An exhausted tenant can still delete, and deleting frees nothing it should not.** The refusal is asserted first against the same tenant, then `FileRepository::trash` and `FileRepository::restore` both succeed under it — a tenant over quota that cannot delete cannot get back under it. And the counter is asserted **unchanged** by the trash: a soft delete destroys nothing, the bytes are still stored, and releasing there would make the recycle bin an unmetered tier that reconciliation would then report as drift. The loop closes with a real release admitting the charge that exhaustion refused. `crates/files/tests/tree.rs` (`ENC-589`) |
+| Q11 | **Rollout modes and unmetered tenants reach the same wiring.** `MONITOR` counts a commit it will not refuse while `BLOCK` refuses the identical one; a tenant with no quota row commits unmetered while `tenant-beta`, configured, is refused under the same fixture; one tenant's exhaustion never refuses the other's commit; a restore is charged for its *copy* of the bytes and refused when they do not fit, because `uq_version_object` makes sharing the source's key unrepresentable and the deployment is storing both. Each "not refused" leg carries a refusal beside it. `crates/versions/tests/versions.rs` (`ENC-589`) |
+
+**Not yet covered, and named rather than implied:** `release_storage` has **no caller outside its own
+tests**, because no path in this workspace destroys stored bytes. `FileRepository::trash` is a soft
+delete whose bytes are still held (`Q10` asserts it must not release), and
+`enclave_files::purge_permanently` refuses by construction until retention and legal hold exist.
+`ENC-597` owns the release, and `crates/files/src/purge.rs` names where it goes.
 
 ## 5. Structural CI gates
 

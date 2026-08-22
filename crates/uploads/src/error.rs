@@ -103,6 +103,22 @@ pub enum UploadError {
         limit: u64,
     },
 
+    /// The tenant already has no room for the bytes this session declares.
+    ///
+    /// Raised by [`crate::quota::preflight`], which is a **read** and therefore advisory: it is
+    /// what `docs/05-API.md §8` and `docs/10-SYNC-AND-EDITING.md §5` ask for — a refusal before the
+    /// client spends its bandwidth — and it is explicitly *not* the enforcement. The enforcement is
+    /// the single charging statement in `enclave_versions::VersionService::commit`
+    /// (`plans/M4-GOVERNANCE.md` D31), and an upload that slips past this one is refused there.
+    ///
+    /// Renders identically to a refusal at commit — `403` `QUOTA_EXCEEDED` with the limit — because
+    /// a client should not have to tell the two apart to know what to do about it.
+    #[error("the tenant's stored-byte quota leaves no room for this upload")]
+    StorageQuotaExceeded {
+        /// The configured limit, so a client can show headroom rather than a bare refusal.
+        limit_bytes: i64,
+    },
+
     /// The SHA-256 declared when the session was created is not lowercase hex.
     ///
     /// Checked before the object store is asked for anything: the value is handed to the provider
@@ -139,6 +155,9 @@ impl UploadError {
             | Self::ConcurrentTransition { .. }
             | Self::ExtensionNotAllowed { .. }
             | Self::FileTooLarge { .. }
+            // Not retryable: an identical request fails identically until the tenant frees room or
+            // its limit is raised. Deletes are never quota-blocked, so that road is open.
+            | Self::StorageQuotaExceeded { .. }
             | Self::InvalidDeclaredChecksum
             | Self::InvalidName { .. } => false,
         }
@@ -183,6 +202,9 @@ impl From<UploadError> for CoreError {
                 quota: QuotaKind::MaxFileBytes,
                 limit: i64::try_from(limit).unwrap_or(i64::MAX),
             },
+            UploadError::StorageQuotaExceeded { limit_bytes } => {
+                Self::QuotaExceeded { quota: QuotaKind::StorageBytes, limit: limit_bytes }
+            }
 
             UploadError::Expired => {
                 Self::Validation(vec![FieldError::new("uploadId", ValidationCode::OutOfRange)])

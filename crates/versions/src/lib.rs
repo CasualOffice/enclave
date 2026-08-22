@@ -42,9 +42,12 @@
 //! tx.commit().await?;
 //! ```
 //!
-//! `&mut PgConnection`, never a pool (`plans/M1-CONTENT-CORE.md` D10). The caller owns the
-//! transaction, which is what lets the version, its event and its audit row commit together — and
-//! what lets a caller put a quota update or a metadata write in the same transaction later.
+//! The caller owns the transaction, which is what lets the version, its event, its audit row and
+//! its **quota charge** commit together. [`VersionRepository`]'s reads take the `&mut PgConnection`
+//! a [`enclave_db::TenantScoped`] derefs to (`plans/M1-CONTENT-CORE.md` D10); the commit path takes
+//! the `TenantScoped` itself, because [`enclave_db::charge_storage`] does — a charge that could be
+//! handed a bare connection could be committed apart from the bytes it pays for, which is the one
+//! thing `plans/M4-GOVERNANCE.md` D31 exists to prevent.
 //!
 //! # It makes no authorization decision
 //!
@@ -54,9 +57,12 @@
 //!
 //! # Three notes handed to the integrator
 //!
-//! **Quota accounting is not performed.** `docs/03-LLD.md §15` lists `UPDATE quota_usage` in the
-//! commit transaction. `quotas` and `quota_usage` (`docs/04-DATA-MODEL.md §16`) have no migration
-//! yet, so the step is named and skipped rather than faked; see [`commit`] for where it goes.
+//! **The stored-byte quota is charged here and released nowhere.** `ENC-589` wires
+//! [`enclave_db::charge_storage`] into [`VersionService::commit`] and
+//! [`VersionService::restore`]; there is no corresponding release, because no path in this
+//! workspace destroys stored bytes yet. The trash is a soft delete and its bytes are still stored,
+//! so releasing there would under-count; `enclave_files::purge_permanently` refuses by
+//! construction until retention and legal hold exist. See [`commit`] for the whole argument.
 //!
 //! **`storage_profile_id` is a bare `Uuid`.** `enclave_core::id` has no `StorageProfileId` newtype,
 //! and defining one here would collide with the real one the day the storage crate defines it.

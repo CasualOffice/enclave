@@ -24,9 +24,10 @@
 //!
 //! # What it does
 //!
-//! * [`UploadService::create`] — checks the library's extension rules and size ceiling **before**
-//!   asking the object store for a single URL (`docs/05-API.md §8`: a rejected upload must never
-//!   consume bandwidth), reserves a staging key, and records the session.
+//! * [`UploadService::create`] — checks the library's extension rules, its size ceiling and the
+//!   tenant's stored-byte headroom **before** asking the object store for a single URL
+//!   (`docs/05-API.md §8`: a rejected upload must never consume bandwidth), reserves a staging key,
+//!   and records the session.
 //! * [`UploadService::complete`] — verifies the reported size and SHA-256 against the declaration
 //!   *and* against what the store observed, then advances to `SCANNING`. A mismatch is a persisted
 //!   [`Completion::Refused`], not a warning: the checksum is what makes the version immutable later
@@ -38,9 +39,15 @@
 //! # What it does not do
 //!
 //! No authorization. The policy chain runs in the handler, before this service is reached
-//! (`plans/M1-CONTENT-CORE.md` D11), and nothing here reads an ACL, a classification or a quota
-//! beyond the per-file ceiling it is handed. It also creates no file and writes no version row —
-//! those are `enclave-files` and `enclave-versions`, downstream of the scan.
+//! (`plans/M1-CONTENT-CORE.md` D11), and nothing here reads an ACL or a classification. It also
+//! creates no file and writes no version row — those are `enclave-files` and `enclave-versions`,
+//! downstream of the scan.
+//!
+//! **It does not charge the storage quota, and cannot.** [`quota::preflight`] is a read that can
+//! only refuse; the counter is moved by `enclave_versions::VersionService::commit`, in the
+//! transaction that writes the `file_versions` row the bytes are accounted by
+//! (`plans/M4-GOVERNANCE.md` D31). [`quota`] carries the argument, including what that leaves open
+//! for many concurrent sessions and why the alternative is worse.
 //!
 //! # Shape
 //!
@@ -52,6 +59,7 @@ pub mod content;
 pub mod error;
 pub mod id;
 pub mod limits;
+pub mod quota;
 pub mod reaper;
 pub mod repo;
 pub mod service;
@@ -65,6 +73,7 @@ pub use content::{ChecksumEvidence, FailureReason, ReportedContent, VerifiedCont
 pub use error::{Result, UploadError};
 pub use id::UploadSessionId;
 pub use limits::{extension_of, UploadLimits, MAX_NAME_CHARS};
+pub use quota::{preflight, Preflight};
 pub use reaper::{reap_expired, ReapReport};
 pub use repo::UploadRepository;
 pub use service::{Completion, IssuedUpload, NewUpload, UploadIntent, UploadService};
@@ -108,6 +117,7 @@ mod flat_memory {
         ("error.rs", include_str!("error.rs")),
         ("id.rs", include_str!("id.rs")),
         ("limits.rs", include_str!("limits.rs")),
+        ("quota.rs", include_str!("quota.rs")),
         ("reaper.rs", include_str!("reaper.rs")),
         ("repo.rs", include_str!("repo.rs")),
         ("row.rs", include_str!("row.rs")),

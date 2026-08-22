@@ -5,18 +5,19 @@
 //! ```text
 //! BEGIN                                  -- the caller's TenantScoped transaction
 //!   UPDATE files.current_version_id, revision = revision + 1
+//!   UPDATE storage_quotas.used_bytes    -- the charge; refuses here or nowhere
 //!   INSERT file_versions
 //!   INSERT events_outbox('file.version.created')
 //!   INSERT audit_events
 //! COMMIT
 //! ```
 //!
-//! Every one of those writes goes through the same `&mut PgConnection`
-//! (`plans/M1-CONTENT-CORE.md` D10), which is what makes "the event, the audit row and the state
-//! change commit together or not at all" a property of the signature rather than of a comment. It
-//! also answers open question **Q6** in `plans/M1-CONTENT-CORE.md`: the audit row *shares* the
-//! write's transaction, via [`enclave_audit::record_in_tx`], and an audit failure therefore fails
-//! the commit rather than leaving an unaudited state change behind (`CLAUDE.md` rule 10).
+//! Every one of those writes goes through the same transaction (`plans/M1-CONTENT-CORE.md` D10),
+//! which is what makes "the event, the audit row and the state change commit together or not at
+//! all" a property of the signature rather than of a comment. It also answers open question **Q6**
+//! in `plans/M1-CONTENT-CORE.md`: the audit row *shares* the write's transaction, via
+//! [`enclave_audit::record_in_tx`], and an audit failure therefore fails the commit rather than
+//! leaving an unaudited state change behind (`CLAUDE.md` rule 10).
 //!
 //! # Why the file is updated before the version is inserted
 //!
@@ -32,15 +33,47 @@
 //! retryable) because a stricter isolation level, or any other writer, can still produce it — the
 //! index is the guarantee and the lock ordering is what stops it being reached in ordinary use.
 //!
-//! # What is missing, and deliberately
+//! # The quota, and why it is charged here rather than at upload
 //!
-//! `docs/03 §15` also lists `UPDATE quota_usage`. There is no `quota_usage` table yet — `quotas`
-//! and `quota_usage` are `docs/04-DATA-MODEL.md §16` and no migration creates them. Rather than
-//! write a plausible statement against a table that does not exist, or silently drop the step, it
-//! is named here: **byte and file-count accounting is not performed by this commit**, and the
-//! migration that creates the table has to add it to [`VersionService::commit`] and to
-//! [`VersionService::restore`]. A commit that quietly stopped counting bytes would show up as a
-//! tenant exceeding a quota that says it has headroom.
+//! `docs/03 §15` lists `UPDATE quota_usage` in this transaction. `ENC-584` built it as
+//! `storage_quotas` (`migrations/0018`, `plans/M4-GOVERNANCE.md` D31) and `ENC-589` wires it in
+//! here — [`enclave_db::charge_storage`], in the caller's transaction, between the file bump and
+//! the version insert.
+//!
+//! **This is the only place stored bytes are charged, and that follows from what the counter
+//! means rather than from convenience.** `ENC-584`'s nightly reconciliation defines the truth the
+//! counter is corrected against as `SUM(file_versions.size_bytes) WHERE status <> 'FAILED'`. A
+//! charge raised anywhere else — at `POST /uploads`, at upload completion, against a staged object
+//! — has no row in that sum, so the very first reconciliation pass would read it as drift and
+//! subtract it. Enforcement would then depend on whether the job had run since, which is not
+//! enforcement. Charging exactly where the row is inserted makes the counter and the measurement
+//! agree by construction, which is the property `crates/db/src/quota.rs` is built around.
+//!
+//! The consequence, stated rather than hidden: **bytes staged by an upload session that has not
+//! committed a version are not metered.** `crates/uploads` refuses at creation what it can already
+//! tell will not fit (`UploadService::create`'s preflight), the per-library
+//! ceiling bounds any single one, and the session TTL and reaper bound how long unmetered staged
+//! bytes survive — but a tenant that opens many sessions at once is bounded at *commit*, not at
+//! reservation. That is deliberate: a reservation is not representable in a table with one counter
+//! and no reservation column, and a fake one would be a charge that the nightly job erases.
+//!
+//! # Where the charge sits, and why not one statement earlier
+//!
+//! After the file bump, before the version insert. Not before the bump, because the bump is the
+//! existence check: a caller naming a file that does not exist, or one in the trash, must get
+//! `404` rather than learning the tenant's billing state (`CLAUDE.md` rule 7). Not after the
+//! insert, because a refusal has to be reached before the row it pays for exists — although both
+//! orders would in fact roll back together, so this ordering is about what the caller is told, and
+//! about every commit taking the `files` lock and the `storage_quotas` lock in one fixed order.
+//!
+//! A refused charge is [`VersionsError::StorageQuotaExceeded`], which renders as `403`
+//! `QUOTA_EXCEEDED` carrying the limit. Quota exhaustion is not a server error, and the mapping is
+//! `enclave_db`'s own `impl From<Refused>` rather than a second opinion about the status.
+//!
+//! Nothing here can *release* bytes: [`enclave_db::Released`] has no refusal variant and no call
+//! in this crate, because no path in this crate destroys stored bytes. Deletes are never
+//! quota-blocked (D31), and the trash is a soft delete whose bytes are still stored — so it must
+//! not release either.
 //!
 //! # Nothing here decides who may do this
 //!
@@ -53,10 +86,10 @@ use enclave_audit::{record_in_tx, AuditEvent, ChainMode, Detail, Outcome, Record
 use enclave_core::{
     Action, FileAction, FileId, RequestContext, ResourceRef, UserId, Uuid, VersionId,
 };
-use enclave_db::sql;
+use enclave_db::{charge_storage, sql, Admitted, Charged, TenantScoped};
 use enclave_events::{Event, EventType, Outbox};
 use serde_json::json;
-use sqlx::{PgConnection, Row as _};
+use sqlx::Row as _;
 
 use crate::error::{classify_write, Result, VersionsError};
 use crate::model::{AvStatus, FileVersion, VersionBump, VersionStatus};
@@ -117,6 +150,18 @@ pub struct CommittedVersion {
     pub file_revision: i64,
     /// What the audit sink assigned the row, for correlating the response with the trail.
     pub audit: Recorded,
+    /// The stored-byte charge this commit paid, or `None` for a tenant with no quota row.
+    ///
+    /// Carried rather than swallowed because [`Admitted::crossed_soft_limit`] is the **one** edge
+    /// on which anybody notifies: it is true for exactly one charge per crossing, decided inside
+    /// the charging statement under the row lock, and a caller that never sees it cannot raise the
+    /// warning `plans/M4-GOVERNANCE.md §2` requires quotas to give before they refuse. A `warn!` is
+    /// logged here as well, so the crossing is not lost while the notifications path is unbuilt —
+    /// but a log is not a notification and this field is what a handler should use.
+    ///
+    /// `None` is *unmetered*, never *refused*: a tenant with no quota row is not billed and not
+    /// blocked (`enclave_db::Charged::Unmetered`).
+    pub charged: Option<Admitted>,
 }
 
 /// Commits versions.
@@ -130,10 +175,16 @@ pub struct VersionService;
 impl VersionService {
     /// Commits a new version of a file.
     ///
-    /// The whole of `docs/03-LLD.md §15` in one transaction the caller owns. On return, the file
-    /// points at the new version, the version is `SCANNING`, an `file.version.created` event is in
-    /// the outbox, and an audit row is written — and none of it is visible to anyone until the
-    /// caller commits.
+    /// The whole of `docs/03-LLD.md §15` in one transaction the caller owns. On return, the tenant
+    /// has been charged for the bytes, the file points at the new version, the version is
+    /// `SCANNING`, a `file.version.created` event is in the outbox, and an audit row is written —
+    /// and none of it is visible to anyone until the caller commits.
+    ///
+    /// Takes a [`TenantScoped`] rather than the `&mut PgConnection` the repositories take, and that
+    /// is the wiring rather than a style change: [`enclave_db::charge_storage`] takes one for the
+    /// express purpose of being uncommittable apart from the write it bounds
+    /// (`plans/M4-GOVERNANCE.md` D31). A signature that took a bare connection could not call it,
+    /// which is the point at which "the charge is in the same transaction" stops being a comment.
     ///
     /// The file is left `PROCESSING` rather than `AVAILABLE`: its current version is one nobody may
     /// read yet, and a file that advertised itself as available while pointing at unscanned bytes
@@ -142,17 +193,18 @@ impl VersionService {
     /// # Errors
     ///
     /// [`VersionsError::FileNotFound`] if the file does not exist, is in the trash, or belongs to
-    /// another tenant; [`VersionsError::VersionNumberTaken`] if a concurrent commit took this
-    /// number (retryable); [`VersionsError::ObjectKeyInUse`] if the key already belongs to a
-    /// version; storage, event and audit failures, every one of which must fail the transaction.
+    /// another tenant; [`VersionsError::StorageQuotaExceeded`] if the tenant has no room for these
+    /// bytes; [`VersionsError::VersionNumberTaken`] if a concurrent commit took this number
+    /// (retryable); [`VersionsError::ObjectKeyInUse`] if the key already belongs to a version;
+    /// storage, event and audit failures, every one of which must fail the transaction.
     pub async fn commit(
-        conn: &mut PgConnection,
+        tx: &mut TenantScoped,
         ctx: &RequestContext,
         chain: ChainMode,
         new: &NewVersion,
         at: DateTime<Utc>,
     ) -> Result<CommittedVersion> {
-        Self::write(conn, ctx, chain, new, at, None).await
+        Self::write(tx, ctx, chain, new, at, None).await
     }
 
     /// Restores an earlier version by committing a **new** one with its content.
@@ -167,6 +219,12 @@ impl VersionService {
     /// `uq_version_object` is globally unique, so two rows naming one object is unrepresentable —
     /// which is what stops a purge of the restored version from deleting the original's bytes.
     ///
+    /// It is charged against the stored-byte quota like any other commit, and for the same reason
+    /// the key is new: the restore produces a *second* object holding the same content, and the
+    /// deployment is storing both. A restore exempted from the charge would be a way to grow a
+    /// tenant's footprint without moving its counter, and the nightly reconciliation would report
+    /// the difference as drift in the write path — which it would be.
+    ///
     /// The restored version starts `SCANNING` like any other, even though its source was scanned
     /// clean. The bytes are a new object, and the signature database has moved on since; treating
     /// "we scanned the original in March" as a verdict on a copy made today is the reasoning
@@ -179,20 +237,16 @@ impl VersionService {
     /// still-scanning version is not a thing to make current. Otherwise as
     /// [`VersionService::commit`].
     pub async fn restore(
-        conn: &mut PgConnection,
+        tx: &mut TenantScoped,
         ctx: &RequestContext,
         chain: ChainMode,
         request: &RestoreVersion,
         at: DateTime<Utc>,
     ) -> Result<CommittedVersion> {
-        let source = crate::VersionRepository::find(
-            &mut *conn,
-            ctx.tenant_id,
-            request.file_id,
-            request.source,
-        )
-        .await?
-        .ok_or(VersionsError::NotFound)?;
+        let source =
+            crate::VersionRepository::find(tx, ctx.tenant_id, request.file_id, request.source)
+                .await?
+                .ok_or(VersionsError::NotFound)?;
 
         // A version that is still scanning has no settled bytes, and a quarantined one has bytes
         // the system has already refused to serve. Re-publishing either under a new number would
@@ -216,7 +270,7 @@ impl VersionService {
             comment: request.comment.clone(),
         };
 
-        Self::write(conn, ctx, chain, &new, at, Some(source.id)).await
+        Self::write(tx, ctx, chain, &new, at, Some(source.id)).await
     }
 
     /// The shared body of [`VersionService::commit`] and [`VersionService::restore`].
@@ -225,7 +279,7 @@ impl VersionService {
     /// audited action and one field in the event. Two copies would be two places to forget the
     /// outbox row.
     async fn write(
-        conn: &mut PgConnection,
+        tx: &mut TenantScoped,
         ctx: &RequestContext,
         chain: ChainMode,
         new: &NewVersion,
@@ -246,12 +300,18 @@ impl VersionService {
             .bind(&new.mime_type)
             .bind(sql(new.created_by))
             .bind(at)
-            .fetch_optional(&mut *conn)
+            .fetch_optional(&mut **tx)
             .await?
             .ok_or(VersionsError::FileNotFound)?;
         let file_revision: i64 = bumped.try_get("revision")?;
 
-        // 2. The version. The number is computed inside the statement, from the same snapshot that
+        // 2. The quota, before the row it pays for and in this same transaction. The charge is
+        //    against `tx`'s tenant, which row-level security also pins the insert below to: the two
+        //    cannot disagree and still commit, so the tenant charged is always the tenant storing
+        //    the bytes.
+        let charged = Self::charge(tx, new).await?;
+
+        // 3. The version. The number is computed inside the statement, from the same snapshot that
         //    inserts it — computing it in Rust would be a read and a write with a window between.
         let row = sqlx::query(INSERT_VERSION)
             .bind(sql(id))
@@ -268,20 +328,20 @@ impl VersionService {
             .bind(new.bump.is_major())
             .bind(COMMITTED_STATUS.as_str())
             .bind(COMMITTED_AV_STATUS.as_str())
-            .fetch_one(&mut *conn)
+            .fetch_one(&mut **tx)
             .await
             // The revision handed to the classifier is the one the file held *before* this
             // transaction's bump, because this transaction is about to roll back.
             .map_err(|error| classify_write(error, file_revision.saturating_sub(1)))?;
         let version = version_from_row(&row)?;
 
-        // 3. The event, in the same transaction (`plans/M0-FOUNDATIONS.md` D6). Consumers — AV,
+        // 4. The event, in the same transaction (`plans/M0-FOUNDATIONS.md` D6). Consumers — AV,
         //    DLP, indexing, preview — key on the version id and read the row; the payload carries
         //    what they need to route, not what they need to work, which is why neither the object
         //    key nor the checksum is in it. An outbox row outlives the version it describes and is
         //    replayed; putting content-derived values in it would spread them.
         Outbox::publish(
-            &mut *conn,
+            tx,
             &Event::new(
                 tenant,
                 EventType::FileVersionCreated,
@@ -303,12 +363,11 @@ impl VersionService {
         )
         .await?;
 
-        // 4. The audit row, last and in the same transaction. Last because the two writes above are
+        // 5. The audit row, last and in the same transaction. Last because the two writes above are
         //    what it describes; in the same transaction because an audit row that survived a
         //    rolled-back commit would describe something that never happened.
         let audit =
-            record_in_tx(&mut *conn, Self::audit_event(ctx, &version, restored_from), chain)
-                .await?;
+            record_in_tx(tx, Self::audit_event(ctx, &version, restored_from), chain).await?;
 
         tracing::info!(
             tenant_id = %tenant,
@@ -319,7 +378,58 @@ impl VersionService {
             "version committed"
         );
 
-        Ok(CommittedVersion { version, file_revision, audit })
+        Ok(CommittedVersion { version, file_revision, audit, charged })
+    }
+
+    /// Charges this version's bytes against the tenant's stored-byte quota.
+    ///
+    /// One statement, in the caller's transaction, with the limit in its `WHERE` clause — the
+    /// charge *is* the check (`plans/M4-GOVERNANCE.md` D31). Nothing here reads the quota first and
+    /// decides: a read-then-charge is the race whose losing side is an over-issued resource, and
+    /// sixteen concurrent uploads against room for one is the case it loses.
+    ///
+    /// The soft-limit crossing is logged as well as returned. `crossed_soft_limit` is true for
+    /// exactly one charge per crossing and is decided under the row lock, so this cannot fire twice
+    /// for one crossing or again after a restart — but a caller that ignores
+    /// [`CommittedVersion::charged`] would drop the only warning a tenant gets before it is
+    /// refused, and `plans/M4-GOVERNANCE.md §2` is emphatic that quotas notify before they refuse.
+    async fn charge(tx: &mut TenantScoped, new: &NewVersion) -> Result<Option<Admitted>> {
+        // A negative size is refused rather than saturated in either direction. Clamping to zero
+        // would store bytes free of charge; `unsigned_abs` would charge for a row that is
+        // nonsensical. `file_versions.size_bytes` carries no `CHECK` (`migrations/0006`), so this
+        // is the only thing standing between a negative size and a `SUM` that reconciliation would
+        // then hand back to the tenant as credit.
+        let bytes = u64::try_from(new.size_bytes).map_err(|_| VersionsError::NegativeSize)?;
+
+        match charge_storage(tx, bytes).await? {
+            Charged::Admitted(admitted) => {
+                if admitted.crossed_soft_limit {
+                    tracing::warn!(
+                        tenant_id = %tx.tenant_id(),
+                        used_bytes = admitted.quota.used_bytes,
+                        limit_bytes = admitted.quota.limit_bytes,
+                        soft_limit_pct = admitted.quota.soft_limit_pct,
+                        "storage quota soft limit crossed; the tenant should be told before a \
+                         write is refused"
+                    );
+                }
+                Ok(Some(admitted))
+            }
+            // Unmetered is admitted, never refused: a tenant with no quota row is not billed, and
+            // defaulting one to zero bytes would make provisioning order decide whether the
+            // deployment can be written to at all.
+            Charged::Unmetered => Ok(None),
+            Charged::Refused(refused) => {
+                tracing::info!(
+                    tenant_id = %tx.tenant_id(),
+                    file_id = %new.file_id,
+                    requested_bytes = refused.requested_bytes,
+                    limit_bytes = refused.quota.limit_bytes,
+                    "version commit refused: the tenant is at its stored-byte quota"
+                );
+                Err(VersionsError::StorageQuotaExceeded(refused))
+            }
+        }
     }
 
     /// Builds the audit row for a commit.
@@ -520,6 +630,56 @@ mod tests {
         assert!(INSERT_VERSION.contains("COALESCE(MAX(major), 0) + 1"));
         assert!(INSERT_VERSION.contains("COALESCE(MAX(major), 1)"));
         assert!(INSERT_VERSION.contains("numbering.major), -1)"));
+    }
+
+    /// Where the charge sits, asserted against the source because ordering is invisible to a
+    /// behavioural test: every one of the three orders commits or rolls back identically, and the
+    /// difference only shows in what a caller is told and in which lock is taken first.
+    #[test]
+    fn the_charge_sits_between_the_file_bump_and_the_version_insert() {
+        let source = include_str!("commit.rs");
+        let body = source.split("async fn write(").nth(1).expect("write exists");
+        let bump = body.find("sqlx::query(BUMP_FILE)").expect("the file bump");
+        let charge = body.find("Self::charge(tx, new)").expect("the charge");
+        let insert = body.find("sqlx::query(INSERT_VERSION)").expect("the version insert");
+
+        assert!(
+            bump < charge,
+            "the bump is the existence check; charging first tells a caller probing a file id \
+             about the tenant's billing state instead of 404 (CLAUDE.md rule 7)"
+        );
+        assert!(
+            charge < insert,
+            "the refusal must be reached before the row it pays for is written"
+        );
+    }
+
+    /// D31's shape, read out of this module: one charging statement, no read beside it, no release.
+    ///
+    /// The needles are assembled at run time. `docs/12 §1.2`: a source-scanning test's needle
+    /// appears in its own source, and two tests in this repository have already failed against
+    /// themselves for exactly that.
+    #[test]
+    fn the_quota_is_charged_by_one_statement_and_never_read_and_compared_first() {
+        let source = include_str!("commit.rs");
+        let charge = format!("charge_{}(", "storage");
+        let read = format!("storage_{}(", "quota");
+        let release = format!("release_{}(", "storage");
+
+        assert_eq!(
+            source.matches(charge.as_str()).count(),
+            1,
+            "one charge, one place; a second call site is a second chance to get the order wrong"
+        );
+        assert!(
+            !source.contains(read.as_str()),
+            "reading the quota and comparing is the check-then-write D31 forbids: ten concurrent \
+             commits all read the same figure and all conclude there is room"
+        );
+        assert!(
+            !source.contains(release.as_str()),
+            "nothing on the commit path destroys stored bytes, so nothing here may release them"
+        );
     }
 
     #[test]
