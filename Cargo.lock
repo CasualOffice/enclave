@@ -1319,10 +1319,17 @@ dependencies = [
 name = "enclave-conditional_access"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "enclave-config",
  "enclave-core",
+ "enclave-db",
+ "enclave-testing",
  "ipnetwork",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "thiserror 2.0.20",
  "tokio",
  "tracing",
 ]

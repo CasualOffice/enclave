@@ -13,15 +13,42 @@ enclave-core = { workspace = true }
 # For `TrustedProxy` and the zone definitions an operator writes. `enclave-config` depends only on
 # `enclave-core`, so a policy service depending on it keeps the dependency pointing inward.
 enclave-config = { workspace = true }
+# Rules are tenant data (`ENC-590`), so they are rows. Every statement lives in `enclave-db`'s
+# repository module and every read goes through `TenantScoped` — `CLAUDE.md`'s Rust conventions
+# forbid a domain crate reaching PostgreSQL any other way, and forbid `sqlx::query!` here entirely.
+enclave-db   = { workspace = true }
 async-trait  = { workspace = true }
+# `enclave_core::Error::Internal` *holds* an `anyhow::Error`, so a crate that maps its own error
+# into the canonical type has to be able to construct one — the same exception, for the same
+# reason, that `enclave-db`'s manifest argues against `plans/M0-FOUNDATIONS.md` D2. It is never this
+# crate's own error type.
+anyhow       = { workspace = true }
+# The stored form of a rule. `serde` is on the condition enums themselves rather than on a parallel
+# set of wire structs, so the vocabulary a stored rule may use *is* the vocabulary the evaluator
+# has — which is what stops storage from expressing a rule the types cannot (Q19; src/store.rs).
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+thiserror    = { workspace = true }
 # CIDR containment for trusted-proxy and zone matching. Already the type `ServerConfig` stores, so
 # using it here avoids a second, hand-rolled prefix comparison over the same configured values.
 ipnetwork    = { workspace = true }
 tracing      = { workspace = true }
 
 [dev-dependencies]
-# `tests/rules.rs` drives the async `ConditionalAccessService` trait the policy engine holds.
-tokio = { workspace = true, features = ["rt", "macros"] }
+# `tests/rules.rs` drives the async `ConditionalAccessService` trait the policy engine holds;
+# `tests/stored_rules.rs` needs a runtime with timers, because the cache's staleness bound is a
+# duration and asserting it means letting one elapse.
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time"] }
+# A throwaway PostgreSQL and the seeded `tenant-alpha`/`tenant-beta` pair. `docs/12 §3`: beta exists
+# so a cross-tenant assertion has a realistic counterpart rather than passing because the other
+# tenant's rows were named differently. A **dev**-dependency: `enclave-testing` takes this crate as
+# one of its own, and Cargo permits that cycle only because both edges are dev edges.
+enclave-testing = { workspace = true }
+# `tests/stored_rules.rs` asserts two things about the *table* rather than about a rule: that
+# `enclave_app` holds no `DELETE` on it, and that a withdrawn rule keeps its row. Both are questions
+# only PostgreSQL can answer, and neither belongs in the repository's public API — a `delete_rule`
+# added so a test could prove it fails would be the statement the migration exists to withhold.
+sqlx = { workspace = true }
 
 [lints]
 workspace = true

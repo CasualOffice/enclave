@@ -1,6 +1,6 @@
 # 04 — Data Model
 
-> **Status:** Draft · **Version:** 1.4 · **Owner:** Platform Engineering · **Last updated:** 2026-08-22
+> **Status:** Draft · **Version:** 1.5 · **Owner:** Platform Engineering · **Last updated:** 2026-08-22
 > **Authoritative for:** all PostgreSQL DDL, tenant isolation, quotas. No other document defines schema.
 
 ## 1. Conventions
@@ -29,7 +29,7 @@
 | Structured | `lists`, `list_fields`, `list_items`, `pages`, `library_views` |
 | Sharing | `share_links`, `share_link_grants`, `share_link_events` |
 | Access control | `acl_entries`, `role_definitions`, `role_assignments` |
-| Security | `classifications`, `security_facts`, `dlp_policies`, `dlp_incidents`, `conditional_access_policies`, `network_zones`, `trusted_proxies`, `barrier_segments`, `barrier_assignments` |
+| Security | `classifications`, `security_facts`, `dlp_policies`, `dlp_incidents`, `conditional_access_policies`, `conditional_access_rules`, `network_zones`, `trusted_proxies`, `barrier_segments`, `barrier_assignments` |
 | Compliance | `retention_policies`, `retention_assignments`, `legal_holds`, `legal_hold_items`, `records` |
 | Audit | `audit_events`, `config_versions` |
 | Search | `index_manifests`, `retrieval_denylist`, `chunk_text` |
@@ -1012,6 +1012,73 @@ CREATE TABLE barrier_assignments (
 CREATE INDEX idx_barrier_subject ON barrier_assignments (tenant_id, subject_type, subject_id);
 ```
 
+### 12.1 `conditional_access_rules` — the rules this deployment actually evaluates
+
+The stored form of a conditional-access rule (`ENC-590`).
+`migrations/0019_conditional_access_rules.sql` creates it; `06-SECURITY-DLP-ACCESS.md §7` remains
+authoritative for what a rule *means*.
+
+```sql
+CREATE TABLE conditional_access_rules (
+    tenant_id   UUID NOT NULL REFERENCES tenants (id),
+    id          UUID NOT NULL,
+    audience    TEXT NOT NULL CHECK (audience IN ('HUMAN','MACHINE')),
+    name        TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 200),
+    conditions  JSONB NOT NULL CHECK (jsonb_typeof(conditions) = 'array'),
+    effect      TEXT NOT NULL CHECK (effect IN (
+                    'BLOCK','REQUIRE_TRUSTED_NETWORK','REQUIRE_MANAGED_DEVICE','REQUIRE_MFA',
+                    'PREVIEW_ONLY','NO_DOWNLOAD','NO_SYNC')),
+    mode        TEXT NOT NULL DEFAULT 'SIMULATION' CHECK (mode IN ('SIMULATION','ENFORCE')),
+    created_by  UUID NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    deleted_at  TIMESTAMPTZ,
+    PRIMARY KEY (tenant_id, id),
+    CONSTRAINT conditional_access_rules_author_fkey
+        FOREIGN KEY (tenant_id, created_by) REFERENCES users (tenant_id, id)
+);
+
+CREATE UNIQUE INDEX uq_conditional_access_rules_live_name
+    ON conditional_access_rules (tenant_id, name) WHERE deleted_at IS NULL;
+```
+
+**Why this is a second table beside §12's `conditional_access_policies`.** The same boundary §16.1
+draws for `storage_quotas`: §12's model describes an evaluator with a rule `priority`, a
+`scope_type`/`scope_id` and an opaque `definition`, and the evaluator that exists has none of the
+three. Resolution is *most restrictive effect wins* in a fixed severity order (`06 §7.4`), so a
+`priority` column would be a number nothing reads, and the first operator to tune it would conclude
+the product was broken. Scope cannot exist because this stage runs **before** authorization, so a
+refusal that varied by resource would be an oracle for a resource the caller has not been permitted
+to know exists. And the effect is a column rather than a field inside `definition` precisely so a
+`CHECK` can see it. `conditional_access_policies` is not created by any migration.
+
+**`audience` is a column because the Q19 separation has to survive storage.**
+`plans/M4-GOVERNANCE.md` Q19 gives service accounts and MCP tokens a *separate rule set*, and
+`crates/conditional_access` makes that a type separation — `MachineCondition` has no device posture
+and no authentication strength, so a posture rule against a service account cannot be written. JSONB
+holds any document, so the guarantee is kept by two things rather than by the document's shape: the
+column decides which type the conditions are decoded into, and decoding is strict, so a `MACHINE`
+row naming `posture_below` is refused by name rather than having the clause dropped. It cannot be
+inferred from the document — `client_is` and `action_is` are legitimately in both vocabularies.
+
+**There is no `ALLOW` effect**, and the `CHECK` is where that absence becomes structural. Under
+most-restrictive-wins an allow can never change an outcome, so accepting one would let an
+administrator write an exception, see it stored, and have it do nothing (`06 §7.4`). A Rust enum
+enforces that only on the path that went through it; the constraint enforces it on every path,
+including a repair script.
+
+**`mode` defaults to `SIMULATION`**, unlike §12's model. `plans/M4-GOVERNANCE.md §2`: a control that
+cannot be turned on gradually will be turned on carelessly, or not at all. A rule written without
+saying which it is rehearses, and enforcing is the statement an administrator has to make.
+
+RLS enabled and forced with a `tenant_isolation` policy, as §3.2 requires. `enclave_app` holds
+`SELECT, INSERT, UPDATE` and **not** `DELETE`: one `DELETE` lifts every network restriction a tenant
+has and leaves nothing to say it existed. Removing a rule is an ordinary administrative act — unlike
+removing a quota — so it is an `UPDATE` setting `deleted_at`, the row and its text stay, and the
+loader ignores it. The failure direction is right as well: a withdrawal the loader failed to honour
+denies too much, loudly, while a `DELETE` nobody could see would do the opposite.
+
+
 ## 13. Compliance
 
 ```sql
@@ -1477,6 +1544,7 @@ CREATE INDEX idx_jobs_ready ON jobs (state, run_after) WHERE state = 'QUEUED';
 
 | Version | Date | Change |
 |---|---|---|
+| 1.5 | 2026-08-22 | Added §12.1, `conditional_access_rules` — the stored form of a conditional-access rule, and the first tenant-editable policy this deployment evaluates (`ENC-590`). A second table beside §12's `conditional_access_policies` for the reason §16.1 is a second table beside the `quotas` pair: §12 models an evaluator with a rule `priority`, a scope and an opaque `definition`, and the evaluator that exists has none of the three — resolution is most-restrictive-wins in a fixed severity order, and this stage runs before authorization so it has no resource to scope to. Records three things the design did not state: `audience` is a **column** because Q19's rule-set separation is a type separation that JSONB would otherwise dissolve, and it cannot be inferred from the document because `client_is` and `action_is` are in both vocabularies; `effect`'s `CHECK` has no `ALLOW`, which is where §7.4's absent effect becomes structural rather than a convention of one Rust enum; and `enclave_app` holds no `DELETE`, so a rule is withdrawn with `deleted_at` and keeps its text. `migrations/0019_conditional_access_rules.sql` applies it. |
 | 1.4 | 2026-08-22 | Added §16.1, `storage_quotas` — the per-tenant stored-byte quota, and the only quota implemented (`ENC-584`, `plans/M4-GOVERNANCE.md` D31/Q18). One table rather than a `quotas` + `quota_usage` pair because a `CHECK` constraint cannot reference another table and D31 requires one as the backstop behind the charging statement. Records three things the design did not previously state: the bound lives in the charge's `WHERE` clause and a zero-row result is the refusal; `overshoot_bytes` is an acknowledgement of a legitimately over-limit tenant rather than headroom; and nightly reconciliation applies drift *relatively*, which is what removes the window in which a correction would either erase concurrent charges or lock them out. `migrations/0018_storage_quotas.sql` applies it. |
 | 1.3 | 2026-08-22 | Added §10.1, the slug rule: a slug addresses one live row in its container, so `libraries`, `lists` and `pages` gain partial unique indexes keyed on `(tenant_id, workspace_id, slug)` and `tenants` keeps its non-partial `UNIQUE` as the stated exception. Resolves the disagreement `migrations/0015_lists.sql` recorded (`ENC-544`); `migrations/0017_slug_uniqueness.sql` applies it. |
 | 1.2 | 2026-08-21 | Earlier revisions predate this table. |
