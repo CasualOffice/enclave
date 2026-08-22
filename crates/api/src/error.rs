@@ -46,6 +46,18 @@ impl ApiError {
     pub const fn new(error: Error, request_id: RequestId) -> Self {
         Self { error, request_id }
     }
+
+    /// The failure being rendered.
+    ///
+    /// The inverse of [`ApiError::new`], and it exists for tests that assert what a handler
+    /// *decided*: reading the decision back out of a rendered response would prove the renderer
+    /// works rather than that the right decision was taken, and the two fail for different reasons.
+    /// Adding no information a caller does not already receive — the envelope carries the code —
+    /// so it is public rather than a `cfg(test)` back door.
+    #[must_use]
+    pub const fn error(&self) -> &Error {
+        &self.error
+    }
 }
 
 impl IntoResponse for ApiError {

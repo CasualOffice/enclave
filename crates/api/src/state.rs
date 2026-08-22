@@ -2,12 +2,14 @@
 
 use std::sync::Arc;
 
+use enclave_audit::{AuditSink, ChainMode, PgAuditSink};
 use enclave_auth::{AccessTokenVerifier, KeySet};
 use enclave_core::PolicyEngine;
 use enclave_db::DbPool;
 
 use crate::admin::conditional_access::SharedRuleCache;
 use crate::edge::Edge;
+use crate::refusal::HandlerAudit;
 
 /// Shared, cheaply cloneable application state.
 #[derive(Clone)]
@@ -28,6 +30,17 @@ pub struct ApiState {
     /// message reaches one replica; a deployment is several*. Nothing in the admin surface's
     /// behaviour turns on it, which is exactly why it is an `Option` and not a required argument.
     pub rule_cache: Option<SharedRuleCache>,
+    /// Where a refusal *this layer* takes is recorded (`ENC-606`).
+    ///
+    /// Not `Option`, and not a builder step that a deployment could forget. `ENC-606` was a class
+    /// of refusal that reached callers with no row behind it; a sink a binary could omit would
+    /// reintroduce exactly that, silently, in the deployment rather than in the code. It is derived
+    /// from the same pool the chain's own sink is built over in `crates/api/src/main.rs`, so both
+    /// write into one chain and the two rows for one request are adjacent in it.
+    ///
+    /// It cannot write an allow — see [`HandlerAudit`]. The chain remains the only thing that
+    /// records a decision it took.
+    pub audit: HandlerAudit,
 }
 
 impl std::fmt::Debug for ApiState {
@@ -47,13 +60,34 @@ impl ApiState {
         audience: &str,
         keys: KeySet,
     ) -> Self {
+        // Built here rather than taken as an argument, deliberately. `ApiState::new` already holds
+        // the pool the chain's sink is built over, and a required *argument* would have to be
+        // threaded through `crates/api/src/main.rs` and every test harness — which is how the
+        // `ENC-170` shape starts: a dependency the binary can forget while every test supplies it.
+        // `ChainMode::Enabled` matches the binary's own sink; `with_audit` exists for a deployment
+        // that runs unchained, and for a test that wants to read what was written.
+        let audit = HandlerAudit::new(
+            Arc::new(PgAuditSink::new(db.clone(), ChainMode::Enabled)) as Arc<dyn AuditSink>
+        );
         Self {
             policy: Arc::new(policy),
             db: Arc::new(db),
             tokens: Arc::new(AccessTokenVerifier::new(issuer, audience, keys)),
             edge: Arc::new(Edge::untrusting()),
             rule_cache: None,
+            audit,
         }
+    }
+
+    /// Supplies the sink handler refusals are recorded into.
+    ///
+    /// The default is a [`PgAuditSink`] over the same pool, which is what a deployment wants. This
+    /// exists for the chain-disabled posture of `docs/08-BYO-INFRA.md §14`, and for tests that need
+    /// to read the rows back out of an in-memory sink rather than out of PostgreSQL.
+    #[must_use]
+    pub fn with_audit(mut self, audit: HandlerAudit) -> Self {
+        self.audit = audit;
+        self
     }
 
     /// Supplies the conditional-access rule cache the admin surface tells about a change.

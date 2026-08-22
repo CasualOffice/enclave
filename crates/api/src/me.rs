@@ -7,13 +7,17 @@
 
 use axum::extract::State;
 use axum::Json;
-use enclave_core::{Action, ContainerAction, Error, ResourceRef};
+use enclave_core::{Action, ContainerAction, Error, ReasonCode, RequestContext, ResourceRef, Uuid};
 use serde::Serialize;
 use sqlx::Row;
 
 use crate::auth::Authenticated;
 use crate::error::ApiError;
+use crate::refusal::{none_dischargeable, Refused};
 use crate::state::ApiState;
+
+/// The action this endpoint asks the chain about, and the one a refusal here is recorded against.
+const READ: Action = Action::Container(ContainerAction::Read);
 
 /// The caller, as the caller may see themselves.
 #[derive(Debug, Serialize)]
@@ -50,9 +54,17 @@ pub async fn me(
 
     // A caller with no subject — the `System` actor — has no user row to return. It should never
     // reach an HTTP handler; saying so is cheaper than discovering it as a nil-UUID lookup.
-    let subject = ctx.actor.subject_id().ok_or_else(|| {
-        ApiError::new(Error::denied(enclave_core::ReasonCode::AccessDenied), request_id)
-    })?;
+    //
+    // This one is refused *before* the chain runs, so there is no `ALLOW` row beside it. The row it
+    // writes therefore stands alone, which is accurate: the tenant is the verified token's and the
+    // actor is `system`, so it is attributable, and nothing about the policy chain is asserted.
+    let subject = match subject(&ctx) {
+        Ok(subject) => subject,
+        Err(refused) => {
+            let resource = ResourceRef::tenant(ctx.tenant_id);
+            return Err(state.audit.refuse(&ctx, READ, &resource, refused).await);
+        }
+    };
 
     let resource = ResourceRef::new(ctx.tenant_id, enclave_core::ResourceKind::User, subject);
 
@@ -60,7 +72,7 @@ pub async fn me(
     // this returns, and the audit row is written inside it whether it allows or denies.
     let decision = state
         .policy
-        .enforce(&ctx, Action::Container(ContainerAction::Read), &resource)
+        .enforce(&ctx, READ, &resource)
         .await
         .map_err(|error| ApiError::new(error, request_id))?;
 
@@ -73,8 +85,14 @@ pub async fn me(
     // This was a `debug_assert!` until `ENC-582`, which is to say it was nothing at all in the
     // build that ships: release compiled the check out and served the response with the obligation
     // dropped. `ENC-544` was the same defect in the audit crate's field-count guard.
+    //
+    // `none_dischargeable` rather than `Obligations::require_none`: same rule and same code, in the
+    // type that cannot reach a caller without a row. `require_none` returns an `Error`, and an
+    // `Error` here is `ENC-606` — the chain wrote `ALLOW` two lines above.
     let obligations = decision.into_obligations();
-    obligations.require_none().map_err(|error| ApiError::new(error, request_id))?;
+    if let Err(refused) = none_dischargeable(&obligations) {
+        return Err(state.audit.refuse(&ctx, READ, &resource, refused).await);
+    }
 
     let mut tx = state
         .db
@@ -107,4 +125,20 @@ pub async fn me(
         is_admin: row.get("is_admin"),
         capabilities: Capabilities { read_self: true },
     }))
+}
+
+/// The subject a self-read can be about.
+///
+/// A function rather than an inline `ok_or_else` so that the refusal is *constructed in a function
+/// that returns one*, which is what `cargo run -p xtask -- audit-coverage` reads to decide that it
+/// is audited — the same rule that makes a `StageDecision` audited by construction. It is also
+/// where the argument for the refusal belongs.
+///
+/// # Errors
+///
+/// [`Refused`] for [`enclave_core::Actor::System`], which has no subject. It is an actor-eligibility
+/// refusal rather than an obligation one: nothing was attached to this request, the principal is
+/// simply not one that can have a `users` row.
+fn subject(ctx: &RequestContext) -> Result<Uuid, Refused> {
+    ctx.actor.subject_id().ok_or_else(|| Refused::actor(ReasonCode::AccessDenied))
 }

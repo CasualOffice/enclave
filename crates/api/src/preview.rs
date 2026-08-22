@@ -40,6 +40,14 @@
 //! simply does not draw the overlay gets an unmarked page. Refusing is the safe direction and the
 //! honest one; `ENC-169` is the compositor that lifts it.
 //!
+//! # Where those refusals are recorded
+//!
+//! Every one of them happens *after* `PolicyEngine::enforce` has allowed and written its row, so
+//! until `ENC-606` the audit trail said `ALLOW` for a request that received `403`. Each now returns
+//! a [`Refused`], whose only conversion into an error is
+//! [`crate::refusal::HandlerAudit::refuse`] — which writes the second row first. Four sites:
+//! [`satisfy`]'s three blocking arms, [`stampable`], and [`mark`]'s three.
+//!
 use core::str::FromStr as _;
 
 use std::sync::Arc;
@@ -59,6 +67,7 @@ use crate::auth::Authenticated;
 use crate::download::conceal_if_not_visible;
 use crate::error::ApiError;
 use crate::error::Envelope;
+use crate::refusal::Refused;
 use crate::state::ApiState;
 
 /// The rendition profile used when a caller names none.
@@ -75,6 +84,12 @@ const MAX_PAGE: u32 = 10_000;
 
 /// The longest profile name that can name a real profile.
 const MAX_PROFILE_LEN: usize = 64;
+
+/// The action this endpoint asks the chain about, and the one a refusal here is recorded against.
+///
+/// `Preview`, and only `Preview` — see the module header. Named once so the `enforce` call and the
+/// audit row cannot name different actions for one decision.
+const PREVIEW: Action = Action::File(FileAction::Preview);
 
 /// Query parameters of `GET /files/{id}/preview` (`docs/05-API.md §9`).
 ///
@@ -134,17 +149,33 @@ pub async fn preview(
 
     // `Preview`, and only `Preview`. A caller whose download is denied reaches this line; a caller
     // whose preview is denied does not, whatever their download rights say.
-    let decision =
-        match state.policy.enforce(&ctx, Action::File(FileAction::Preview), &resource).await {
-            Ok(decision) => decision,
-            Err(error) => {
-                let error = conceal_if_not_visible(&state, &ctx, &resource, error).await;
-                return Err(ApiError::new(error, request_id));
-            }
-        };
+    let decision = match state.policy.enforce(&ctx, PREVIEW, &resource).await {
+        Ok(decision) => decision,
+        Err(error) => {
+            let error = conceal_if_not_visible(&state, &ctx, &resource, error).await;
+            return Err(ApiError::new(error, request_id));
+        }
+    };
 
     let obligations = decision.into_obligations();
-    let required = satisfy(&obligations).map_err(|error| ApiError::new(error, request_id))?;
+    let required = match satisfy(&obligations) {
+        Ok(required) => required,
+        Err(refused) => return Err(state.audit.refuse(&ctx, PREVIEW, &resource, refused).await),
+    };
+
+    // Asked before the transaction opens, and only when a mark is required. Two reasons: the audit
+    // write below takes its own connection, and a refusal that happened while this handler held an
+    // open tenant-scoped transaction would hold it across somebody else's network round trip.
+    let stamp = if required.watermark {
+        match stampable(&ctx) {
+            Ok(actor) => Some(actor),
+            Err(refused) => {
+                return Err(state.audit.refuse(&ctx, PREVIEW, &resource, refused).await)
+            }
+        }
+    } else {
+        None
+    };
 
     let profile = profile_for(&rendition.profile)
         .ok_or_else(|| ApiError::new(Error::NotFound, request_id))?;
@@ -163,10 +194,9 @@ pub async fn preview(
     // Read inside the same tenant-scoped transaction as everything else, and only when a mark is
     // actually required — a preview with no watermark obligation must not pay for a lookup, and
     // must not read a viewer's email at all.
-    let viewer = if required.watermark {
-        Some(viewer_identity(&mut tx, &ctx, request_id).await?)
-    } else {
-        None
+    let viewer = match stamp {
+        Some(actor) => Some(viewer_identity(&mut tx, &ctx, actor, request_id).await?),
+        None => None,
     };
 
     let delivery = pipeline
@@ -187,7 +217,14 @@ pub async fn preview(
         }
         Delivery::Available { bytes, media_type, .. } => {
             let bytes = if required.watermark {
-                mark(bytes, &media_type, &viewer, &ctx, file, request_id)?
+                match mark(bytes, &media_type, viewer.as_ref(), &ctx, file) {
+                    Ok(marked) => marked,
+                    // After `tx.commit()`, so the audit write is not taking a second connection
+                    // while this request holds one.
+                    Err(refused) => {
+                        return Err(state.audit.refuse(&ctx, PREVIEW, &resource, refused).await)
+                    }
+                }
             } else {
                 bytes
             };
@@ -207,6 +244,29 @@ struct Viewer {
     email: String,
 }
 
+/// The principal a watermark can name, or the refusal that they are not one.
+///
+/// Split out of [`viewer_identity`] so the two failures have different types, because they are
+/// different kinds of fact: this one is a **policy refusal** and has to leave a row (`ENC-606`);
+/// the lookup's failures are absence and storage errors, which the chain has nothing to say about.
+/// Asked before any transaction is opened, so the audit write that follows it is not competing with
+/// a connection this request is holding.
+///
+/// # Errors
+///
+/// [`Refused`] when the actor is a service account, an MCP client or the system. Refused rather
+/// than marked "system": a watermark exists to attribute a leak to a person, and one naming nobody
+/// in particular satisfies the obligation on paper and not in fact.
+fn stampable(ctx: &RequestContext) -> Result<enclave_core::UserId, Refused> {
+    match ctx.actor {
+        enclave_core::Actor::User(actor) => Ok(actor),
+        // `ACCESS_DENIED` rather than the obligation's standard `PREVIEW_ONLY`, which would advise
+        // a caller who is already previewing to preview. The row still names `WATERMARK`, so what
+        // could not be discharged is on the record even though the code does not say it.
+        _ => Err(Refused::obligation_with(Obligation::Watermark, ReasonCode::AccessDenied)),
+    }
+}
+
 /// Reads the viewer's name and email inside the caller's transaction.
 ///
 /// # Errors
@@ -216,16 +276,10 @@ struct Viewer {
 async fn viewer_identity(
     tx: &mut enclave_db::TenantScoped,
     ctx: &RequestContext,
+    actor: enclave_core::UserId,
     request_id: RequestId,
 ) -> Result<Viewer, ApiError> {
     use sqlx::Row as _;
-
-    let enclave_core::Actor::User(actor) = ctx.actor else {
-        // A service account or the system has no name to stamp. Refused rather than marked
-        // "system": a watermark exists to attribute a leak to a person, and one naming nobody in
-        // particular is a mark that satisfies the obligation on paper and not in fact.
-        return Err(ApiError::new(Error::denied(ReasonCode::AccessDenied), request_id));
-    };
 
     let row = sqlx::query("SELECT email, display_name FROM users WHERE tenant_id = $1 AND id = $2")
         .bind(ctx.tenant_id.as_uuid())
@@ -248,19 +302,27 @@ async fn viewer_identity(
 /// The refusal is the point. `CLAUDE.md` rule 8: an obligation is satisfied or the operation fails.
 /// There is no arm here that serves the bytes anyway — not for an unsupported media type, not for a
 /// name the bundled face cannot draw, not for a base the compositor cannot decode.
+///
+/// # Errors
+///
+/// [`Refused`] naming the watermark obligation, on every path that cannot burn it in. Every one is
+/// recorded by the caller before it reaches the client (`ENC-606`).
 fn mark(
     bytes: Vec<u8>,
     media_type: &str,
-    viewer: &Option<Viewer>,
+    viewer: Option<&Viewer>,
     ctx: &RequestContext,
     file: FileId,
-    request_id: RequestId,
-) -> Result<Vec<u8>, ApiError> {
-    let Some(viewer) = viewer.as_ref() else {
+) -> Result<Vec<u8>, Refused> {
+    // The one refusal here that is not the compositor's: a mark required with nobody to name.
+    let undischargeable =
+        || Refused::obligation_with(Obligation::Watermark, ReasonCode::AccessDenied);
+
+    let Some(viewer) = viewer else {
         // Unreachable while `required.watermark` is the only thing that populates it; kept as a
         // refusal rather than an `expect` so that a future edit which separates the two cannot turn
         // a missing viewer into an unmarked page.
-        return Err(ApiError::new(Error::denied(ReasonCode::AccessDenied), request_id));
+        return Err(undischargeable());
     };
 
     // Raster profiles only. `HtmlSanitized` wants the SVG overlay `enclave_preview::watermark`
@@ -268,7 +330,7 @@ fn mark(
     // unmarked HTML while that is unwritten is precisely what rule 8 forbids.
     if media_type != "image/png" {
         tracing::info!(media_type, "no watermark compositor for this rendition; refusing");
-        return Err(ApiError::new(Error::denied(ReasonCode::AccessDenied), request_id));
+        return Err(undischargeable());
     }
 
     let facts = enclave_preview::WatermarkFacts {
@@ -297,7 +359,7 @@ fn mark(
     enclave_preview::composite_watermark(&bytes, &facts, enclave_preview::WatermarkStyle::DEFAULT)
         .map_err(|refusal| {
             tracing::info!(?refusal, "the watermark could not be composited; refusing the preview");
-            ApiError::new(Error::denied(ReasonCode::AccessDenied), request_id)
+            undischargeable()
         })
 }
 
@@ -391,8 +453,9 @@ async fn readable_version(
 ///
 /// # Errors
 ///
-/// [`Error::PolicyDenied`] when an obligation cannot be satisfied on this path.
-fn satisfy(obligations: &Obligations) -> Result<Required, Error> {
+/// [`Refused`] when an obligation cannot be satisfied on this path — recorded by the caller before
+/// it becomes the client's `403` (`ENC-606`).
+fn satisfy(obligations: &Obligations) -> Result<Required, Refused> {
     let mut required = Required::default();
     for obligation in obligations {
         match *obligation {
@@ -418,20 +481,21 @@ fn satisfy(obligations: &Obligations) -> Result<Required, Error> {
             // Blocking obligations. The caller must do something before *any* exposure, and a
             // rendition is an exposure.
             Obligation::RequireJustification => {
-                return Err(Error::denied(ReasonCode::DlpJustificationRequired))
+                return Err(Refused::obligation(Obligation::RequireJustification))
             }
             Obligation::RequireApproval => {
-                return Err(Error::denied(ReasonCode::DlpApprovalRequired))
+                return Err(Refused::obligation(Obligation::RequireApproval))
             }
 
             // A write this handler cannot perform. Refused rather than dropped (`CLAUDE.md`
-            // rule 8); the audit row the chain wrote carries the obligation for the operator.
-            Obligation::Reclassify { .. } => {
+            // rule 8), and now recorded as a refusal rather than left to be inferred from the
+            // obligation list on the row the chain wrote.
+            Obligation::Reclassify { to } => {
                 tracing::warn!(
                     "a reclassification obligation reached the preview path, which cannot apply \
                      one; refusing rather than rendering under a stale label"
                 );
-                return Err(Error::denied(ReasonCode::AccessDenied));
+                return Err(Refused::obligation(Obligation::Reclassify { to }));
             }
         }
     }
@@ -525,20 +589,27 @@ mod tests {
         .is_ok());
     }
 
+    /// The code a refusal carries, or `None` when the obligations were satisfiable.
+    fn refused<T>(result: Result<T, Refused>) -> Option<ReasonCode> {
+        result.err().map(Refused::code)
+    }
+
     #[test]
     fn blocking_obligations_refuse_before_any_rendition() {
-        assert!(matches!(
-            satisfy(&obligations([Obligation::RequireJustification])),
-            Err(Error::PolicyDenied { code: ReasonCode::DlpJustificationRequired, .. })
-        ));
-        assert!(matches!(
-            satisfy(&obligations([Obligation::RequireApproval])),
-            Err(Error::PolicyDenied { code: ReasonCode::DlpApprovalRequired, .. })
-        ));
-        assert!(matches!(
-            satisfy(&obligations([Obligation::Reclassify { to: ClassificationRank::new(40) }])),
-            Err(Error::PolicyDenied { code: ReasonCode::AccessDenied, .. })
-        ));
+        assert_eq!(
+            refused(satisfy(&obligations([Obligation::RequireJustification]))),
+            Some(ReasonCode::DlpJustificationRequired)
+        );
+        assert_eq!(
+            refused(satisfy(&obligations([Obligation::RequireApproval]))),
+            Some(ReasonCode::DlpApprovalRequired)
+        );
+        assert_eq!(
+            refused(satisfy(&obligations([Obligation::Reclassify {
+                to: ClassificationRank::new(40)
+            }]))),
+            Some(ReasonCode::AccessDenied)
+        );
     }
 
     #[test]
