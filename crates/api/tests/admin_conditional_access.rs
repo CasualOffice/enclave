@@ -410,6 +410,33 @@ async fn a_rule_written_through_the_api_is_stored_decides_and_invalidates_this_r
     assert_eq!(stored.len(), 1);
     assert_eq!(stored[0].0, fixtures.alpha.id.as_uuid(), "written into the caller's own tenant");
     assert!(stored[0].3.is_none(), "a created rule is live");
+
+    // What is in the column is the *decoded* rule's document, not the bytes the caller sent — the
+    // body above writes `action` before `resource`, and `Action`'s own encoding writes `resource`
+    // first.
+    //
+    // Recorded because a deliberate break here **failed nothing** (`docs/12 §1.2`): storing
+    // `request.when` verbatim instead of `encode_rule`'s output leaves all eleven tests green. Two
+    // mechanisms hold the property between them and neither is the re-encode. `decode_rule` is what
+    // refuses a clause the types cannot express — every strictness test above fails when *it* is
+    // weakened — and PostgreSQL's `jsonb` is what normalises the rest: it sorts keys by length and
+    // drops whitespace, so a document that decoded is stored identically whichever of the two
+    // values reaches it. The stored form is therefore asserted as a *value*, which is what can
+    // honestly be asserted; the re-encode stays because the guarantee should not rest on the
+    // storage engine's normalisation, and would stop being true the day the body is carried as a
+    // raw string rather than parsed into `serde_json::Value`.
+    let mut conn = db.connect().await.expect("connect");
+    let document: String =
+        sqlx::query_scalar("SELECT conditions::text FROM conditional_access_rules")
+            .fetch_one(&mut conn)
+            .await
+            .expect("read the document");
+    let stored_document: serde_json::Value = serde_json::from_str(&document).expect("json");
+    assert_eq!(
+        stored_document,
+        serde_json::json!([{ "action_is": [{ "resource": "file", "action": "download" }] }]),
+        "the column holds the rule that was decoded"
+    );
 }
 
 // --- The strictness of the decoder, at the HTTP boundary ---------------------------------------------

@@ -28,11 +28,19 @@
 //!    [`decode_rule`], the same function the loader uses on every request;
 //! 3. the decoded [`Rule`] is then re-encoded with [`encode_rule`], and *that* is what is written.
 //!
-//! Step 3 is what makes the guarantee structural rather than careful: the bytes in the column are
-//! the canonical serialization of a value of the type the audience names, so a clause the types
-//! cannot express has nowhere to survive. A second vocabulary in this module — even a list of
-//! condition names for validation — would be the drift `ENC-590` designed the column split to
-//! prevent, and it does not exist here.
+//! **Step 2 is what holds the property**, and step 3 is belt-and-braces — which is worth stating
+//! precisely, because the opposite was written here first and a deliberate break disproved it.
+//! Removing step 3 and storing the request's own document fails *no* test in this crate: the
+//! refusal of an inexpressible clause is `decode_rule`'s, and PostgreSQL's `jsonb` normalises key
+//! order and whitespace, so a document that decoded is stored identically either way. Step 3 stays
+//! because a guarantee should not rest on the storage engine's normalisation — it is the difference
+//! between "the column holds a value the type produced" and "the column holds what the caller sent,
+//! which happened to parse" — and because it stops being free the day `when` is carried as a raw
+//! string rather than parsed into `serde_json::Value`. The finding is recorded in
+//! `crates/api/tests/admin_conditional_access.rs` beside the assertion that replaced the claim.
+//!
+//! A second vocabulary in this module — even a list of condition names for validation — would be
+//! the drift `ENC-590` designed the column split to prevent, and it does not exist here.
 //!
 //! # `ALLOW` is refused, and told why
 //!
