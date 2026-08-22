@@ -18,9 +18,19 @@
 //!    is skipped cannot make that distinction — nor be audited, since audit happens inside the
 //!    engine.
 
+//! 4. **Rules are tenant data, and the storage cannot express what the types cannot** ([`store`]).
+//!    `docs/06 §7` has an administrator writing rules against their own tenant while one
+//!    `enclave.yaml` serves every tenant on a host, so rules are rows
+//!    (`migrations/0019_conditional_access_rules.sql`). The audience is a *column*, it selects which
+//!    Rust type a stored document is decoded into, and a document that is not that type is refused
+//!    by name rather than coerced — which is how point 2 survives a round trip through JSONB
+//!    (`ENC-590`).
+
 pub mod origin;
 pub mod policy;
 pub mod rules;
+pub mod store;
+pub mod tenant;
 pub mod zone;
 
 use async_trait::async_trait;
@@ -31,6 +41,10 @@ use enclave_core::{
 pub use origin::{ProxyTrust, ResolvedOrigin};
 pub use policy::{Audience, BreakGlass, Evaluation, PolicySet};
 pub use rules::{Effect, HumanCondition, HumanRule, MachineCondition, MachineRule, RuleMode};
+pub use store::{
+    decode_rule, decode_rules, encode_human, encode_machine, encode_rule, Rule, RuleError,
+};
+pub use tenant::{TenantConditionalAccess, DEFAULT_CACHE_TTL};
 pub use zone::{NetworkZone, ZoneMap};
 
 /// Network/device/auth-strength policy evaluation, evaluated against **no configured policy**.

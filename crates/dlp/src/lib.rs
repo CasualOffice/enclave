@@ -11,6 +11,10 @@
 //! | [`detector`] | The shape of a detector: [`Candidate`], [`Verdict`], [`StructuredDetector`], and the linear scan |
 //! | [`checksum`] | Luhn and ISO 7064 MOD 97-10, written out rather than depended on |
 //! | [`builtin`] | The detectors a deployment gets without configuring anything |
+//! | [`policy`] | Rules, and the **mode-independent** verdict evaluating them produces |
+//! | [`mode`] | The five modes of `docs/06 §9`, and the one function that maps a verdict to an effect |
+//! | [`observation`] | What an evaluation leaves behind, and the port it leaves it through |
+//! | [`service`] | [`ModedDlp`] — the `DlpService` the chain holds |
 //!
 //! The facts a scan produces — [`enclave_core::SecurityFacts`] and the
 //! [`enclave_core::FactsSnapshot`] the chain threads them through — live in `core`, because they
@@ -22,10 +26,18 @@
 //!    by structure and checksum, and [`detector`] has nowhere to put a pattern.
 //! 2. **Counts leave, content does not** (`CLAUDE.md` rule 10). A [`Candidate`] borrows the
 //!    document and redacts itself in `Debug`; a [`ScanReport`] carries numbers.
+//! 3. **Nothing that computes a verdict can see the mode** (`plans/M4-GOVERNANCE.md` D28).
+//!    [`policy::RuleSet`] holds no mode and [`policy::RuleSet::evaluate`] takes none, so
+//!    `SIMULATION` and `ENFORCE` cannot reach different conclusions — the code that reaches one
+//!    has not been told which is running. [`mode`] carries the rest of that argument.
 
 pub mod builtin;
 pub mod checksum;
 pub mod detector;
+pub mod mode;
+pub mod observation;
+pub mod policy;
+pub mod service;
 
 pub use builtin::{builtin_set, Iban, PaymentCardNumber, BUILTIN_SET_VERSION};
 pub use checksum::{luhn_valid, mod97};
@@ -33,9 +45,18 @@ pub use detector::{
     Candidate, CandidateClass, Confidence, DetectorFinding, DetectorId, DetectorSet, ScanReport,
     StructuredDetector, Verdict, MAX_CANDIDATE_LEN,
 };
+pub use mode::{DlpMode, Effect};
+pub use observation::{Observation, ObservationSink, TracingObservations};
+pub use policy::{
+    ActionScope, Basis, Condition, Demand, DlpAction, DlpRule, RuleId, RuleSet,
+    Verdict as PolicyVerdict,
+};
+pub use service::ModedDlp;
 
 use async_trait::async_trait;
-use enclave_core::{Action, DlpService, RequestContext, ResourceRef, Result, StageDecision};
+use enclave_core::{
+    Action, DlpService, FactsSnapshot, RequestContext, ResourceRef, Result, StageDecision,
+};
 
 /// DLP in its `DISABLED` mode.
 ///
@@ -47,9 +68,15 @@ use enclave_core::{Action, DlpService, RequestContext, ResourceRef, Result, Stag
 /// it will remain reachable after `ENC-133` lands the detector engine. What changes then is that
 /// the mode becomes a configuration choice rather than the only option.
 ///
-/// It deliberately does **not** consult `SecurityFacts`. With DLP disabled there is no policy whose
-/// conditions could reference them, so a missing-facts decision (`docs/06 §12`) cannot arise. The
-/// moment any mode other than `DISABLED` exists, that handling does too.
+/// It deliberately does **not** consult `SecurityFacts`, and now that the other four modes exist
+/// that is worth restating rather than removing: with DLP disabled there is no policy whose
+/// conditions could reference them, so a missing-facts decision (`docs/06 §12`) cannot arise. It
+/// receives the snapshot because every implementation of the trait does — not consulting one you
+/// were handed is a visible choice, whereas not having one to consult is an absence nobody reviews.
+///
+/// Equivalent to [`ModedDlp`] in [`DlpMode::Disabled`], and asserted to be in `tests/modes.rs`.
+/// It is kept because a deployment that wants DLP off should not have to name a rule set and a sink
+/// in order to say so.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct DisabledDlp;
 
@@ -60,6 +87,7 @@ impl DlpService for DisabledDlp {
         _ctx: &RequestContext,
         _action: Action,
         _resource: &ResourceRef,
+        _facts: &FactsSnapshot,
     ) -> Result<StageDecision> {
         Ok(StageDecision::allow())
     }
@@ -71,8 +99,9 @@ mod tests {
     #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
     use enclave_core::{
-        ClassificationRank, DetectorCategory, DetectorSetVersion, FactsOutcome, FactsPolicy,
-        FactsSnapshot, FileAction, FileId, ScanVersion, SecurityFacts, Utc, VersionId,
+        ClassificationRank, DetectorCategory, DetectorSetVersion, Exposure, FactsOutcome,
+        FactsPolicy, FactsSnapshot, FileAction, FileId, ResourceState, ScanVersion, SecurityFacts,
+        Utc, VersionId,
     };
 
     use super::*;
@@ -142,9 +171,14 @@ mod tests {
             Utc::now(),
         );
 
-        let snapshot = FactsSnapshot::gathered(facts, set.version(), FactsPolicy::fail_closed());
+        let snapshot = FactsSnapshot::gathered(
+            facts,
+            set.version(),
+            FactsPolicy::fail_closed(),
+            ResourceState::new(Exposure::Internal, None),
+        );
         assert!(matches!(
-            snapshot.require(Action::File(FileAction::ContentRead), None),
+            snapshot.require(Action::File(FileAction::ContentRead)),
             FactsOutcome::Facts(_)
         ));
 
@@ -158,10 +192,14 @@ mod tests {
             ScanVersion::new(1),
             Utc::now(),
         );
-        let snapshot = FactsSnapshot::gathered(facts, set.version(), FactsPolicy::fail_closed());
+        let snapshot = FactsSnapshot::gathered(
+            facts,
+            set.version(),
+            FactsPolicy::fail_closed(),
+            ResourceState::new(Exposure::Internal, Some(ClassificationRank::new(20))),
+        );
         assert!(matches!(
-            snapshot
-                .require(Action::File(FileAction::ContentRead), Some(ClassificationRank::new(20))),
+            snapshot.require(Action::File(FileAction::ContentRead)),
             FactsOutcome::Denied { .. }
         ));
     }

@@ -52,6 +52,25 @@ use crate::error::{FilesError, Result};
 /// deletes the `files` row and stops has left the content readable through search and through the
 /// preview cache.
 ///
+/// # And the accounting it must return
+///
+/// [`enclave_db::release_storage`], for the summed `size_bytes` of every `file_versions` row it
+/// destroys, **in the same transaction as the deletion** — the mirror of the charge
+/// `enclave_versions::VersionService::commit` makes when the row is written (`ENC-589`,
+/// `plans/M4-GOVERNANCE.md` D31). This is the only place a release belongs, and the trash
+/// ([`crate::FileRepository::trash`]) is deliberately not it: a soft delete destroys nothing, the
+/// bytes are still stored and still paid for, and a release there would make the recycle bin an
+/// unmetered tier.
+///
+/// The release cannot refuse — [`enclave_db::Released`] has no refusal variant — and that is
+/// load-bearing rather than incidental. A purge that could be blocked on a quota-accounting error
+/// is a tenant that cannot get back under its limit, which D31 forbids in the same breath as it
+/// requires the charge.
+///
+/// Until this function does something, `release_storage` has **no caller outside its own tests**,
+/// and `.github/scripts/unwired_report.py` says so. That is the honest state: nothing in this
+/// workspace destroys stored bytes yet, so there is nothing to give back.
+///
 /// # Errors
 ///
 /// Always [`FilesError::PurgeUnavailable`]. It maps to an internal error rather than to a

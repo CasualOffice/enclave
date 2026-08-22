@@ -144,8 +144,8 @@ pub use context::{
 };
 pub use engine::{
     AuthorizationService, BarrierService, ClassificationService, ConditionalAccessService,
-    DlpService, PolicyAuditSink, PolicyEngine, RetentionService, Stage, StageDecision,
-    StageOutcome,
+    DlpService, PolicyAuditSink, PolicyEngine, RetentionService, SecurityFactsProvider, Stage,
+    StageDecision, StageOutcome,
 };
 pub use error::{
     Dependency, Error, FieldError, QuotaKind, ReasonCode, Remediation, Result, UnknownVariant,
@@ -156,9 +156,10 @@ pub use id::{
     ServiceAccountId, SessionId, TenantId, UserId, VersionId, WorkspaceId,
 };
 pub use policy::{
-    ClassificationRank, DetectorCategory, DetectorCounts, DetectorSetVersion, FactsOutcome,
-    FactsPolicy, FactsSnapshot, FactsStaleness, FactsUnavailable, Obligation, Obligations,
-    PolicyDecision, RiskScore, ScanVersion, SecurityFacts, Severity, UnscannedAllow,
+    ClassificationRank, DetectorCategory, DetectorCounts, DetectorSetVersion, Exposure,
+    FactsOutcome, FactsPolicy, FactsSnapshot, FactsStaleness, FactsUnavailable, Obligation,
+    Obligations, PolicyDecision, ResourceState, RiskScore, ScanVersion, SecurityFacts, Severity,
+    UnscannedAllow,
 };
 
 /// Re-exported so that downstream crates can name the raw type at the few boundaries where an

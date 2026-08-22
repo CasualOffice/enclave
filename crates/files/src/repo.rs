@@ -463,6 +463,21 @@ impl FileRepository {
     /// Returns every node moved to the trash, the addressed one first — the caller needs the whole
     /// set for audit and for search-index invalidation (`docs/07-SEARCH-INDEXING.md §6`).
     ///
+    /// # The storage quota, on both sides
+    ///
+    /// **Nothing here reads the quota and nothing here releases it** (`ENC-589`,
+    /// `plans/M4-GOVERNANCE.md` D31).
+    ///
+    /// Not read, because a tenant over its limit that cannot delete cannot get back under it —
+    /// which turns a billing control into a hostage situation. A `UPDATE files SET deleted_at`
+    /// bounded by a quota is the shortest way to build one.
+    ///
+    /// Not released, because this destroys nothing. The bytes behind every version of every node
+    /// in the subtree are still in object storage and still being paid for, and
+    /// `enclave_db`'s reconciliation counts versions of soft-deleted files for exactly that reason.
+    /// Releasing here would under-count by the size of the recycle bin, and the nightly job would
+    /// report the difference as drift in the write path. The release belongs to [`crate::purge`].
+    ///
     /// # Errors
     ///
     /// [`FilesError::NotFound`] if the node is gone, already in the trash, or another tenant's;

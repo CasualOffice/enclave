@@ -31,7 +31,10 @@ use core::sync::atomic::{AtomicI64, Ordering};
 
 use chrono::{DateTime, Duration, TimeZone as _, Utc};
 use enclave_core::{FileId, LibraryId, TenantId, UserId, WorkspaceId};
-use enclave_db::{DbPool, TenantScoped};
+use enclave_db::{
+    charge_storage, configure_storage_quota, release_storage, storage_quota, DbPool, Enforcement,
+    Released, TenantScoped,
+};
 use enclave_files::{
     ChildFilter, FileNode, FileRepository, FilesError, Mutation, NewFile, NewFolder, NodeStatus,
     NodeType, PageSize, Parent,
@@ -823,4 +826,78 @@ async fn two_deletes_stamped_with_the_same_instant_come_back_together() {
 /// instant rather than inventing the window.
 fn purge_at() -> DateTime<Utc> {
     fixed_time() + Duration::days(30)
+}
+
+// ---------------------------------------------------------------------------
+// The stored-byte quota — `ENC-589`, `docs/12-TESTING.md §4.12` Q10 and Q11
+// ---------------------------------------------------------------------------
+
+/// An exhausted quota refuses a write and never a delete or a restore.
+///
+/// `plans/M4-GOVERNANCE.md` D31 and M4's third exit criterion: *a tenant over quota that cannot
+/// delete anything cannot get back under it.* The refusal is asserted **first**, in the same
+/// fixture and against the same tenant, because "the trash was not blocked" is true of a build
+/// where the quota was never wired at all (`docs/12 §1.2`).
+///
+/// The charge here is `enclave_db::charge_storage` directly rather than a version commit: this
+/// crate does not own that path, and what is under test is that *these* statements — trash and
+/// restore — consult nothing. The commit's own refusal lives in `crates/versions/tests/versions.rs`.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL with migrations 0004, 0005 and 0018 applied; CI runs it with --include-ignored"]
+async fn an_exhausted_quota_refuses_a_charge_and_never_the_trash_or_a_restore() {
+    let (_db, pool, alpha, _beta) = setup().await;
+
+    let top = folder(&pool, &alpha, alpha.root(), "Finance").await;
+    let leaf = file(&pool, &alpha, Parent::Folder(top.id), "Q1.pdf").await;
+
+    let mut tx = TenantScoped::begin(&pool, alpha.tenant).await.expect("begin");
+    configure_storage_quota(&mut tx, 4_096, 80, Enforcement::Block)
+        .await
+        .expect("configure the quota");
+    let filled = charge_storage(&mut tx, 4_096).await.expect("charge");
+    tx.commit().await.expect("commit");
+    assert!(filled.is_admitted(), "the fixture has to reach the limit before it means anything");
+
+    // Exhausted, and shown to be: one byte more is refused.
+    let mut tx = TenantScoped::begin(&pool, alpha.tenant).await.expect("begin");
+    let refused = charge_storage(&mut tx, 1).await.expect("charge");
+    tx.commit().await.expect("commit");
+    assert!(refused.refused().is_some(), "got {refused:?}");
+
+    // The delete, against that same exhausted tenant.
+    let mut tx = TenantScoped::begin(&pool, alpha.tenant).await.expect("begin");
+    let trashed =
+        FileRepository::trash(&mut tx, alpha.tenant, top.id, purge_at(), &alpha.edit(None))
+            .await
+            .expect("a delete is never quota-blocked");
+    tx.commit().await.expect("commit");
+    assert_eq!(trashed.len(), 2, "the folder and its child");
+    assert!(trashed.iter().any(|node| node.id == leaf.id));
+
+    // The trash is a *soft* delete: the bytes are still stored, so nothing may have been released.
+    let mut tx = TenantScoped::begin(&pool, alpha.tenant).await.expect("begin");
+    let after = storage_quota(&mut tx).await.expect("read").expect("a quota row");
+    tx.commit().await.expect("commit");
+    assert_eq!(
+        after.used_bytes, 4_096,
+        "a release on soft delete would make the recycle bin an unmetered tier, and the nightly \
+         reconciliation counts versions of trashed files for exactly that reason"
+    );
+
+    // And the way back out of the trash is not blocked either.
+    let mut tx = TenantScoped::begin(&pool, alpha.tenant).await.expect("begin");
+    let restored = FileRepository::restore(&mut tx, alpha.tenant, top.id, &alpha.edit(None))
+        .await
+        .expect("a restore from the trash is never quota-blocked");
+    tx.commit().await.expect("commit");
+    assert_eq!(restored.len(), 2);
+
+    // The loop closes: a release — which has no refusal variant — admits the charge that was
+    // refused above.
+    let mut tx = TenantScoped::begin(&pool, alpha.tenant).await.expect("begin");
+    let released = release_storage(&mut tx, 4_096).await.expect("release");
+    let admitted = charge_storage(&mut tx, 1).await.expect("charge");
+    tx.commit().await.expect("commit");
+    assert!(matches!(released, Released::Recorded(_)));
+    assert!(admitted.refused().is_none(), "freeing bytes admits what exhaustion refused");
 }

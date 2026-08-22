@@ -16,7 +16,7 @@
 //! the `RowNotFound` → `404` mapping are decided in exactly one place in the workspace.
 
 use enclave_core::{Error as CoreError, FieldError, ValidationCode};
-use enclave_db::DbError;
+use enclave_db::{DbError, Refused};
 
 /// Everything the version paths can fail with.
 #[derive(Debug, thiserror::Error)]
@@ -49,6 +49,28 @@ pub enum VersionsError {
     /// apart could enumerate file ids.
     #[error("no such file")]
     FileNotFound,
+
+    /// The tenant has no room for these bytes (`plans/M4-GOVERNANCE.md` D31).
+    ///
+    /// Raised by [`enclave_db::charge_storage`] returning zero rows, which is the refusal — not by
+    /// reading the quota and comparing. Carries the [`Refused`] whole rather than an `i64`, so the
+    /// rendering stays `enclave_db`'s: `403` `QUOTA_EXCEEDED` with the *limit* and not the usage,
+    /// because usage is a number that has already moved by the time a client reads it.
+    ///
+    /// **Not a server error, and not retryable.** An identical retry fails identically until the
+    /// tenant deletes something or its limit is raised — which is why deletes are never
+    /// quota-blocked.
+    #[error("the tenant's stored-byte quota is exhausted")]
+    StorageQuotaExceeded(Refused),
+
+    /// A version was described with a negative size.
+    ///
+    /// `file_versions.size_bytes` is a `BIGINT` with no `CHECK` (`migrations/0006`), so this is the
+    /// refusal that keeps a negative size out of `SUM(size_bytes)` — the figure the nightly quota
+    /// reconciliation treats as truth. A negative row there would hand the tenant credit for bytes
+    /// it never stored.
+    #[error("a version's size cannot be negative")]
+    NegativeSize,
 
     /// A restore was asked for from a version that cannot be a source.
     ///
@@ -156,6 +178,13 @@ impl From<VersionsError> for CoreError {
             }
             VersionsError::ObjectKeyInUse => {
                 Self::Validation(vec![FieldError::new("objectKey", ValidationCode::NotUnique)])
+            }
+            // `enclave_db`'s own mapping, not a second opinion about the status. A quota is a
+            // capacity refusal — `403` with the limit — and re-deriving it here is how two paths
+            // end up rendering the same refusal two ways.
+            VersionsError::StorageQuotaExceeded(refused) => refused.into(),
+            VersionsError::NegativeSize => {
+                Self::Validation(vec![FieldError::new("sizeBytes", ValidationCode::OutOfRange)])
             }
             // The reason stays in the source chain for the logs and never reaches the caller:
             // `Internal`'s `Display` is the bare phrase "internal error".
@@ -339,6 +368,48 @@ mod tests {
         ];
         for message in messages {
             assert!(!message.contains('/'), "{message} looks like it carries a key");
+        }
+    }
+
+    /// Quota exhaustion is a capacity refusal, not a server error and not a retry.
+    #[test]
+    fn an_exhausted_quota_is_a_403_carrying_the_limit_rather_than_a_500() {
+        use enclave_db::{Enforcement, StorageQuota};
+
+        let refused = Refused {
+            quota: StorageQuota {
+                limit_bytes: 4_096,
+                used_bytes: 4_096,
+                overshoot_bytes: 0,
+                soft_limit_pct: 80,
+                enforcement: Enforcement::Block,
+            },
+            requested_bytes: 1,
+        };
+        let error = VersionsError::StorageQuotaExceeded(refused);
+        assert!(!error.is_retryable(), "an identical retry fails identically until room is freed");
+
+        let core = CoreError::from(error);
+        assert_eq!(core.status_code(), 403, "waiting does not fix a capacity quota");
+        match core {
+            CoreError::QuotaExceeded { quota, limit } => {
+                assert_eq!(quota, enclave_core::QuotaKind::StorageBytes);
+                // The limit, never the usage: usage has already moved by the time a client reads
+                // it, and an error quoting it invites a retry against a stale figure.
+                assert_eq!(limit, 4_096);
+            }
+            other => panic!("expected a quota refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_negative_size_is_a_field_error_and_not_a_free_charge() {
+        match CoreError::from(VersionsError::NegativeSize) {
+            CoreError::Validation(fields) => {
+                assert_eq!(fields[0].field, "sizeBytes");
+                assert_eq!(fields[0].code, ValidationCode::OutOfRange);
+            }
+            other => panic!("expected a validation failure, got {other:?}"),
         }
     }
 

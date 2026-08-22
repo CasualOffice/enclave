@@ -41,6 +41,7 @@ use enclave_core::{
     RequestContext,
 };
 use ipnetwork::IpNetwork;
+use serde::{Deserialize, Serialize};
 
 use crate::zone::ZoneMap;
 
@@ -183,7 +184,17 @@ pub struct Facts<'a> {
 ///
 /// Every variant here is meaningless for a service account, which is why the machine rule set is a
 /// separate type rather than the same one with a filter.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// # The serialized form is the type separation, not a description of it
+///
+/// `Deserialize` is externally tagged and closed: `{"posture_below": "MANAGED"}` is a
+/// `HumanCondition` and **nothing else can be**. A stored rule whose `audience` column says
+/// `MACHINE` is decoded into [`MachineCondition`], which has no such variant, so serde refuses the
+/// document by name rather than dropping the clause. That refusal is what stops storage from
+/// becoming the escape hatch the type separation exists to remove (`ENC-590`,
+/// `migrations/0019_conditional_access_rules.sql`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum HumanCondition {
     /// The request arrived through one of these client types.
     ClientIs(Vec<ClientType>),
@@ -313,7 +324,12 @@ impl HumanRule {
 /// attest and no second factor to present, so a posture rule written against one could only ever
 /// be a rule that always matches — which is why the single-rule-set design needs an escape clause
 /// and this one does not.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// The absence survives serialization: see [`HumanCondition`]'s note. There is no name in this
+/// enum's `Deserialize` for a posture or an authentication strength, so a stored `MACHINE` rule
+/// asking for one is rejected loudly rather than coerced into something that always matches.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum MachineCondition {
     /// The principal is one of these kinds.
     ActorKindIs(Vec<ActorKind>),
