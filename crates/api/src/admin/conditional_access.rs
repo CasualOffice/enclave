@@ -251,7 +251,7 @@ struct Page {
 pub async fn list_rules(
     State(state): State<ApiState>,
     Authenticated { ctx }: Authenticated,
-) -> Result<Json<RuleList>, ApiError> {
+) -> Result<Response, ApiError> {
     let request_id = ctx.request_id;
     enforce(&state, &ctx, READ_ACTION).await?;
 
@@ -265,10 +265,16 @@ pub async fn list_rules(
         .map_err(|error| ApiError::new(error.into(), request_id))?;
     tx.commit().await.map_err(|error| ApiError::new(error.into(), request_id))?;
 
-    Ok(Json(RuleList {
-        items: rows.iter().map(view).collect(),
-        page: Page { next_cursor: None, has_more: false },
-    }))
+    // `no-store` for the same reason the delivery paths use it: a shared cache holding this would
+    // serve one tenant's security policy from a response another caller's proxy had kept.
+    Ok((
+        [(header::CACHE_CONTROL, NO_STORE)],
+        Json(RuleList {
+            items: rows.iter().map(view).collect(),
+            page: Page { next_cursor: None, has_more: false },
+        }),
+    )
+        .into_response())
 }
 
 /// Handles `POST /api/v1/admin/conditional-access/rules`.
