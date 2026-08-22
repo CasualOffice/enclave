@@ -1,6 +1,6 @@
 # 04 — Data Model
 
-> **Status:** Draft · **Version:** 1.7 · **Owner:** Platform Engineering · **Last updated:** 2026-08-22
+> **Status:** Draft · **Version:** 1.8 · **Owner:** Platform Engineering · **Last updated:** 2026-08-22
 > **Authoritative for:** all PostgreSQL DDL, tenant isolation, quotas. No other document defines schema.
 
 ## 1. Conventions
@@ -1243,6 +1243,105 @@ removes the rule that `06 §9`'s mandatory-simulation gate has to query the hist
 record naming a rule that no longer exists cannot answer "has this ever been simulated" (`ENC-593`).
 Withdrawal sets `deleted_at`; the row and its text stay, and the rule can be read and reinstated.
 
+### 12.4 `classifications` as created, and how an *effective* rank is resolved from it
+
+`migrations/0022_classifications.sql` creates the table (`ENC-574`, closing `ENC-614`);
+`01-PRD.md §22` remains authoritative for the shipped label set and `06-SECURITY-DLP-ACCESS.md §12.1`
+for what a rank decides. The shape is §12's, with four differences and one addition, each a decision
+rather than an omission.
+
+```sql
+CREATE TABLE classifications (
+    tenant_id   UUID NOT NULL REFERENCES tenants (id),
+    id          UUID NOT NULL,
+    key         TEXT NOT NULL CHECK (length(key)   BETWEEN 1 AND 100),
+    label       TEXT NOT NULL CHECK (length(label) BETWEEN 1 AND 200),
+    rank        INT  NOT NULL CHECK (rank >= 0),
+    color       TEXT CHECK (color IS NULL OR length(color) BETWEEN 1 AND 32),
+    watermark_required     BOOLEAN NOT NULL DEFAULT FALSE,
+    download_restricted    BOOLEAN NOT NULL DEFAULT FALSE,
+    external_share_blocked BOOLEAN NOT NULL DEFAULT FALSE,
+    sync_blocked           BOOLEAN NOT NULL DEFAULT FALSE,
+    embedding_policy TEXT NOT NULL DEFAULT 'ANY'
+                     CHECK (embedding_policy IN ('ANY','APPROVED_ONLY','LOCAL_ONLY','NO_INDEX')),
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    deleted_at  TIMESTAMPTZ,
+    PRIMARY KEY (tenant_id, id)
+);
+
+CREATE UNIQUE INDEX uq_classifications_live_key  ON classifications (tenant_id, key)
+    WHERE deleted_at IS NULL;
+CREATE UNIQUE INDEX uq_classifications_live_rank ON classifications (tenant_id, rank)
+    WHERE deleted_at IS NULL;
+CREATE INDEX        idx_classifications_live     ON classifications (tenant_id, rank)
+    WHERE deleted_at IS NULL;
+```
+
+1. **`tenant_id` leads and the primary key is `(tenant_id, id)`**, rather than §12's `id UUID PRIMARY
+   KEY` with a separate `UNIQUE (tenant_id, key)`. §1's rule, and the composite key is what the four
+   references below can target.
+2. **`deleted_at`, and no `DELETE` grant.** §12 models neither. See below.
+3. **The two `UNIQUE`s are partial on `deleted_at`**, so a withdrawn label frees both its name and
+   its rank — a tenant renaming a label withdraws one row and writes another at the same rank.
+4. **`CHECK (rank >= 0)` and no upper bound.** The lower bound is what stops a negative rank
+   comparing below every ceiling; an upper bound would be the schema inventing a ceiling for a scale
+   it has just called tenant-defined.
+
+The addition is the four references §12 models as bare `UUID` columns and this migration makes real,
+each composite per §3.3 — `files (tenant_id, classification_id)`,
+`libraries (tenant_id, default_classification_id)`, `workspaces (…)` and `content_types (…)`, all
+onto `classifications (tenant_id, id)`. A single-column `REFERENCES classifications (id)` would be
+worse than none: referential-integrity checks run with row security deliberately not enforced, so it
+would accept another tenant's label on this tenant's file, and the resolver would then read that
+label's rank and hand it to a policy decision.
+
+RLS enabled and forced with a `tenant_isolation` policy, as §3.2 requires. `enclave_app` holds
+`SELECT, INSERT, UPDATE` and **not** `DELETE`, on grounds of its own rather than §12.1's or §12.3's:
+one `DELETE` declassifies in bulk. The composite keys are `ON DELETE RESTRICT`, so a label *in use*
+cannot be deleted at all — but `security_facts.classification_rank` and the vector collection's
+`classification_rank` are **copies of `rank` taken at scan time**, protected by no key, so deleting
+an unused label leaves stored ranks naming nothing.
+
+**A withdrawn label still resolves.** The resolver joins `classifications` with no `deleted_at IS
+NULL` filter, deliberately: if withdrawal stopped a label resolving, withdrawing `RESTRICTED` would
+declassify every document carrying it in one statement — the bulk declassification the missing
+`DELETE` grant exists to prevent, reached through the door that *is* granted. Withdrawal governs
+whether a label may be **assigned**; it does not govern what it **means**.
+
+#### The resolution rule
+
+A file's **effective** classification — the value `ResourceState`, `FactsPolicy::is_forced_closed`
+and the embedding router all consume — is the **maximum `rank`** over its own `classification_id`,
+every ancestor folder's, its library's `default_classification_id` and its workspace's.
+`enclave_db::classifications` is the walk. Three properties are load-bearing:
+
+* **Maximum, not nearest-wins.** Nearest-wins would let a `PUBLIC` folder created inside a
+  `RESTRICTED` one declassify everything filed under it, through an ordinary supported operation, in
+  the direction that leaks. A rank on the chain is a floor; lowering it is an explicit act on the
+  ancestor that carries it. `07-SEARCH-INDEXING.md §14` already composes labels this way — the
+  classification of an AI answer is the maximum of its sources.
+* **The walk is not gated on `inherit_permissions`, and is deliberately not
+  `enclave_authorization`'s.** That walk stops at the first node whose `inherit_permissions` is
+  `FALSE`, which is correct for permissions because breaking inheritance materialises the effective
+  entries onto the node (§9). **Nothing materialises a label.** A label walk that honoured the flag
+  would drop an inherited `RESTRICTED` the moment somebody broke permission inheritance on a
+  document — `ENC-141`'s escalation, through the same supported operation, one control over.
+* **A truncated walk is an error, not a rank.** The cap is 64; a chain that reaches it with more
+  tree above returns a failure rather than `Ok(None)`, because the ancestors nearest the root are
+  where a tenant-wide `RESTRICTED` folder sits and `Ok(None)` means *unlabelled*, which a tenant
+  configured to assume a rank would proceed on.
+
+**An unlabelled resource has no rank, and what that means is tenant policy.** `Ok(None)` is not
+`PUBLIC` and not the highest defined label: `enclave_core::Unlabelled` is `FAIL_CLOSED` by default
+or `Assume(rank)` with the rank named by the tenant, and — like `FactsUnavailable`, and for D27's
+reason — it implements `Serialize` and neither `Deserialize` nor `FromStr`, so no request can carry
+one. `FAIL_CLOSED` is mandatory for external sharing whatever the tenant configured.
+
+The four label-obligation booleans and `embedding_policy` are stored and not yet evaluated:
+`06 §9`'s classification stage still allows unconditionally, and giving those columns effect is
+`ENC-657`.
+
 
 ## 13. Compliance
 
@@ -1709,6 +1808,7 @@ CREATE INDEX idx_jobs_ready ON jobs (state, run_after) WHERE state = 'QUEUED';
 
 | Version | Date | Change |
 |---|---|---|
+| 1.8 | 2026-08-22 | Added §12.4, `classifications` as created — the table three separate consumers of a `ClassificationRank` had no way to be given one from (`ENC-574`, closing `ENC-614`). §12's shape with `tenant_id` leading, a `(tenant_id, id)` primary key, `deleted_at` withdrawal, partial live-uniqueness on both `key` and `rank`, and `CHECK (rank >= 0)` with no upper bound. The four `classification_id` columns §§7–8 have carried since 0004/0005 become **composite** foreign keys per §3.3; a single-column form would accept another tenant's label on this tenant's file, because RI checks run with row security not enforced. `enclave_app` holds no `DELETE` on grounds of its own: one statement declassifies in bulk, and the ranks already copied into `security_facts` and the vector collection are protected by no key. **A withdrawn label still resolves** — the resolver has no `deleted_at` filter, because a withdrawal that declassified would be that same `DELETE` through the door that is granted. Also records the **resolution rule**: effective rank is the *maximum* over the file, its ancestors, its library default and its workspace default; the walk is deliberately **not** `enclave_authorization`'s, because that one stops at `inherit_permissions = FALSE` and nothing materialises a label when that flag flips — honouring it would be `ENC-141`'s escalation one control over; and a truncated walk is an error rather than `Ok(None)`. An unlabelled resource has **no rank**: `Unlabelled` is `FAIL_CLOSED` or a tenant-named `Assume(rank)`, is not deserializable (D27), and `FAIL_CLOSED` is mandatory for external sharing regardless. `migrations/0022_classifications.sql` applies it. |
 | 1.7 | 2026-08-22 | Added §12.3, `dlp_rules` — the stored form of a DLP rule, and the table that makes `ENFORCE` able to refuse anything (`ENC-615`). A second table beside §12's `dlp_policies` on §12.1's boundary: five of that model's columns are not read by the evaluator that exists. The one worth reading is the **absent `mode`**: D28 requires `SIMULATION` to be indistinguishable from `ENFORCE` except in effect, and `crates/dlp` makes that structural by having `RuleSet::evaluate` take no mode argument — a per-rule mode would have to be carried on the rule type, which is exactly the field a divergence becomes writable through, so the mode stays in configuration and the cost (no per-tenant rollout pace) is recorded as `ENC-632`. Also: **no `ALLOW` action**, because `Verdict::blocking_code` scans past a `Nothing` demand to the next refusal, so an `ALLOW` above a `BLOCK` would be an exception that fires and changes nothing (`ENC-631`) — §12.1's absent effect, one stage over; no `enabled` (a second off-switch beside withdrawal), no `scope_type`/`scope_id` (no rule type has a resource scope); and `priority` kept, because it *is* read — it decides which reason code a refused caller sees when two refusing rules fire, ordered `priority, name` so the answer cannot depend on a query plan. `conditions` is Q16's boundary and it is held by strict, closed decoding rather than by the column: a stored condition naming `pattern` is refused by name and fails the whole set. `enclave_app` holds no `DELETE`: one statement stops a tenant's inspection refusing anything, and it would remove the rule §9's mandatory-simulation gate has to query the history of. `migrations/0021_dlp_rules.sql` applies it. |
 | 1.6 | 2026-08-22 | Added §12.2, `security_facts` as created — the table a DLP decision is actually taken from (`ENC-594`). §12's shape, with three deviations recorded rather than left to be discovered: **no `detector_results JSONB`**, because nothing reads a per-detector breakdown and an opaque results document is the first place a future scanner writes the string it matched — `CLAUDE.md` rule 10 is structural everywhere else in this path and a column that would hold anything is where it would be lost; `classification_rank INT` in place of `classification_id UUID`, because comparisons are against ranks and `classifications` is created by no migration, so an id would point at nothing; and `CHECK (… >= 0)` on the counts, which is what makes the `INT`-to-`u32` conversion total rather than turning a negative row into two billion card numbers. `detector_set_version` is compared for equality and never ordered (`ENC-581`). `enclave_app` holds no `DELETE`: a rescan replaces, and the cascade from `file_versions` is what removes facts about content that no longer exists. `migrations/0020_security_facts.sql` applies it. |
 | 1.5 | 2026-08-22 | Added §12.1, `conditional_access_rules` — the stored form of a conditional-access rule, and the first tenant-editable policy this deployment evaluates (`ENC-590`). A second table beside §12's `conditional_access_policies` for the reason §16.1 is a second table beside the `quotas` pair: §12 models an evaluator with a rule `priority`, a scope and an opaque `definition`, and the evaluator that exists has none of the three — resolution is most-restrictive-wins in a fixed severity order, and this stage runs before authorization so it has no resource to scope to. Records three things the design did not state: `audience` is a **column** because Q19's rule-set separation is a type separation that JSONB would otherwise dissolve, and it cannot be inferred from the document because `client_is` and `action_is` are in both vocabularies; `effect`'s `CHECK` has no `ALLOW`, which is where §7.4's absent effect becomes structural rather than a convention of one Rust enum; and `enclave_app` holds no `DELETE`, so a rule is withdrawn with `deleted_at` and keeps its text. `migrations/0019_conditional_access_rules.sql` applies it. |
