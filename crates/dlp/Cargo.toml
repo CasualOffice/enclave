@@ -10,7 +10,18 @@ authors.workspace      = true
 
 [dependencies]
 enclave-core = { workspace = true }
+# For the operator-facing `DlpConfig`, which this crate maps onto its own `DlpMode`. `enclave-config`
+# depends only on `enclave-core`, so a policy service depending on it keeps the dependency pointing
+# inward — the same edge `enclave-conditional_access` already has.
+enclave-config = { workspace = true }
 async-trait  = { workspace = true }
+# One structured event per evaluation. `MONITOR` and `SIMULATION` have no effect on the request, so
+# the record is the mode's entire output.
+tracing      = { workspace = true }
+
+[dev-dependencies]
+# `tests/modes.rs` drives the async `DlpService` the policy engine holds.
+tokio = { workspace = true, features = ["rt", "macros"] }
 
 [lints]
 workspace = true

@@ -16,6 +16,7 @@
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
 
+use enclave_core::{ClassificationRank, FactsPolicy, FactsUnavailable};
 use ipnetwork::IpNetwork;
 use serde::{Deserialize, Serialize};
 use url::Url;
@@ -987,37 +988,129 @@ pub enum FailureMode {
     FailOpen,
 }
 
-/// Data-loss prevention (`docs/06-SECURITY-DLP-ACCESS.md`).
+/// Data-loss prevention (`docs/06-SECURITY-DLP-ACCESS.md §9`, `§12`).
+///
+/// # Why `enabled` is gone
+///
+/// It used to sit beside `default_mode`, and the two could contradict each other — `enabled: false`
+/// with `default_mode: ENFORCE` had no defined answer. `DISABLED` is one of `docs/06 §9`'s five
+/// modes rather than the absence of a mode, so the setting is the mode, and
+/// [`AntivirusProvider::None`] is the precedent: one key, with a "no" value, and an `is_enabled()`
+/// accessor for the code that only wants the boolean.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DlpConfig {
-    /// Whether DLP evaluates at all.
-    pub enabled: bool,
-    /// Whether matches are recorded or enforced.
+    /// The mode DLP runs in for policies that do not name their own.
     pub default_mode: DlpMode,
-    /// What to do when the facts a rule needs (classification, labels) cannot be loaded.
-    pub facts_unavailable: FailureMode,
+    /// What to do when the security facts a rule needs are missing or stale (`docs/06 §12`).
+    pub facts_unavailable: FactsUnavailablePolicy,
+    /// The rank at which this tenant's labels become `RESTRICTED`.
+    ///
+    /// A configured number rather than the constant 50 because ranks are tenant-defined
+    /// (`enclave_core::ClassificationRank`), and D27 makes `FAIL_CLOSED` mandatory at and above it
+    /// whatever `facts_unavailable` says. Raising it is a widening of that escalation, and putting
+    /// it in configuration is what makes the widening appear in a diff.
+    pub restricted_at: i32,
 }
 
 impl Default for DlpConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
             default_mode: DlpMode::Monitor,
-            facts_unavailable: FailureMode::FailClosed,
+            facts_unavailable: FactsUnavailablePolicy::FailClosed,
+            restricted_at: ClassificationRank::RESTRICTED.get(),
         }
     }
 }
 
-/// Whether DLP records or blocks.
+impl DlpConfig {
+    /// Whether DLP inspects content at all.
+    #[must_use]
+    pub const fn is_enabled(&self) -> bool {
+        !matches!(self.default_mode, DlpMode::Disabled)
+    }
+
+    /// The tenant policy `enclave_core::FactsSnapshot::require` is evaluated under.
+    ///
+    /// Both halves of `FactsPolicy` come from this one accessor so that a deployment cannot end up
+    /// with the mode from configuration and the boundary from a default — which would silently
+    /// move where D27's mandatory escalation applies.
+    #[must_use]
+    pub fn facts_policy(&self) -> FactsPolicy {
+        FactsPolicy::from_tenant_config(
+            self.facts_unavailable.into(),
+            ClassificationRank::new(self.restricted_at),
+        )
+    }
+}
+
+/// What happens when the security facts a rule needs are missing or stale (`docs/06 §12`).
+///
+/// # Why this is not [`FailureMode`]
+///
+/// Two reasons, and the second is the load-bearing one.
+///
+/// The spellings differ: `docs/06 §12` names these `FAIL_CLOSED` and **`FAIL_OPEN_AUDIT`**, and the
+/// suffix is not decoration — the mode is "allow, record a high-visibility audit event, and enqueue
+/// a priority rescan", so a key spelled `FAIL_OPEN` would promise an operator something weaker than
+/// what happens and something stronger than what `FailureMode::FailOpen` means elsewhere.
+///
+/// And this is the only route into `enclave_core::FactsUnavailable`, which deliberately implements
+/// neither `Deserialize` nor `FromStr` (D27): there must be no path from bytes on the wire to a
+/// value of it, so that a *request* cannot carry an override even as a field somebody meant to
+/// ignore. Configuration is not the wire, so the deserializable half lives here and converts. The
+/// duplication is the price of that guarantee, and `the_two_spellings_of_facts_unavailable_agree`
+/// is what stops the two drifting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum FactsUnavailablePolicy {
+    /// Deny the sensitive action and explain that scanning is in progress. The default, and
+    /// mandatory for `RESTRICTED` and for external sharing whatever this says.
+    #[default]
+    FailClosed,
+    /// Allow, record a high-visibility audit event, and enqueue a priority rescan.
+    FailOpenAudit,
+}
+
+impl From<FactsUnavailablePolicy> for FactsUnavailable {
+    fn from(value: FactsUnavailablePolicy) -> Self {
+        match value {
+            FactsUnavailablePolicy::FailClosed => Self::FailClosed,
+            FactsUnavailablePolicy::FailOpenAudit => Self::FailOpenAudit,
+        }
+    }
+}
+
+/// How a tenant's DLP policy is being run (`docs/06-SECURITY-DLP-ACCESS.md §9`).
+///
+/// The operator-facing half of `enclave_dlp::DlpMode`. Five values, not two: the earlier
+/// `monitor`/`enforce` pair could not express the rollout `plans/M4-GOVERNANCE.md §2` is built
+/// around — *a control that cannot be turned on gradually will be turned on carelessly, or not at
+/// all* — and `docs/06 §9` requires simulation before enforcement for any `BLOCK` or `QUARANTINE`
+/// policy, which needs `SIMULATION` to be a value somebody can write down.
+///
+/// The canonical spellings are `docs/06 §9`'s uppercase ones. The lowercase aliases are kept
+/// because they are what the earlier two-value key accepted, and refusing to load a file over the
+/// case of a word it has always used is a worse outcome than accepting both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum DlpMode {
+    /// No content inspection at any enforcement point.
+    #[serde(alias = "disabled")]
+    Disabled,
     /// Record matches, allow the action. The default, so a new deployment does not block work
     /// before its rules have been tuned.
     #[default]
+    #[serde(alias = "monitor")]
     Monitor,
+    /// Evaluate exactly as `ENFORCE` would and record what it would have done, without doing it.
+    #[serde(alias = "simulation")]
+    Simulation,
+    /// Apply the obligations matches demand, but never refuse.
+    #[serde(alias = "warn")]
+    Warn,
     /// Block on match.
+    #[serde(alias = "enforce")]
     Enforce,
 }
 
@@ -1142,6 +1235,7 @@ fn env_ref(explicit: Option<&SecretRef>, env_name: Option<&str>) -> Option<Secre
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use enclave_core::Exposure;
 
     #[test]
     fn defaults_are_the_safe_choice() {
@@ -1153,7 +1247,10 @@ mod tests {
         assert_eq!(config.auth.refresh_token.reuse_detection, ReuseDetection::RevokeFamily);
         assert!(config.auth.refresh_token.cookie.secure);
         assert_eq!(config.security.privileged_denylist_failure, FailureMode::FailClosed);
-        assert_eq!(config.dlp.facts_unavailable, FailureMode::FailClosed);
+        assert_eq!(config.dlp.facts_unavailable, FactsUnavailablePolicy::FailClosed);
+        assert_eq!(config.dlp.default_mode, DlpMode::Monitor);
+        assert!(config.dlp.is_enabled(), "MONITOR inspects content; it simply does not refuse");
+        assert_eq!(config.dlp.restricted_at, ClassificationRank::RESTRICTED.get());
         assert!(config.audit.enabled);
         assert!(config.audit.hash_chain);
         assert!(config.antivirus.is_enabled());
@@ -1549,6 +1646,103 @@ mcp:
 ";
         let config: Config = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config, Config::default());
+    }
+
+    /// The two spellings of `facts_unavailable` are one vocabulary, held in two types for D27's
+    /// sake. A test rather than a comment, because the whole point of the duplication is that the
+    /// compiler cannot check it.
+    #[test]
+    fn the_two_spellings_of_facts_unavailable_agree() {
+        for (configured, domain) in [
+            (FactsUnavailablePolicy::FailClosed, FactsUnavailable::FailClosed),
+            (FactsUnavailablePolicy::FailOpenAudit, FactsUnavailable::FailOpenAudit),
+        ] {
+            assert_eq!(FactsUnavailable::from(configured), domain);
+            // `docs/06 §12` names them, and an audit row records them; the YAML key an operator
+            // writes must be the same string.
+            let yaml = serde_yaml::to_string(&configured).expect("serialize");
+            assert!(
+                yaml.trim().trim_matches('\'').ends_with(domain.as_str()),
+                "the configured spelling {yaml:?} is not the documented {}",
+                domain.as_str()
+            );
+        }
+    }
+
+    /// `restricted_at` is where D27's mandatory escalation applies, and it must survive the trip
+    /// from YAML into the type the chain actually consults.
+    #[test]
+    fn the_facts_policy_is_built_from_both_configured_keys() {
+        let yaml = "
+dlp:
+  default_mode: SIMULATION
+  facts_unavailable: FAIL_OPEN_AUDIT
+  restricted_at: 30
+";
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.dlp.default_mode, DlpMode::Simulation);
+
+        let policy = config.dlp.facts_policy();
+        assert_eq!(policy.on_unavailable(), FactsUnavailable::FailOpenAudit);
+        // The boundary moved with the key: a rank of 30 is now RESTRICTED for this tenant, and 29
+        // is not. Asserted through the predicate rather than through a getter, because the
+        // predicate is what decides a request.
+        let read = enclave_core::Action::File(enclave_core::FileAction::ContentRead);
+        assert!(policy.is_forced_closed(
+            read,
+            Some(ClassificationRank::new(30)),
+            Exposure::Internal
+        ));
+        assert!(!policy.is_forced_closed(
+            read,
+            Some(ClassificationRank::new(29)),
+            Exposure::Internal
+        ));
+
+        // And the default is not silently substituted when the key is absent.
+        let bare: Config = serde_yaml::from_str("dlp:\n  default_mode: ENFORCE\n").unwrap();
+        assert_eq!(bare.dlp.restricted_at, ClassificationRank::RESTRICTED.get());
+    }
+
+    /// `DISABLED` is a mode, not the absence of one, and it is the only one that turns DLP off.
+    #[test]
+    fn disabled_is_the_only_mode_that_stops_dlp_evaluating() {
+        for (mode, enabled) in [
+            (DlpMode::Disabled, false),
+            (DlpMode::Monitor, true),
+            (DlpMode::Simulation, true),
+            (DlpMode::Warn, true),
+            (DlpMode::Enforce, true),
+        ] {
+            let dlp = DlpConfig { default_mode: mode, ..DlpConfig::default() };
+            assert_eq!(dlp.is_enabled(), enabled, "{mode:?}");
+        }
+    }
+
+    /// Every mode `docs/06 §9` names must be writable, in both the documented spelling and the one
+    /// the two-value key used to accept.
+    #[test]
+    fn every_documented_dlp_mode_parses_in_either_case() {
+        for (written, expected) in [
+            ("DISABLED", DlpMode::Disabled),
+            ("MONITOR", DlpMode::Monitor),
+            ("SIMULATION", DlpMode::Simulation),
+            ("WARN", DlpMode::Warn),
+            ("ENFORCE", DlpMode::Enforce),
+            ("disabled", DlpMode::Disabled),
+            ("monitor", DlpMode::Monitor),
+            ("simulation", DlpMode::Simulation),
+            ("warn", DlpMode::Warn),
+            ("enforce", DlpMode::Enforce),
+        ] {
+            let yaml = format!("dlp:\n  default_mode: {written}\n");
+            let config: Config = serde_yaml::from_str(&yaml).expect(written);
+            assert_eq!(config.dlp.default_mode, expected, "{written}");
+        }
+
+        // The control: a value that is not a mode is refused rather than defaulted to MONITOR.
+        // Without this, every assertion above would also pass against a lenient deserializer.
+        assert!(serde_yaml::from_str::<Config>("dlp:\n  default_mode: mostly\n").is_err());
     }
 
     #[test]

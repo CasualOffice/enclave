@@ -414,13 +414,13 @@ pub async fn browse(
         .map_err(|error| ApiError::new(existence_gate(error), request_id))?;
     let obligations = consume(decision);
 
-    // Listing a container carries no obligation any current stage can attach. If one ever does —
-    // a watermark on the names themselves, say — it has to be satisfied here, and this assertion is
-    // what makes that a failing test rather than a silently dropped control.
-    debug_assert!(
-        obligations.is_empty(),
-        "no stage attaches an obligation to browsing a container yet; if one does, satisfy it here"
-    );
+    // Listing a container carries no obligation any current stage can attach, and this path could
+    // not satisfy one if it did — a watermark on the names themselves has nowhere to be burned in.
+    // An unsatisfiable obligation is a refusal (D29, `CLAUDE.md` rule 8).
+    //
+    // A `debug_assert!` until `ENC-582`, which meant the release build dropped it and returned the
+    // listing — the check ran only where nobody was looking, which is `ENC-544` again.
+    obligations.require_none().map_err(|error| ApiError::new(error, request_id))?;
 
     let mut tx = state
         .db
@@ -582,11 +582,11 @@ pub async fn file_versions(
         .await
         .map_err(|error| ApiError::new(existence_gate(error), request_id))?;
     let obligations = consume(decision);
-    debug_assert!(
-        obligations.is_empty(),
-        "no stage attaches an obligation to reading version metadata yet; if one does, satisfy it \
-         here — a watermark obligation on history means the client must not render it bare"
-    );
+    // A watermark obligation on history means the client must not render it bare, and this handler
+    // returns JSON rather than a rendition — so there is nothing here that could carry the mark.
+    // Refusing is the only honest answer (D29). Was a `debug_assert!`, so the release build served
+    // the history and dropped the obligation; `ENC-582` made the check one that ships.
+    obligations.require_none().map_err(|error| ApiError::new(error, request_id))?;
 
     let mut tx = state
         .db

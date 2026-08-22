@@ -279,6 +279,52 @@ financial data.
 Simulation is mandatory before enforcement for any policy whose effect is `BLOCK` or `QUARANTINE`.
 The admin UI refuses to enable enforcement on a policy that has never been simulated.
 
+### 9.1 What each mode does
+
+The modes are a ladder, and every rung adds exactly one thing to the one below it:
+
+| Mode | Evaluates | Records | Applies obligations | Refuses |
+|---|---|---|---|---|
+| `DISABLED` | no | no | no | no |
+| `MONITOR` | yes | yes | no | no |
+| `SIMULATION` | yes | yes | no | no |
+| `WARN` | yes | yes | yes | no |
+| `ENFORCE` | yes | yes | yes | yes |
+
+`DISABLED` is a mode a tenant may legitimately run in, not the absence of configuration. It is the
+one mode that does not inspect content, and that is what the mode *means* rather than an
+optimization.
+
+`MONITOR` and `SIMULATION` have the same effect on a request and are not the same mode. The
+difference is what the record means: `MONITOR` says a live policy observed this, `SIMULATION` says a
+candidate policy was rehearsed against it. The gate in the paragraph above — enforcement refused on a
+policy never simulated — is a question asked of the second kind of record, so the mode that produced
+an observation is part of the record and not a detail of it.
+
+**`SIMULATION` must be indistinguishable from `ENFORCE` except in its effect.** Same detectors, same
+facts, same evaluation, same record shape, same latency budget. A simulation that is fast because it
+skips work measures something other than what enforcement will do, which makes the mandatory-
+simulation rule worthless. The implementation makes the divergence hard to write rather than merely
+forbidden: nothing that computes a verdict is told which mode is running, and the "what would
+enforcement have done" field on every record is produced by calling the *same* mode-to-effect
+function with `ENFORCE`.
+
+### 9.2 Modes and `facts_unavailable` are different questions
+
+`facts_unavailable` (`§12`) decides what an evaluation **concludes** when it has no usable facts. The
+mode decides whether any conclusion is **acted on**. A tenant in a non-enforcing mode has not asked
+DLP to refuse anything, and `facts_unavailable` does not enable blocking on their behalf — so a
+missing-facts conclusion is recorded under `MONITOR`, `SIMULATION` and `WARN`, and refused only under
+`ENFORCE`. The alternative would be a mode that still blocks during a rollout, which is a mode nobody
+can roll out.
+
+### 9.3 An action no rule governs never consults facts
+
+Whether any rule applies to an attempt is settled **before** facts are required. Without that
+ordering a `FAIL_CLOSED` tenant would find every action refused while a scanning backlog drained —
+including actions no policy has anything to say about — and the control would be switched off and
+never switched back on.
+
 ## 10. DLP actions
 
 `ALLOW`, `AUDIT`, `WARN`, `REQUIRE_JUSTIFICATION`, `REQUIRE_APPROVAL`, `BLOCK`, `QUARANTINE`,
@@ -308,6 +354,49 @@ When facts are missing or their `detector_set_version` is older than the active 
 - `FAIL_CLOSED` — deny the sensitive action and explain that scanning is in progress. Default for
   `RESTRICTED` and for external sharing at any classification.
 - `FAIL_OPEN_AUDIT` — allow, record a high-visibility audit event, and enqueue a priority rescan.
+
+`dlp.facts_unavailable` is **tenant configuration and never a per-request choice**. A caller, a
+header and an operation may not select it; the shape that gets added for "just this bulk import"
+stays.
+
+### 12.1 What the mandatory escalations are compared against
+
+Two of the inputs are properties of the **resource**, not of the scan, and both are read in the same
+breath as the facts so that every stage of one request sees the same values:
+
+- **The classification.** `FAIL_CLOSED` is mandatory at and above the rank a tenant calls
+  `RESTRICTED` (`dlp.restricted_at`, since ranks are tenant-defined). That rank comes from the label
+  the resource carries *now* and not from the scan — otherwise the escalation is asked about an
+  unknown rank in exactly the case it exists for, and an unscanned `RESTRICTED` document is
+  permitted under `FAIL_OPEN_AUDIT` because the evidence that it was `RESTRICTED` was expected from
+  the scan that had not happened.
+- **The existing exposure.** "External sharing" is two questions. The actions that *create* external
+  exposure are a property of the action alone. Changing the terms of a share that is **already
+  external** — its expiry, its permission, its password — is not: whether that share is external is
+  a property of the resource. Both fail closed. Broadening a permission or dropping a password
+  increases the exposure of a document nobody has scanned, and the reading that the content was
+  already exposed so nothing new is does not hold.
+
+**Revocation is deliberately excluded from the second.** Revoking reduces exposure, and a tenant that
+cannot revoke an external link over unscanned content is left holding the link — the same trap a
+delete refused on an exhausted quota creates, reached by a different road.
+
+### 12.2 Facts are gathered once per request
+
+Every stage that needs facts receives the *same* value, read once before the chain's first stage. No
+stage re-fetches.
+
+The cost argument is the smaller one. The argument that decides it is that a stage re-fetching can
+observe *different* facts from the stage before it — a scan completing mid-chain — so the request is
+decided against two views of one document while the audit row records one of them. That is not a
+race that occasionally gives a wrong answer; it is a race that gives a decision nobody can
+reconstruct afterwards.
+
+The consequence is accepted rather than mitigated: **facts are as of the start of the request**, and
+a scan finishing during a request does not affect that request.
+
+A facts *read failure* is not "no facts". Returning "missing" on a database error converts an outage
+into a policy answer, and under `FAIL_OPEN_AUDIT` that answer is allow.
 
 ## 13. Incidents
 
