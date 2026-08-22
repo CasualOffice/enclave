@@ -20,13 +20,21 @@ async fn main() -> anyhow::Result<()> {
 
     enclave_observability::init(&Default::default()).context("initialise tracing")?;
 
+    // The DLP posture is settled here, before the banner, because the banner reports it (`ENC-594`).
+    // Two independent parts: the **mode**, which comes from configuration and decides whether a
+    // conclusion is acted on, and the **rules**, which decide what is concluded and have no storage
+    // yet — `ENC-615`. A mode without rules governs nothing, and the banner says so rather than
+    // announcing a control that is on.
+    let dlp_mode = enclave_dlp::DlpMode::from(config.dlp.default_mode);
+    let dlp_rules = enclave_dlp::RuleSet::empty();
+
     // Loud, once, at start-up. A deployment running with five of six stages permitting everything
     // looks identical from the outside to one carefully allowing each request, and the difference
     // matters enormously. `docs/12-TESTING.md §5` has CI proving the gates; this is the equivalent
     // for an operator standing in front of a running process.
-    let unenforcing = unenforcing_stages();
+    let unenforcing = unenforcing_stages(dlp_mode, dlp_rules.len());
     for stage in &unenforcing {
-        tracing::warn!(stage, "policy stage is not enforcing");
+        tracing::warn!(stage = stage.as_str(), "policy stage is not enforcing");
     }
 
     if config.profile == enclave_config::DeploymentProfile::Enterprise && !unenforcing.is_empty() {
@@ -73,15 +81,55 @@ async fn main() -> anyhow::Result<()> {
          the cache TTL"
     );
 
+    // DLP runs in the mode the tenant's configuration names (`ENC-594`), replacing `DisabledDlp` as
+    // the only option. `DisabledDlp` stays reachable and is what `DISABLED` builds: it is one of
+    // `docs/06 §9`'s five modes and a posture a tenant may legitimately run, not a placeholder —
+    // and a deployment that wants DLP off should not have to name a rule set and a sink to say so.
+    //
+    // Every other mode gets `ModedDlp`, which evaluates identically in all four and differs only in
+    // what it does about the verdict (D28). The observation sink is the `tracing` one, which is
+    // what can be written without inventing a schema; `ENC-593` is the queryable record
+    // `docs/06 §9`'s simulate-before-enforce gate actually needs.
+    let dlp: Arc<dyn enclave_core::DlpService> = if dlp_mode.evaluates() {
+        Arc::new(enclave_dlp::ModedDlp::new(
+            dlp_mode,
+            dlp_rules,
+            Arc::new(enclave_dlp::TracingObservations),
+        ))
+    } else {
+        Arc::new(enclave_dlp::DisabledDlp)
+    };
+
+    // The reader that makes the stage above able to decide anything (`ENC-594`). Without it the
+    // engine keeps `stub::NoSecurityFacts`, which reports every resource unscanned — safe, because
+    // the fail-closed default then refuses rather than permitting, but not a state to ship.
+    //
+    // The active detector set is passed rather than discovered: a fact row has to answer "were you
+    // produced by the detectors running *now*", and a set inferred from the rows would answer "were
+    // you produced by the detectors that produced you" (`ENC-581`).
+    let facts = enclave_dlp::PgSecurityFacts::new(
+        db.clone(),
+        enclave_dlp::builtin_set().version().clone(),
+        config.dlp.facts_policy(),
+    );
+    tracing::info!(
+        detector_set = facts.active_set().as_str(),
+        facts_unavailable = facts.policy().on_unavailable().as_str(),
+        dlp_mode = dlp_mode.as_str(),
+        "DLP is reading security facts; a version with no fact row is unscanned, and what that \
+         means is the facts_unavailable policy's to say"
+    );
+
     let policy = PolicyEngine::new(
         Arc::new(conditional_access),
         Arc::new(enclave_authorization::SelfServiceAuthorization),
         Arc::new(enclave_information_barriers::UnconfiguredBarriers),
         Arc::new(enclave_classification::UnconfiguredClassification),
-        Arc::new(enclave_dlp::DisabledDlp),
+        dlp,
         Arc::new(enclave_retention::UnconfiguredRetention),
         audit,
-    );
+    )
+    .with_facts(Arc::new(facts));
 
     // The one place a client address is established (`ENC-583`). An empty `server.trusted_proxies`
     // means the socket peer *is* the client address and `X-Forwarded-For` is not read at all —
@@ -149,26 +197,56 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The prefix of [`unconfigured_stages`]'s entry for the stage this binary now wires.
+/// The prefix of [`unconfigured_stages`]'s entry for the stage `ENC-590` wired.
 const CONDITIONAL_ACCESS_STAGE: &str = "conditional_access";
+
+/// The prefix of [`unconfigured_stages`]'s entry for the stage `ENC-594` wired.
+const DLP_STAGE: &str = "dlp";
 
 /// The policy stages still permitting everything **after this binary's wiring**.
 ///
 /// [`unconfigured_stages`] is a fixed list in `crates/api/src/state.rs` describing the stages as
-/// `ApiState` finds them, and `ENC-590` makes one of them untrue: conditional access is wired to
-/// `TenantConditionalAccess` above and decides from stored rules. The list is filtered here rather
-/// than edited there because that file is held by another change in flight; `ENC-601` is the row
-/// for deriving the list from what was actually wired, which is the shape that cannot go stale.
+/// `ApiState` finds them, and two of its entries are now decided here instead: conditional access
+/// is `TenantConditionalAccess` and DLP is whatever `dlp.default_mode` names. The list is filtered
+/// rather than edited there because that file is held by another change in flight; `ENC-601` is the
+/// row for deriving it from what was actually wired, which is the shape that cannot go stale — and
+/// this second entry is the case it predicted.
 ///
-/// Filtering rather than hard-coding the remainder is deliberate: the entry has to be *found* to be
-/// removed, so a rename in `state.rs` fails `the_conditional_access_stage_is_no_longer_unconfigured`
-/// instead of silently filtering nothing.
-fn unenforcing_stages() -> Vec<&'static str> {
-    unconfigured_stages()
+/// Filtering rather than hard-coding the remainder is deliberate: an entry has to be *found* to be
+/// removed, so a rename in `state.rs` fails a test here instead of silently filtering nothing.
+///
+/// # What "unenforcing" means for DLP, which is not the same as "disabled"
+///
+/// The entry is replaced rather than simply dropped, because the honest answer has three parts and
+/// the fixed string only says one of them. A stage that **cannot refuse anything** is announced,
+/// and there are two ways to be in that state:
+///
+///   * the mode does not enforce — `DISABLED` inspects nothing, and `MONITOR`, `SIMULATION` and
+///     `WARN` are rungs of `docs/06 §9`'s rollout ladder that deliberately never refuse;
+///   * no rule is in force, in which case the mode is irrelevant: `RuleSet::evaluate` returns
+///     `NotGoverned` for every action, so `ENFORCE` over an empty set refuses exactly as much as
+///     `DISABLED` does — nothing.
+///
+/// The second is the state every deployment is in today (`ENC-615`: rules have no storage), which
+/// is precisely why it is reported rather than assumed away. An operator who set `ENFORCE` and saw
+/// no entry in this banner would reasonably conclude that content inspection was refusing things.
+fn unenforcing_stages(dlp_mode: enclave_dlp::DlpMode, dlp_rules: usize) -> Vec<String> {
+    let dlp_refuses = dlp_mode.enforces() && dlp_rules > 0;
+
+    let mut stages: Vec<String> = unconfigured_stages()
         .iter()
-        .copied()
-        .filter(|stage| !stage.starts_with(CONDITIONAL_ACCESS_STAGE))
-        .collect()
+        .filter(|stage| {
+            !stage.starts_with(CONDITIONAL_ACCESS_STAGE) && !stage.starts_with(DLP_STAGE)
+        })
+        .map(|stage| (*stage).to_owned())
+        .collect();
+
+    if !dlp_refuses {
+        let posture =
+            if dlp_mode.evaluates() { "evaluates, refuses nothing" } else { "inspects nothing" };
+        stages.push(format!("{DLP_STAGE} ({dlp_mode}, {dlp_rules} rules — {posture})"));
+    }
+    stages
 }
 
 /// Translates the configuration's database section into the `db` crate's own type.
@@ -221,20 +299,20 @@ mod tests {
     /// `TenantConditionalAccess` is named there. The behavioural proof that the wired type decides
     /// anything is `crates/conditional_access/tests/stored_rules.rs`, which drives it through the
     /// `dyn ConditionalAccessService` the engine holds.
+    use enclave_dlp::DlpMode;
+
+    /// One rule is enough to make a rule set non-empty, and the count is all this banner reads.
+    const ONE_RULE: usize = 1;
+
     #[test]
     fn the_conditional_access_stage_is_no_longer_unconfigured() {
         let before = unconfigured_stages();
-        let after = unenforcing_stages();
+        let after = unenforcing_stages(DlpMode::Disabled, 0);
 
         assert!(
             before.iter().any(|stage| stage.starts_with(CONDITIONAL_ACCESS_STAGE)),
             "the entry this filter removes is no longer in the list; the filter is a no-op and the \
              start-up banner would be reporting a stage that is wired"
-        );
-        assert_eq!(
-            before.len() - after.len(),
-            1,
-            "exactly one entry belongs to the conditional-access stage"
         );
         assert!(
             !after.iter().any(|stage| stage.starts_with(CONDITIONAL_ACCESS_STAGE)),
@@ -242,7 +320,62 @@ mod tests {
         );
         // The positive control: the stages that really are stubs are still announced, so this does
         // not pass against a filter that emptied the list.
-        assert!(after.iter().any(|stage| stage.starts_with("dlp")));
         assert!(after.iter().any(|stage| stage.starts_with("retention")));
+        assert!(after.iter().any(|stage| stage.starts_with("classification")));
+    }
+
+    /// The DLP entry is now **computed** rather than fixed, and the banner has to be able to say
+    /// all three of the states a wired stage can be in (`ENC-594`).
+    ///
+    /// `docs/12 §1.2`: "dlp is not in the list" is an assertion about an absence and holds for free
+    /// against a filter that removed every entry, so the disappearance is asserted alongside the
+    /// two cases where the entry must still be there, and against a list that still names the
+    /// genuinely unconfigured stages.
+    #[test]
+    fn the_dlp_entry_says_whether_the_configured_mode_can_refuse_anything() {
+        assert!(
+            unconfigured_stages().iter().any(|stage| stage.starts_with(DLP_STAGE)),
+            "the fixed entry this replaces is gone from state.rs; the filter is a no-op and the \
+             computed entry below would be a second dlp line rather than a replacement"
+        );
+
+        // Enforcing, with a rule to enforce: the one state in which the stage can refuse, and the
+        // only one where it drops out of the banner.
+        let enforcing = unenforcing_stages(DlpMode::Enforce, ONE_RULE);
+        assert!(
+            !enforcing.iter().any(|stage| stage.starts_with(DLP_STAGE)),
+            "ENFORCE over a non-empty rule set refuses things and must not be announced as \
+             unenforcing: {enforcing:?}"
+        );
+        // The control for that absence: the stages that really are stubs are still announced.
+        assert!(enforcing.iter().any(|stage| stage.starts_with("retention")));
+
+        // Enforcing over nothing. The mode says refuse, the rule set has nothing to refuse, and an
+        // operator who read only the mode would believe content inspection was blocking.
+        let no_rules = unenforcing_stages(DlpMode::Enforce, 0);
+        let entry = no_rules
+            .iter()
+            .find(|stage| stage.starts_with(DLP_STAGE))
+            .expect("ENFORCE with no rules refuses nothing and must be announced");
+        assert!(entry.contains("ENFORCE"), "the banner names the mode actually running: {entry}");
+        assert!(entry.contains("0 rules"), "and why it refuses nothing: {entry}");
+
+        // A rung of the rollout ladder: rules exist and are evaluated, and none of them can refuse.
+        let monitoring = unenforcing_stages(DlpMode::Monitor, ONE_RULE);
+        let entry = monitoring
+            .iter()
+            .find(|stage| stage.starts_with(DLP_STAGE))
+            .expect("MONITOR records and never refuses, however many rules are in force");
+        assert!(entry.contains("MONITOR"), "{entry}");
+        assert!(entry.contains("evaluates"), "MONITOR does inspect content: {entry}");
+
+        // And `DISABLED`, which is a real mode rather than the absence of one — it must be
+        // distinguishable in the banner from a mode that evaluates and declines to act.
+        let disabled = unenforcing_stages(DlpMode::Disabled, ONE_RULE);
+        let entry = disabled
+            .iter()
+            .find(|stage| stage.starts_with(DLP_STAGE))
+            .expect("DISABLED inspects nothing and must be announced");
+        assert!(entry.contains("inspects nothing"), "{entry}");
     }
 }

@@ -1,6 +1,6 @@
 # 04 — Data Model
 
-> **Status:** Draft · **Version:** 1.5 · **Owner:** Platform Engineering · **Last updated:** 2026-08-22
+> **Status:** Draft · **Version:** 1.6 · **Owner:** Platform Engineering · **Last updated:** 2026-08-22
 > **Authoritative for:** all PostgreSQL DDL, tenant isolation, quotas. No other document defines schema.
 
 ## 1. Conventions
@@ -1078,6 +1078,76 @@ removing a quota — so it is an `UPDATE` setting `deleted_at`, the row and its 
 loader ignores it. The failure direction is right as well: a withdrawal the loader failed to honour
 denies too much, loudly, while a `DELETE` nobody could see would do the opposite.
 
+### 12.2 `security_facts` as created — the three columns that differ from the model above
+
+`migrations/0020_security_facts.sql` creates the table (`ENC-594`); `06-SECURITY-DLP-ACCESS.md §12`
+remains authoritative for what the facts *mean*. The shape it creates is §12's, with three
+deviations, and each is a decision rather than an omission.
+
+```sql
+CREATE TABLE security_facts (
+    tenant_id            UUID NOT NULL REFERENCES tenants (id),
+    file_id              UUID NOT NULL,
+    version_id           UUID NOT NULL,
+    pii_count            INT NOT NULL DEFAULT 0 CHECK (pii_count       >= 0),
+    secret_count         INT NOT NULL DEFAULT 0 CHECK (secret_count    >= 0),
+    financial_count      INT NOT NULL DEFAULT 0 CHECK (financial_count >= 0),
+    health_count         INT NOT NULL DEFAULT 0 CHECK (health_count    >= 0),
+    max_severity         TEXT CHECK (max_severity IN ('LOW','MEDIUM','HIGH','CRITICAL')),
+    risk_score           INT NOT NULL DEFAULT 0 CHECK (risk_score BETWEEN 0 AND 100),
+    classification_rank  INT,
+    scan_version         INT NOT NULL,
+    detector_set_version TEXT NOT NULL CHECK (length(detector_set_version) BETWEEN 1 AND 200),
+    scanned_at           TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (tenant_id, file_id, version_id),
+    CONSTRAINT security_facts_file_fkey
+        FOREIGN KEY (tenant_id, file_id) REFERENCES files (tenant_id, id) ON DELETE CASCADE,
+    CONSTRAINT security_facts_version_fkey
+        FOREIGN KEY (tenant_id, version_id) REFERENCES file_versions (tenant_id, id)
+        ON DELETE CASCADE
+);
+
+CREATE INDEX idx_facts_stale ON security_facts (tenant_id, scan_version);
+```
+
+**There is no `detector_results JSONB`.** §12 models a per-detector breakdown as an opaque document,
+and nothing reads one: a synchronous decision compares category counts, a severity, a risk score and
+a rank, which is the whole vocabulary `enclave_dlp::policy::Condition` has (Q16 — structured
+detectors, no patterns). What an opaque `results` document is in practice is the first place a
+future scanner writes the string it matched, and from there it is in every backup, replica and
+support export. `CLAUDE.md` rule 10 is kept structurally everywhere else — `SecurityFacts` has no
+field a match value could occupy, a `Candidate` renders `<candidate withheld>` — and a column that
+would hold anything is where that property would be lost. An absent column cannot be filled in by
+accident; a breakdown that is genuinely needed arrives as its own migration with its own argument.
+
+**`classification_rank INT` replaces `classification_id UUID`.** Comparisons are against *ranks*
+(`ClassificationRank`), `classifications` is not created by any migration yet, and a UUID pointing
+at nothing is a column no code can interpret and no foreign key can protect. When `classifications`
+lands, an id column can be added beside this one and back-filled. Note which rank this is: the one
+the **scan** resolved. The rank the mandatory `FAIL_CLOSED` escalation compares against is the label
+the resource carries *now*, read from the resource in the same breath as these facts (`06 §12.1`),
+because asking the scan for it leaves the escalation dead in exactly the case it exists for.
+
+**The counts carry `CHECK (… >= 0)`.** `DetectorCounts` holds `u32` and PostgreSQL's `INT` is
+signed, so without the constraint a negative row reads back as a count near four billion — a
+document that appears to carry two billion card numbers and fires every threshold rule the tenant
+has. The constraint is what makes the conversion in `enclave_db::security_facts` total.
+
+`detector_set_version` is compared for **equality** with the active set and never ordered: it is an
+opaque build identifier, and an ordering invented over it fails one-directionally — a version that
+sorts unexpectedly high reads as fresh, so stale facts decide a request that believes it saw the
+current rules (`ENC-581`). `scan_version` is the pipeline generation and answers a different
+question; `idx_facts_stale` indexes it so a backfill can find what a pipeline change invalidated.
+
+RLS enabled and forced with a `tenant_isolation` policy, as §3.2 requires. `enclave_app` holds
+`SELECT, INSERT, UPDATE` and **not** `DELETE`, and the reasoning is the mirror image of §12.1's:
+deleting a fact row does not make content look clean, it makes the version **unscanned** — which
+`FAIL_CLOSED` refuses loudly and `FAIL_OPEN_AUDIT` permits with a high-visibility event. Neither is
+a silent escalation, so withholding the statement costs nothing and it has no legitimate use: a
+rescan replaces (`INSERT … ON CONFLICT DO UPDATE`). What does remove a row is the content it
+describes going away — `ON DELETE CASCADE`, exactly as `renditions` in §8, since facts about a
+purged version are facts about nothing.
+
 
 ## 13. Compliance
 
@@ -1544,6 +1614,7 @@ CREATE INDEX idx_jobs_ready ON jobs (state, run_after) WHERE state = 'QUEUED';
 
 | Version | Date | Change |
 |---|---|---|
+| 1.6 | 2026-08-22 | Added §12.2, `security_facts` as created — the table a DLP decision is actually taken from (`ENC-594`). §12's shape, with three deviations recorded rather than left to be discovered: **no `detector_results JSONB`**, because nothing reads a per-detector breakdown and an opaque results document is the first place a future scanner writes the string it matched — `CLAUDE.md` rule 10 is structural everywhere else in this path and a column that would hold anything is where it would be lost; `classification_rank INT` in place of `classification_id UUID`, because comparisons are against ranks and `classifications` is created by no migration, so an id would point at nothing; and `CHECK (… >= 0)` on the counts, which is what makes the `INT`-to-`u32` conversion total rather than turning a negative row into two billion card numbers. `detector_set_version` is compared for equality and never ordered (`ENC-581`). `enclave_app` holds no `DELETE`: a rescan replaces, and the cascade from `file_versions` is what removes facts about content that no longer exists. `migrations/0020_security_facts.sql` applies it. |
 | 1.5 | 2026-08-22 | Added §12.1, `conditional_access_rules` — the stored form of a conditional-access rule, and the first tenant-editable policy this deployment evaluates (`ENC-590`). A second table beside §12's `conditional_access_policies` for the reason §16.1 is a second table beside the `quotas` pair: §12 models an evaluator with a rule `priority`, a scope and an opaque `definition`, and the evaluator that exists has none of the three — resolution is most-restrictive-wins in a fixed severity order, and this stage runs before authorization so it has no resource to scope to. Records three things the design did not state: `audience` is a **column** because Q19's rule-set separation is a type separation that JSONB would otherwise dissolve, and it cannot be inferred from the document because `client_is` and `action_is` are in both vocabularies; `effect`'s `CHECK` has no `ALLOW`, which is where §7.4's absent effect becomes structural rather than a convention of one Rust enum; and `enclave_app` holds no `DELETE`, so a rule is withdrawn with `deleted_at` and keeps its text. `migrations/0019_conditional_access_rules.sql` applies it. |
 | 1.4 | 2026-08-22 | Added §16.1, `storage_quotas` — the per-tenant stored-byte quota, and the only quota implemented (`ENC-584`, `plans/M4-GOVERNANCE.md` D31/Q18). One table rather than a `quotas` + `quota_usage` pair because a `CHECK` constraint cannot reference another table and D31 requires one as the backstop behind the charging statement. Records three things the design did not previously state: the bound lives in the charge's `WHERE` clause and a zero-row result is the refusal; `overshoot_bytes` is an acknowledgement of a legitimately over-limit tenant rather than headroom; and nightly reconciliation applies drift *relatively*, which is what removes the window in which a correction would either erase concurrent charges or lock them out. `migrations/0018_storage_quotas.sql` applies it. |
 | 1.3 | 2026-08-22 | Added §10.1, the slug rule: a slug addresses one live row in its container, so `libraries`, `lists` and `pages` gain partial unique indexes keyed on `(tenant_id, workspace_id, slug)` and `tenants` keeps its non-partial `UNIQUE` as the stated exception. Resolves the disagreement `migrations/0015_lists.sql` recorded (`ENC-544`); `migrations/0017_slug_uniqueness.sql` applies it. |
