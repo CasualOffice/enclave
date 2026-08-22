@@ -56,8 +56,9 @@ use enclave_preview::{Delivery, PreviewPipeline, ReadableVersion, RenditionProfi
 use serde::Deserialize;
 
 use crate::auth::Authenticated;
-use crate::download::{conceal_if_not_visible, Envelope};
+use crate::download::conceal_if_not_visible;
 use crate::error::ApiError;
+use crate::error::Envelope;
 use crate::state::ApiState;
 
 /// The rendition profile used when a caller names none.

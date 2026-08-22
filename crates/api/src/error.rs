@@ -3,11 +3,19 @@
 //! One place, so the rule in `docs/05-API.md §5` — a stable code, a user-safe message, a
 //! remediation, and *nothing else* — cannot be observed by one handler and forgotten by the next.
 
-use axum::http::StatusCode;
+use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use enclave_core::{Error, ReasonCode, RequestId};
 use serde::Serialize;
+
+/// `Cache-Control` for a response a shared cache must not keep.
+///
+/// It began on the delivery path, where a cached response would hand a signed URL to the next
+/// caller without a policy decision (D14). It applies to every refusal for the same reason in
+/// miniature: an error envelope carries a request id, and a shared cache serving it to a second
+/// caller would attach one caller's correlation id to another's failure.
+pub(crate) const NO_STORE: HeaderValue = HeaderValue::from_static("private, no-store");
 
 /// The error envelope from `docs/05-API.md §5`.
 #[derive(Debug, Serialize)]
@@ -139,6 +147,92 @@ impl IntoResponse for ApiError {
         let body =
             ErrorBody { error: ErrorDetail { code, message, remediation, request_id, details } };
         (status, Json(body)).into_response()
+    }
+}
+
+/// The `docs/05-API.md §5` error envelope, for a status [`ApiError`] cannot express.
+///
+/// [`ApiError`] maps [`Error`], whose `status_code` is derived from the variant — so there is no
+/// way through it to send a `409` that is not a revision conflict, a `422`, or a `501`. Rather than
+/// let each handler invent its own error shape, this builds the one envelope `§5` defines and every
+/// such refusal in the crate goes through it.
+///
+/// A description rather than a rendered [`Response`] because it travels in the `Err` arm of small
+/// helpers, and an `axum` response is a large error variant to move around
+/// (`clippy::result_large_err`). Rendering is the last step, where the request id is in scope.
+///
+/// # `code`, `message` and `remediation` are literals; `details` is not
+///
+/// `§5` requires the three prose fields to be user-safe and localizable, which rules out
+/// interpolating anything the request supplied — so they are `&'static str` and the compiler holds
+/// the rule. `details` is the field `§5` reserves for per-field diagnosis, and it is where
+/// `ENC-603`'s conditional-access rule decoder puts the clause it refused: *`unknown variant
+/// `posture_below`*` is the whole diagnostic value of a strict decoder, and an administrator who is
+/// told only "the rule was rejected" is an administrator who goes back to `psql`.
+#[derive(Debug)]
+pub(crate) struct Envelope {
+    status: StatusCode,
+    code: &'static str,
+    message: &'static str,
+    remediation: &'static str,
+    details: Vec<serde_json::Value>,
+}
+
+impl Envelope {
+    /// Describes a refusal. Every string is a literal — see the type's note.
+    pub(crate) const fn new(
+        status: StatusCode,
+        code: &'static str,
+        message: &'static str,
+        remediation: &'static str,
+    ) -> Self {
+        Self { status, code, message, remediation, details: Vec::new() }
+    }
+
+    /// Attaches the `details` array — validation fields, or the diagnostic facts of a `501`.
+    pub(crate) fn with_details(mut self, details: Vec<serde_json::Value>) -> Self {
+        self.details = details;
+        self
+    }
+
+    /// The status this envelope will be sent with.
+    ///
+    /// Test-only: on the production paths the envelope is rendered rather than inspected, and a
+    /// reader of one of these helpers wants to assert the refusal without building a whole
+    /// response to read it back out of.
+    #[cfg(test)]
+    pub(crate) const fn status(&self) -> StatusCode {
+        self.status
+    }
+
+    /// The stable code this envelope will carry. Test-only, as [`Envelope::status`].
+    #[cfg(test)]
+    pub(crate) const fn code(&self) -> &'static str {
+        self.code
+    }
+
+    /// The `details` array, for a test that wants to assert *what* a refusal named.
+    ///
+    /// Test-only, and it is the reason the details are held as values rather than rendered
+    /// eagerly: a test that had to build a whole response and parse it back would be asserting
+    /// axum's rendering as much as this crate's refusal.
+    #[cfg(test)]
+    pub(crate) fn details(&self) -> &[serde_json::Value] {
+        &self.details
+    }
+
+    /// Renders it, stamping the request id that ties a client's report to a log line.
+    pub(crate) fn into_response(self, request_id: RequestId) -> Response {
+        let body = serde_json::json!({
+            "error": {
+                "code": self.code,
+                "message": self.message,
+                "remediation": self.remediation,
+                "requestId": request_id.to_string(),
+                "details": self.details,
+            }
+        });
+        (self.status, [(header::CACHE_CONTROL, NO_STORE)], Json(body)).into_response()
     }
 }
 
