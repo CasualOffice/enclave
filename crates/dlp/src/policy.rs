@@ -20,6 +20,7 @@ use enclave_core::{
     FactsStaleness, Obligation, Obligations, ReasonCode, Remediation, RiskScore, SecurityFacts,
     Severity, UnscannedAllow,
 };
+use serde::{Deserialize, Serialize};
 
 /// A rule's identity, as it appears in `dlp_policies` and in an observation.
 ///
@@ -173,7 +174,14 @@ impl std::fmt::Display for DlpAction {
 /// Predicates over the action rather than a list of every variant, because a rule written as "block
 /// export of anything carrying payment data" has to keep working when a new content-exposing action
 /// is added — and `Action::exposes_content` is where the codebase already decides what that means.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Deserialize` is externally tagged and closed, so `{"exactly": …}` is an [`ActionScope`] and
+/// nothing else can be. A stored scope naming a variant this enum does not have is refused by name
+/// (`crate::store`), never trimmed to the clauses that parsed: a rule that lost a scope governs
+/// *fewer* actions than the administrator wrote, and the actions it stops governing are the ones
+/// nobody notices.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum ActionScope {
     /// Every action.
     Any,
@@ -209,7 +217,15 @@ impl ActionScope {
 /// Q16 is binding here as much as in [`crate::detector`]: every condition is a comparison against a
 /// count, a rank or a score. **There is no variant a pattern could occupy**, so a tenant asking for
 /// a custom expression cannot be served by adding one to this enum either.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Storage is where that would otherwise be lost, because JSONB holds any document. `Deserialize`
+/// is externally tagged and closed, so `{"pattern": "\\d{16}"}` in a stored rule produces
+/// *unknown variant `pattern`* and the load **fails** — the rule is refused by name rather than
+/// having the clause dropped. A rule that lost a condition matches **more** requests than the
+/// administrator wrote, which is the permissive failure; a rule that keeps a condition nobody can
+/// evaluate is the one this refuses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Condition {
     /// At least this many findings in one category.
     CategoryAtLeast {
@@ -285,6 +301,23 @@ impl DlpRule {
     #[must_use]
     pub const fn action(&self) -> DlpAction {
         self.action
+    }
+
+    /// Which actions it governs.
+    ///
+    /// Exposed so [`crate::store`] can render a rule back into the row it came from. A rule that
+    /// could be decoded and not re-encoded would make an admin surface unable to show an
+    /// administrator what it stored, and would leave the two directions untestable against each
+    /// other.
+    #[must_use]
+    pub fn scope(&self) -> &[ActionScope] {
+        &self.scope
+    }
+
+    /// The conjunctive conditions. Empty means "whenever the action is governed".
+    #[must_use]
+    pub fn conditions(&self) -> &[Condition] {
+        &self.conditions
     }
 
     /// Whether this rule has anything to say about the attempt.

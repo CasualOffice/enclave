@@ -20,14 +20,26 @@ enclave-config = { workspace = true }
 # `enclave-conditional_access` has, for the same reason.
 enclave-db   = { workspace = true }
 async-trait  = { workspace = true }
+# `enclave_core::Error::Internal` *holds* an `anyhow::Error`, so a crate that maps its own error
+# into the canonical type has to be able to construct one — the same exception, for the same reason,
+# that `enclave-conditional_access`'s manifest argues. It is never this crate's own error type.
+anyhow       = { workspace = true }
+# The stored form of a rule (`ENC-615`). `serde` is on `Condition` and `ActionScope` themselves
+# rather than on a parallel set of wire structs, so the vocabulary a stored rule may use *is* the
+# vocabulary the evaluator has — which is what stops storage from expressing a rule the types
+# cannot, and Q16's "no pattern anywhere on the synchronous path" is exactly such a rule.
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+thiserror    = { workspace = true }
 # One structured event per evaluation. `MONITOR` and `SIMULATION` have no effect on the request, so
 # the record is the mode's entire output.
 tracing      = { workspace = true }
 
 [dev-dependencies]
 # `tests/modes.rs` drives the async `DlpService` the policy engine holds; `tests/stored_facts.rs`
-# needs a multi-threaded runtime because it drives a pool.
-tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }
+# needs a multi-threaded runtime because it drives a pool, and `tests/stored_rules.rs` needs timers
+# because the cache's staleness bound is a duration and asserting it means letting one elapse.
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time"] }
 # A throwaway PostgreSQL and the seeded `tenant-alpha`/`tenant-beta` pair. `docs/12 §3`: beta exists
 # so a cross-tenant assertion has a realistic counterpart rather than passing because the other
 # tenant's rows were named differently. A **dev**-dependency: `enclave-testing` takes this crate as
