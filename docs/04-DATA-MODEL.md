@@ -1,6 +1,6 @@
 # 04 — Data Model
 
-> **Status:** Draft · **Version:** 1.6 · **Owner:** Platform Engineering · **Last updated:** 2026-08-22
+> **Status:** Draft · **Version:** 1.7 · **Owner:** Platform Engineering · **Last updated:** 2026-08-22
 > **Authoritative for:** all PostgreSQL DDL, tenant isolation, quotas. No other document defines schema.
 
 ## 1. Conventions
@@ -1148,6 +1148,101 @@ rescan replaces (`INSERT … ON CONFLICT DO UPDATE`). What does remove a row is 
 describes going away — `ON DELETE CASCADE`, exactly as `renditions` in §8, since facts about a
 purged version are facts about nothing.
 
+### 12.3 `dlp_rules` — the stored form of a DLP rule, and the five columns §12 models that it does not
+
+`migrations/0021_dlp_rules.sql` creates the table (`ENC-615`); `06-SECURITY-DLP-ACCESS.md §8`–`§10`
+remains authoritative for what a rule *is* and what its action means. This is a second table beside
+§12's `dlp_policies`, on the same boundary §12.1 draws beside `conditional_access_policies` and
+§16.1 beside the `quotas` pair: the evaluator that exists does not read five of `dlp_policies`'
+columns, and a column the evaluator ignores is a promise rather than a schema.
+
+```sql
+CREATE TABLE dlp_rules (
+    tenant_id     UUID NOT NULL REFERENCES tenants (id),
+    id            UUID NOT NULL,
+    name          TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 200),
+    priority      INT NOT NULL DEFAULT 100 CHECK (priority >= 0),
+    scope         JSONB NOT NULL CHECK (
+                      jsonb_typeof(scope) = 'array' AND jsonb_array_length(scope) > 0),
+    conditions    JSONB NOT NULL CHECK (jsonb_typeof(conditions) = 'array'),
+    action        TEXT NOT NULL CHECK (action IN (
+                      'AUDIT','WARN','REQUIRE_JUSTIFICATION','REQUIRE_APPROVAL','BLOCK',
+                      'QUARANTINE','REMOVE_SHARE','READ_ONLY','NO_DOWNLOAD','WATERMARK',
+                      'RECLASSIFY','NOTIFY_SECURITY')),
+    reclassify_to INT CHECK (reclassify_to IS NULL OR reclassify_to >= 0),
+    created_by    UUID NOT NULL,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    deleted_at    TIMESTAMPTZ,
+    PRIMARY KEY (tenant_id, id),
+    CONSTRAINT dlp_rules_reclassify_target
+        CHECK ((action = 'RECLASSIFY') = (reclassify_to IS NOT NULL)),
+    CONSTRAINT dlp_rules_author_fkey
+        FOREIGN KEY (tenant_id, created_by) REFERENCES users (tenant_id, id)
+);
+
+CREATE UNIQUE INDEX uq_dlp_rules_live_name
+    ON dlp_rules (tenant_id, name) WHERE deleted_at IS NULL;
+
+CREATE INDEX idx_dlp_rules_live
+    ON dlp_rules (tenant_id, priority, name) WHERE deleted_at IS NULL;
+```
+
+**There is no `mode` column, and that is the milestone's structural guarantee rather than an
+omission.** `plans/M4-GOVERNANCE.md` D28 requires `SIMULATION` to be indistinguishable from
+`ENFORCE` except in its effect, and `crates/dlp` makes that true by shape: `RuleSet` holds no mode
+field and `RuleSet::evaluate` takes no mode argument, so the code that reaches a conclusion has not
+been told which mode is running and cannot branch on it. A per-rule mode would have to be carried on
+the rule type to be read — it is precisely the field through which a divergence becomes writable. The
+mode is therefore the deployment's `dlp.default_mode`, read once at start-up. The cost is stated
+rather than hidden: a tenant cannot walk `06 §9`'s rollout ladder at its own pace while its
+neighbour stays behind (`ENC-632`).
+
+**There is no `ALLOW` action**, and the `CHECK` is where that absence becomes structural. `06 §10`
+lists it as "a rule that fires and does nothing, so an exception can be written above a broader
+rule", and the implemented evaluator does not give it that meaning: `DlpAction::Allow`'s demand is
+`Nothing`, and `Verdict::blocking_code` scans **past** a `Nothing` to the next fired rule, so an
+`ALLOW` above a `BLOCK` fires and changes nothing. Accepting the string would let an administrator
+write an exception, see it stored, watch it fire, and still be refused — the same failure §12.1's
+absent `ALLOW` effect avoids. `ENC-631` is the row for giving exceptions a meaning; until then the
+error direction is the safe one, since refusing to store an exception can only deny more than was
+written, and it denies at the moment the rule is written.
+
+**`enabled`, `scope_type`/`scope_id` and `definition` are likewise absent.** `enabled` would be a
+second way to switch a rule off beside withdrawal, and therefore a second thing to check when asking
+why a rule did not fire. No rule type has a resource scope: `ActionScope` is a predicate over the
+*action* (`Any`, `ExposesContent`, `ExternalSharing`, `Exactly`), which is what keeps "block export
+of anything carrying payment data" working when a new content-exposing action is added — a
+library-scoped rule would need `DlpRule::governs` to take the resource, so it cannot arrive as a
+column alone. And the action is a column rather than a field inside an opaque `definition` precisely
+so a `CHECK` can see it.
+
+**`priority` is the one §12 column that is read, and it decides less than its name suggests.**
+`RuleSet` is ordered and `Verdict::blocking_code` returns the **first** refusal in rule order rather
+than a computed strongest, because ranking reason codes would need an ordering nothing else in the
+codebase has. So `priority` decides *which reason code a refused caller is shown* when two refusing
+rules fire, and the order fired rules are recorded in. It does not decide whether a rule fires: every
+governing rule whose conditions hold fires, and obligations are applied as a union. The loader sorts
+`priority, name`, and `name` is unique among a tenant's live rules, so the order is total and two
+replicas cannot disagree.
+
+**`conditions` is Q16's boundary.** Every variant of `enclave_dlp::policy::Condition` is a comparison
+against a count, a rank, a severity or a score, and there is no variant a pattern could occupy.
+JSONB holds any document, so the guarantee is kept by decoding rather than by the column: both
+`Condition` and `ActionScope` are externally tagged with `deny_unknown_fields`, so
+`{"pattern": "\\d{16}"}` in a stored rule is refused **by name** and the whole rule set fails with
+it. Trimming a rule to the clauses that parsed is the permissive failure — a rule missing a condition
+matches more requests than the administrator wrote. `scope` additionally refuses an *empty* array,
+because `DlpRule::governs` reads an empty scope as governing nothing, which would make it a rule that
+silently protects nothing.
+
+RLS enabled and forced with a `tenant_isolation` policy, as §3.2 requires. `enclave_app` holds
+`SELECT, INSERT, UPDATE` and **not** `DELETE`, for §12.1's reason and one of its own: one `DELETE`
+stops a tenant's content inspection refusing anything and leaves nothing to say it did, *and* it
+removes the rule that `06 §9`'s mandatory-simulation gate has to query the history of — a simulation
+record naming a rule that no longer exists cannot answer "has this ever been simulated" (`ENC-593`).
+Withdrawal sets `deleted_at`; the row and its text stay, and the rule can be read and reinstated.
+
 
 ## 13. Compliance
 
@@ -1614,6 +1709,7 @@ CREATE INDEX idx_jobs_ready ON jobs (state, run_after) WHERE state = 'QUEUED';
 
 | Version | Date | Change |
 |---|---|---|
+| 1.7 | 2026-08-22 | Added §12.3, `dlp_rules` — the stored form of a DLP rule, and the table that makes `ENFORCE` able to refuse anything (`ENC-615`). A second table beside §12's `dlp_policies` on §12.1's boundary: five of that model's columns are not read by the evaluator that exists. The one worth reading is the **absent `mode`**: D28 requires `SIMULATION` to be indistinguishable from `ENFORCE` except in effect, and `crates/dlp` makes that structural by having `RuleSet::evaluate` take no mode argument — a per-rule mode would have to be carried on the rule type, which is exactly the field a divergence becomes writable through, so the mode stays in configuration and the cost (no per-tenant rollout pace) is recorded as `ENC-632`. Also: **no `ALLOW` action**, because `Verdict::blocking_code` scans past a `Nothing` demand to the next refusal, so an `ALLOW` above a `BLOCK` would be an exception that fires and changes nothing (`ENC-631`) — §12.1's absent effect, one stage over; no `enabled` (a second off-switch beside withdrawal), no `scope_type`/`scope_id` (no rule type has a resource scope); and `priority` kept, because it *is* read — it decides which reason code a refused caller sees when two refusing rules fire, ordered `priority, name` so the answer cannot depend on a query plan. `conditions` is Q16's boundary and it is held by strict, closed decoding rather than by the column: a stored condition naming `pattern` is refused by name and fails the whole set. `enclave_app` holds no `DELETE`: one statement stops a tenant's inspection refusing anything, and it would remove the rule §9's mandatory-simulation gate has to query the history of. `migrations/0021_dlp_rules.sql` applies it. |
 | 1.6 | 2026-08-22 | Added §12.2, `security_facts` as created — the table a DLP decision is actually taken from (`ENC-594`). §12's shape, with three deviations recorded rather than left to be discovered: **no `detector_results JSONB`**, because nothing reads a per-detector breakdown and an opaque results document is the first place a future scanner writes the string it matched — `CLAUDE.md` rule 10 is structural everywhere else in this path and a column that would hold anything is where it would be lost; `classification_rank INT` in place of `classification_id UUID`, because comparisons are against ranks and `classifications` is created by no migration, so an id would point at nothing; and `CHECK (… >= 0)` on the counts, which is what makes the `INT`-to-`u32` conversion total rather than turning a negative row into two billion card numbers. `detector_set_version` is compared for equality and never ordered (`ENC-581`). `enclave_app` holds no `DELETE`: a rescan replaces, and the cascade from `file_versions` is what removes facts about content that no longer exists. `migrations/0020_security_facts.sql` applies it. |
 | 1.5 | 2026-08-22 | Added §12.1, `conditional_access_rules` — the stored form of a conditional-access rule, and the first tenant-editable policy this deployment evaluates (`ENC-590`). A second table beside §12's `conditional_access_policies` for the reason §16.1 is a second table beside the `quotas` pair: §12 models an evaluator with a rule `priority`, a scope and an opaque `definition`, and the evaluator that exists has none of the three — resolution is most-restrictive-wins in a fixed severity order, and this stage runs before authorization so it has no resource to scope to. Records three things the design did not state: `audience` is a **column** because Q19's rule-set separation is a type separation that JSONB would otherwise dissolve, and it cannot be inferred from the document because `client_is` and `action_is` are in both vocabularies; `effect`'s `CHECK` has no `ALLOW`, which is where §7.4's absent effect becomes structural rather than a convention of one Rust enum; and `enclave_app` holds no `DELETE`, so a rule is withdrawn with `deleted_at` and keeps its text. `migrations/0019_conditional_access_rules.sql` applies it. |
 | 1.4 | 2026-08-22 | Added §16.1, `storage_quotas` — the per-tenant stored-byte quota, and the only quota implemented (`ENC-584`, `plans/M4-GOVERNANCE.md` D31/Q18). One table rather than a `quotas` + `quota_usage` pair because a `CHECK` constraint cannot reference another table and D31 requires one as the backstop behind the charging statement. Records three things the design did not previously state: the bound lives in the charge's `WHERE` clause and a zero-row result is the refusal; `overshoot_bytes` is an acknowledgement of a legitimately over-limit tenant rather than headroom; and nightly reconciliation applies drift *relatively*, which is what removes the window in which a correction would either erase concurrent charges or lock them out. `migrations/0018_storage_quotas.sql` applies it. |
