@@ -1,6 +1,6 @@
 # 06 — Security, DLP & Access Controls
 
-> **Status:** Draft · **Version:** 2.2 · **Owner:** Security Engineering · **Last updated:** 2026-08-22
+> **Status:** Draft · **Version:** 2.3 · **Owner:** Security Engineering · **Last updated:** 2026-08-22
 > **Authoritative for:** threat model, conditional access, DLP, antivirus, renditions, incidents, privileged operations.
 
 ## 1. Security model
@@ -397,6 +397,32 @@ a scan finishing during a request does not affect that request.
 
 A facts *read failure* is not "no facts". Returning "missing" on a database error converts an outage
 into a policy answer, and under `FAIL_OPEN_AUDIT` that answer is allow.
+
+### 12.3 A document the scan could not read has **no** facts, not empty ones
+
+The asynchronous scan is content inspection, so it inherits every way content can refuse to be
+inspected: an encrypted container, a corrupt file, a media type this deployment has no extractor
+for, a scanned page where OCR is not mounted. All four yield no text.
+
+Such a version records **no fact row at all**. It does not record a scan with every count at zero,
+and the distinction is the whole of this section. Every condition a rule can express is a threshold
+over counts, a severity or a score, so a row of zeroes makes each of them evaluate cleanly and
+*permit* — with a `scanned_at` timestamp and the active detector-set version standing behind it, and
+with nothing downstream able to tell it apart from a document that was read and found clean. An
+absent row is the `§12` state above, whose meaning the tenant has already chosen: `FAIL_CLOSED`
+refuses the sensitive action and says scanning is in progress, `FAIL_OPEN_AUDIT` permits and records.
+
+A document that *did* yield text and carried nothing does record a row with zero counts. That is a
+real scan finding nothing, and it is what stops the rule collapsing into "record nothing ever".
+
+Two consequences follow, and both are intended:
+
+- **Coverage is a number an operator has to be able to see.** A tenant whose corpus is largely
+  unreadable is either sitting on an outage or on a hole in the control, depending on
+  `facts_unavailable`, and neither is visible from the fact table — which holds no evidence of the
+  versions it has no rows for.
+- **Retrying an unscannable version is correct, not waste.** What could not be read today becomes
+  readable the day the missing extractor or OCR volume is mounted, with no backfill to run.
 
 ## 13. Incidents
 

@@ -83,13 +83,17 @@ use tracing::{debug, info, warn};
 use crate::epoch::ReconcilerConfig;
 use crate::indexing::{index_pass, IndexPass, VectorStage};
 use crate::ocr::MountedOcr;
+use crate::scan::{scan_pass, ScanCursor, ScanPass};
 use crate::{coverage, epoch, invalidation, Result, Stop, Woke};
+use enclave_dlp::detector::DetectorSet;
 
 /// The names [`Scheduler::scheduled`] reports and the loops log under.
 ///
 /// Constants rather than literals at three call sites, because the binary's start-up line, the
 /// per-loop log field and the tests all have to agree for any of them to be worth reading.
 pub const INDEXING: &str = "indexing";
+/// See [`INDEXING`].
+pub const SCANNING: &str = "content-scan";
 /// See [`INDEXING`].
 pub const INVALIDATION: &str = "invalidation";
 /// See [`INDEXING`].
@@ -111,6 +115,15 @@ pub struct Cadence {
     /// LOCKED` per tenant. A tick that indexed anything does not wait at all — see
     /// [`Tick::Progressed`].
     pub indexing_idle: Duration,
+    /// How long the content scanner waits when nothing is due.
+    ///
+    /// Longer than [`Self::indexing_idle`], and the difference is not caution about cost. The scan
+    /// queue is a *query* rather than a claimed work list (`crate::scan::ScanCursor`), so a version
+    /// that cannot be scanned stays in it — and this interval is what turns the re-attempt of an
+    /// unscannable corpus into a bounded rate rather than a spin. Re-attempting is deliberate: an
+    /// unsupported media type becomes scannable the day a deployment mounts PDFium, and a textless
+    /// scan becomes scannable the day it mounts OCR, with no backfill to run.
+    pub scan_idle: Duration,
     /// How often expired suppressions are lifted.
     ///
     /// Can be minutes and could be hours: an expired row is not suppressing anything before the
@@ -134,6 +147,7 @@ impl Default for Cadence {
     fn default() -> Self {
         Self {
             indexing_idle: Duration::from_secs(5),
+            scan_idle: Duration::from_secs(30),
             invalidation: Duration::from_secs(300),
             epoch: Duration::from_secs(60),
             coverage: Duration::from_secs(60),
@@ -175,17 +189,37 @@ pub trait IndexRunner: Send + Sync + fmt::Debug {
     async fn run(&self, tenant: TenantId, stop: &Stop) -> Result<IndexPass>;
 }
 
+/// One tenant's share of the content-scan queue.
+///
+/// Separate from [`IndexRunner`] rather than a second method on it, because the two capabilities are
+/// independently absent: a deployment can index without scanning (no detectors wired) and scan
+/// without indexing. One trait with two methods would make [`Scheduler::scheduled`] unable to say
+/// which of the two a process is actually running, which is the whole point of that function.
+#[async_trait]
+pub trait ScanRunner: Send + Sync + fmt::Debug {
+    /// Scans up to one batch of `tenant`'s versions that have no usable facts.
+    ///
+    /// # Errors
+    ///
+    /// Whatever [`scan_pass`] returns: a storage or database failure, never a document that would
+    /// not parse.
+    async fn run(&self, tenant: TenantId, stop: &Stop) -> Result<ScanPass>;
+}
+
 /// [`IndexRunner`] over a real pipeline, store and pool.
 ///
 /// Holds the pool as well as the store so that the scheduling loop needs neither — a loop that took
 /// a `DbPool` would be untestable without one, and everything it does with it is inside
 /// [`index_pass`] already.
-pub struct PipelineRunner<E: Extractor, S: BlobStore> {
+pub struct PipelineRunner<E: Extractor, S: BlobStore + ?Sized> {
     pool: DbPool,
     pipeline: Pipeline<E>,
-    ocr: Option<MountedOcr>,
+    /// Shared rather than owned since `ENC-613`: [`ContentScanner`] runs the *same* OCR stage, and
+    /// `PdfiumLibrary` is a process singleton whose `DOCUMENTS` lock is per-library — two of them
+    /// would be two locks, which is no lock at all (`crate::ocr`).
+    ocr: Option<Arc<MountedOcr>>,
     vectors: Option<VectorStage>,
-    store: S,
+    store: Arc<S>,
     extractor: ExtractorVersion,
     chunker: ChunkerVersion,
     embedding_model: String,
@@ -193,7 +227,7 @@ pub struct PipelineRunner<E: Extractor, S: BlobStore> {
     batch: i64,
 }
 
-impl<E: Extractor, S: BlobStore> fmt::Debug for PipelineRunner<E, S> {
+impl<E: Extractor, S: BlobStore + ?Sized> fmt::Debug for PipelineRunner<E, S> {
     /// Names the wiring, never its contents.
     ///
     /// A derived `Debug` would print the store, and a store prints an endpoint and whatever else its
@@ -207,7 +241,7 @@ impl<E: Extractor, S: BlobStore> fmt::Debug for PipelineRunner<E, S> {
     }
 }
 
-impl<E: Extractor, S: BlobStore> PipelineRunner<E, S> {
+impl<E: Extractor, S: BlobStore + ?Sized> PipelineRunner<E, S> {
     /// Assembles the indexing pass's dependencies once, for every tenant and every tick.
     ///
     /// **Takes the extractor and the chunker rather than a [`Pipeline`], so that it can read the two
@@ -227,8 +261,8 @@ impl<E: Extractor, S: BlobStore> PipelineRunner<E, S> {
         pool: DbPool,
         extractor: E,
         chunker: enclave_indexing::Chunker,
-        ocr: Option<MountedOcr>,
-        store: S,
+        ocr: Option<Arc<MountedOcr>>,
+        store: Arc<S>,
         embedding_model: impl Into<String>,
         budget: RenderBudget,
         batch: i64,
@@ -267,7 +301,7 @@ impl<E: Extractor, S: BlobStore> PipelineRunner<E, S> {
 }
 
 #[async_trait]
-impl<E: Extractor, S: BlobStore> IndexRunner for PipelineRunner<E, S> {
+impl<E: Extractor, S: BlobStore + ?Sized> IndexRunner for PipelineRunner<E, S> {
     async fn run(&self, tenant: TenantId, stop: &Stop) -> Result<IndexPass> {
         let versions = BuildVersions {
             extractor: self.extractor,
@@ -278,15 +312,132 @@ impl<E: Extractor, S: BlobStore> IndexRunner for PipelineRunner<E, S> {
             &self.pool,
             tenant,
             &self.pipeline,
-            self.ocr.as_ref(),
+            self.ocr.as_deref(),
             self.vectors.as_ref(),
-            &self.store,
+            self.store.as_ref(),
             versions,
             self.budget,
             self.batch,
             stop,
         )
         .await
+    }
+}
+
+/// [`ScanRunner`] over a real pipeline, detector set, store and pool — `ENC-613`.
+///
+/// Takes the **same** [`Pipeline`] and the **same** [`MountedOcr`] as [`PipelineRunner`], by
+/// `Arc`, so a media type that indexes is a media type that scans. See `crate::scan` for why a
+/// second extraction path is the thing this design is arranged against.
+///
+/// # The cursor is the one piece of state a runner holds
+///
+/// [`scan_pass`] is a pure function of its arguments and returns where the next pass should resume;
+/// this is where that answer is kept between ticks. A [`std::sync::Mutex`] rather than an async one
+/// because it is held for two moves and never across an `await` — the lock guards a map lookup, not
+/// the scan.
+///
+/// It is bounded by the tenant list: one small entry per tenant, replaced in place. A tenant that
+/// disappears leaves an entry behind, which costs a `Uuid` and a timestamp and is corrected by the
+/// next process restart — the cursor is a pacing aid and losing one is harmless (`crate::scan`).
+pub struct ContentScanner<E: Extractor, S: BlobStore + ?Sized> {
+    pool: DbPool,
+    pipeline: Pipeline<E>,
+    ocr: Option<Arc<MountedOcr>>,
+    detectors: Arc<DetectorSet>,
+    store: Arc<S>,
+    budget: RenderBudget,
+    batch: i64,
+    cursors: std::sync::Mutex<std::collections::HashMap<TenantId, ScanCursor>>,
+}
+
+impl<E: Extractor, S: BlobStore + ?Sized> fmt::Debug for ContentScanner<E, S> {
+    /// Names the wiring, never its contents — [`PipelineRunner`]'s reason, and one more: the
+    /// detector set's `Debug` would print every detector, which is a list of what this deployment
+    /// looks for. That is not a match value, so it is not a rule 10 violation, but a start-up line
+    /// is not where it belongs either. The **version** is printed, because that is the string a
+    /// stored fact row carries and the one an operator has to be able to compare.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ContentScanner")
+            .field("detector_set", &self.detectors.version().as_str())
+            .field("ocr", &self.ocr.is_some())
+            .field("batch", &self.batch)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<E: Extractor, S: BlobStore + ?Sized> ContentScanner<E, S> {
+    /// Assembles the scan pass's dependencies once, for every tenant and every tick.
+    ///
+    /// `detectors` is an [`Arc`] because the scan itself runs on a blocking thread and the set has
+    /// to outlive the call that moved it there — and because the *same* set has to be the one
+    /// `crates/api` compares fact rows against. A deployment holding two sets under one version
+    /// string is the failure `enclave_dlp::builtin::BUILTIN_SET_VERSION` is pinned against.
+    #[must_use]
+    pub fn new(
+        pool: DbPool,
+        extractor: E,
+        chunker: enclave_indexing::Chunker,
+        ocr: Option<Arc<MountedOcr>>,
+        detectors: Arc<DetectorSet>,
+        store: Arc<S>,
+        budget: RenderBudget,
+        batch: i64,
+    ) -> Self {
+        Self {
+            pool,
+            pipeline: Pipeline::new(extractor, chunker),
+            ocr,
+            detectors,
+            store,
+            budget,
+            batch,
+            cursors: std::sync::Mutex::new(std::collections::HashMap::new()),
+        }
+    }
+
+    /// Where this tenant's next sweep resumes.
+    ///
+    /// A poisoned lock reads as [`ScanCursor::start`] rather than panicking: the cursor is pacing
+    /// and not correctness, so beginning the sweep again is the worst it can cost, whereas a panic
+    /// here would take down a pass for the lifetime of the process.
+    fn cursor(&self, tenant: TenantId) -> ScanCursor {
+        self.cursors
+            .lock()
+            .map(|cursors| cursors.get(&tenant).copied().unwrap_or_default())
+            .unwrap_or_default()
+    }
+
+    /// Records where the next sweep should resume.
+    fn advance(&self, tenant: TenantId, cursor: ScanCursor) {
+        if let Ok(mut cursors) = self.cursors.lock() {
+            cursors.insert(tenant, cursor);
+        }
+    }
+}
+
+#[async_trait]
+impl<E: Extractor, S: BlobStore + ?Sized> ScanRunner for ContentScanner<E, S> {
+    async fn run(&self, tenant: TenantId, stop: &Stop) -> Result<ScanPass> {
+        let from = self.cursor(tenant);
+        let pass = scan_pass(
+            &self.pool,
+            tenant,
+            &self.pipeline,
+            self.ocr.as_deref(),
+            &self.detectors,
+            self.store.as_ref(),
+            self.budget,
+            self.batch,
+            from,
+            stop,
+        )
+        .await?;
+        // Only on success. A pass that failed part-way through a batch has no trustworthy answer
+        // about where it got to, and advancing past versions it never reached would leave them
+        // unscanned until the sweep came round again.
+        self.advance(tenant, pass.resume);
+        Ok(pass)
     }
 }
 
@@ -312,6 +463,7 @@ struct CoverageProbe {
 pub struct Scheduler {
     tenants: Arc<dyn TenantSource>,
     indexing: Option<Arc<dyn IndexRunner>>,
+    scanning: Option<Arc<dyn ScanRunner>>,
     coverage: Option<CoverageProbe>,
     reconciler: ReconcilerConfig,
     cadence: Cadence,
@@ -329,6 +481,7 @@ impl Scheduler {
         Self {
             tenants,
             indexing: None,
+            scanning: None,
             coverage: None,
             reconciler: ReconcilerConfig::default(),
             cadence: Cadence::default(),
@@ -339,6 +492,21 @@ impl Scheduler {
     #[must_use]
     pub fn with_indexing(mut self, runner: Arc<dyn IndexRunner>) -> Self {
         self.indexing = Some(runner);
+        self
+    }
+
+    /// Schedules the content scan. Without this call **nothing writes `security_facts`**, so every
+    /// version stays unscanned and the DLP stage decides on the tenant's `facts_unavailable`
+    /// policy rather than on evidence (`ENC-613`, `docs/06 §12`).
+    ///
+    /// Optional for the reason [`Scheduler::with_indexing`] is: the pass reads object storage, and
+    /// a deployment that configured none must not have it scheduled and failing. That absence is
+    /// safe — no row means unscanned, which is refused under `FAIL_CLOSED` and permitted with
+    /// evidence under `FAIL_OPEN_AUDIT` — and [`Scheduler::scheduled`] is what makes it visible
+    /// rather than merely true.
+    #[must_use]
+    pub fn with_scanning(mut self, runner: Arc<dyn ScanRunner>) -> Self {
+        self.scanning = Some(runner);
         self
     }
 
@@ -373,6 +541,9 @@ impl Scheduler {
     #[must_use]
     pub fn scheduled(&self) -> Vec<&'static str> {
         let mut passes = vec![INVALIDATION, EPOCH];
+        if self.scanning.is_some() {
+            passes.insert(0, SCANNING);
+        }
         if self.indexing.is_some() {
             passes.insert(0, INDEXING);
         }
@@ -399,6 +570,14 @@ impl Scheduler {
                 (Arc::clone(&self.tenants), self.cadence.indexing_idle, stop.clone());
             tasks.push(tokio::spawn(async move {
                 indexing_loop(tenants.as_ref(), runner.as_ref(), cadence, &stop).await;
+            }));
+        }
+
+        if let Some(runner) = self.scanning.clone() {
+            let (tenants, cadence, stop) =
+                (Arc::clone(&self.tenants), self.cadence.scan_idle, stop.clone());
+            tasks.push(tokio::spawn(async move {
+                scanning_loop(tenants.as_ref(), runner.as_ref(), cadence, &stop).await;
             }));
         }
 
@@ -541,6 +720,60 @@ async fn indexing_loop(
 /// and `claimed` is not used, which is the whole content of the rule — see [`indexing_loop`].
 const fn made_progress(pass: &IndexPass) -> bool {
     pass.indexed + pass.failed + pass.skipped > 0
+}
+
+/// Scans each tenant in turn, and goes straight round again while facts are being written.
+///
+/// **Only a recorded fact counts as progress**, and that is load-bearing in the same way deferral
+/// is for [`indexing_loop`], for the opposite reason. The scan queue is a query with no claim
+/// column, so a version that *cannot* be scanned never leaves it (`crate::scan::ScanCursor`).
+/// Counting an unscannable version as progress would make a tick that reached the end of a sweep
+/// reset the cursor and immediately re-select the same documents, at the speed of extraction — a
+/// worker that re-parses a corpus of encrypted archives forever. Idling instead turns that into one
+/// bounded re-attempt per interval, which is what makes the re-attempt *useful*: it is how a
+/// document becomes scanned the day OCR is mounted.
+async fn scanning_loop(
+    tenants: &dyn TenantSource,
+    runner: &dyn ScanRunner,
+    idle: Duration,
+    stop: &Stop,
+) {
+    run_loop(SCANNING, idle, stop, move || async move {
+        let Some(tenants) = tenants_for(SCANNING, tenants).await else { return Tick::Idle };
+
+        let mut progressed = false;
+        for tenant in tenants {
+            if stop.is_stopped() {
+                break;
+            }
+            match runner.run(tenant, stop).await {
+                Ok(pass) => progressed |= scan_progressed(&pass),
+                // Per tenant, and the loop continues: one tenant whose bucket is unreachable must
+                // not leave every other tenant's content unscanned.
+                Err(error) => {
+                    warn!(pass = SCANNING, tenant = %tenant, %error, "content scan failed");
+                }
+            }
+        }
+
+        if progressed {
+            Tick::Progressed
+        } else {
+            Tick::Idle
+        }
+    })
+    .await;
+}
+
+/// Whether a scan pass did anything a second tick could build on.
+///
+/// A named function for the reason [`made_progress`] is one: so the rule can be asserted directly
+/// rather than restated by a test that then agrees with a broken loop.
+///
+/// Facts written, and nothing else. `ScanPass::unscannable` is deliberately excluded — see
+/// [`scanning_loop`].
+const fn scan_progressed(pass: &ScanPass) -> bool {
+    pass.scanned > 0
 }
 
 /// Lifts expired suppressions on a fixed cadence.

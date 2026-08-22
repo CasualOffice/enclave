@@ -1806,6 +1806,7 @@ dependencies = [
  "enclave-config",
  "enclave-core",
  "enclave-db",
+ "enclave-dlp",
  "enclave-embeddings",
  "enclave-events",
  "enclave-indexing",

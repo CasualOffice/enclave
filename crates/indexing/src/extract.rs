@@ -253,6 +253,32 @@ impl<E: Extractor> Extractor for BoundedExtractor<E> {
     }
 }
 
+/// A shared extractor is an extractor.
+///
+/// `ENC-613`. Two passes now extract text from the same corpus — indexing, and the DLP scan that
+/// produces `security_facts` — and `docs/06 §12`'s asynchronous scan has to read the *same* text
+/// the index does. So the composition root builds **one** router, wraps it in one
+/// [`BoundedExtractor`], and lends it to both, rather than assembling a second one that agrees with
+/// the first until somebody registers a media type in one of the two places.
+///
+/// `?Sized` so that `Arc<dyn Extractor>` is covered: the trait is object-safe, and the erased form
+/// is what lets two [`crate::Pipeline`]s share one instance without the binary naming a concrete
+/// extractor type twice.
+#[async_trait]
+impl<E: Extractor + ?Sized> Extractor for std::sync::Arc<E> {
+    fn extractor_version(&self) -> ExtractorVersion {
+        (**self).extractor_version()
+    }
+
+    fn supports(&self, declared_media_type: &str) -> bool {
+        (**self).supports(declared_media_type)
+    }
+
+    async fn extract(&self, request: ExtractRequest) -> Result<ExtractOutcome> {
+        (**self).extract(request).await
+    }
+}
+
 /// An extractor that extracts nothing.
 ///
 /// The deny-by-default stub, in the shape `crates/core`'s policy stages and
