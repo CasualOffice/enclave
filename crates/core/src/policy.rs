@@ -2041,4 +2041,161 @@ mod tests {
         assert!(!Action::Share(ShareAction::Create).is_external_share());
         assert!(!Action::File(FileAction::Download).is_external_share());
     }
+
+    // --- Classification: unresolved is a state, and what it means is tenant policy --------------
+    //
+    // `Unlabelled` implements `Serialize` and neither `Deserialize` nor `FromStr`, for the reason
+    // `FactsUnavailable` does. The compile-fail cases share that type's missing `trybuild` wiring
+    // and would read:
+    //
+    //     serde_json::from_str::<Unlabelled>("\"FAIL_CLOSED\"")   // no `Deserialize`
+    //     "FAIL_CLOSED".parse::<Unlabelled>()                     // no `FromStr`
+    //
+    // The second is the one worth naming: `Unlabelled::Assume` carries a **rank**, applied to
+    // content the caller is about to act on, so it is the single most valuable field an attacker
+    // could add to a request body.
+
+    fn unlabelled(on_unlabelled: Unlabelled) -> ClassificationResolution {
+        ClassificationResolution::unlabelled(ClassificationPolicy::from_tenant_config(
+            on_unlabelled,
+        ))
+    }
+
+    #[test]
+    fn an_unlabelled_resource_refuses_rather_than_defaulting() {
+        let outcome =
+            unlabelled(Unlabelled::FailClosed).require(Action::File(FileAction::Download));
+
+        match outcome {
+            ClassificationOutcome::Denied { code, remediation } => {
+                assert_eq!(code, ReasonCode::ClassificationCeiling);
+                // Not `REQUEST_ACCESS`, which is the code's default: the caller's access is not the
+                // problem and asking the owner for more of it will not help.
+                assert_eq!(remediation, Remediation::ContactAdministrator);
+            }
+            other => panic!("FAIL_CLOSED must refuse an unlabelled resource, not {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_tenant_that_named_a_rank_gets_that_rank_and_an_obligation() {
+        let rank = ClassificationRank::new(20);
+        let outcome =
+            unlabelled(Unlabelled::Assume(rank)).require(Action::File(FileAction::Preview));
+
+        match outcome {
+            ClassificationOutcome::Assumed(allow) => assert_eq!(allow.rank(), rank),
+            other => panic!("a configured Assume must be honoured, not {other:?}"),
+        }
+    }
+
+    /// D27's shape applied to labels: external sharing is refused whatever the tenant configured.
+    ///
+    /// The pairing is the point. The *same* policy permits a preview of the *same* unlabelled
+    /// resource, so the refusal is the escalation rather than the policy refusing everything —
+    /// which is the failure mode that gets a control switched off wholesale.
+    #[test]
+    fn an_external_share_of_an_unlabelled_resource_fails_closed_whatever_the_tenant_configured() {
+        let resolution = unlabelled(Unlabelled::Assume(ClassificationRank::new(20)));
+
+        assert!(
+            matches!(
+                resolution.require(Action::File(FileAction::Preview)),
+                ClassificationOutcome::Assumed(_)
+            ),
+            "the control: the configured rank is honoured for an ordinary read"
+        );
+
+        for action in
+            [Action::File(FileAction::ShareExternal), Action::Share(ShareAction::CreateExternal)]
+        {
+            assert!(
+                resolution.require(action).into_denial().is_some(),
+                "putting an unclassified document outside the tenant is the one attempt whose \
+                 consequence cannot be recalled, so it is refused even under Assume: {action:?}"
+            );
+        }
+    }
+
+    /// Indexing has no `Action`, and therefore no mandatory escalation — argued, not overlooked.
+    ///
+    /// Embedding an unlabelled document is not the unrecallable act external sharing is: the
+    /// assumed rank both routes the provider and is written into the collection, so a tenant that
+    /// assumes a high rank gets local-only embedding rather than a leak.
+    #[test]
+    fn the_indexing_door_honours_assume_and_the_fail_closed_default_still_refuses() {
+        let rank = ClassificationRank::new(40);
+        match unlabelled(Unlabelled::Assume(rank)).require_for_indexing() {
+            ClassificationOutcome::Assumed(allow) => assert_eq!(allow.rank(), rank),
+            other => panic!("indexing must honour a configured rank, not {other:?}"),
+        }
+
+        assert!(
+            unlabelled(Unlabelled::FailClosed).require_for_indexing().into_denial().is_some(),
+            "the default is what every deployment has today — `UnclassifiedFiles` refuses — and \
+             that behaviour is preserved rather than replaced"
+        );
+    }
+
+    #[test]
+    fn an_assumed_rank_is_never_reported_as_a_read_rank() {
+        let resolution = unlabelled(Unlabelled::Assume(ClassificationRank::RESTRICTED));
+
+        assert_eq!(
+            resolution.rank(),
+            None,
+            "`ResourceState`'s contract is that None means the resource genuinely has no label. An \
+             assumption laundered through it would make FactsPolicy::is_forced_closed fire on a \
+             rank this codebase inferred rather than read"
+        );
+    }
+
+    #[test]
+    fn a_resolved_label_is_returned_whatever_the_unlabelled_policy_says() {
+        let effective =
+            EffectiveClassification::found(ClassificationRank::new(30), LabelSource::Ancestor);
+
+        for mode in [Unlabelled::FailClosed, Unlabelled::Assume(ClassificationRank::new(10))] {
+            let resolution = ClassificationResolution::resolved(
+                ClassificationPolicy::from_tenant_config(mode),
+                effective,
+            );
+
+            assert_eq!(resolution.rank(), Some(ClassificationRank::new(30)));
+            assert_eq!(
+                resolution.require(Action::File(FileAction::ShareExternal)),
+                ClassificationOutcome::Labelled(effective),
+                "the unlabelled policy decides nothing about a resource that has a label — not \
+                 even for a forced-closed action"
+            );
+        }
+    }
+
+    #[test]
+    fn the_unlabelled_mode_serializes_to_a_form_an_audit_row_can_carry() {
+        assert_eq!(
+            serde_json::to_string(&Unlabelled::FailClosed).expect("serialize"),
+            "\"FAIL_CLOSED\""
+        );
+        // The rank is in the string because it is the whole of what the mode means: two tenants on
+        // `Assume` with different ranks are running different policies, and an audit row that
+        // recorded only `ASSUME_RANK` could not tell them apart.
+        assert_eq!(
+            serde_json::to_string(&Unlabelled::Assume(ClassificationRank::new(20)))
+                .expect("serialize"),
+            "\"ASSUME_RANK(20)\""
+        );
+    }
+
+    #[test]
+    fn a_label_source_serializes_to_the_place_an_administrator_would_go() {
+        for (source, expected) in [
+            (LabelSource::Resource, "\"RESOURCE\""),
+            (LabelSource::Ancestor, "\"ANCESTOR\""),
+            (LabelSource::Library, "\"LIBRARY\""),
+            (LabelSource::Workspace, "\"WORKSPACE\""),
+        ] {
+            assert_eq!(serde_json::to_string(&source).expect("serialize"), expected);
+        }
+    }
 }

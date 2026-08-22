@@ -350,14 +350,27 @@ mod tests {
     /// Layer 1, asserted where it is written. Deleting a `tenant_id` predicate leaves row-level
     /// security holding the property alone — `docs/12 §4.1` `T5`'s designed property, and therefore
     /// something the behavioural cross-tenant test cannot catch. This is where it is caught.
+    /// The reading and updating statements carry the predicate; the insert carries the column.
+    ///
+    /// Written as two assertions rather than one because an `INSERT` has no `WHERE` and a single
+    /// `contains("tenant_id = $1")` over all four is a test that cannot hold for the one statement
+    /// that *writes* the tenant. Collapsing them was this file's first defect: the loop below was
+    /// written over all four and failed on `DEFINE_SQL` the moment it was run, which is what
+    /// `docs/12 §1.2`'s "watched to fail" catches and an unrun assertion does not.
     #[test]
     fn every_statement_is_scoped_to_one_tenant() {
-        for statement in [EFFECTIVE_SQL, DEFINE_SQL, WITHDRAW_SQL, ASSIGN_SQL] {
+        for statement in [EFFECTIVE_SQL, WITHDRAW_SQL, ASSIGN_SQL] {
             assert!(
                 statement.contains("tenant_id = $1"),
                 "a statement reaching classifications without a tenant predicate: {statement}"
             );
         }
+
+        assert!(
+            DEFINE_SQL.contains("(tenant_id, id,") && DEFINE_SQL.contains("VALUES ($1, $2,"),
+            "the insert must write `tenant_id` from $1 as its first column, or a label can be \
+             defined into a tenant the caller's transaction is not scoped to: {DEFINE_SQL}"
+        );
     }
 
     /// Every join in the walk carries the tenant too, not just the anchor.
@@ -396,13 +409,20 @@ mod tests {
     ///
     /// `ENC-594` recorded a break that failed nothing for exactly this reason: deleting the whole
     /// recursive term left an assertion on `RECURSIVE` green, because the keyword survives in
-    /// `WITH RECURSIVE`. Asserted on the join into the CTE instead.
+    /// `WITH RECURSIVE`. **This test made the same mistake again before it was right.** Asserting
+    /// `UNION ALL` and `FROM ancestry a` was also green with the recursive term deleted, because
+    /// both survive in the `labels` CTE below it — three of its branches read `FROM ancestry a`,
+    /// and they are joined by `UNION ALL`.
+    ///
+    /// What is unique to the recursive term is the **parent join**: it is the only place the walk
+    /// climbs, so it is the only string whose absence means the walk reads the file's own label and
+    /// calls it effective.
     #[test]
     fn the_walk_actually_recurses() {
         assert!(
-            EFFECTIVE_SQL.contains("UNION ALL") && EFFECTIVE_SQL.contains("JOIN ancestry a"),
-            "the walk must join back into `ancestry`, or it reads the file's own label and calls \
-             it effective"
+            EFFECTIVE_SQL.contains("p.id = a.parent_id"),
+            "the walk must climb from a node to its parent, or an inherited label is never seen \
+             and every document in a RESTRICTED folder resolves as unlabelled"
         );
     }
 }
