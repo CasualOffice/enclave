@@ -53,7 +53,9 @@ use enclave_preview::RenderBudget;
 use enclave_search::health::{CoverageFloor, IndexCensus};
 use enclave_storage::S3BlobStore;
 use enclave_worker::ocr::MountedOcr;
-use enclave_worker::schedule::{IndexRunner, PipelineRunner, Scheduler};
+use enclave_worker::schedule::{
+    ContentScanner, IndexRunner, PipelineRunner, ScanRunner, Scheduler,
+};
 use enclave_worker::tenants::DbTenants;
 use enclave_worker::Stop;
 
@@ -66,6 +68,16 @@ use enclave_worker::Stop;
 const CHUNKER: ChunkerVersion = ChunkerVersion::new("fixed/1");
 /// Files claimed per tenant per indexing tick.
 const INDEX_BATCH: i64 = 32;
+/// Versions considered per tenant per content-scan tick.
+///
+/// Smaller than [`INDEX_BATCH`], and the number is the whole of the rescan's rate limit: moving the
+/// active detector-set version invalidates *every* fact row in every tenant at once (equality, not
+/// an ordering — `ENC-581`), so the backlog after a detector change is the entire corpus. What
+/// bounds it is this batch against `Cadence::scan_idle`, per tenant, and nothing else — there is no
+/// priority queue and no burst. A rescan is therefore slow by construction, and the versions it has
+/// not reached are *unscanned* in the meantime, which is a state both `facts_unavailable` policies
+/// already have an answer for.
+const SCAN_BATCH: i64 = 16;
 /// The share of PostgreSQL's expectation a tenant's store must hold to count as stocked.
 const COVERAGE_FLOOR: u32 = 90;
 
@@ -78,6 +90,7 @@ const COVERAGE_FLOOR: u32 = 90;
 /// belongs where the mistake would be made, and a build failure is louder than a test.
 const _PACING_IS_NOT_ZERO: () = {
     assert!(INDEX_BATCH > 0, "a batch of zero claims no files and reports success");
+    assert!(SCAN_BATCH > 0, "a batch of zero scans nothing and leaves every version unscanned");
     assert!(COVERAGE_FLOOR > 0, "a floor of zero calls an empty index stocked");
     assert!(COVERAGE_FLOOR <= 100, "a floor above 100 is unsatisfiable");
 };
@@ -144,8 +157,8 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let mut scheduler = Scheduler::new(Arc::new(DbTenants::new(db.clone())));
-    if let Some(runner) = index_runner(config, &registry, db.clone()).await? {
-        scheduler = scheduler.with_indexing(runner);
+    if let Some(passes) = content_passes(config, &registry, db.clone()).await? {
+        scheduler = scheduler.with_indexing(passes.indexing).with_scanning(passes.scanning);
     }
     if let Some(census) = index_census(config, &secrets)? {
         scheduler = scheduler.with_coverage(census, CoverageFloor::percent(COVERAGE_FLOOR));
@@ -178,7 +191,28 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The indexing pass's wiring, or `None` when this deployment configured no object storage.
+/// The two passes that read a version's content, built over one extractor and one OCR stage.
+///
+/// Present or absent together, because they have the same dependency — object storage — and
+/// because the point of `ENC-613` is that they extract the *same* text. See
+/// [`content_passes`] for why they are constructed in one place.
+struct ContentPasses {
+    /// Text into `chunk_text` and a manifest (`ENC-527`).
+    indexing: Arc<dyn IndexRunner>,
+    /// Detector counts into `security_facts` (`ENC-613`).
+    scanning: Arc<dyn ScanRunner>,
+}
+
+/// The content passes' wiring, or `None` when this deployment configured no object storage.
+///
+/// # Why one function builds both
+///
+/// They share the extractor and the OCR stage, and *sharing* is the requirement rather than a
+/// saving. A media type registered for indexing and not for scanning is a document that is
+/// searchable and permanently unscanned, with nothing reporting it — so the router is built once
+/// here, wrapped in one [`BoundedExtractor`], and handed to both as an `Arc`. `PdfiumLibrary` is a
+/// process singleton besides, whose `DOCUMENTS` lock is per-library (`ENC-551`), so two OCR stages
+/// would be two locks and no lock at all.
 ///
 /// # Why `None` rather than [`UnconfiguredBlobStore`](enclave_storage::UnconfiguredBlobStore)
 ///
@@ -188,7 +222,11 @@ async fn main() -> anyhow::Result<()> {
 /// budget that quarantines a genuinely poisoned document — and then fail. A deployment whose only
 /// problem was a missing bucket would end up with a corpus of files nothing will retry.
 ///
-/// So the pass is not scheduled, `Scheduler::scheduled` says so, and this logs what is missing.
+/// The scan pass has no claim to burn, so its absence costs something different and is worth
+/// stating: with nothing writing `security_facts`, every version is *unscanned*, which the tenant's
+/// `dlp.facts_unavailable` policy then decides the meaning of — refused under `FAIL_CLOSED`,
+/// permitted with a high-visibility audit event under `FAIL_OPEN_AUDIT`. Safe in both directions,
+/// and announced by `Scheduler::scheduled` rather than inferred from a table that stays empty.
 ///
 /// # Errors
 ///
@@ -196,23 +234,27 @@ async fn main() -> anyhow::Result<()> {
 /// reported as one; see that function for why it must never read as "no OCR". Also a `storage:`
 /// section that names a bucket this process cannot reach — see [`object_store`] for why that is an
 /// error rather than a `None`.
-async fn index_runner(
+async fn content_passes(
     config: &enclave_config::Config,
     registry: &enclave_config::SecretRegistry,
     pool: enclave_db::DbPool,
-) -> anyhow::Result<Option<Arc<dyn IndexRunner>>> {
+) -> anyhow::Result<Option<ContentPasses>> {
     let Some(store) = object_store(config, registry).await? else {
         tracing::warn!(
-            "no object storage is configured (`storage.provider` is `none`), so the indexing pass \
-             is not scheduled and nothing will make `chunk_text` non-empty. See \
+            "no object storage is configured (`storage.provider` is `none`), so neither the \
+             indexing pass nor the content scan is scheduled: nothing will make `chunk_text` \
+             non-empty, and nothing will write `security_facts`, so every version stays unscanned \
+             and the DLP stage decides on `dlp.facts_unavailable` alone. See \
              crates/worker/src/main.rs::object_store and docs/08-BYO-INFRA.md §15."
         );
         return Ok(None);
     };
+    let store = Arc::new(store);
 
     let chunker = Chunker::new(CHUNKER, ChunkBudget::default());
     let ocr = MountedOcr::from_config(config, chunker, RenderBudget::DEFAULT)
-        .context("build the OCR stage from the mounted volumes")?;
+        .context("build the OCR stage from the mounted volumes")?
+        .map(Arc::new);
     if ocr.is_none() {
         // Not a degradation — see `crates/worker/src/ocr.rs`. A scanned PDF becomes a `FAILED`
         // manifest with `no_text_extracted`, which is a file visibly unsearchable rather than
@@ -247,24 +289,54 @@ async fn index_runner(
         );
     }
 
-    Ok(Some(Arc::new(PipelineRunner::new(
-        pool,
-        // `BoundedExtractor` — `ENC-570`. The wall clock, the input cap, the output cap and D24's
-        // empty-document conversion are applied by this wrapper *from outside* the extractor, and
-        // the shipped worker was passing a bare one: every test in `crates/indexing` runs wrapped,
-        // which is exactly why nothing caught it. A hostile document reaching this process was
-        // parsed under no bound at all.
-        BoundedExtractor::new(router),
+    // `BoundedExtractor` — `ENC-570`. The wall clock, the input cap, the output cap and D24's
+    // empty-document conversion are applied by this wrapper *from outside* the extractor, and the
+    // shipped worker was passing a bare one: every test in `crates/indexing` runs wrapped, which is
+    // exactly why nothing caught it. A hostile document reaching this process was parsed under no
+    // bound at all.
+    //
+    // `Arc<dyn Extractor>` and not two constructions: `ENC-613`. Both passes hold this exact
+    // instance, so the text the DLP scan reads is the text the index holds, and the bounds above
+    // are one set of numbers rather than two that agree until somebody tunes one.
+    let extractor: Arc<dyn enclave_indexing::Extractor> = Arc::new(BoundedExtractor::new(router));
+
+    let indexing = Arc::new(PipelineRunner::new(
+        pool.clone(),
+        Arc::clone(&extractor),
         Chunker::new(CHUNKER, ChunkBudget::default()),
-        ocr,
-        store,
+        ocr.clone(),
+        Arc::clone(&store),
         // Nothing embeds yet, and `""` is what `BuildVersions` documents as the honest value for
         // that. A model name written here before anything used it would be a claim about a manifest
         // that no embedding produced.
         "",
         RenderBudget::DEFAULT,
         INDEX_BATCH,
-    ))))
+    ));
+
+    // The detectors this deployment runs, and the version stamped onto every row they produce.
+    // `enclave_dlp::builtin_set()` is the same constructor `crates/api/src/main.rs` reads the
+    // active version out of, which is what makes `FactsSnapshot::gathered`'s equality check compare
+    // a row against the set that would have produced it rather than against a second opinion.
+    let detectors = Arc::new(enclave_dlp::builtin_set());
+    tracing::info!(
+        detector_set = detectors.version().as_str(),
+        detectors = ?detectors.ids().map(|id| id.as_str()).collect::<Vec<_>>(),
+        "content scanning is enabled; moving the detector-set version rescans every version"
+    );
+
+    let scanning = Arc::new(ContentScanner::new(
+        pool,
+        extractor,
+        Chunker::new(CHUNKER, ChunkBudget::default()),
+        ocr,
+        detectors,
+        store,
+        RenderBudget::DEFAULT,
+        SCAN_BATCH,
+    ));
+
+    Ok(Some(ContentPasses { indexing, scanning }))
 }
 
 /// The routing marker this deployment records for everything it indexes.

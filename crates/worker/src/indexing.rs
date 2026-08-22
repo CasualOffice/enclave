@@ -646,7 +646,10 @@ const FILE_FACTS_SQL: &str = "
 ///
 /// The budget's `max_output_bytes` is the limit because it already bounds what the extractor may
 /// produce: reading more than it could ever emit buys nothing and costs memory per worker.
-async fn read_bounded<S: BlobStore + ?Sized>(
+///
+/// `pub(crate)` since `ENC-613`: [`crate::scan`] reads the same objects for the same reason, and a
+/// second bounded-read helper is a second place the refusal-rather-than-truncation rule above lives.
+pub(crate) async fn read_bounded<S: BlobStore + ?Sized>(
     store: &S,
     key: &str,
     budget: &RenderBudget,
