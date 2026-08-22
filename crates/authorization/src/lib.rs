@@ -14,6 +14,8 @@
 //!
 //! # How it is laid out, and why
 //!
+//! * [`admin`] answers the one question the ACL model has no rows for — *may this principal
+//!   administer this tenant* (`ENC-619`) — and composes with everything below it.
 //! * [`resolve`] holds the rules as pure functions over rows. They are the definition.
 //! * [`repo`] holds the SQL that fetches those rows in three round trips per batch, whatever the
 //!   batch size. Its `WHERE` clauses duplicate rules 2 and 4 as a prefilter; [`resolve`] re-applies
@@ -45,6 +47,7 @@
 //! * **Caching.** Only the key. A cache whose invalidation is not designed is a stale-grant
 //!   machine, and stale grants outlive the revocation that was supposed to end them.
 
+pub mod admin;
 pub mod cache;
 pub mod error;
 pub mod materialise;
@@ -53,6 +56,7 @@ pub mod resolve;
 pub mod self_service;
 pub mod service;
 
+pub use admin::{AdminAuthorization, AdminGrants, AdminRoles, PgAdminRoles};
 pub use cache::{cache_key, CACHE_KEY_PREFIX};
 pub use error::{AuthzError, Result};
 pub use materialise::{
