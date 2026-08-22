@@ -41,7 +41,10 @@ use enclave_audit::ChainMode;
 use enclave_core::{
     Actor, FileId, LibraryId, RequestContext, TenantId, UserId, Uuid, VersionId, WorkspaceId,
 };
-use enclave_db::{DbPool, TenantScoped};
+use enclave_db::{
+    configure_storage_quota, release_storage, storage_quota, DbPool, Enforcement, Released,
+    TenantScoped,
+};
 use enclave_testing::{Fixtures, TestDb};
 use enclave_versions::{
     classify_write, CommittedVersion, FileVersion, NewVersion, PageLimit, RestoreVersion,
@@ -725,4 +728,378 @@ async fn history_pages_newest_first_without_repeating_or_skipping_a_version() {
     }
 
     assert_eq!(seen, vec!["5.0", "4.0", "3.0", "2.0", "1.0"]);
+}
+
+// ---------------------------------------------------------------------------
+// The stored-byte quota — `ENC-589`, `docs/12-TESTING.md §4.12` Q7–Q11
+// ---------------------------------------------------------------------------
+//
+// `ENC-584` proved the *statement* against a live database (`crates/db/tests/storage_quota.rs`).
+// What it could not prove is that anything calls it, which is the whole of `ENC-589` and the whole
+// of `plans/M4-GOVERNANCE.md §2`: a control that is switched off is indistinguishable from an
+// absent one except in the compliance answer.
+//
+// So these test the *integration* (`docs/12 §1.1`) — that the charge happens on the real commit
+// path, in the real transaction, before the row it pays for — and every assertion about an absence
+// here carries its positive control in the same fixture (`docs/12 §1.2`). "The refused commit
+// stored nothing" is true of a commit path that stores nothing ever.
+
+/// Writes a quota row for `tenant` over the application role.
+async fn set_quota(pool: &DbPool, tenant: TenantId, limit: u64, mode: Enforcement) {
+    let mut tx = TenantScoped::begin(pool, tenant).await.expect("begin");
+    configure_storage_quota(&mut tx, limit, 80, mode).await.expect("configure the quota");
+    tx.commit().await.expect("commit");
+}
+
+/// `used_bytes` as the row currently holds it, or `None` for an unmetered tenant.
+async fn used(pool: &DbPool, tenant: TenantId) -> Option<i64> {
+    let mut tx = TenantScoped::begin(pool, tenant).await.expect("begin");
+    let quota = storage_quota(&mut tx).await.expect("read the quota");
+    tx.commit().await.expect("commit");
+    quota.map(|quota| quota.used_bytes)
+}
+
+/// The file's `revision`, which every successful commit bumps and no refused one may.
+async fn revision(pool: &DbPool, at: &Fixture) -> i64 {
+    let mut tx = TenantScoped::begin(pool, at.tenant).await.expect("begin");
+    let row = sqlx::query("SELECT revision FROM files WHERE tenant_id = $1 AND id = $2")
+        .bind(at.tenant.as_uuid())
+        .bind(at.file.as_uuid())
+        .fetch_one(&mut *tx)
+        .await
+        .expect("read the revision");
+    let revision: i64 = row.try_get("revision").expect("a revision");
+    tx.commit().await.expect("commit");
+    revision
+}
+
+/// A new version of a given size, with a key nobody else will use.
+fn sized(at: &Fixture, bytes: i64) -> NewVersion {
+    NewVersion { size_bytes: bytes, ..at.new_version(VersionBump::Major) }
+}
+
+/// Everything a committed version leaves behind, counted in one place.
+///
+/// The refusal test asserts that **none** of it moves, and the control asserts that **all** of it
+/// does. Counting them together is what stops the refusal leg from passing against a commit path
+/// that never wrote an outbox row in the first place.
+#[derive(Debug, PartialEq, Eq)]
+struct Footprint {
+    versions: i64,
+    outbox: i64,
+    audit: i64,
+    revision: i64,
+    used_bytes: Option<i64>,
+}
+
+async fn footprint(pool: &DbPool, at: &Fixture) -> Footprint {
+    Footprint {
+        versions: count(pool, at.tenant, "file_versions").await,
+        outbox: count(pool, at.tenant, "events_outbox").await,
+        audit: count(pool, at.tenant, "audit_events").await,
+        revision: revision(pool, at).await,
+        used_bytes: used(pool, at.tenant).await,
+    }
+}
+
+/// **The test that matters most.** A commit over the quota is refused and stores nothing — and the
+/// identical commit under a quota with room stores everything.
+///
+/// The control runs *first* and is asserted in full, because "no version row, no outbox row, no
+/// audit row, no counter movement" is an assertion about an absence and passes for free against a
+/// path that writes none of them (`docs/12 §1.2`). Once the control has shown all five moving, the
+/// refusal leg is evidence.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL with migrations 0004, 0005, 0006 and 0018 applied; CI runs it with --include-ignored"]
+async fn a_commit_over_the_quota_is_refused_and_stores_nothing_while_one_with_room_stores_all_of_it(
+) {
+    let (_db, pool, alpha, _beta) = setup().await;
+    set_quota(&pool, alpha.tenant, 8_192, Enforcement::Block).await;
+
+    let before = footprint(&pool, &alpha).await;
+    assert_eq!(before.used_bytes, Some(0), "a fresh quota row starts at zero");
+
+    // The positive control: 4 KiB into 8 KiB of room.
+    let admitted = commit(&pool, &alpha, &sized(&alpha, 4_096)).await;
+    let stored = footprint(&pool, &alpha).await;
+    assert_eq!(stored.versions, before.versions + 1, "the version row");
+    assert_eq!(stored.outbox, before.outbox + 1, "the file.version.created event");
+    assert_eq!(stored.audit, before.audit + 1, "the audit row");
+    assert_eq!(stored.revision, before.revision + 1, "the file's revision");
+    assert_eq!(stored.used_bytes, Some(4_096), "the counter");
+    assert_eq!(
+        admitted.charged.expect("a metered tenant is charged").quota.used_bytes,
+        4_096,
+        "the commit reports the figure its own charge reached"
+    );
+
+    // The refusal: 8 KiB into the 4 KiB that is left.
+    let refused = try_commit(&pool, &alpha, &sized(&alpha, 8_192)).await;
+    match refused {
+        Err(VersionsError::StorageQuotaExceeded(refusal)) => {
+            assert_eq!(refusal.requested_bytes, 8_192);
+            assert_eq!(refusal.quota.limit_bytes, 8_192);
+            // Unchanged: the refusal moved nothing, which is the `WHERE` clause doing its job
+            // rather than a rollback tidying up after it.
+            assert_eq!(refusal.quota.used_bytes, 4_096);
+        }
+        other => panic!("expected a quota refusal, got {other:?}"),
+    }
+
+    assert_eq!(
+        footprint(&pool, &alpha).await,
+        stored,
+        "a refused commit must leave no version row, no event, no audit row, no revision bump and \
+         no counter movement — the whole transaction rolls back with the charge inside it"
+    );
+
+    // And the refusal renders as a quota refusal rather than a server error.
+    let error: enclave_core::Error =
+        try_commit(&pool, &alpha, &sized(&alpha, 8_192)).await.expect_err("still refused").into();
+    assert_eq!(error.status_code(), 403, "quota exhaustion is not a 500");
+}
+
+/// The transaction property, proved directly: the charge is visible **inside** the transaction and
+/// gone once it rolls back.
+///
+/// The in-transaction read is the positive control. Without it, "the counter did not move after a
+/// rollback" is satisfied by a commit path that never charges at all — which is precisely the state
+/// `ENC-589` exists to leave behind.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL with migrations 0004, 0005, 0006 and 0018 applied; CI runs it with --include-ignored"]
+async fn a_charge_is_visible_inside_the_commits_transaction_and_gone_when_it_rolls_back() {
+    let (_db, pool, alpha, _beta) = setup().await;
+    set_quota(&pool, alpha.tenant, 1_048_576, Enforcement::Block).await;
+
+    let mut tx = TenantScoped::begin(&pool, alpha.tenant).await.expect("begin");
+    VersionService::commit(
+        &mut tx,
+        &alpha.ctx(),
+        ChainMode::Enabled,
+        &sized(&alpha, 4_096),
+        tick(),
+    )
+    .await
+    .expect("commit the version");
+    let inside = storage_quota(&mut tx).await.expect("read").expect("a quota row");
+    assert_eq!(inside.used_bytes, 4_096, "the charge ran in this transaction");
+
+    // Rolled back rather than committed — the failure mode this is arranged around is a write that
+    // dies after the charge.
+    tx.rollback().await.expect("roll back");
+
+    assert_eq!(
+        used(&pool, alpha.tenant).await,
+        Some(0),
+        "a charge that could commit apart from the version it pays for would leak quota on every \
+         failed upload"
+    );
+    assert_eq!(count(&pool, alpha.tenant, "file_versions").await, 0, "and no version survived");
+
+    // The other half: the same commit, committed, does move it.
+    commit(&pool, &alpha, &sized(&alpha, 4_096)).await;
+    assert_eq!(used(&pool, alpha.tenant).await, Some(4_096));
+}
+
+/// A failure *after* the charge and before the commit leaves the counter untouched.
+///
+/// Forced with a real post-charge failure rather than an injected one: a duplicate `object_key` is
+/// refused by `uq_version_object`, which is the statement immediately after the charge. The
+/// successful commit above it is the control — it shows the counter moving under the identical
+/// fixture, so "unchanged" is a statement about a charge that ran and rolled back.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL with migrations 0004, 0005, 0006 and 0018 applied; CI runs it with --include-ignored"]
+async fn a_commit_that_fails_after_the_charge_leaves_the_counter_untouched() {
+    let (_db, pool, alpha, _beta) = setup().await;
+    set_quota(&pool, alpha.tenant, 1_048_576, Enforcement::Block).await;
+
+    let first = sized(&alpha, 4_096);
+    commit(&pool, &alpha, &first).await;
+    assert_eq!(used(&pool, alpha.tenant).await, Some(4_096), "the control: a charge that landed");
+
+    let clash = NewVersion { object_key: first.object_key.clone(), ..sized(&alpha, 65_536) };
+    let refused = try_commit(&pool, &alpha, &clash).await;
+    assert!(matches!(refused, Err(VersionsError::ObjectKeyInUse)), "{refused:?}");
+
+    assert_eq!(
+        used(&pool, alpha.tenant).await,
+        Some(4_096),
+        "the 64 KiB charge was made and then rolled back with the insert that failed after it; a \
+         counter that kept it is the drift ENC-584's reconciliation would spend the night undoing"
+    );
+}
+
+/// Exhaustion blocks the write and nothing else — the exit criterion, with the refusal first.
+///
+/// The "not blocked" legs are statements about a demonstrably exhausted quota rather than about one
+/// that never engaged. The loop closes at the end: a release brings the tenant back under its limit
+/// and the commit that was refused is admitted.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL with migrations 0004, 0005, 0006 and 0018 applied; CI runs it with --include-ignored"]
+async fn an_exhausted_quota_refuses_a_commit_while_every_read_of_the_history_keeps_working() {
+    let (_db, pool, alpha, _beta) = setup().await;
+    set_quota(&pool, alpha.tenant, 4_096, Enforcement::Block).await;
+
+    let committed = commit(&pool, &alpha, &sized(&alpha, 4_096)).await;
+    let version = committed.version.id;
+
+    // Exhausted, and shown to be.
+    let refused = try_commit(&pool, &alpha, &sized(&alpha, 1)).await;
+    assert!(matches!(refused, Err(VersionsError::StorageQuotaExceeded(_))), "{refused:?}");
+
+    // Reads, against the tenant that has just been refused a write.
+    assert!(read(&pool, &alpha, version).await.is_some(), "find must not consult the quota");
+
+    let mut tx = TenantScoped::begin(&pool, alpha.tenant).await.expect("begin");
+    let current = VersionRepository::current(&mut tx, alpha.tenant, alpha.file)
+        .await
+        .expect("read the current version");
+    let page = VersionRepository::list(&mut tx, alpha.tenant, alpha.file, None, PageLimit::new(10))
+        .await
+        .expect("page the history");
+    tx.commit().await.expect("commit");
+    assert_eq!(current.map(|version| version.id), Some(version));
+    assert_eq!(page.versions.len(), 1, "history is readable at the limit");
+
+    // And the loop closes: freeing bytes admits the commit that was refused.
+    let mut tx = TenantScoped::begin(&pool, alpha.tenant).await.expect("begin");
+    let released = release_storage(&mut tx, 4_096).await.expect("release");
+    tx.commit().await.expect("commit");
+    assert!(matches!(released, Released::Recorded(_)), "a release can never be refused");
+
+    commit(&pool, &alpha, &sized(&alpha, 1)).await;
+}
+
+/// One tenant's exhaustion never refuses another's commit.
+///
+/// `tenant-beta` exists so this is realistic rather than notional: identical fixtures, identical
+/// limits, identical sizes, and the only difference is which tenant has spent its allowance.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL with migrations 0004, 0005, 0006 and 0018 applied; CI runs it with --include-ignored"]
+async fn tenant_betas_exhaustion_does_not_refuse_tenant_alphas_commit() {
+    let (_db, pool, alpha, beta) = setup().await;
+    set_quota(&pool, alpha.tenant, 4_096, Enforcement::Block).await;
+    set_quota(&pool, beta.tenant, 4_096, Enforcement::Block).await;
+
+    commit(&pool, &beta, &sized(&beta, 4_096)).await;
+    let refused = try_commit(&pool, &beta, &sized(&beta, 1)).await;
+    assert!(matches!(refused, Err(VersionsError::StorageQuotaExceeded(_))), "{refused:?}");
+
+    // Alpha has spent nothing, and beta's row is not visible to it.
+    commit(&pool, &alpha, &sized(&alpha, 4_096)).await;
+    assert_eq!(used(&pool, alpha.tenant).await, Some(4_096));
+    assert_eq!(used(&pool, beta.tenant).await, Some(4_096), "and beta's counter did not move");
+}
+
+/// A tenant with no quota row is unmetered, never refused.
+///
+/// Provisioning order must not be the difference between a working deployment and a read-only one.
+/// The control is `tenant-beta`, configured and refused under the identical fixture — without it
+/// this passes against a build where the charge was never wired at all.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL with migrations 0004, 0005, 0006 and 0018 applied; CI runs it with --include-ignored"]
+async fn a_tenant_with_no_quota_row_commits_unmetered_while_a_configured_one_is_refused() {
+    let (_db, pool, alpha, beta) = setup().await;
+    set_quota(&pool, beta.tenant, 4_096, Enforcement::Block).await;
+
+    let refused = try_commit(&pool, &beta, &sized(&beta, 8_192)).await;
+    assert!(matches!(refused, Err(VersionsError::StorageQuotaExceeded(_))), "{refused:?}");
+
+    let committed = commit(&pool, &alpha, &sized(&alpha, 8_192)).await;
+    assert!(committed.charged.is_none(), "an unmetered tenant is charged nothing");
+    assert_eq!(used(&pool, alpha.tenant).await, None, "and has no row to charge");
+}
+
+/// `MONITOR` counts without refusing; `BLOCK` refuses the identical charge.
+///
+/// `plans/M4-GOVERNANCE.md §2` — a control that cannot be turned on gradually will be turned on
+/// carelessly, or not at all. Both halves in one test, because "MONITOR did not refuse" is worth
+/// nothing without the demonstration that the same commit under `BLOCK` does.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL with migrations 0004, 0005, 0006 and 0018 applied; CI runs it with --include-ignored"]
+async fn monitor_counts_a_commit_it_will_not_refuse_and_block_refuses_the_same_one() {
+    let (_db, pool, alpha, beta) = setup().await;
+    set_quota(&pool, alpha.tenant, 4_096, Enforcement::Monitor).await;
+    set_quota(&pool, beta.tenant, 4_096, Enforcement::Block).await;
+
+    let over = commit(&pool, &alpha, &sized(&alpha, 65_536)).await;
+    assert_eq!(
+        over.charged.expect("monitored tenants are still counted").quota.used_bytes,
+        65_536,
+        "MONITOR counts; it is the refusal it promises not to make"
+    );
+
+    let refused = try_commit(&pool, &beta, &sized(&beta, 65_536)).await;
+    assert!(matches!(refused, Err(VersionsError::StorageQuotaExceeded(_))), "{refused:?}");
+    assert_eq!(used(&pool, beta.tenant).await, Some(0), "and BLOCK moved nothing");
+}
+
+/// The soft limit is announced by exactly one commit, and before anything is refused.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL with migrations 0004, 0005, 0006 and 0018 applied; CI runs it with --include-ignored"]
+async fn one_commit_reports_the_soft_limit_crossing_and_the_next_ones_do_not() {
+    let (_db, pool, alpha, _beta) = setup().await;
+    // 80% of 10 000 is 8 000.
+    set_quota(&pool, alpha.tenant, 10_000, Enforcement::Block).await;
+
+    let under = commit(&pool, &alpha, &sized(&alpha, 7_900)).await;
+    assert!(
+        !under.charged.expect("metered").crossed_soft_limit,
+        "79% is under the threshold and must not announce"
+    );
+
+    let crossing = commit(&pool, &alpha, &sized(&alpha, 100)).await;
+    assert!(
+        crossing.charged.expect("metered").crossed_soft_limit,
+        "8 000 of 10 000 is the crossing"
+    );
+
+    let after = commit(&pool, &alpha, &sized(&alpha, 100)).await;
+    assert!(
+        !after.charged.expect("metered").crossed_soft_limit,
+        "announced once per crossing, not once per write"
+    );
+
+    // Notified well before refused, which is the ordering §2 asks for.
+    let refused = try_commit(&pool, &alpha, &sized(&alpha, 10_000)).await;
+    assert!(matches!(refused, Err(VersionsError::StorageQuotaExceeded(_))), "{refused:?}");
+}
+
+/// A restore pays for its copy of the bytes, and is refused when they do not fit.
+///
+/// The restored version is a *new* object holding the same content — `uq_version_object` makes
+/// sharing the source's key unrepresentable — so the deployment is storing both. A restore exempt
+/// from the charge would be a way to grow a tenant's footprint without moving its counter.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL with migrations 0004, 0005, 0006 and 0018 applied; CI runs it with --include-ignored"]
+async fn a_restore_is_charged_for_its_copy_and_refused_when_it_does_not_fit() {
+    let (_db, pool, alpha, _beta) = setup().await;
+    set_quota(&pool, alpha.tenant, 12_288, Enforcement::Block).await;
+
+    let source = commit(&pool, &alpha, &sized(&alpha, 4_096)).await;
+    make_available(&pool, &alpha, source.version.id).await;
+    assert_eq!(used(&pool, alpha.tenant).await, Some(4_096));
+
+    let restored = try_restore(&pool, &alpha, &restore_of(&alpha, source.version.id))
+        .await
+        .expect("the restore fits");
+    assert_eq!(restored.charged.expect("metered").quota.used_bytes, 8_192, "charged a second time");
+
+    // Fill the remainder, then a further restore has nowhere to go.
+    commit(&pool, &alpha, &sized(&alpha, 4_096)).await;
+    let refused = try_restore(&pool, &alpha, &restore_of(&alpha, source.version.id)).await;
+    assert!(matches!(refused, Err(VersionsError::StorageQuotaExceeded(_))), "{refused:?}");
+    assert_eq!(used(&pool, alpha.tenant).await, Some(12_288), "and nothing was charged for it");
+}
+
+/// A restore request pointing at a fresh key, which is the only kind the schema allows.
+fn restore_of(at: &Fixture, source: VersionId) -> RestoreVersion {
+    RestoreVersion {
+        file_id: at.file,
+        source,
+        object_key: format!("{}/{}", at.tenant, Uuid::now_v7()),
+        bump: VersionBump::Major,
+        restored_by: at.owner,
+        comment: None,
+    }
 }

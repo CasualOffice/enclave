@@ -38,6 +38,7 @@
 
 use chrono::{DateTime, Duration, Utc};
 use enclave_core::{FileId, LibraryId, TenantId, UserId};
+use enclave_db::TenantScoped;
 use enclave_storage::{BlobStore, CompletedPart, UploadRequest, UploadTarget};
 use sqlx::PgConnection;
 
@@ -45,6 +46,7 @@ use crate::content::{is_lowercase_sha256_hex, FailureReason, ReportedContent, Ve
 use crate::error::{Result, UploadError};
 use crate::id::UploadSessionId;
 use crate::limits::UploadLimits;
+use crate::quota::{preflight, Preflight};
 use crate::repo::UploadRepository;
 use crate::session::{LoadedSession, ScanHandoff, Session, SessionRecord};
 use crate::staged::{completion_session, StagedObject};
@@ -140,13 +142,19 @@ pub struct UploadService;
 impl UploadService {
     /// Validates, reserves a staging key, asks the store for URLs and records the session.
     ///
+    /// The tenant's stored-byte quota is consulted here too, and *only* as a courtesy: see
+    /// [`crate::quota`]. It refuses an upload that already cannot fit, before a URL is issued, and
+    /// it admits nothing — the binding decision is the charge inside the version commit
+    /// (`plans/M4-GOVERNANCE.md` D31).
+    ///
     /// # Errors
     ///
     /// [`UploadError::ExtensionNotAllowed`], [`UploadError::FileTooLarge`],
-    /// [`UploadError::InvalidName`] and [`UploadError::InvalidDeclaredChecksum`] — all of them
-    /// *before* the object store is contacted — plus storage and database failures after it.
+    /// [`UploadError::InvalidName`], [`UploadError::InvalidDeclaredChecksum`] and
+    /// [`UploadError::StorageQuotaExceeded`] — all of them *before* the object store is contacted —
+    /// plus storage and database failures after it.
     pub async fn create(
-        conn: &mut PgConnection,
+        tx: &mut TenantScoped,
         blob: &dyn BlobStore,
         tenant: TenantId,
         request: &NewUpload,
@@ -161,6 +169,12 @@ impl UploadService {
             if !is_lowercase_sha256_hex(declared) {
                 return Err(UploadError::InvalidDeclaredChecksum);
             }
+        }
+        // The quota read is last of the four, because it is the only one that costs a round trip
+        // and the other three refuse from the request alone. It is still above the store call,
+        // which is what `docs/05-API.md §8` asks for.
+        if let Preflight::Refused { limit_bytes } = preflight(tx, request.declared_size).await? {
+            return Err(UploadError::StorageQuotaExceeded { limit_bytes });
         }
 
         let file_id = match request.intent {
@@ -208,7 +222,7 @@ impl UploadService {
         };
 
         let session = Session::<Created>::new(record);
-        UploadRepository::insert(conn, &session).await?;
+        UploadRepository::insert(tx, &session).await?;
 
         tracing::info!(
             tenant_id = %tenant,
@@ -395,5 +409,36 @@ mod tests {
         let store = body.find("blob.create_upload(").expect("create calls the store");
         assert!(check < store, "the library's limits must be checked before any URL is issued");
         assert_eq!(body.matches("blob.create_upload(").count(), 1, "one store call, one place");
+    }
+
+    /// The same guarantee for the quota, which `docs/05-API.md §8` names alongside the file-type
+    /// and size checks. Asserted against the source for the same reason as above: an upload issued
+    /// URLs and *then* refused would pass every functional test and would still have let a client
+    /// start sending gigabytes.
+    #[test]
+    fn the_quota_preflight_also_precedes_the_only_call_to_the_object_store() {
+        let source = include_str!("service.rs");
+        let body = source.split("pub async fn create(").nth(1).expect("create exists");
+        let quota = body.find("preflight(tx,").expect("create consults the quota");
+        let store = body.find("blob.create_upload(").expect("create calls the store");
+        assert!(quota < store, "a rejected upload must never consume bandwidth");
+    }
+
+    /// This service reads the quota and never moves it.
+    ///
+    /// The charge belongs to the version commit, in the transaction that writes the row it pays
+    /// for. A charge raised here would be against a staged object that the nightly reconciliation
+    /// — which measures `SUM(file_versions.size_bytes)` — cannot see, so it would be subtracted as
+    /// drift on the first pass. Needles assembled at run time (`docs/12 §1.2`).
+    #[test]
+    fn nothing_in_this_service_moves_the_counter() {
+        let source = include_str!("service.rs");
+        for needle in [format!("charge_{}", "storage"), format!("release_{}", "storage")] {
+            assert!(
+                !source.contains(&needle),
+                "`{needle}` in the upload service means bytes are metered before a version row \
+                 exists to account for them"
+            );
+        }
     }
 }
