@@ -8,6 +8,7 @@ use enclave_core::PolicyEngine;
 use enclave_db::DbPool;
 
 use crate::admin::conditional_access::SharedRuleCache;
+use crate::admin::dlp::SharedDlpRuleCache;
 use crate::edge::Edge;
 use crate::refusal::HandlerAudit;
 
@@ -30,6 +31,13 @@ pub struct ApiState {
     /// message reaches one replica; a deployment is several*. Nothing in the admin surface's
     /// behaviour turns on it, which is exactly why it is an `Option` and not a required argument.
     pub rule_cache: Option<SharedRuleCache>,
+    /// The DLP rule cache this replica reads, when the binary has one to hand.
+    ///
+    /// `None` is a supported deployment for [`ApiState::rule_cache`]'s reason, and one extra: a
+    /// deployment whose `dlp.default_mode` is `DISABLED` builds `DisabledDlp`, which holds no rule
+    /// cache because it reads no rules. There is nothing to invalidate, and that is a posture
+    /// rather than a gap (`ENC-633`).
+    pub dlp_rule_cache: Option<SharedDlpRuleCache>,
     /// Where a refusal *this layer* takes is recorded (`ENC-606`).
     ///
     /// Not `Option`, and not a builder step that a deployment could forget. `ENC-606` was a class
@@ -75,6 +83,7 @@ impl ApiState {
             tokens: Arc::new(AccessTokenVerifier::new(issuer, audience, keys)),
             edge: Arc::new(Edge::untrusting()),
             rule_cache: None,
+            dlp_rule_cache: None,
             audit,
         }
     }
@@ -100,6 +109,18 @@ impl ApiState {
     #[must_use]
     pub fn with_rule_cache(mut self, cache: SharedRuleCache) -> Self {
         self.rule_cache = Some(cache);
+        self
+    }
+
+    /// Supplies the DLP rule cache the admin surface tells about a change.
+    ///
+    /// Separate from [`ApiState::with_rule_cache`] rather than one handle carrying both, because
+    /// the two stages are two independently wired things: a deployment can run `DISABLED` DLP
+    /// beside enforced conditional access, and a single combined handle would make one of them
+    /// require the other to exist.
+    #[must_use]
+    pub fn with_dlp_rule_cache(mut self, cache: SharedDlpRuleCache) -> Self {
+        self.dlp_rule_cache = Some(cache);
         self
     }
 
@@ -134,6 +155,12 @@ pub fn unconfigured_stages() -> &'static [&'static str] {
         "classification (no ceilings — no label restricts any action)",
         "dlp (DISABLED — no content inspection on any enforcement point)",
         "retention (no policies — nothing blocks deletion)",
-        "authorization (self-read only — ENC-126 brings ACL resolution)",
+        // Half of this stage is wired and half is not, and the entry says which half: `ENC-619`
+        // gave the binary an authorization service that can answer an `Action::Admin` from
+        // `users.is_admin`, and content is still self-read only. An operator reading "authorization"
+        // here must not conclude that the admin surface is closed, and one reading nothing at all
+        // must not conclude that ACLs are being resolved.
+        "authorization (content is self-read only — ENC-126 brings ACL resolution; administrative \
+         actions are decided from users.is_admin)",
     ]
 }

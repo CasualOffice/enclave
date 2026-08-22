@@ -94,12 +94,18 @@ async fn main() -> anyhow::Result<()> {
     // them, which is what keeps `RuleSet::evaluate` unable to see it. The observation sink is the
     // `tracing` one, which is what can be written without inventing a schema; `ENC-593` is the
     // queryable record `docs/06 §9`'s simulate-before-enforce gate actually needs.
+    //
+    // The stage doubles as the cache the admin surface tells about a write (`ENC-633`): clones
+    // share one cache, so the handle handed to `ApiState` and the one the chain evaluates against
+    // are the same map. `DISABLED` has none — it reads no rules, so there is nothing to forget.
+    let mut dlp_cache: Option<enclave_api::admin::dlp::SharedDlpRuleCache> = None;
     let dlp: Arc<dyn enclave_core::DlpService> = if dlp_mode.evaluates() {
         let stage = enclave_dlp::TenantDlp::new(
             db.clone(),
             dlp_mode,
             Arc::new(enclave_dlp::TracingObservations),
         );
+        dlp_cache = Some(Arc::new(stage.clone()));
         tracing::info!(
             dlp_mode = dlp_mode.as_str(),
             cache_ttl_secs = stage.cache_ttl().as_secs(),
@@ -131,9 +137,24 @@ async fn main() -> anyhow::Result<()> {
          means is the facts_unavailable policy's to say"
     );
 
+    // Authorization can now answer an administrative question (`ENC-619`). `SelfServiceAuthorization`
+    // allows a principal to read *itself* and refuses everything else, so with it alone every route
+    // under `/api/v1/admin/**` was refused at this stage whoever the caller was — closed, which was
+    // the right direction, and unusable.
+    //
+    // `AdminAuthorization` **wraps** it rather than replacing it: an `Action::Admin` is decided from
+    // the caller's administrative grants and every other action is still the inner service's to
+    // answer, which is what keeps `GET /api/v1/me` working and leaves `ENC-126` a single line to
+    // change when ACL resolution is wired. Grants come from `users.is_admin` — the tenant's global
+    // administrator — and what that can and cannot yet express is in `crates/authorization/src/admin.rs`.
+    let authorization = enclave_authorization::AdminAuthorization::new(
+        Arc::new(enclave_authorization::PgAdminRoles::new(db.clone())),
+        Arc::new(enclave_authorization::SelfServiceAuthorization),
+    );
+
     let policy = PolicyEngine::new(
         Arc::new(conditional_access),
-        Arc::new(enclave_authorization::SelfServiceAuthorization),
+        Arc::new(authorization),
         Arc::new(enclave_information_barriers::UnconfiguredBarriers),
         Arc::new(enclave_classification::UnconfiguredClassification),
         dlp,
@@ -154,7 +175,7 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
-    let state = ApiState::new(
+    let mut state = ApiState::new(
         policy,
         db,
         config.auth.access_token.issuer.as_deref().unwrap_or_default(),
@@ -162,6 +183,14 @@ async fn main() -> anyhow::Result<()> {
         keys,
     )
     .with_edge(edge);
+
+    // Present only when the configured mode evaluates: `DisabledDlp` reads no rules and has no
+    // cache to forget. Not required for correctness in any case — the TTL is the bound and this is
+    // the shortcut for the replica that made the change. (`ENC-624` is the same line for the
+    // conditional-access cache, which this binary still does not hand to `ApiState`.)
+    if let Some(cache) = dlp_cache {
+        state = state.with_dlp_rule_cache(cache);
+    }
 
     // Delivery, and the same treatment the policy stages get above. `ENC-170`: the router used to
     // register download and preview without either dependency, so both answered `500` in the binary
