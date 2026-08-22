@@ -71,6 +71,8 @@ use core::future::Future;
 use core::time::Duration;
 
 use async_trait::async_trait;
+use chrono::Utc;
+use enclave_antivirus::{AntivirusScanner, ScanPolicy};
 use enclave_core::TenantId;
 use enclave_db::DbPool;
 use enclave_indexing::{BuildVersions, ChunkerVersion, Extractor, ExtractorVersion, Pipeline};
@@ -80,6 +82,7 @@ use enclave_storage::BlobStore;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
 
+use crate::antivirus::{av_pass, AvCursor, AvPass};
 use crate::epoch::ReconcilerConfig;
 use crate::indexing::{index_pass, IndexPass, VectorStage};
 use crate::ocr::MountedOcr;
@@ -92,6 +95,8 @@ use enclave_dlp::detector::DetectorSet;
 /// Constants rather than literals at three call sites, because the binary's start-up line, the
 /// per-loop log field and the tests all have to agree for any of them to be worth reading.
 pub const INDEXING: &str = "indexing";
+/// See [`INDEXING`].
+pub const ANTIVIRUS: &str = "antivirus";
 /// See [`INDEXING`].
 pub const SCANNING: &str = "content-scan";
 /// See [`INDEXING`].
@@ -115,6 +120,17 @@ pub struct Cadence {
     /// LOCKED` per tenant. A tick that indexed anything does not wait at all — see
     /// [`Tick::Progressed`].
     pub indexing_idle: Duration,
+    /// How long the antivirus pass waits when nothing is waiting for a verdict.
+    ///
+    /// The shortest of the five, because this interval **is** the latency between an upload
+    /// completing and its content existing as far as every other part of the product is concerned:
+    /// nothing is readable, previewable, searchable or scannable for DLP until this pass has moved
+    /// the version. The indexing interval used to be described as that latency and was measuring
+    /// only the second half of it (`ENC-641`).
+    ///
+    /// A tick that recorded any verdict does not wait at all — see [`Tick::Progressed`] and
+    /// [`av_progressed`].
+    pub antivirus_idle: Duration,
     /// How long the content scanner waits when nothing is due.
     ///
     /// Longer than [`Self::indexing_idle`], and the difference is not caution about cost. The scan
@@ -147,6 +163,7 @@ impl Default for Cadence {
     fn default() -> Self {
         Self {
             indexing_idle: Duration::from_secs(5),
+            antivirus_idle: Duration::from_secs(5),
             scan_idle: Duration::from_secs(30),
             invalidation: Duration::from_secs(300),
             epoch: Duration::from_secs(60),
@@ -187,6 +204,23 @@ pub trait IndexRunner: Send + Sync + fmt::Debug {
     /// Whatever [`index_pass`] returns: a storage or database failure, never a document that would
     /// not parse.
     async fn run(&self, tenant: TenantId, stop: &Stop) -> Result<IndexPass>;
+}
+
+/// One tenant's share of the versions waiting for an antivirus verdict.
+///
+/// Its own trait for the reason [`ScanRunner`] is its own: the three content passes are
+/// independently absent, and [`Scheduler::scheduled`] has to be able to say *which*. This one is the
+/// most consequential absence of the three — see [`Scheduler::with_antivirus`].
+#[async_trait]
+pub trait AvRunner: Send + Sync + fmt::Debug {
+    /// Scans up to one batch of `tenant`'s versions that have no usable antivirus verdict.
+    ///
+    /// # Errors
+    ///
+    /// Whatever [`av_pass`] returns: a database failure. Never an engine that would not answer and
+    /// never an object that could not be read — both are verdicts, so that `av.unavailable_policy`
+    /// decides what happens to the content instead of an error path.
+    async fn run(&self, tenant: TenantId, stop: &Stop) -> Result<AvPass>;
 }
 
 /// One tenant's share of the content-scan queue.
@@ -441,6 +475,105 @@ impl<E: Extractor, S: BlobStore + ?Sized> ScanRunner for ContentScanner<E, S> {
     }
 }
 
+/// [`AvRunner`] over a real engine, store and pool — `ENC-641`.
+///
+/// # What it holds that the two extraction runners do not
+///
+/// A [`ScanPolicy`] and no extractor. The policy is resolved once, at the composition root, from
+/// `antivirus:` — see [`ScanPolicy::from_config`] for why exactly one of its two knobs comes from
+/// configuration. No extractor because antivirus reads *bytes*: the object goes to the engine as a
+/// stream and is never parsed, chunked or held, which is also why this pass has no
+/// [`RenderBudget`] — the ceiling that applies is the engine's own `max_scan_bytes`.
+///
+/// The cursor is the one piece of state, exactly as in [`ContentScanner`], and for the same reason:
+/// the queue is a query with no claim column, so a version that keeps producing no verdict never
+/// leaves it and a sweep without a cursor would re-select the same batch forever.
+pub struct VersionScanner<S: BlobStore + ?Sized> {
+    pool: DbPool,
+    scanner: Arc<dyn AntivirusScanner>,
+    store: Arc<S>,
+    policy: ScanPolicy,
+    batch: i64,
+    cursors: std::sync::Mutex<std::collections::HashMap<TenantId, AvCursor>>,
+}
+
+impl<S: BlobStore + ?Sized> fmt::Debug for VersionScanner<S> {
+    /// Names the wiring, never its contents — [`PipelineRunner`]'s reason. The policy *is* printed,
+    /// because it is two closed enumerations and it is the pair an operator most needs to see in a
+    /// start-up line: it decides what happens to a version the engine could not form an opinion
+    /// about, and to every version at all if the engine is down.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("VersionScanner")
+            .field("unsupported", &self.policy.unsupported)
+            .field("unavailable", &self.policy.unavailable)
+            .field("batch", &self.batch)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<S: BlobStore + ?Sized> VersionScanner<S> {
+    /// Assembles the antivirus pass's dependencies once, for every tenant and every tick.
+    #[must_use]
+    pub fn new(
+        pool: DbPool,
+        scanner: Arc<dyn AntivirusScanner>,
+        store: Arc<S>,
+        policy: ScanPolicy,
+        batch: i64,
+    ) -> Self {
+        Self {
+            pool,
+            scanner,
+            store,
+            policy,
+            batch,
+            cursors: std::sync::Mutex::new(std::collections::HashMap::new()),
+        }
+    }
+
+    /// Where this tenant's next sweep resumes.
+    ///
+    /// A poisoned lock reads as [`AvCursor::start`] rather than panicking: the cursor is pacing and
+    /// not correctness, so beginning the sweep again is the worst it can cost — whereas a panic here
+    /// would stop every version in the deployment becoming readable for the life of the process.
+    fn cursor(&self, tenant: TenantId) -> AvCursor {
+        self.cursors
+            .lock()
+            .map(|cursors| cursors.get(&tenant).copied().unwrap_or_default())
+            .unwrap_or_default()
+    }
+
+    /// Records where the next sweep should resume.
+    fn advance(&self, tenant: TenantId, cursor: AvCursor) {
+        if let Ok(mut cursors) = self.cursors.lock() {
+            cursors.insert(tenant, cursor);
+        }
+    }
+}
+
+#[async_trait]
+impl<S: BlobStore + ?Sized> AvRunner for VersionScanner<S> {
+    async fn run(&self, tenant: TenantId, stop: &Stop) -> Result<AvPass> {
+        let from = self.cursor(tenant);
+        let pass = av_pass(
+            &self.pool,
+            tenant,
+            self.scanner.as_ref(),
+            self.store.as_ref(),
+            self.policy,
+            self.batch,
+            from,
+            stop,
+        )
+        .await?;
+        // Only on success, as [`ContentScanner`] does: a pass that failed part-way has no
+        // trustworthy answer about where it got to, and advancing past versions it never reached
+        // would leave them unscanned — and therefore unreadable — until the sweep came round again.
+        self.advance(tenant, pass.resume);
+        Ok(pass)
+    }
+}
+
 /// The coverage probe's two dependencies, present together or not at all.
 ///
 /// One field would do; two exist because a floor without a census is not a half-configured probe,
@@ -462,6 +595,7 @@ struct CoverageProbe {
 #[derive(Debug, Clone)]
 pub struct Scheduler {
     tenants: Arc<dyn TenantSource>,
+    antivirus: Option<Arc<dyn AvRunner>>,
     indexing: Option<Arc<dyn IndexRunner>>,
     scanning: Option<Arc<dyn ScanRunner>>,
     coverage: Option<CoverageProbe>,
@@ -480,12 +614,33 @@ impl Scheduler {
     pub fn new(tenants: Arc<dyn TenantSource>) -> Self {
         Self {
             tenants,
+            antivirus: None,
             indexing: None,
             scanning: None,
             coverage: None,
             reconciler: ReconcilerConfig::default(),
             cadence: Cadence::default(),
         }
+    }
+
+    /// Schedules the antivirus pass. **Without this call, nothing in the deployment ever becomes
+    /// readable.**
+    ///
+    /// That sentence is the whole of `ENC-641`, and it is why this builder step reads differently
+    /// from the other three. `with_indexing` absent costs searchability; `with_scanning` absent
+    /// costs evidence the DLP stage would have decided on. This one absent costs *the product*: every
+    /// version stays `SCANNING` / `PENDING`, `readable_version` answers `None` for all of them, and
+    /// the two passes below run correctly over an empty set forever.
+    ///
+    /// It is still optional, and for the same deny-by-default reason the others are: the pass reads
+    /// object storage, so a deployment that configured none must not have it scheduled and failing.
+    /// What makes that safe is that the absence is *unreadable*, never permissive —
+    /// [`Scheduler::scheduled`] is what makes it visible rather than merely true, and
+    /// `crates/worker/src/main.rs` logs it at start-up.
+    #[must_use]
+    pub fn with_antivirus(mut self, runner: Arc<dyn AvRunner>) -> Self {
+        self.antivirus = Some(runner);
+        self
     }
 
     /// Schedules the indexing pass. Without this call, nothing indexes.
@@ -547,6 +702,11 @@ impl Scheduler {
         if self.indexing.is_some() {
             passes.insert(0, INDEXING);
         }
+        // First, because it is first in the pipeline: nothing the other two passes read exists
+        // until this one has run.
+        if self.antivirus.is_some() {
+            passes.insert(0, ANTIVIRUS);
+        }
         if self.coverage.is_some() {
             passes.push(COVERAGE);
         }
@@ -564,6 +724,14 @@ impl Scheduler {
         info!(passes = ?self.scheduled(), "worker passes starting");
 
         let mut tasks = Vec::new();
+
+        if let Some(runner) = self.antivirus.clone() {
+            let (tenants, cadence, stop) =
+                (Arc::clone(&self.tenants), self.cadence.antivirus_idle, stop.clone());
+            tasks.push(tokio::spawn(async move {
+                antivirus_loop(tenants.as_ref(), runner.as_ref(), cadence, &stop).await;
+            }));
+        }
 
         if let Some(runner) = self.indexing.clone() {
             let (tenants, cadence, stop) =
@@ -720,6 +888,112 @@ async fn indexing_loop(
 /// and `claimed` is not used, which is the whole content of the rule — see [`indexing_loop`].
 const fn made_progress(pass: &IndexPass) -> bool {
     pass.indexed + pass.failed + pass.skipped > 0
+}
+
+/// How long a version may wait for an antivirus verdict before the loop starts saying so.
+///
+/// Not a timeout and not a policy: nothing changes when it elapses, and a version over it is exactly
+/// as unreadable as one under it. It is the threshold at which "the queue is draining" stops being a
+/// plausible reading of the same numbers, and the point of having it at all is `ENC-641` — a
+/// permanently stuck `PENDING` with nothing reporting it is how that defect survived four
+/// milestones. An hour is far longer than a scan and far shorter than a working day.
+const STUCK_AFTER: chrono::Duration = chrono::Duration::hours(1);
+
+/// Scans each tenant's unverdicted versions, and goes straight round again while verdicts are landing.
+///
+/// **Only a row that moved counts as progress**, which is [`av_progressed`] and is load-bearing in
+/// the same way deferral is for [`indexing_loop`]. The queue is a query with no claim column, so a
+/// version that produced no *new* verdict stays in it: a `HOLD` while the engine is down, and — under
+/// the `SKIPPED` rescan sweep — an encrypted archive the engine still cannot open. Counting either as
+/// progress would make the loop re-select the same batch immediately and re-send it to the engine at
+/// the speed of the network, forever. Idling instead makes the re-attempt one bounded try per
+/// interval, which is what makes it *useful*: it is how a corpus skipped by `antivirus.provider:
+/// none` becomes scanned the day an engine is configured.
+///
+/// Every write moves a version towards a state the queue no longer offers, or towards one where the
+/// next verdict is identical and therefore writes nothing — so "progress" cannot loop.
+async fn antivirus_loop(
+    tenants: &dyn TenantSource,
+    runner: &dyn AvRunner,
+    idle: Duration,
+    stop: &Stop,
+) {
+    run_loop(ANTIVIRUS, idle, stop, move || async move {
+        let Some(tenants) = tenants_for(ANTIVIRUS, tenants).await else { return Tick::Idle };
+
+        let mut progressed = false;
+        for tenant in tenants {
+            if stop.is_stopped() {
+                break;
+            }
+            match runner.run(tenant, stop).await {
+                Ok(pass) => {
+                    report(tenant, &pass);
+                    progressed |= av_progressed(&pass);
+                }
+                // Per tenant, and the loop continues: one tenant whose bucket is unreachable must
+                // not leave every other tenant's uploads permanently unreadable.
+                Err(error) => {
+                    warn!(pass = ANTIVIRUS, tenant = %tenant, %error, "the antivirus pass failed");
+                }
+            }
+        }
+
+        if progressed {
+            Tick::Progressed
+        } else {
+            Tick::Idle
+        }
+    })
+    .await;
+}
+
+/// Says out loud what a pass found, when what it found is that content is not becoming readable.
+///
+/// Two different signals, deliberately not merged. **`held`** is this tick: versions the engine would
+/// not give a verdict for, which is what an outage looks like as it starts. **The backlog** is
+/// cumulative: how long the oldest version still waiting has been waiting, which is what an outage
+/// nobody noticed looks like a day later — and it is the reading that would have made `ENC-641`
+/// visible, because with no pass at all every version's wait grows without bound.
+///
+/// `warn!` rather than a gauge, and that is a stated limitation rather than a preference: metrics for
+/// the content passes are `ENC-637` and `ENC-648`, and neither is this task's. A log line is what
+/// ships today.
+fn report(tenant: TenantId, pass: &AvPass) {
+    if pass.held > 0 {
+        warn!(
+            pass = ANTIVIRUS,
+            tenant = %tenant,
+            held = pass.held,
+            considered = pass.considered,
+            "antivirus reached no verdict for these versions; they stay unreadable and will be \
+             retried. A `held` count that does not fall is an engine that is not answering."
+        );
+    }
+
+    if let Some(backlog) = pass.backlog(Utc::now()) {
+        if backlog > STUCK_AFTER {
+            warn!(
+                pass = ANTIVIRUS,
+                tenant = %tenant,
+                waiting_hours = backlog.num_hours(),
+                "the oldest version waiting for an antivirus verdict has been waiting for hours; \
+                 nothing this tenant has uploaded since then is readable, previewable, searchable \
+                 or scannable for DLP"
+            );
+        }
+    }
+}
+
+/// Whether an antivirus pass did anything a second tick could build on.
+///
+/// A named function for the reason [`made_progress`] is one: so the rule can be asserted directly
+/// rather than restated by a test that then agrees with a broken loop.
+///
+/// Rows written, and nothing else. A version re-confirmed unscannable is counted in
+/// `AvPass::quarantined` and changed nothing — see [`antivirus_loop`].
+const fn av_progressed(pass: &AvPass) -> bool {
+    pass.written > 0
 }
 
 /// Scans each tenant in turn, and goes straight round again while facts are being written.
@@ -1078,6 +1352,109 @@ mod tests {
         stop.stop();
         indexing_loop(tenants.as_ref(), runner.as_ref(), Duration::from_secs(3600), &stop).await;
         assert!(runner.seen().is_empty(), "no tenant could be read, so none was indexed");
+    }
+
+    /// An antivirus runner that answers a fixed pass and stops the world after `stop_after` calls.
+    #[derive(Debug)]
+    struct FixedAv {
+        seen: std::sync::Mutex<Vec<TenantId>>,
+        stop_after: usize,
+        outcome: AvPass,
+        stop: Stop,
+    }
+
+    impl FixedAv {
+        fn new(stop: Stop, stop_after: usize, outcome: AvPass) -> Arc<Self> {
+            Arc::new(Self { seen: std::sync::Mutex::new(Vec::new()), stop_after, outcome, stop })
+        }
+
+        fn seen(&self) -> Vec<TenantId> {
+            self.seen.lock().expect("the recorder was not poisoned").clone()
+        }
+    }
+
+    #[async_trait]
+    impl AvRunner for FixedAv {
+        async fn run(&self, tenant: TenantId, _stop: &Stop) -> Result<AvPass> {
+            let calls = {
+                let mut seen = self.seen.lock().expect("the recorder was not poisoned");
+                seen.push(tenant);
+                seen.len()
+            };
+            if calls >= self.stop_after {
+                self.stop.stop();
+            }
+            Ok(self.outcome)
+        }
+    }
+
+    fn cleared_one() -> AvPass {
+        AvPass { considered: 1, cleared: 1, written: 1, ..AvPass::default() }
+    }
+
+    /// The antivirus pass is scheduled when it is wired, and named first because it is first.
+    ///
+    /// Both halves, and the negative one is the reason the row exists: a deployment with no object
+    /// storage must not have this pass scheduled and failing, and it must be able to *tell* — every
+    /// version staying `SCANNING` looks identical to a running scanner with nothing to do, which is
+    /// exactly how `ENC-641` survived.
+    #[test]
+    fn the_antivirus_pass_is_absent_until_it_is_wired_and_is_named_first_when_it_is() {
+        let tenants = FixedTenants::of(1);
+
+        let bare = Scheduler::new(tenants.clone());
+        assert!(!bare.scheduled().contains(&ANTIVIRUS), "{:?}", bare.scheduled());
+
+        let wired = Scheduler::new(tenants).with_antivirus(FixedAv::new(
+            Stop::new(),
+            usize::MAX,
+            cleared_one(),
+        ));
+        assert_eq!(wired.scheduled(), vec![ANTIVIRUS, INVALIDATION, EPOCH]);
+    }
+
+    /// The loop visits every tenant, once per tick.
+    ///
+    /// The interval is an hour and is never waited on: the runner raises the signal on the last
+    /// tenant of the first sweep, so a regression that enumerated nothing, or that visited only the
+    /// first tenant, fails on the recorded list rather than on a stopwatch.
+    #[tokio::test]
+    async fn the_antivirus_loop_visits_every_tenant() {
+        let stop = Stop::new();
+        let tenants = FixedTenants::of(3);
+        let runner = FixedAv::new(stop.clone(), 3, cleared_one());
+
+        antivirus_loop(tenants.as_ref(), runner.as_ref(), Duration::from_secs(3600), &stop).await;
+
+        assert_eq!(runner.seen(), tenants.tenants, "every tenant, in the source's order, once");
+    }
+
+    /// A tick that reached no *new* verdict is idle, so the loop waits rather than re-sending the
+    /// same objects to the engine.
+    ///
+    /// Both directions, against the rule the loop actually applies. The two idle cases are the ones
+    /// that matter and they are different states: `held` is an engine that is down, and
+    /// `quarantined` with nothing written is the `SKIPPED` rescan re-confirming an archive it still
+    /// cannot open. Counting either as progress is a loop that re-scans a corpus at the speed of the
+    /// network for as long as the condition lasts.
+    #[test]
+    fn only_a_verdict_that_moved_a_row_is_progress() {
+        assert!(av_progressed(&cleared_one()));
+        assert!(av_progressed(&AvPass {
+            considered: 1,
+            quarantined: 1,
+            written: 1,
+            ..AvPass::default()
+        }));
+        assert!(
+            !av_progressed(&AvPass { considered: 1, held: 1, ..AvPass::default() }),
+            "an engine that is down would spin the loop"
+        );
+        assert!(
+            !av_progressed(&AvPass { considered: 1, quarantined: 1, ..AvPass::default() }),
+            "a re-confirmed unscannable version changed nothing, so a second tick finds it again"
+        );
+        assert!(!av_progressed(&AvPass::default()), "an empty queue is idle");
     }
 
     /// A census that answers nothing, for the `scheduled()` assertions, which never call it.

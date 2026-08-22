@@ -75,6 +75,34 @@ impl Default for ScanPolicy {
 }
 
 impl ScanPolicy {
+    /// The policy a deployment's `antivirus:` section resolves to.
+    ///
+    /// One knob comes from configuration and one deliberately does not, and the asymmetry is the
+    /// point:
+    ///
+    /// * [`ScanPolicy::unavailable`] is `av.unavailable_policy`, which `docs/06 §6.2` names as a
+    ///   tenant-settable trade — availability against a malware window — and which
+    ///   `enclave_config` already parses, defaulting to [`UnavailablePolicy::Hold`].
+    /// * [`ScanPolicy::unsupported`] is **always** [`UnsupportedPolicy::Block`], because
+    ///   `AntivirusConfig` has no key for it and this function does not invent one. That absence is
+    ///   load-bearing rather than an omission: `ALLOW_WITH_FLAG` is the single setting that would
+    ///   let content nobody scanned become `AVAILABLE`, and a control expressed as a configuration
+    ///   default is a control somebody turns off — the shape `ENC-157` removed from
+    ///   `preview.watermark_cache`. In particular it is what stops `antivirus.provider: none`,
+    ///   whose scanner answers [`ScanVerdict::Unsupported`] for every object, from becoming a
+    ///   deployment-wide bypass of `CLAUDE.md` rule 9.
+    ///
+    /// A tenant that genuinely needs `ALLOW_WITH_FLAG` therefore needs a change to `docs/06`, a
+    /// configuration key and a review — which is the price the setting should cost.
+    #[must_use]
+    pub const fn from_config(config: &enclave_config::AntivirusConfig) -> Self {
+        Self {
+            unsupported: UnsupportedPolicy::Block,
+            unavailable: config.unavailable_policy,
+            block_unsupported_at_or_above: CONFIDENTIAL_RANK,
+        }
+    }
+
     /// Whether unsupported content at this rank must be blocked, accounting for the ceiling.
     #[must_use]
     pub fn blocks_unsupported(&self, rank: Option<ClassificationRank>) -> bool {
@@ -550,6 +578,69 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// No configuration a deployment can write makes unscannable content publishable.
+    ///
+    /// The one setting that would — `ALLOW_WITH_FLAG` — has no key, and this asserts that the
+    /// resolved policy is `BLOCK` for every provider and every unavailable policy a `Config` can
+    /// express. Without it, `antivirus.provider: none` plus a future `unsupported_policy` key would
+    /// be a rule-9 bypass written entirely in YAML.
+    #[test]
+    fn no_antivirus_configuration_resolves_to_a_policy_that_publishes_unscanned_content() {
+        use enclave_config::{AntivirusConfig, AntivirusProvider};
+
+        for provider in [
+            AntivirusProvider::Clamav,
+            AntivirusProvider::Icap,
+            AntivirusProvider::Http,
+            AntivirusProvider::None,
+        ] {
+            for unavailable in [UnavailablePolicy::Hold, UnavailablePolicy::AllowAndRescan] {
+                let config = AntivirusConfig {
+                    provider,
+                    unavailable_policy: unavailable,
+                    ..AntivirusConfig::default()
+                };
+                let policy = ScanPolicy::from_config(&config);
+                assert_eq!(policy.unsupported, UnsupportedPolicy::Block, "{provider:?}");
+                assert!(policy.blocks_unsupported(None), "{provider:?}");
+                assert!(
+                    !decide(&ScanVerdict::Unsupported, policy, None).readable(),
+                    "{provider:?}"
+                );
+
+                // The positive control, so the three assertions above are not passing against a
+                // `from_config` that returns a policy refusing everything: the same policy still
+                // publishes a clean scan.
+                assert!(decide(&ScanVerdict::Clean, policy, None).readable(), "{provider:?}");
+            }
+        }
+    }
+
+    /// The one knob that *is* configuration reaches the policy.
+    ///
+    /// Paired with the test above so neither can pass by `from_config` ignoring its argument.
+    #[test]
+    fn the_unavailable_policy_comes_from_configuration() {
+        use enclave_config::AntivirusConfig;
+
+        let hold = AntivirusConfig {
+            unavailable_policy: UnavailablePolicy::Hold,
+            ..AntivirusConfig::default()
+        };
+        let allow = AntivirusConfig {
+            unavailable_policy: UnavailablePolicy::AllowAndRescan,
+            ..AntivirusConfig::default()
+        };
+        assert_eq!(ScanPolicy::from_config(&hold).unavailable, UnavailablePolicy::Hold);
+        assert_eq!(ScanPolicy::from_config(&allow).unavailable, UnavailablePolicy::AllowAndRescan);
+        assert!(!decide(
+            &ScanVerdict::Error { retryable: true },
+            ScanPolicy::from_config(&hold),
+            None
+        )
+        .readable());
     }
 
     #[test]

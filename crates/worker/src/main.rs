@@ -28,10 +28,17 @@
 //!
 //! # Which passes run, and what an unconfigured one costs
 //!
-//! All four are wired, and two of them are wired to sections an operator may leave out.
-//! `storage.provider: none` means no [`object_store`] and therefore no indexing pass;
-//! `search.provider: none` means no [`index_census`] and therefore no coverage probe. `ENC-562` and
-//! `ENC-563` closed the gap that used to make both unconditional.
+//! All of them are wired, and three are wired to sections an operator may leave out.
+//! `storage.provider: none` means no [`object_store`] and therefore none of the three content
+//! passes; `search.provider: none` means no [`index_census`] and therefore no coverage probe.
+//! `ENC-562` and `ENC-563` closed the gap that used to make both unconditional.
+//!
+//! The one whose absence is not a degradation is antivirus (`ENC-641`). It is what moves a version
+//! from `SCANNING` / `PENDING` to `AVAILABLE` / `CLEAN`, and it is the only thing that does, so a
+//! deployment without it has no readable content at all rather than unsearchable content. That is
+//! why the missing-storage branch below logs at `error!` rather than `warn!`, and why
+//! [`antivirus_scanner`] refuses to start for a provider it cannot honour instead of quietly
+//! scanning nothing.
 //!
 //! Neither is faked. A pass whose dependency is missing is **not scheduled** — see
 //! `crates/worker/src/schedule.rs` for why an indexing pass pointed at a store that cannot answer is
@@ -45,6 +52,7 @@
 use std::sync::Arc;
 
 use anyhow::Context as _;
+use enclave_antivirus::ScanPolicy;
 use enclave_indexing::{
     BoundedExtractor, ChunkBudget, Chunker, ChunkerVersion, ExtractorVersion, MediaTypeRouter,
     PdfTextExtractor, PlainTextExtractor,
@@ -54,7 +62,7 @@ use enclave_search::health::{CoverageFloor, IndexCensus};
 use enclave_storage::S3BlobStore;
 use enclave_worker::ocr::MountedOcr;
 use enclave_worker::schedule::{
-    ContentScanner, IndexRunner, PipelineRunner, ScanRunner, Scheduler,
+    AvRunner, ContentScanner, IndexRunner, PipelineRunner, ScanRunner, Scheduler, VersionScanner,
 };
 use enclave_worker::tenants::DbTenants;
 use enclave_worker::Stop;
@@ -78,6 +86,15 @@ const INDEX_BATCH: i64 = 32;
 /// not reached are *unscanned* in the meantime, which is a state both `facts_unavailable` policies
 /// already have an answer for.
 const SCAN_BATCH: i64 = 16;
+/// Versions sent to the antivirus engine per tenant per tick.
+///
+/// The same size as [`SCAN_BATCH`] and for a related reason, but the backlog it paces is a different
+/// one: a fresh upload waits at most one `Cadence::antivirus_idle` for a verdict, so this bounds how
+/// many objects one tenant can have in flight to the engine at once — the engine's own concurrency
+/// limit is the other half, and a batch larger than clamd's `MaxThreads` only queues inside clamd.
+/// It also paces the `SKIPPED` rescan sweep, which after configuring an engine on a deployment that
+/// ran `antivirus.provider: none` is the tenant's entire corpus.
+const AV_BATCH: i64 = 16;
 /// The share of PostgreSQL's expectation a tenant's store must hold to count as stocked.
 const COVERAGE_FLOOR: u32 = 90;
 
@@ -91,6 +108,7 @@ const COVERAGE_FLOOR: u32 = 90;
 const _PACING_IS_NOT_ZERO: () = {
     assert!(INDEX_BATCH > 0, "a batch of zero claims no files and reports success");
     assert!(SCAN_BATCH > 0, "a batch of zero scans nothing and leaves every version unscanned");
+    assert!(AV_BATCH > 0, "a batch of zero moves no av_status, so nothing ever becomes readable");
     assert!(COVERAGE_FLOOR > 0, "a floor of zero calls an empty index stocked");
     assert!(COVERAGE_FLOOR <= 100, "a floor above 100 is unsatisfiable");
 };
@@ -158,7 +176,10 @@ async fn main() -> anyhow::Result<()> {
 
     let mut scheduler = Scheduler::new(Arc::new(DbTenants::new(db.clone())));
     if let Some(passes) = content_passes(config, &registry, db.clone()).await? {
-        scheduler = scheduler.with_indexing(passes.indexing).with_scanning(passes.scanning);
+        scheduler = scheduler
+            .with_antivirus(passes.antivirus)
+            .with_indexing(passes.indexing)
+            .with_scanning(passes.scanning);
     }
     if let Some(census) = index_census(config, &secrets)? {
         scheduler = scheduler.with_coverage(census, CoverageFloor::percent(COVERAGE_FLOOR));
@@ -197,6 +218,9 @@ async fn main() -> anyhow::Result<()> {
 /// because the point of `ENC-613` is that they extract the *same* text. See
 /// [`content_passes`] for why they are constructed in one place.
 struct ContentPasses {
+    /// An antivirus verdict onto `file_versions.av_status`, and the version into `AVAILABLE`
+    /// (`ENC-641`). Upstream of the other two: neither sees anything until this has run.
+    antivirus: Arc<dyn AvRunner>,
     /// Text into `chunk_text` and a manifest (`ENC-527`).
     indexing: Arc<dyn IndexRunner>,
     /// Detector counts into `security_facts` (`ENC-613`).
@@ -239,17 +263,49 @@ async fn content_passes(
     registry: &enclave_config::SecretRegistry,
     pool: enclave_db::DbPool,
 ) -> anyhow::Result<Option<ContentPasses>> {
+    // Before the store, so that a provider this build cannot honour refuses the start-up whatever
+    // else is configured. An operator who wrote `provider: icap` and silently got no scanning is
+    // the worst outcome available on this path, and it looks correct in every dashboard.
+    let scanner = antivirus_scanner(config)?;
+
     let Some(store) = object_store(config, registry).await? else {
-        tracing::warn!(
-            "no object storage is configured (`storage.provider` is `none`), so neither the \
-             indexing pass nor the content scan is scheduled: nothing will make `chunk_text` \
-             non-empty, and nothing will write `security_facts`, so every version stays unscanned \
-             and the DLP stage decides on `dlp.facts_unavailable` alone. See \
+        tracing::error!(
+            "no object storage is configured (`storage.provider` is `none`), so none of the three \
+             content passes is scheduled. The consequence is not degraded search: **nothing will \
+             move `file_versions.av_status`**, so no version ever becomes AVAILABLE/CLEAN, no read \
+             path serves anything, `chunk_text` stays empty and `security_facts` stays empty. See \
              crates/worker/src/main.rs::object_store and docs/08-BYO-INFRA.md §15."
         );
         return Ok(None);
     };
     let store = Arc::new(store);
+
+    // `engine_info` rather than a claim about the configured provider: it is the engine itself
+    // saying whether it inspects content, and `NoScanningPerformed` answers `false`. Failing to
+    // answer is not fatal — an unreachable clamd holds every version in SCANNING under the default
+    // policy, which is correct, and refusing to start would take indexing down with it.
+    match scanner.engine_info().await {
+        Ok(info) if info.scans_content => tracing::info!(
+            engine = %info.engine,
+            signatures = info.signature_version.as_deref().unwrap_or("unknown"),
+            "antivirus is enabled; uploads become readable once this engine clears them"
+        ),
+        Ok(info) => tracing::error!(
+            engine = %info.engine,
+            unsupported_policy = "BLOCK",
+            "the configured antivirus provider does NOT inspect content. Every version will be \
+             recorded SKIPPED and QUARANTINED under the BLOCK policy, so nothing uploaded to this \
+             deployment will be readable. Configure `antivirus.provider: clamav`; the versions \
+             skipped in the meantime are re-offered automatically once a scanning engine answers."
+        ),
+        Err(error) => tracing::warn!(
+            %error,
+            unavailable_policy = ?config.antivirus.unavailable_policy,
+            "the antivirus engine could not be identified at start-up. Versions will follow \
+             `antivirus.unavailable_policy` until it answers; under the default HOLD they wait in \
+             SCANNING and are unreadable."
+        ),
+    }
 
     let chunker = Chunker::new(CHUNKER, ChunkBudget::default());
     let ocr = MountedOcr::from_config(config, chunker, RenderBudget::DEFAULT)
@@ -326,17 +382,79 @@ async fn content_passes(
     );
 
     let scanning = Arc::new(ContentScanner::new(
-        pool,
+        pool.clone(),
         extractor,
         Chunker::new(CHUNKER, ChunkBudget::default()),
         ocr,
         detectors,
-        store,
+        Arc::clone(&store),
         RenderBudget::DEFAULT,
         SCAN_BATCH,
     ));
 
-    Ok(Some(ContentPasses { indexing, scanning }))
+    let antivirus = Arc::new(VersionScanner::new(
+        pool,
+        scanner,
+        store,
+        // One knob from configuration and one deliberately not — see `ScanPolicy::from_config`.
+        // `ALLOW_WITH_FLAG` is the setting that would let unscanned content become AVAILABLE, and
+        // there is no key for it, so it cannot be reached from a YAML file.
+        ScanPolicy::from_config(&config.antivirus),
+        AV_BATCH,
+    ));
+
+    Ok(Some(ContentPasses { antivirus, indexing, scanning }))
+}
+
+/// The scanner this deployment configured, or a refusal to start.
+///
+/// `crates/antivirus/src/lib.rs` gives this wiring block verbatim and this is the caller it was
+/// written for — `ENC-641` is that it never had one.
+///
+/// **`icap` and `http` refuse the start-up rather than falling through to
+/// [`NoScanningPerformed`](enclave_antivirus::NoScanningPerformed).** `docs/08 §9` lists both as
+/// providers and neither is implemented; an operator who configured a scanning gateway and silently
+/// got no scanning is the worst outcome available here, and it would look correct in every
+/// dashboard.
+///
+/// **`none` gets a real provider rather than no pass**, which is the decision on this path and the
+/// one worth reading. `NoScanningPerformed` answers `Unsupported` for every object — never `Clean`,
+/// because it did not look — so `decide` sends it down `docs/06 §6.2`'s unsupported-content path and
+/// the `BLOCK` policy quarantines it. A tenant that turned antivirus off therefore publishes
+/// **nothing**, loudly, instead of accumulating a corpus that silently never becomes readable. Not
+/// scheduling the pass at all was the alternative and it is worse in the way that matters: it would
+/// make "no antivirus" and "antivirus configured and broken" the same observation, and it would put
+/// the decision in this file rather than in `decide`, where every other provider's is.
+///
+/// It is also recoverable: `crate::antivirus`'s queue re-offers `SKIPPED` versions the moment an
+/// engine that actually scans content is configured.
+///
+/// # Errors
+///
+/// [`AntivirusError::Configuration`](enclave_antivirus::AntivirusError::Configuration) for a
+/// provider with no implementation, and for `clamav` with no `antivirus.endpoint`.
+fn antivirus_scanner(
+    config: &enclave_config::Config,
+) -> anyhow::Result<Arc<dyn enclave_antivirus::AntivirusScanner>> {
+    use enclave_config::AntivirusProvider;
+
+    let scanner: Arc<dyn enclave_antivirus::AntivirusScanner> = match config.antivirus.provider {
+        AntivirusProvider::Clamav => Arc::new(enclave_antivirus::ClamavScanner::new(
+            enclave_antivirus::ClamavConfig::from_config(&config.antivirus)
+                .context("build the clamd client from `antivirus:`")?,
+        )),
+        // Warns once, from its own constructor, that this deployment does not scan.
+        AntivirusProvider::None => Arc::new(enclave_antivirus::NoScanningPerformed::new()),
+        provider @ (AntivirusProvider::Icap | AntivirusProvider::Http) => {
+            anyhow::bail!(
+                "antivirus.provider `{provider:?}` is named by docs/08-BYO-INFRA.md §9 and has no \
+                 implementation in this build. Refusing to start rather than falling back to no \
+                 scanning: set `antivirus.provider: clamav`, or `none` if this deployment really is \
+                 to publish nothing until an engine is configured."
+            );
+        }
+    };
+    Ok(scanner)
 }
 
 /// The routing marker this deployment records for everything it indexes.
