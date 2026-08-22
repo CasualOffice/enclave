@@ -349,7 +349,14 @@ pub async fn av_pass<S: BlobStore + ?Sized>(
 ) -> Result<AvPass> {
     let mut outcome = AvPass { resume: from, ..AvPass::default() };
 
-    let due = due_versions(pool, tenant, scanner, from, batch).await?;
+    // Once per pass, before the queue is read, and used for two things: the `av_engine` and
+    // `av_signature_version` columns, and whether the `SKIPPED` half of the queue is live. The trait
+    // asks that this not be cached *forever* — the signature generation is what a rescan sweep keys
+    // on — and a tick is not forever, since it is re-read every `Cadence::antivirus_idle`. Once per
+    // version would be a second round trip per object for a string that cannot change within a batch.
+    let engine = engine_info(scanner).await;
+
+    let due = due_versions(pool, tenant, engine.as_ref(), from, batch).await?;
     outcome.considered = due.len();
     if from.is_start() {
         outcome.oldest_due = due.first().map(|first| first.created_at);
@@ -358,12 +365,6 @@ pub async fn av_pass<S: BlobStore + ?Sized>(
     // Short of a full batch means the end of this tenant's queue was reached, so the next pass
     // starts the sweep again. Decided from the query, before any version is scanned.
     let swept = i64::try_from(due.len()).unwrap_or(i64::MAX) < batch;
-
-    // Once per pass, not once per version. The trait asks that this not be cached forever — the
-    // signature generation is what a rescan sweep keys on — and a tick is not forever: the value is
-    // re-read every `Cadence::antivirus_idle`. Once per *version* would be a second round trip per
-    // object for a string that cannot change within a batch.
-    let engine = engine_info(scanner).await;
 
     for item in due {
         if stop.is_stopped() {
@@ -474,19 +475,22 @@ async fn engine_info(scanner: &dyn AntivirusScanner) -> Option<EngineInfo> {
 }
 
 /// Reads the queue for one tick, in one tenant-scoped transaction.
-async fn due_versions<S: AntivirusScanner + ?Sized>(
+async fn due_versions(
     pool: &DbPool,
     tenant: TenantId,
-    scanner: &S,
+    engine: Option<&EngineInfo>,
     from: AvCursor,
     batch: i64,
 ) -> Result<Vec<Due>> {
-    // Whether the `SKIPPED` half of the queue is live. Asking the engine rather than the
+    // Whether the `SKIPPED` half of the queue is live. Asked of the engine rather than of the
     // configuration, because the question is "did anything look at these bytes" and only the engine
-    // can answer it — `NoScanningPerformed` reports `scans_content: false` for exactly this.
-    // Unknown counts as *does not scan*: re-offering a corpus to an engine that cannot be identified
-    // would re-send every skipped object on every sweep for no possible new verdict.
-    let rescans = scanner.engine_info().await.is_ok_and(|info| info.scans_content);
+    // can answer it — `NoScanningPerformed` reports `scans_content: false` for exactly this, and a
+    // future provider that is configured but inert would too.
+    //
+    // An engine that could not be identified counts as *does not scan*, which is the safe direction
+    // on both sides: it re-offers nothing, so a clamd that is down does not re-send a tenant's whole
+    // skipped corpus on every sweep for a verdict it cannot produce.
+    let rescans = engine.is_some_and(|info| info.scans_content);
 
     let mut tx = pool.begin(tenant).await?;
     let rows = sqlx::query(DUE_SQL)
