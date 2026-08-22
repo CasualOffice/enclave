@@ -46,10 +46,12 @@
 
 use async_trait::async_trait;
 use enclave_core::{
-    Action, DetectorSetVersion, Error, Exposure, FactsPolicy, FactsSnapshot, RequestContext,
-    ResourceRef, ResourceState, Result, SecurityFactsProvider,
+    Action, DetectorSetVersion, Error, Exposure, FactsPolicy, FactsSnapshot, FileId,
+    RequestContext, ResourceKind, ResourceRef, ResourceState, Result, SecurityFactsProvider,
 };
-use enclave_db::{external_exposure, load_facts, resolve_content, DbPool};
+use enclave_db::{
+    effective_classification, external_exposure, load_facts, resolve_content, DbPool,
+};
 
 /// Security facts read from PostgreSQL, under the tenant's `facts_unavailable` policy.
 ///
@@ -88,17 +90,6 @@ impl PgSecurityFacts {
     pub const fn policy(&self) -> FactsPolicy {
         self.policy
     }
-
-    /// What the chain sees for a resource that has no content to have facts about.
-    ///
-    /// Unscanned, internal, unlabelled — and note that this is *not* a permissive answer:
-    /// `FactsSnapshot::require` still applies the tenant's policy to it, so under `FAIL_CLOSED` a
-    /// rule that governs the action refuses. `enclave_dlp::policy::RuleSet::evaluate` is what stops
-    /// that becoming "everything is refused while a scan backlog drains": it settles whether any
-    /// rule governs the action *before* it asks for facts (`docs/06 §9.3`).
-    fn unscanned(&self) -> FactsSnapshot {
-        FactsSnapshot::missing(self.policy, ResourceState::new(Exposure::Internal, None))
-    }
 }
 
 #[async_trait]
@@ -130,9 +121,46 @@ impl SecurityFactsProvider for PgSecurityFacts {
         let resolved =
             resolve_content(&mut tx, resource.kind, resource.id).await.map_err(Error::from)?;
 
+        // The label is read **before** the early return below, and that ordering is the whole of
+        // `ENC-655`. A label belongs to the resource; facts belong to its content. A file whose
+        // first upload has not committed resolves to no version, so a label read after the return
+        // is `None` for a `RESTRICTED` document whose label is sitting in the database — and D27's
+        // escalation, which exists precisely to refuse that document without facts, never fires.
+        //
+        // `resource.id` is the file or folder itself for those kinds; for anything else the only
+        // labelled thing in reach is whatever `resolve_content` found.
+        let labelled = match resource.kind {
+            ResourceKind::File | ResourceKind::Folder => Some(FileId::from_uuid(resource.id)),
+            _ => resolved.map(|(file, _)| file),
+        };
+        // `ResourceState` compares ranks, so the `LabelSource` is dropped here deliberately: it is
+        // evidence for an audit row rather than an input to a comparison, and carrying it into the
+        // policy type would invite a decision that varies by *where* a label was found.
+        let classification = match labelled {
+            Some(file) => effective_classification(&mut tx, file)
+                .await
+                .map_err(Error::from)?
+                .map(|effective| effective.rank()),
+            None => None,
+        };
+
         let Some((file, version)) = resolved else {
             tx.commit().await.map_err(Error::from)?;
-            return Ok(self.unscanned());
+            // Unscanned, but *not* unlabelled: a document with no committed content still carries
+            // whatever its folder or library says about it. This replaces an `unscanned()` helper
+            // that hardcoded `None` — the label had to move above the early return, and a helper
+            // that could only answer "unlabelled" was the shape of the bug rather than a caller of
+            // it, so it is gone rather than parameterised.
+            //
+            // Not a permissive answer either: `FactsSnapshot::require` still applies the tenant's
+            // policy, so under `FAIL_CLOSED` a rule governing the action refuses.
+            // `RuleSet::evaluate` is what stops that becoming "everything is refused while a scan
+            // backlog drains" — it settles whether any rule governs the action *before* it asks
+            // for facts (`docs/06 §9.3`).
+            return Ok(FactsSnapshot::missing(
+                self.policy,
+                ResourceState::new(Exposure::Internal, classification),
+            ));
         };
 
         // All three reads share one transaction, so the exposure and the facts are as of one
@@ -146,9 +174,7 @@ impl SecurityFactsProvider for PgSecurityFacts {
         };
         tx.commit().await.map_err(Error::from)?;
 
-        // `ENC-614`: the label is `None` until `classifications` exists. See the module header for
-        // what that costs and which escalation it disables.
-        let state = ResourceState::new(exposure, None);
+        let state = ResourceState::new(exposure, classification);
 
         Ok(match facts {
             Some(facts) => FactsSnapshot::gathered(facts, &self.active_set, self.policy, state),
