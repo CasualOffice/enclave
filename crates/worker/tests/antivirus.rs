@@ -147,15 +147,28 @@ impl BlobStore for KeyedStore {
         unreachable!("the antivirus pass never mints a download URL")
     }
 
-    async fn read_range(&self, key: &str, _range: ByteRange) -> StorageResult<ByteStream> {
+    /// Honours the range, which `common::RecordingStore` does not.
+    ///
+    /// That is the whole point of this fake existing beside that one: the property under test in
+    /// `the_engine_is_handed_the_whole_object_and_not_a_prefix` is that the pass asks for the *whole*
+    /// object, and a store that served everything whatever it was asked would make that assertion
+    /// pass against a pass that asked for the first kilobyte.
+    async fn read_range(&self, key: &str, range: ByteRange) -> StorageResult<ByteStream> {
         self.reads.lock().expect("not poisoned").push(key.to_owned());
-        let body = self
+        let whole = self
             .bodies
             .lock()
             .expect("not poisoned")
             .get(key)
             .cloned()
             .ok_or_else(|| StorageError::NotFound { key: key.to_owned() })?;
+
+        let start = usize::try_from(range.start()).unwrap_or(usize::MAX).min(whole.len());
+        let end = range
+            .end_inclusive()
+            .and_then(|end| usize::try_from(end).ok())
+            .map_or(whole.len(), |end| end.saturating_add(1).min(whole.len()));
+        let body = whole[start..end.max(start)].to_vec();
         let length = body.len() as u64;
         Ok(ByteStream::new(
             futures::stream::once(async move { Ok(bytes::Bytes::from(body)) }),
@@ -221,6 +234,30 @@ impl AntivirusScanner for EngineDown {
 
     async fn engine_info(&self) -> AvResult<EngineInfo> {
         Err(enclave_antivirus::AntivirusError::Unreachable)
+    }
+}
+
+/// An engine that identifies itself and then fails every scan — a flapping clamd.
+///
+/// Distinct from [`EngineDown`], and the distinction is load-bearing: an engine that cannot be
+/// identified is treated as non-scanning, so the `SKIPPED` half of the queue is not offered to it at
+/// all. Reaching "a rescan during an outage" therefore needs an engine that answers `engine_info`
+/// and not `scan`.
+#[derive(Debug, Default)]
+struct ScanningFails;
+
+#[async_trait]
+impl AntivirusScanner for ScanningFails {
+    async fn scan(&self, _stream: ByteStream, _hint: ScanHint) -> AvResult<ScanVerdict> {
+        Ok(ScanVerdict::Error { retryable: true })
+    }
+
+    async fn engine_info(&self) -> AvResult<EngineInfo> {
+        Ok(EngineInfo {
+            engine: "FakeAV 1.0".to_owned(),
+            signature_version: Some("27621".to_owned()),
+            scans_content: true,
+        })
     }
 }
 
@@ -620,6 +657,66 @@ async fn a_disabled_provider_publishes_nothing_and_an_engine_arriving_recovers_t
     drop(db);
 }
 
+/// A recovery sweep that runs while the engine is down leaves the earlier verdict standing.
+///
+/// The `SKIPPED` half of the queue means an outage now lands on rows that already carry a verdict,
+/// and the wrong answer is available and tempting: record what this attempt concluded, which is
+/// "nothing". That would replace `QUARANTINED` / `SKIPPED` with `SCANNING` / `PENDING` — the evidence
+/// that a version was once refused, deleted in order to record that an attempt did not happen, and
+/// the file dragged out of `QUARANTINED` with it.
+///
+/// Added because breaking this rule failed **no integration test at all**: the unit test over
+/// `Target::of` caught it and nothing that touched a database did, since no other test here rescans
+/// during an outage (`docs/12 §1.2`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a live PostgreSQL; CI runs it with --include-ignored"]
+async fn a_rescan_during_an_outage_leaves_the_earlier_verdict_standing() {
+    let (db, fixtures, pool) = start().await;
+    let alpha = fixtures.alpha.id;
+    let mut conn = db.connect().await.expect("connection");
+    let store = KeyedStore::new();
+
+    let (spine, skipped) = a_file_on_a_spine(
+        &mut conn,
+        alpha,
+        fixtures.alpha.owner,
+        "QUARANTINED",
+        "SKIPPED",
+        "text/plain",
+    )
+    .await;
+    commit_pointer(&mut conn, alpha, spine.file, skipped).await;
+    sqlx::query("UPDATE files SET status = 'QUARANTINED' WHERE id = $1")
+        .bind(spine.file.as_uuid())
+        .execute(&mut conn)
+        .await
+        .expect("the file follows its quarantined current version");
+    store.put(skipped, b"harmless".to_vec());
+
+    // `EngineDown` reports `scans_content: false` only because it cannot be identified at all; the
+    // queue treats an unidentifiable engine as non-scanning, so the SKIPPED row is not even offered.
+    // The state that matters is therefore reached with an engine that *is* identified and whose
+    // scans fail — which is a flapping clamd, and is what `ScanningFails` is.
+    let hold = ScanPolicy { unavailable: UnavailablePolicy::Hold, ..ScanPolicy::default() };
+    let pass = sweep_with(&pool, alpha, &ScanningFails, &store, hold).await;
+
+    assert_eq!(pass.considered, 1, "the recovery sweep did not offer the skipped version");
+    assert_eq!(pass.held, 1);
+    assert_eq!(pass.written, 0, "an outage overwrote a recorded verdict");
+    assert_eq!(state(&mut conn, skipped).await, ("QUARANTINED".to_owned(), "SKIPPED".to_owned()));
+    assert_eq!(file_status(&mut conn, spine.file).await, "QUARANTINED");
+    assert!(!is_readable(&pool, alpha, skipped).await);
+
+    // The positive control: the same fixture, the same sweep, an engine that answers — the verdict
+    // does move. Without it every assertion above passes against a pass that considered nothing.
+    let pass = sweep(&pool, alpha, &FakeEngine, &store).await;
+    assert_eq!(pass.cleared, 1);
+    assert!(is_readable(&pool, alpha, skipped).await);
+    assert_eq!(file_status(&mut conn, spine.file).await, "AVAILABLE");
+
+    drop(db);
+}
+
 /// The recovery sweep re-offers `SKIPPED` and never `INFECTED`.
 ///
 /// The dangerous direction of the test above. `SKIPPED` means nobody looked, so looking again is
@@ -739,12 +836,18 @@ async fn a_pass_for_one_tenant_never_moves_another_tenants_versions() {
     drop(db);
 }
 
-/// Quarantining an old version does not take a file whose current version is clean offline.
+/// Quarantining a superseded version does not take a file whose current version is clean offline.
 ///
-/// The `current_version_id` guard. Without it the `files` update is applied by whichever version the
-/// pass happened to reach last, so a rescan of a three-year-old version would quarantine a file
-/// whose live content is fine — and, in the other direction, publish a file whose current version is
-/// still scanning.
+/// The `current_version_id` guard, and the fixture is arranged so that guard is the **only** thing
+/// holding the property. The first version of this test had both versions pending in one pass, and
+/// it passed with the predicate deleted: the queue is ordered oldest-first, so the *current* version
+/// was written last and its `AVAILABLE` simply overwrote the other's `QUARANTINED`. The assertion
+/// was true because of the ordering, not because of the guard — `docs/12 §1.2`, found by breaking it.
+///
+/// So the current version is already `CLEAN` and out of the queue, and the superseded one is
+/// `SKIPPED` — a version from a `provider: none` era, which the recovery sweep re-offers. It is the
+/// only version the pass touches, and its bytes turn out to have been malware all along. Without the
+/// predicate the file goes to `QUARANTINED` and a tenant's live document disappears.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires a live PostgreSQL; CI runs it with --include-ignored"]
 async fn quarantining_a_superseded_version_leaves_the_files_current_content_alone() {
@@ -753,41 +856,49 @@ async fn quarantining_a_superseded_version_leaves_the_files_current_content_alon
     let mut conn = db.connect().await.expect("connection");
     let store = KeyedStore::new();
 
-    let (spine, old) = a_file_on_a_spine(
+    let (spine, superseded) = a_file_on_a_spine(
         &mut conn,
         alpha,
         fixtures.alpha.owner,
-        "SCANNING",
-        "PENDING",
+        "QUARANTINED",
+        "SKIPPED",
         "text/plain",
     )
     .await;
-    store.put(old, eicar_test_file());
+    store.put(superseded, eicar_test_file());
 
     let current = a_version(
         &mut conn,
         alpha,
         &spine,
         fixtures.alpha.owner,
-        "SCANNING",
-        "PENDING",
+        "AVAILABLE",
+        "CLEAN",
         "text/plain",
     )
     .await;
     store.put(current, b"the good version".to_vec());
     commit_pointer(&mut conn, alpha, spine.file, current).await;
+    sqlx::query("UPDATE files SET status = 'AVAILABLE' WHERE id = $1")
+        .bind(spine.file.as_uuid())
+        .execute(&mut conn)
+        .await
+        .expect("the file is serving its current version");
 
     let pass = sweep(&pool, alpha, &FakeEngine, &store).await;
+    assert_eq!(pass.considered, 1, "the cleared current version was offered a second verdict");
     assert_eq!(pass.quarantined, 1);
-    assert_eq!(pass.cleared, 1);
 
-    assert_eq!(state(&mut conn, old).await, ("QUARANTINED".to_owned(), "INFECTED".to_owned()));
-    assert!(!is_readable(&pool, alpha, old).await);
+    assert_eq!(
+        state(&mut conn, superseded).await,
+        ("QUARANTINED".to_owned(), "INFECTED".to_owned())
+    );
+    assert!(!is_readable(&pool, alpha, superseded).await);
     assert!(is_readable(&pool, alpha, current).await);
     assert_eq!(
         file_status(&mut conn, spine.file).await,
         "AVAILABLE",
-        "an old infected version took the file's clean current content offline"
+        "a superseded infected version took the file's clean current content offline"
     );
 
     drop(db);
