@@ -243,6 +243,20 @@ pub(crate) const ACKNOWLEDGED: &[Acknowledged] = &[
     },
     // -- Group 3: ENC-606 — the chain allowed, the handler refused, the row says ALLOW ---------
     Acknowledged {
+        file: "crates/api/src/admin/conditional_access.rs",
+        function: "author",
+        kind: SiteKind::ErrorRefusal,
+        reason: "ENC-606's class, reached from the admin surface rather than the delivery paths. \
+                 `conditional_access_rules.created_by` is NOT NULL onto `users (tenant_id, id)`, \
+                 so a service account, an MCP client or `system` cannot author a rule; refusing \
+                 here is what stops the composite foreign key reporting that as a 500. The chain \
+                 has already written its ALLOW for `admin.manage_policy` by the time this fires, \
+                 so a non-human principal's attempt to write a conditional-access rule is a 403 \
+                 the audit log records as a success. That is precisely the gap ENC-606 owns, and \
+                 it is worth more here than on a download path: an investigation asking who tried \
+                 to change the access rules is the investigation this table exists for.",
+    },
+    Acknowledged {
         file: "crates/api/src/download.rs",
         function: "satisfy",
         kind: SiteKind::ErrorRefusal,
