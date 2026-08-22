@@ -5,6 +5,7 @@
 //! to understand Rust live here, so that a developer can run the identical check before pushing
 //! instead of discovering it in a red pull request.
 
+mod audit_coverage;
 mod policy_routing;
 
 use anyhow::{bail, Result};
@@ -19,6 +20,7 @@ fn main() -> Result<()> {
     let subcommand = std::env::args().nth(1);
     match subcommand.as_deref() {
         Some("policy-routing") => policy_routing::run(),
+        Some("audit-coverage") => audit_coverage::run(),
         Some(other) => bail!("unknown subcommand `{other}`\n{USAGE}"),
         None => {
             println!("{USAGE}");
@@ -32,4 +34,6 @@ usage: cargo run -p xtask -- <subcommand>
 
 subcommands:
   policy-routing   assert every Axum route handler reaches PolicyEngine::enforce
-                   (CLAUDE.md rule 1, docs/12-TESTING.md §5)";
+                   (CLAUDE.md rule 1, docs/12-TESTING.md §5)
+  audit-coverage   assert every refusal is constructed where the policy engine records it
+                   (CLAUDE.md rule 10, plans/M4-GOVERNANCE.md D32)";
