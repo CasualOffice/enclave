@@ -300,7 +300,6 @@ SELECT v.id, v.created_at
 /// scanned in this pass keep their facts: each write is its own transaction. A document that will
 /// not parse is **not** an error — it is an [`Unscannable`], counted, because a hostile or broken
 /// document is the ordinary case here and must not stop the queue.
-#[allow(clippy::too_many_arguments)]
 pub async fn scan_pass<E: Extractor, S: BlobStore + ?Sized>(
     pool: &DbPool,
     tenant: TenantId,
@@ -429,7 +428,6 @@ async fn due_versions(
 /// were read, they are only ever consulted when that version is the subject of an action, and a
 /// version that has been *purged* takes its facts with it — the write fails on the foreign key
 /// rather than storing facts about content that no longer exists (`migrations/0020`).
-#[allow(clippy::too_many_arguments)]
 async fn scan_version<E: Extractor, S: BlobStore + ?Sized>(
     pool: &DbPool,
     tenant: TenantId,
