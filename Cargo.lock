@@ -1297,6 +1297,10 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "enclave-core",
+ "enclave-db",
+ "enclave-testing",
+ "sqlx",
+ "tokio",
 ]
 
 [[package]]

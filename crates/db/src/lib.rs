@@ -86,6 +86,7 @@
 //! See `plans/M0-FOUNDATIONS.md` D3 for the decision record behind [`TenantScoped`], and
 //! `docs/02-HLD.md §4` for where this crate sits.
 
+pub mod classifications;
 pub mod conditional_access;
 pub mod config;
 pub mod cursor;
@@ -100,6 +101,10 @@ pub mod security_facts;
 pub mod tenant;
 pub mod tenants;
 
+pub use classifications::{
+    assign_classification, define_classification, effective_classification,
+    effective_classification_on, withdraw_classification, MAX_CHAIN_DEPTH,
+};
 pub use conditional_access::{
     insert_rule, load_rules, set_rule_mode, withdraw_rule, RuleId, RuleRow,
 };

@@ -152,14 +152,15 @@ pub use error::{
     ValidationCode,
 };
 pub use id::{
-    ChunkId, DeviceId, FileId, GroupId, GuestId, IdParseError, LibraryId, McpClientId, RequestId,
-    ServiceAccountId, SessionId, TenantId, UserId, VersionId, WorkspaceId,
+    ChunkId, ClassificationId, DeviceId, FileId, GroupId, GuestId, IdParseError, LibraryId,
+    McpClientId, RequestId, ServiceAccountId, SessionId, TenantId, UserId, VersionId, WorkspaceId,
 };
 pub use policy::{
-    ClassificationRank, DetectorCategory, DetectorCounts, DetectorSetVersion, Exposure,
-    FactsOutcome, FactsPolicy, FactsSnapshot, FactsStaleness, FactsUnavailable, Obligation,
-    Obligations, PolicyDecision, ResourceState, RiskScore, ScanVersion, SecurityFacts, Severity,
-    UnscannedAllow,
+    AssumedClassification, ClassificationOutcome, ClassificationPolicy, ClassificationRank,
+    ClassificationResolution, DetectorCategory, DetectorCounts, DetectorSetVersion,
+    EffectiveClassification, Exposure, FactsOutcome, FactsPolicy, FactsSnapshot, FactsStaleness,
+    FactsUnavailable, LabelSource, Obligation, Obligations, PolicyDecision, ResourceState,
+    RiskScore, ScanVersion, SecurityFacts, Severity, Unlabelled, UnscannedAllow,
 };
 
 /// Re-exported so that downstream crates can name the raw type at the few boundaries where an
