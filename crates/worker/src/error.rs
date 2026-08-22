@@ -44,6 +44,21 @@ pub enum WorkerError {
     #[error("the readable-version lookup failed")]
     Preview(#[from] enclave_preview::PreviewError),
 
+    /// The antivirus scanner could not be *used* — never that it reached an unwelcome verdict.
+    ///
+    /// The distinction is `crates/antivirus/src/error.rs`'s and it is the reason this variant is
+    /// almost unreachable: a refused connection, a timeout and an engine answering `ERROR` are all
+    /// `ScanVerdict::Error`, values, because `av.unavailable_policy` is written policy that has to
+    /// be applied to them. Routed through here they would meet the caller that logs an error and
+    /// moves on, and the `HOLD` would be lost.
+    ///
+    /// What is left is the caller's own inputs breaking, and `crate::antivirus` converts even those
+    /// into a verdict at its one call site so that one unreadable object cannot stop a tenant's
+    /// queue. The variant exists so that a future caller which does not make that choice cannot
+    /// reach for `MalformedRow` instead.
+    #[error("the antivirus scanner could not be used")]
+    Antivirus(#[from] enclave_antivirus::AntivirusError),
+
     /// Object storage failed while reading a version's bytes.
     #[error("reading object storage failed")]
     Blob(#[from] enclave_storage::StorageError),

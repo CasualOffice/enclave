@@ -26,6 +26,16 @@
 //! working*, and *OCR configured and broken*; see that module for why the third must never be
 //! reported as the first.
 //!
+//! [`antivirus`] is the pass that breaks the constraint outright, and it says so at the top of its
+//! own module: its absence does not cost index size, it costs **every version in the deployment**.
+//! It is the only thing in this workspace that writes `file_versions.status = 'AVAILABLE'`, so with
+//! it absent nothing an uploader commits ever becomes readable and both content passes below run
+//! correctly over nothing (`ENC-641`). It is here rather than in a crate of its own for the reason
+//! [`scan`] is: it needs the pool, the object store and a scanner a deployment configured, and this
+//! is the crate that composes what a deployment mounted. What it must never do is decide *policy* —
+//! `enclave_antivirus::decide` owns `docs/06 §6.2` and this pass only translates its answer into two
+//! rows.
+//!
 //! [`scan`] is the one pass here that is not housekeeping either, and it is the exception to the
 //! constraint above: its absence costs more than index size. It reads a version's text through the
 //! same extraction the indexing pass uses and records what `enclave_dlp`'s detectors found in
@@ -90,6 +100,7 @@
 //! stopped run is a shorter run, not a half-finished one. [`Stop`] is checked at those boundaries
 //! and nowhere else.
 
+pub mod antivirus;
 pub mod coverage;
 pub mod epoch;
 pub mod error;
