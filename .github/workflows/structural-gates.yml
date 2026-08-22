@@ -374,6 +374,112 @@ jobs:
             echo "Run it locally with \`cargo run -p xtask -- policy-routing\`."
           } >> "$GITHUB_STEP_SUMMARY"
 
+
+  # --------------------------------------------------------------------------
+  # Gate: audit coverage — the ENC-585 sweep, as a check rather than a review.
+  #
+  # Two halves, both in this job, because they fail differently and neither is
+  # sufficient. The xtask lint enumerates every site that CONSTRUCTS a refusal
+  # and fails on any that returns it to something other than PolicyEngine::
+  # enforce. The enclave-audit integration test drives the real engine into the
+  # real record format and asserts the ROW: that it was refused, why, and by
+  # which stage. Deleting `record_deny` from the chain leaves the lint green;
+  # dropping the stage attribution leaves both the lint and enclave-core's own
+  # engine tests green. Only the pair covers the rule.
+  #
+  # There is no `if [ ! -f ... ]` guard here and there must never be one. That
+  # shape is ENC-543 — a gate whose assertion was conditional on a file existing,
+  # which printed `pass` in green for a milestone having inspected nothing. If
+  # the lint or the test is deleted, this job fails to compile or fails to find
+  # the test, which is the correct outcome.
+  # --------------------------------------------------------------------------
+  audit-coverage:
+    name: "RULE: every refusal is audited — no enforcement point is silent"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the pinned toolchain
+        run: |
+          set -euo pipefail
+          channel=$(grep -E '^[[:space:]]*channel' rust-toolchain.toml | head -1 | sed -E 's/.*"(.*)".*/\1/')
+          rustup toolchain install "$channel" --profile minimal --no-self-update
+          rustup default "$channel"
+          rustc --version
+
+      # Fetch only — never the gates below. See the header comment.
+      - name: Fetch dependencies (retried — registry only)
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4; do
+            if cargo fetch --locked; then
+              echo "dependencies fetched on attempt ${attempt}"
+              exit 0
+            fi
+            if [ "$attempt" -lt 4 ]; then
+              delay=$((attempt * attempt * 5))
+              echo "crates.io fetch failed (attempt ${attempt}/4); retrying in ${delay}s"
+              sleep "$delay"
+            fi
+          done
+          echo "::error title=Dependency registry unavailable — NOT a gate failure::cargo could not fetch from index.crates.io after 4 attempts over ~70s. The audit-coverage gate did not run: no refusal site was enumerated and no rule was broken. Check https://status.crates.io and re-run the job."
+          exit 1
+
+      # The lint prints its full inventory and every acknowledgement on each run,
+      # so "this refusal writes no audit row" appears in the log of every pull
+      # request rather than only in a `const` three files deep.
+      - name: Enumerate every refusal site and fail on the unaudited ones
+        id: sites
+        run: |
+          set -euo pipefail
+          RULE='Audit coverage — every enforcement point emits an audit row, for denials as well as allows (CLAUDE.md rule 10, plans/M4-GOVERNANCE.md D32)'
+          echo "Enforcing: ${RULE}"
+          cargo run --locked -p xtask -- audit-coverage
+
+      - name: Assert the row can explain the denial
+        id: rows
+        run: |
+          set -euo pipefail
+          echo "Enforcing: every stage that can deny produces exactly one audit row that names it"
+          cargo test --locked -p enclave-audit --test policy_audit_coverage -- --nocapture
+
+      # Conditioned on the gate steps, not the job: a failed fetch must not print
+      # a page about unaudited denials when none were examined.
+      - name: Explain on failure
+        if: failure() && (steps.sites.outcome == 'failure' || steps.rows.outcome == 'failure')
+        run: |
+          set -euo pipefail
+          {
+            echo "### ❌ FAILED — Audit coverage"
+            echo ""
+            echo "**Rule:** Audit happens inside the policy engine, for denials as well as allows"
+            echo "(\`CLAUDE.md\` rule 10, \`plans/M4-GOVERNANCE.md\` D32, \`docs/12-TESTING.md §4.10\`)."
+            echo ""
+            echo "One of two things happened."
+            echo ""
+            echo "**A refusal is constructed somewhere the engine does not record it.**"
+            echo "The annotations above name the file, the line and the function. A denial that"
+            echo "reaches a caller with no audit row is the gap an incident investigation falls"
+            echo "into: the user was refused and the audit trail does not say so. Either take the"
+            echo "decision inside a stage — return a \`StageDecision\`, which \`PolicyEngine::enforce\`"
+            echo "records before it returns \`Err\` — or add an entry to \`ACKNOWLEDGED\` in"
+            echo "\`xtask/src/audit_coverage.rs\` **with the reason and the tracker row that owns**"
+            echo "**the gap**. That list is printed on every run and a stale entry fails this gate."
+            echo ""
+            echo "**Or the row no longer explains the denial.**"
+            echo "\`crates/audit/tests/policy_audit_coverage.rs\` drives the real chain and asserts"
+            echo "the row records that it was refused, why, and by which stage. An audit row that"
+            echo "says \`DENY\` without saying which control refused is not something an investigator"
+            echo "can start from."
+            echo ""
+            echo "Run both locally:"
+            echo ""
+            echo '```'
+            echo "cargo run -p xtask -- audit-coverage"
+            echo "cargo test -p enclave-audit --test policy_audit_coverage"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
   # --------------------------------------------------------------------------
   # Gate: no raw pool — enforceable today, purely static.
   # --------------------------------------------------------------------------
@@ -808,6 +914,11 @@ jobs:
       - grant-coverage
       - composite-fks
       - policy-routing
+      # Beside policy-routing for the same reason grant-coverage sits beside rls-coverage: one
+      # says every entry point reaches the chain, the other says every refusal the chain (or
+      # anything else) takes leaves a row. A surface that routes correctly and audits nothing is
+      # green on the first and is exactly what CLAUDE.md rule 10 forbids.
+      - audit-coverage
       - no-raw-pool
       - obligations
       - secrets

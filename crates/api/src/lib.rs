@@ -5,6 +5,7 @@
 //!
 //! See `docs/02-HLD.md §4` for where this crate sits in the architecture.
 
+pub mod admin;
 pub mod auth;
 pub mod content;
 pub mod download;
@@ -18,7 +19,7 @@ pub mod state;
 
 use std::sync::Arc;
 
-use axum::routing::{get, post};
+use axum::routing::{get, patch, post};
 use axum::{Extension, Router};
 use enclave_preview::PreviewPipeline;
 use enclave_storage::BlobStore;
@@ -116,6 +117,22 @@ pub fn router(state: ApiState, delivery: Delivery) -> Router {
         // split exists to prevent (docs/01-PRD.md §18).
         .route("/api/v1/files/{id}/download", post(download::download))
         .route("/api/v1/files/{id}/preview", get(preview::preview))
+        // Administration (docs/05-API.md §14). Registered here rather than in a router of its own
+        // so that `main.rs` needs no second line to serve it: the routes need nothing the rest of
+        // the surface does not already have, and the one thing they *can* use — the rule cache —
+        // is optional by design (crates/api/src/admin/conditional_access.rs).
+        //
+        // `DELETE` at the edge is the withdrawal `UPDATE` underneath. `migrations/0019` grants the
+        // application role no `DELETE` on this table, and the handler's doc comment carries why.
+        .route(
+            "/api/v1/admin/conditional-access/rules",
+            get(admin::conditional_access::list_rules).post(admin::conditional_access::create_rule),
+        )
+        .route(
+            "/api/v1/admin/conditional-access/rules/{id}",
+            patch(admin::conditional_access::change_rule_mode)
+                .delete(admin::conditional_access::withdraw_rule),
+        )
         // Operational probes. On the policy-routing allowlist: no tenant, no actor, no resource.
         .route("/health/live", get(health::live))
         .route("/health/ready", get(health::ready))

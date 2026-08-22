@@ -14,14 +14,29 @@ enclave-core = { workspace = true }
 # depends only on `enclave-core`, so a policy service depending on it keeps the dependency pointing
 # inward — the same edge `enclave-conditional_access` already has.
 enclave-config = { workspace = true }
+# Facts are rows (`ENC-594`), so the statements that read them live in `enclave-db`'s repository
+# module and every read goes through `TenantScoped` — `CLAUDE.md`'s Rust conventions forbid a domain
+# crate reaching PostgreSQL any other way, and forbid `sqlx::query!` here entirely. The same edge
+# `enclave-conditional_access` has, for the same reason.
+enclave-db   = { workspace = true }
 async-trait  = { workspace = true }
 # One structured event per evaluation. `MONITOR` and `SIMULATION` have no effect on the request, so
 # the record is the mode's entire output.
 tracing      = { workspace = true }
 
 [dev-dependencies]
-# `tests/modes.rs` drives the async `DlpService` the policy engine holds.
-tokio = { workspace = true, features = ["rt", "macros"] }
+# `tests/modes.rs` drives the async `DlpService` the policy engine holds; `tests/stored_facts.rs`
+# needs a multi-threaded runtime because it drives a pool.
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }
+# A throwaway PostgreSQL and the seeded `tenant-alpha`/`tenant-beta` pair. `docs/12 §3`: beta exists
+# so a cross-tenant assertion has a realistic counterpart rather than passing because the other
+# tenant's rows were named differently. A **dev**-dependency: `enclave-testing` takes this crate as
+# one of its own, and Cargo permits that cycle only because both edges are dev edges.
+enclave-testing = { workspace = true }
+# `tests/stored_facts.rs` writes its fixture versions and share links with plain statements, over
+# the harness's administrative connection — setup is not the subject, and the subject is read back
+# through the application role.
+sqlx = { workspace = true }
 
 [lints]
 workspace = true

@@ -1,6 +1,6 @@
 # 05 — API Surface
 
-> **Status:** Draft · **Version:** 1.2 · **Owner:** Platform Engineering · **Last updated:** 2026-08-21
+> **Status:** Draft · **Version:** 1.3 · **Owner:** Platform Engineering · **Last updated:** 2026-08-22
 > **Authoritative for:** REST contracts, error model, pagination, idempotency, versioning, rate limits.
 
 ## 1. Principles
@@ -123,7 +123,10 @@ Rules:
 - `code` is stable and machine-readable; `message` and `remediation` are user-safe and localizable.
 - Policy denials never disclose which policy matched, its conditions, or whether other users have
   access. Internal reasoning goes to audit, not to the client.
-- Validation errors populate `details` with `{ "field": "name", "code": "TOO_LONG" }` entries.
+- Validation errors populate `details` with `{ "field": "name", "code": "TOO_LONG" }` entries. An
+  endpoint whose refusal carries a diagnosis the caller cannot otherwise reconstruct may add a
+  `detail` sentence to an entry — see `§14.1`, which is the only one that does today, and which
+  states the bound on what such a sentence may contain.
 
 | HTTP | Use |
 |---|---|
@@ -384,6 +387,106 @@ configured step-up window (default 15 minutes) for any privileged mutation liste
 
 Simulation endpoints (`/admin/*/simulate`) accept a proposed policy plus a sample set or a historical
 time range and return the decisions that *would* have been made, with no side effects.
+
+### 14.1 Conditional-access rules
+
+Implemented `ENC-603`. The path is `/admin/conditional-access/**rules**`, not the `policies` the map
+above lists: `04-DATA-MODEL.md §12.1` records why the stored resource is a *rule* —
+`conditional_access_policies`' `priority`, `scope_type` and `scope_id` describe an evaluator that was
+deliberately not built, and a path naming a resource whose fields are ignored is a path an operator
+tunes in vain. `06-SECURITY-DLP-ACCESS.md §7` is authoritative for what a rule decides; this section
+is the contract only.
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/admin/conditional-access/rules` | The tenant's live rules |
+| `POST` | `/admin/conditional-access/rules` | Write one |
+| `PATCH` | `/admin/conditional-access/rules/{id}` | Move it between `SIMULATION` and `ENFORCE` |
+| `DELETE` | `/admin/conditional-access/rules/{id}` | Withdraw it |
+
+```http
+POST /api/v1/admin/conditional-access/rules
+Content-Type: application/json
+
+{
+  "audience": "HUMAN",
+  "name": "Finance downloads from the corporate network only",
+  "effect": "BLOCK",
+  "mode": "SIMULATION",
+  "when": [
+    { "outside_every_zone": ["Corporate India", "VPN"] },
+    { "action_is": [{ "resource": "file", "action": "download" }] }
+  ]
+}
+```
+
+- **`audience` is required and is never inferred from `when`.** It selects which rule set — and
+  therefore which condition vocabulary — the document is read in; several condition names are
+  legitimately in both (`06 §7.4`). A document that is not that audience's is refused, **naming the
+  clause**, and is never trimmed to the clauses that parsed.
+- **Condition names are `snake_case`**, unlike every other field in this API. They are the stored
+  vocabulary, and a second spelling at the edge would be a second vocabulary that can drift — and
+  would make the refusal above name a clause the administrator did not write.
+- **`mode` defaults to `SIMULATION`.** A rule written without saying which it is rehearses;
+  enforcing is a statement an administrator makes. Unknown fields in the body are **rejected**, so a
+  misspelled `mode` cannot silently produce a rehearsal.
+- **`effect` has no `allow`.** `06 §7.4`: under most-restrictive-wins an allow could never change an
+  outcome, so accepting one would be an exception that appears to exist. `ALLOW` is refused with
+  that reason in `details[].detail`.
+- **`when: []` is legitimate** and means every request — "require a managed device, always".
+
+The response is the stored rule, and it carries the rule's **name**; no error ever does. It also
+carries `decodes` (and `decodeError` when false), which is `true` for anything written through this
+API and can be `false` for a row written by a repair script: a rule that no longer decodes fails
+every request in the tenant, and this list is where an administrator finds out which one to withdraw.
+
+`GET` returns the whole live set with `page: { "nextCursor": null, "hasMore": false }`. There is no
+cursor: the same set is read on every request in the policy chain, so a tenant with enough rules to
+page has a per-request cost that matters long before the page envelope does. §6's shape is kept so
+that a cursor can be added without a `v2`.
+
+`PATCH` carries `mode` and nothing else. **A rule's conditions and effect are not editable**:
+changing what a rule refuses is a withdrawal and a new rule, so the text of what was in force during
+any period remains readable, which is the same argument the table makes for having no `DELETE`. An
+edit in place would leave an audit trail saying that a rule changed and no way to see what it said
+before.
+
+`DELETE` is **withdrawal**: the row and its text stay and `deleted_at` is set (`04 §12.1`). A rule's
+history is audit evidence, and the application role holds no `DELETE` on the table. Withdrawing a
+rule that is already withdrawn, that never existed, or that belongs to another tenant are all `404`.
+
+There is no `Idempotency-Key` on the create. A live rule's name is unique within its tenant, so a
+replayed create is refused as a collision rather than duplicated; the name is reusable once the rule
+holding it has been withdrawn.
+
+| Status | When |
+|---|---|
+| `201` | Created. `Location` names the rule |
+| `200` | The mode changed |
+| `204` | Withdrawn |
+| `400` | `VALIDATION_FAILED` — one entry in `details`, naming the field |
+| `403` | `ACCESS_DENIED` from the chain, or `STEP_UP_REQUIRED` (see below) |
+| `404` | Unknown, already withdrawn, or another tenant's — deliberately indistinguishable |
+| `409` | `RULE_NAME_IN_USE` |
+| `422` | `RULE_WOULD_DENY_ITS_AUTHOR` (see below) |
+
+**`details` entries here carry a third key, `detail`.** §5 defines `{ "field", "code" }`; a refused
+rule adds a sentence, because `unknown variant \`posture_below\`` is the whole diagnostic value of a
+closed decoder and an administrator told only "rejected" writes the same document again. It is
+bounded in length and never contains the rule's name.
+
+**Writing, promoting and withdrawing require recent multi-factor authentication** — the rule stated
+at the top of §14, for the privileged mutation `06 §22` calls *changing conditional access*. Reading
+does not. A refusal is `403 STEP_UP_REQUIRED` with `{"acr": "mfa", "maxAge": 900}` in `details`
+rather than beside `code`, which is where §3.3's older example puts it; the envelope in §5 is fixed.
+
+**A rule may not begin deciding if it would deny its author's own session.** `422
+RULE_WOULD_DENY_ITS_AUTHOR` is returned for a create in `ENFORCE`, or a promotion to it, when the
+rule would refuse the caller's own `admin/manage_policy` — the action that would undo it. A zone rule
+that denies the network an administrator is on cannot be undone through the product
+(`plans/M4-GOVERNANCE.md §5`), and break-glass is deliberately *not* honoured by this check: the
+question is whether an ordinary session would be refused. Any rule may be written and rehearsed; the
+way to enforce one is from a session it allows.
 
 ## 15. MCP
 
