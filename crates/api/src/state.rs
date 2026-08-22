@@ -6,6 +6,7 @@ use enclave_auth::{AccessTokenVerifier, KeySet};
 use enclave_core::PolicyEngine;
 use enclave_db::DbPool;
 
+use crate::admin::conditional_access::SharedRuleCache;
 use crate::edge::Edge;
 
 /// Shared, cheaply cloneable application state.
@@ -20,6 +21,13 @@ pub struct ApiState {
     /// Where a request's network origin comes from. The *only* thing that may populate
     /// `NetworkContext`; see `crates/api/src/edge.rs`.
     pub edge: Arc<Edge>,
+    /// The conditional-access rule cache this replica reads, when the binary has one to hand.
+    ///
+    /// `None` is a supported deployment rather than a defect: `ENC-590`'s staleness bound is the
+    /// cache TTL, and invalidation is only the shortcut for the replica that made a change — *a
+    /// message reaches one replica; a deployment is several*. Nothing in the admin surface's
+    /// behaviour turns on it, which is exactly why it is an `Option` and not a required argument.
+    pub rule_cache: Option<SharedRuleCache>,
 }
 
 impl std::fmt::Debug for ApiState {
@@ -44,7 +52,21 @@ impl ApiState {
             db: Arc::new(db),
             tokens: Arc::new(AccessTokenVerifier::new(issuer, audience, keys)),
             edge: Arc::new(Edge::untrusting()),
+            rule_cache: None,
         }
+    }
+
+    /// Supplies the conditional-access rule cache the admin surface tells about a change.
+    ///
+    /// A builder step for the same reason [`ApiState::with_edge`] is one, and with the opposite
+    /// consequence when it is forgotten: forgetting the edge makes every client address the socket
+    /// peer, which is wrong in a direction nobody can exploit; forgetting this makes a rule change
+    /// take up to the cache TTL to apply on *this* replica as well as the others, which is the
+    /// documented bound rather than a defect (`ENC-590`).
+    #[must_use]
+    pub fn with_rule_cache(mut self, cache: SharedRuleCache) -> Self {
+        self.rule_cache = Some(cache);
+        self
     }
 
     /// Supplies the configured edge.

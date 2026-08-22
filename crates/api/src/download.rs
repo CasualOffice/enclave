@@ -35,7 +35,7 @@ use std::sync::Arc;
 
 use axum::body::Bytes;
 use axum::extract::{Path, State};
-use axum::http::{header, HeaderValue, StatusCode};
+use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse as _, Response};
 use axum::{Extension, Json};
 use enclave_core::{
@@ -48,7 +48,11 @@ use enclave_versions::{FileVersion, VersionRepository};
 use serde::{Deserialize, Serialize};
 
 use crate::auth::Authenticated;
-use crate::error::ApiError;
+// `Envelope` and `NO_STORE` moved to `crate::error` with `ENC-603`, which needed both for the
+// administration surface: `crate::error` is the one place `docs/05-API.md §5`'s shape is written
+// down, and a third handler family reaching into *this* module for it would have made "one place"
+// true only by import.
+use crate::error::{ApiError, Envelope, NO_STORE};
 use crate::state::ApiState;
 
 /// How long a minted URL is valid for.
@@ -58,12 +62,6 @@ use crate::state::ApiState;
 /// *is* the revocation window. One URL per authorized request, minted at the last moment, never
 /// cached.
 const SIGNED_URL_TTL: Duration = Duration::from_secs(120);
-
-/// `Cache-Control` for a response carrying a signed URL.
-///
-/// A shared cache holding this response would hand the URL to the next caller without a policy
-/// decision — the exact standing grant D14 exists to prevent.
-const NO_STORE: HeaderValue = HeaderValue::from_static("private, no-store");
 
 /// The request body of `docs/05-API.md §9`.
 ///
@@ -356,67 +354,6 @@ fn parse_body(body: &Bytes) -> Result<DownloadRequest, Envelope> {
             "Send `{}`, or an object with `justification` and `versionId`.",
         )
     })
-}
-
-/// The `docs/05-API.md §5` error envelope, for a status [`ApiError`] cannot yet express.
-///
-/// `ApiError` maps [`Error`], and [`Error`] has no variant for "not implemented" and no way to
-/// carry a status that is not derived from a variant. Rather than let each handler invent its own
-/// error shape, this builds the one envelope `§5` defines, and both delivery endpoints use it.
-///
-/// A description rather than a rendered [`Response`] because it travels in the `Err` arm of the
-/// small helpers below, and an `axum` response is a large error variant to move around
-/// (`clippy::result_large_err`). Rendering is the last step, where the request id is in scope.
-#[derive(Debug)]
-pub(crate) struct Envelope {
-    status: StatusCode,
-    code: &'static str,
-    message: &'static str,
-    remediation: &'static str,
-    details: Vec<serde_json::Value>,
-}
-
-impl Envelope {
-    /// Describes a refusal. Every string is a literal: `§5` requires user-safe, localizable text,
-    /// which rules out interpolating anything the request supplied.
-    pub(crate) const fn new(
-        status: StatusCode,
-        code: &'static str,
-        message: &'static str,
-        remediation: &'static str,
-    ) -> Self {
-        Self { status, code, message, remediation, details: Vec::new() }
-    }
-
-    /// Attaches the `details` array — validation fields, or the diagnostic facts of a `501`.
-    pub(crate) fn with_details(mut self, details: Vec<serde_json::Value>) -> Self {
-        self.details = details;
-        self
-    }
-
-    /// The status this envelope will be sent with.
-    ///
-    /// Test-only: on the production paths the envelope is rendered rather than inspected, and a
-    /// reader of one of these helpers wants to assert the refusal without building a whole
-    /// response to read it back out of.
-    #[cfg(test)]
-    pub(crate) const fn status(&self) -> StatusCode {
-        self.status
-    }
-
-    /// Renders it, stamping the request id that ties a client's report to a log line.
-    pub(crate) fn into_response(self, request_id: RequestId) -> Response {
-        let body = serde_json::json!({
-            "error": {
-                "code": self.code,
-                "message": self.message,
-                "remediation": self.remediation,
-                "requestId": request_id.to_string(),
-                "details": self.details,
-            }
-        });
-        (self.status, [(header::CACHE_CONTROL, NO_STORE)], Json(body)).into_response()
-    }
 }
 
 /// Maps an object-storage failure onto the one error type the API renders.
