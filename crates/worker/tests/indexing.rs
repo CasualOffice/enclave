@@ -50,111 +50,17 @@ use enclave_preview::RenderBudget;
 use enclave_worker::ocr::MountedOcr;
 
 mod common;
-use common::page_of_words;
+use common::{page_of_words, RecordingStore};
 
-use enclave_storage::{
-    BlobStore, ByteRange, ByteStream, MultipartLimits, ObjectMeta, PublicAccessCheck,
-    PublicAccessError, PublicAccessReport, Result as StorageResult, StoreCapabilities, Support,
-    UploadRequest, UploadSession,
-};
 use enclave_testing::content::Spine;
 use enclave_testing::{Fixtures, TestDb};
 use enclave_worker::indexing::index_pass;
 use enclave_worker::Stop;
 use sqlx::{PgConnection, Row as _};
-use url::Url;
 use uuid::Uuid;
 
 const CHUNKER: ChunkerVersion = ChunkerVersion::new("test/1");
 const EXTRACTOR: ExtractorVersion = ExtractorVersion::new("test/1");
-
-/// Records every key it is asked to read, and serves the same bytes for all of them.
-///
-/// The recording is the point: "the scanning version's bytes were never fetched" is only checkable
-/// from the store's side.
-#[derive(Default)]
-struct RecordingStore {
-    body: Vec<u8>,
-    reads: Mutex<Vec<String>>,
-}
-
-impl RecordingStore {
-    fn new(body: &str) -> Self {
-        Self { body: body.as_bytes().to_vec(), reads: Mutex::new(Vec::new()) }
-    }
-
-    /// The same store over bytes that are not text — a PDF, for the OCR tests.
-    fn of_bytes(body: Vec<u8>) -> Self {
-        Self { body, reads: Mutex::new(Vec::new()) }
-    }
-
-    fn reads(&self) -> Vec<String> {
-        self.reads.lock().expect("the lock is not poisoned").clone()
-    }
-}
-
-#[async_trait]
-impl PublicAccessCheck for RecordingStore {
-    async fn verify_not_public(
-        &self,
-    ) -> core::result::Result<PublicAccessReport, PublicAccessError> {
-        Ok(PublicAccessReport { bucket: "test".to_owned(), endpoint: None, probes: Vec::new() })
-    }
-}
-
-#[async_trait]
-impl BlobStore for RecordingStore {
-    fn capabilities(&self) -> StoreCapabilities {
-        StoreCapabilities {
-            backend: "recording-stub",
-            multipart: Some(MultipartLimits {
-                min_part_bytes: 5 * 1024 * 1024,
-                max_part_bytes: 5 * 1024 * 1024 * 1024,
-                max_parts: 10_000,
-            }),
-            signed_urls: true,
-            single_use_signed_urls: false,
-            max_signed_url_ttl: Duration::from_secs(900),
-            versioning: Support::Unknown,
-            object_lock: Support::Unknown,
-            server_side_encryption: Support::Unknown,
-            range_reads: true,
-            server_side_copy: true,
-        }
-    }
-
-    async fn create_upload(&self, _request: UploadRequest) -> StorageResult<UploadSession> {
-        unreachable!("the indexing pass never uploads")
-    }
-
-    async fn complete_upload(&self, _session: &UploadSession) -> StorageResult<ObjectMeta> {
-        unreachable!("the indexing pass never uploads")
-    }
-
-    async fn signed_download(&self, _key: &str, _ttl: Duration) -> StorageResult<Url> {
-        // Not merely unimplemented: a signed URL for an *original* has no business being minted on
-        // an indexing path, and a panic here would name that if one ever appeared.
-        unreachable!("the indexing pass never mints a download URL")
-    }
-
-    async fn read_range(&self, key: &str, _range: ByteRange) -> StorageResult<ByteStream> {
-        self.reads.lock().expect("the lock is not poisoned").push(key.to_owned());
-        let body = self.body.clone();
-        let length = body.len() as u64;
-        Ok(ByteStream::new(
-            futures::stream::once(async move { Ok(bytes::Bytes::from(body)) }),
-            Some(length),
-        ))
-    }
-
-    async fn copy(&self, _from: &str, _to: &str) -> StorageResult<()> {
-        unreachable!("the indexing pass never copies")
-    }
-
-    async fn delete(&self, _key: &str) -> StorageResult<()> {
-        unreachable!("the indexing pass never deletes")
-    }
-}
 
 fn pipeline() -> Pipeline<PlainTextExtractor> {
     Pipeline::new(PlainTextExtractor, Chunker::new(CHUNKER, ChunkBudget::default()))
@@ -172,6 +78,10 @@ async fn start() -> (TestDb, Fixtures, DbPool) {
 }
 
 /// A file with one version, in the given antivirus state.
+///
+/// A thin wrapper over `common::a_file`, which every content pass's tests share: the media type is
+/// fixed here because nothing in this binary exercises routing, and passing `"text/plain"` at
+/// sixteen call sites would say nothing at any of them.
 async fn a_file(
     conn: &mut PgConnection,
     tenant: TenantId,
@@ -179,14 +89,10 @@ async fn a_file(
     status: &str,
     av_status: &str,
 ) -> (FileId, VersionId) {
-    let (spine, version) = a_file_on_a_spine(conn, tenant, owner, status, av_status).await;
-    (spine.file, version)
+    common::a_file(conn, tenant, owner, status, av_status, "text/plain").await
 }
 
 /// The same file, with the spine it hangs on.
-///
-/// The vector tests need the workspace and library as well, because those are columns of the store
-/// record and a record naming the wrong library is one the query-time narrowing silently excludes.
 async fn a_file_on_a_spine(
     conn: &mut PgConnection,
     tenant: TenantId,
@@ -194,30 +100,7 @@ async fn a_file_on_a_spine(
     status: &str,
     av_status: &str,
 ) -> (Spine, VersionId) {
-    let spine = Spine::new(tenant);
-    spine.insert(&mut *conn, owner, Utc::now()).await.expect("spine");
-
-    let id = Uuid::now_v7();
-    sqlx::query(
-        "INSERT INTO file_versions
-           (id, tenant_id, file_id, object_key, storage_profile_id, size_bytes, checksum_sha256,
-            mime_type, major, minor, status, av_status, created_by, created_at)
-         VALUES ($1, $2, $3, $4, $5, 12, 'deadbeef', 'text/plain', 1, 0, $6, $7, $8, $9)",
-    )
-    .bind(id)
-    .bind(tenant.as_uuid())
-    .bind(spine.file.as_uuid())
-    .bind(format!("objects/{id}"))
-    .bind(Uuid::nil())
-    .bind(status)
-    .bind(av_status)
-    .bind(owner.as_uuid())
-    .bind(Utc::now())
-    .execute(&mut *conn)
-    .await
-    .expect("version");
-
-    (spine, VersionId::from(id))
+    common::a_file_on_a_spine(conn, tenant, owner, status, av_status, "text/plain").await
 }
 
 async fn manifest_status(conn: &mut PgConnection, file: FileId) -> (String, i32) {

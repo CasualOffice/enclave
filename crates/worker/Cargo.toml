@@ -26,6 +26,11 @@ enclave-search = { workspace = true }
 # `MilvusConfig::dimension` says so at length — because a dependency added to hold a constant is a
 # dependency invented for an assertion.
 enclave-embeddings = { workspace = true }
+# `ENC-613`: the content-scan pass runs `enclave_dlp`'s detector set over extracted text and writes
+# `security_facts`. The edge is this way round on purpose — `crates/dlp` holds the detectors and the
+# provider that *reads* the table, and a domain crate that also owned a background pass would need
+# the pool, the object store and the clock. The scanner is composition, so it lives here.
+enclave-dlp = { workspace = true }
 enclave-indexing = { workspace = true }
 enclave-preview = { workspace = true }
 enclave-storage = { workspace = true }

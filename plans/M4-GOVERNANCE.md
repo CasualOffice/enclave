@@ -1,6 +1,6 @@
 # M4 — Governance baseline
 
-> **Status:** Draft · **Version:** 1.2 · **Owner:** Engineering · **Last updated:** 2026-08-22
+> **Status:** Exit criteria met · **Version:** 1.3 · **Owner:** Engineering · **Last updated:** 2026-08-22
 
 `ROADMAP.md`: *"A tenant can be told no, for the right reasons, with an audit trail."*
 
@@ -16,11 +16,20 @@ enforced, and three of its stages currently decide nothing.
 
 ### Exit criteria (from the roadmap — may not be weakened here)
 
-- [ ] **D1–D4** green: `ENFORCE` blocks, `SIMULATION` records only, missing facts fail closed, a
-      dropped obligation fails the operation.
-- [ ] A forged `X-Forwarded-For` from an untrusted peer is ignored.
-- [ ] Quota exhaustion blocks writes while reads, deletes and exports keep working.
-- [ ] Every row in the audit table maps to a real enforcement point; no silent successes.
+- [x] **D1–D4** green: `ENFORCE` blocks, `SIMULATION` records only, missing facts fail closed, a
+      dropped obligation fails the operation. `ENC-582` built the modes and `ENC-615` gave rules
+      somewhere to live, so `ENFORCE` refuses a stored rule rather than an empty set; `ENC-613`
+      writes the facts it decides from, and `what_the_scan_wrote_is_what_the_dlp_stage_decides_from`
+      closes that loop end to end. D4 was a **release-only defect** until `ENC-582` found it: three
+      handlers asserted `obligations.is_empty()` with `debug_assert!`, so the shipping binary
+      dropped the obligation and served the response.
+- [x] A forged `X-Forwarded-For` from an untrusted peer is ignored. `ENC-583`, and the header is
+      never parsed at all from an untrusted peer rather than parsed and discarded.
+- [x] Quota exhaustion blocks writes while reads, deletes and exports keep working. `ENC-584`
+      enforces in the charging statement; `Released` has no refusal variant by construction.
+- [x] Every row in the audit table maps to a real enforcement point; no silent successes.
+      `ENC-585` made it a gate rather than a claim, and the gate immediately found that the claim
+      was **false**: `ENC-606`, a `403` the log recorded as `ALLOW`, at fourteen sites.
 
 ---
 
@@ -146,6 +155,33 @@ Most-uncertain first, so the expensive discovery happens while there is room to 
 | Simulation diverging from enforcement | D28 forbids it in code, but nothing structurally prevents a second code path appearing. Worth a test that runs one policy both ways and asserts the recorded decision is identical |
 | Conditional access locking out an administrator | A zone rule that denies the network the admin is on is a control that cannot be undone through the product. Break-glass (`docs/11 §5.6`) already exists; M4 must not add a stage that break-glass itself traverses |
 | Quota reconciliation disagreeing with the counter | Two numbers for one fact. The nightly job must be able to *correct* without a window in which writes are refused on a stale figure |
+
+---
+
+## 5a. What the criteria do not cover — read before calling M4 shipped
+
+The four criteria above are met, and each is proven by a test that has been watched to fail. Three
+P1 rows remain open, and none of them weakens a criterion — but a reader who takes "M4 complete" to
+mean "an operator can use this" would be wrong in a specific way, so it is stated here rather than
+left to be discovered.
+
+**`ENC-641` — `enclave-antivirus` has no caller in any binary, so `av_status` never moves.** Every
+version this product writes starts `SCANNING` with `av_status = 'PENDING'`, and `readable_version`
+requires `AVAILABLE AND CLEAN`. Nothing performs the transition. Rule 9 holds perfectly in the
+direction that matters — no read path serves unscanned content — and holds *absolutely*, because
+nothing ever becomes scanned. Found by `ENC-613` going to look for the antivirus job an earlier
+report had described, and discovering it did not exist.
+
+**`ENC-619` — no deployment authorizes an administrative action**, so the conditional-access admin
+surface is closed in the binary. Fails closed, which is the right direction and not a usable one.
+
+**`ENC-633` — DLP rules have no HTTP surface**, so a rule's only route into the database is `psql`.
+
+The honest summary: **M4's controls are correct, tested, and enforced; the operator-facing half of
+three of them is not built.** That is a truthful place to close a milestone whose sentence was *a
+control that cannot be turned on gradually will be turned on carelessly, or not at all* — and it is
+worth noticing that the sentence now applies to this milestone's own output. The rows exist so that
+this is a scheduling decision rather than a discovery.
 
 ---
 

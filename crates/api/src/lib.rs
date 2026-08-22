@@ -15,6 +15,7 @@ pub mod health;
 pub mod me;
 pub mod metrics_listener;
 pub mod preview;
+pub mod refusal;
 pub mod state;
 
 use std::sync::Arc;

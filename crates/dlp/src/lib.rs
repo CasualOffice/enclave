@@ -14,7 +14,9 @@
 //! | [`policy`] | Rules, and the **mode-independent** verdict evaluating them produces |
 //! | [`mode`] | The five modes of `docs/06 §9`, and the one function that maps a verdict to an effect |
 //! | [`observation`] | What an evaluation leaves behind, and the port it leaves it through |
-//! | [`service`] | [`ModedDlp`] — the `DlpService` the chain holds |
+//! | [`service`] | [`ModedDlp`] — one rule set, one mode — and [`service::decide`], the one body |
+//! | [`store`] | The stored form of a rule, and the one place a row becomes a [`policy::DlpRule`] |
+//! | [`tenant`] | [`TenantDlp`] — the `DlpService` a deployment runs, over each tenant's own rules |
 //! | [`facts`] | [`PgSecurityFacts`] — the `SecurityFactsProvider` that reads `security_facts` |
 //!
 //! The facts a scan produces — [`enclave_core::SecurityFacts`] and the
@@ -40,6 +42,8 @@ pub mod mode;
 pub mod observation;
 pub mod policy;
 pub mod service;
+pub mod store;
+pub mod tenant;
 
 pub use builtin::{builtin_set, Iban, PaymentCardNumber, BUILTIN_SET_VERSION};
 pub use checksum::{luhn_valid, mod97};
@@ -54,7 +58,9 @@ pub use policy::{
     ActionScope, Basis, Condition, Demand, DlpAction, DlpRule, RuleId, RuleSet,
     Verdict as PolicyVerdict,
 };
-pub use service::ModedDlp;
+pub use service::{decide, ModedDlp};
+pub use store::{decode_rule, decode_rules, encode_rule, DlpRuleError};
+pub use tenant::{TenantDlp, DEFAULT_CACHE_TTL};
 
 use async_trait::async_trait;
 use enclave_core::{

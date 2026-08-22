@@ -79,26 +79,49 @@ impl ModedDlp {
         resource: &ResourceRef,
         facts: &FactsSnapshot,
     ) -> Observation {
-        // Step 1 — the conclusion. Mode-independent, and unable to be otherwise: `RuleSet` holds no
-        // mode and `evaluate` takes none.
-        let verdict = self.rules.evaluate(action, facts);
-
-        // Step 2 — what this mode does about it. The only mode-sensitive line in the crate.
-        let applied = self.mode.effect(&verdict);
-
-        // Step 3 — the record, which computes `Enforce.effect(&verdict)` from the same function.
-        let observation = Observation::of(self.mode, action, *resource, verdict, applied);
-
-        // `DISABLED` inspects nothing, so there is nothing to record. Every other mode records,
-        // including the ones that changed nothing about the request — a `MONITOR` evaluation that
-        // found nothing is the evidence that the policy ran and was clean, which is what a rollout
-        // is reading.
-        if self.mode.evaluates() {
-            self.sink.record(&observation);
-        }
-
-        observation
+        decide(self.mode, &self.rules, self.sink.as_ref(), action, resource, facts)
     }
+}
+
+/// Evaluate, act, record — **the only body that does those three things**.
+///
+/// A free function rather than a method, because there are now two stages that need it:
+/// [`ModedDlp`], which holds one rule set for every tenant, and [`crate::tenant::TenantDlp`], which
+/// loads a rule set per tenant from `dlp_rules` (`ENC-615`). A second copy of these three lines is
+/// exactly the "second code path" `plans/M4-GOVERNANCE.md` D28's risk table warns about — it would
+/// be the place a `SIMULATION`/`ENFORCE` divergence could appear without anyone editing
+/// [`DlpMode::effect`].
+///
+/// The rules arrive as an argument and the mode does not reach them: `RuleSet::evaluate` still
+/// takes no mode, so where the rules came from cannot change what they conclude.
+#[must_use]
+pub fn decide(
+    mode: DlpMode,
+    rules: &RuleSet,
+    sink: &dyn ObservationSink,
+    action: Action,
+    resource: &ResourceRef,
+    facts: &FactsSnapshot,
+) -> Observation {
+    // Step 1 — the conclusion. Mode-independent, and unable to be otherwise: `RuleSet` holds no
+    // mode and `evaluate` takes none.
+    let verdict = rules.evaluate(action, facts);
+
+    // Step 2 — what this mode does about it. The only mode-sensitive line in the crate.
+    let applied = mode.effect(&verdict);
+
+    // Step 3 — the record, which computes `Enforce.effect(&verdict)` from the same function.
+    let observation = Observation::of(mode, action, *resource, verdict, applied);
+
+    // `DISABLED` inspects nothing, so there is nothing to record. Every other mode records,
+    // including the ones that changed nothing about the request — a `MONITOR` evaluation that
+    // found nothing is the evidence that the policy ran and was clean, which is what a rollout
+    // is reading.
+    if mode.evaluates() {
+        sink.record(&observation);
+    }
+
+    observation
 }
 
 #[async_trait]

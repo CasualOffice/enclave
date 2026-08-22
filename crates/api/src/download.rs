@@ -25,9 +25,19 @@
 //!   lands, the decrement belongs between the chain and the URL — a budget consumed for a request
 //!   that was then denied is a budget spent on nothing.
 //! * **The justification's destination.** A [`Obligation::RequireJustification`] is *enforced* here
-//!   — the request is refused without one — but the text is not yet persisted, because the audit
-//!   row is written inside `PolicyEngine::enforce` and no port exists for a handler to add a detail
-//!   to it. Recording it is a follow-up on the audit crate, not on this handler.
+//!   — the request is refused without one — but the text is not yet persisted. It is user-authored
+//!   text about a file, so it does not belong in the refusal row [`crate::refusal`] writes either
+//!   (`CLAUDE.md` rule 10); the row records that a justification was required and absent, which is
+//!   the auditable fact. Storing the supplied text against the operation it unlocked is a follow-up
+//!   on the audit crate, not on this handler.
+//!
+//! # The refusal this handler takes, and where it is recorded
+//!
+//! [`satisfy`] refuses an obligation the download path cannot discharge, *after* the chain has
+//! allowed and written its `ALLOW` row. Until `ENC-606` that refusal left no trace: one row, saying
+//! the opposite of what happened. It now returns a [`Refused`], which has no conversion into an
+//! error except [`crate::refusal::HandlerAudit::refuse`] — so the second row is written by the type
+//! system rather than by remembering to.
 
 use core::str::FromStr as _;
 use core::time::Duration;
@@ -53,6 +63,7 @@ use crate::auth::Authenticated;
 // down, and a third handler family reaching into *this* module for it would have made "one place"
 // true only by import.
 use crate::error::{ApiError, Envelope, NO_STORE};
+use crate::refusal::Refused;
 use crate::state::ApiState;
 
 /// How long a minted URL is valid for.
@@ -62,6 +73,16 @@ use crate::state::ApiState;
 /// *is* the revocation window. One URL per authorized request, minted at the last moment, never
 /// cached.
 const SIGNED_URL_TTL: Duration = Duration::from_secs(120);
+
+/// The action this endpoint asks the chain about, and the one a refusal here is recorded against.
+///
+/// Named once so the `enforce` call and the audit row cannot drift apart: a refusal attributed to a
+/// different action from the decision it followed would not line up with it on `request_id`, which
+/// is the only thing that pairs the two rows.
+const DOWNLOAD: Action = Action::File(FileAction::Download);
+
+/// The second, separately deniable question a named version raises.
+const VERSION_READ: Action = Action::File(FileAction::VersionRead);
 
 /// The request body of `docs/05-API.md §9`.
 ///
@@ -129,32 +150,39 @@ pub async fn download(
     // The chain. Note what is *not* above this line: no file lookup, no version lookup, no call to
     // the store. Nothing has been read about this file yet, so nothing can leak through a timing
     // difference or an error message before the decision exists.
-    let decision =
-        match state.policy.enforce(&ctx, Action::File(FileAction::Download), &resource).await {
-            Ok(decision) => decision,
-            Err(error) => {
-                let error = conceal_if_not_visible(&state, &ctx, &resource, error).await;
-                return Err(ApiError::new(error, request_id));
-            }
-        };
+    let decision = match state.policy.enforce(&ctx, DOWNLOAD, &resource).await {
+        Ok(decision) => decision,
+        Err(error) => {
+            let error = conceal_if_not_visible(&state, &ctx, &resource, error).await;
+            return Err(ApiError::new(error, request_id));
+        }
+    };
 
     // `PolicyDecision` is `#[must_use]`; taking the obligations by value is this handler accepting
     // responsibility for them, and `satisfy` is where each one is either honoured or turned into a
     // refusal. None of them may be dropped (`CLAUDE.md` rule 8).
+    //
+    // The refusal is recorded here — a second row for this request, beside the `ALLOW` the chain
+    // has already written — because `Refused` cannot become an error any other way (`ENC-606`).
     let obligations = decision.into_obligations();
-    satisfy(&obligations, request.justification.as_deref())
-        .map_err(|error| ApiError::new(error, request_id))?;
+    if let Err(refused) = satisfy(&obligations, request.justification.as_deref()) {
+        return Err(state.audit.refuse(&ctx, DOWNLOAD, &resource, refused).await);
+    }
 
     // A specific version is a second, separately deniable exposure: version history can hold
     // content that was later redacted from the current version (`FileAction::VersionRead`). It is
     // asked about the *file*, not the version row, because `docs/12-TESTING.md §4.2` A7 requires a
     // version read to respect the current file ACL rather than the ACL at version creation.
     if request.version_id.is_some() {
-        match state.policy.enforce(&ctx, Action::File(FileAction::VersionRead), &resource).await {
+        match state.policy.enforce(&ctx, VERSION_READ, &resource).await {
             Ok(decision) => {
                 let obligations = decision.into_obligations();
-                satisfy(&obligations, request.justification.as_deref())
-                    .map_err(|error| ApiError::new(error, request_id))?;
+                // Recorded against `file.version_read`, not `file.download`: the obligation came
+                // from *that* decision, and a refusal row naming the other action would not line up
+                // with the `ALLOW` it followed.
+                if let Err(refused) = satisfy(&obligations, request.justification.as_deref()) {
+                    return Err(state.audit.refuse(&ctx, VERSION_READ, &resource, refused).await);
+                }
             }
             Err(error) => {
                 let error = conceal_if_not_visible(&state, &ctx, &resource, error).await;
@@ -240,32 +268,38 @@ async fn readable_version(
 ///
 /// # Errors
 ///
-/// [`Error::PolicyDenied`] when an obligation cannot be satisfied on this path.
-fn satisfy(obligations: &Obligations, justification: Option<&str>) -> Result<(), Error> {
+/// [`Refused`] when an obligation cannot be satisfied on this path. It is a `Refused` rather than
+/// an [`Error`] so that it cannot reach the caller without a row: the only conversion is
+/// [`crate::refusal::HandlerAudit::refuse`], which writes one first (`ENC-606`). The reason codes are unchanged —
+/// they come from [`Obligation::unsatisfied_code`], which is where D29 puts them.
+fn satisfy(obligations: &Obligations, justification: Option<&str>) -> Result<(), Refused> {
     for obligation in obligations {
         match *obligation {
             // The claim in `docs/02-HLD.md §16`, at the only place it can be kept: before the URL
             // exists. `PREVIEW_ONLY` rather than `ACCESS_DENIED` because it is the honest one —
             // the caller may well be able to view this file, just not take it away.
-            Obligation::NoDownload => return Err(Error::denied(ReasonCode::PreviewOnly)),
+            Obligation::NoDownload => return Err(Refused::obligation(Obligation::NoDownload)),
 
             // A watermark identifies the viewer inside a rendition. Original bytes cannot carry
             // one, so this obligation cannot be satisfied on this path — and an unsatisfiable
             // obligation is a refusal, never a shrug (`CLAUDE.md` rule 8). Watermarked *export* is
             // a different endpoint producing a different artifact.
-            Obligation::Watermark => return Err(Error::denied(ReasonCode::PreviewOnly)),
+            Obligation::Watermark => return Err(Refused::obligation(Obligation::Watermark)),
 
             Obligation::RequireJustification => {
                 let supplied = justification.is_some_and(|text| !text.trim().is_empty());
                 if !supplied {
-                    return Err(Error::denied(ReasonCode::DlpJustificationRequired));
+                    // The row records that a justification was required and not supplied. It never
+                    // records the text of one that was — that is user-authored prose about a file
+                    // (`CLAUDE.md` rule 10).
+                    return Err(Refused::obligation(Obligation::RequireJustification));
                 }
             }
 
             // Routing for approval is a workflow this endpoint cannot start. Refusing with the
             // code that says so is what lets the client offer the right next step.
             Obligation::RequireApproval => {
-                return Err(Error::denied(ReasonCode::DlpApprovalRequired))
+                return Err(Refused::obligation(Obligation::RequireApproval))
             }
 
             // Satisfied by construction: a download response carries no mutation affordance and
@@ -279,13 +313,15 @@ fn satisfy(obligations: &Obligations, justification: Option<&str>) -> Result<(),
 
             // Raising a resource's classification is a write, and this handler performs none. It
             // cannot be quietly skipped either, so the operation is refused and the discrepancy is
-            // left where an operator will meet it: in the audit row the chain already wrote.
-            Obligation::Reclassify { .. } => {
+            // left where an operator will meet it: in the refusal row, which names `RECLASSIFY` as
+            // the obligation that could not be discharged — the rank it wanted stays out, being
+            // DLP's finding about the content (`CLAUDE.md` rule 10).
+            Obligation::Reclassify { to } => {
                 tracing::warn!(
                     "a reclassification obligation reached the download path, which cannot apply \
                      one; refusing rather than serving the file with a stale label"
                 );
-                return Err(Error::denied(ReasonCode::AccessDenied));
+                return Err(Refused::obligation(Obligation::Reclassify { to }));
             }
         }
     }
@@ -383,47 +419,53 @@ mod tests {
         list.into_iter().collect()
     }
 
+    /// The code a refusal carries, or `None` when the obligations were satisfied.
+    fn refused(result: Result<(), Refused>) -> Option<ReasonCode> {
+        result.err().map(Refused::code)
+    }
+
     #[test]
     fn no_download_refuses_before_anything_can_mint_a_url() {
-        let error = satisfy(&obligations([Obligation::NoDownload]), None)
-            .expect_err("a no-download obligation must refuse");
-        assert!(matches!(error, Error::PolicyDenied { code: ReasonCode::PreviewOnly, .. }));
+        assert_eq!(
+            refused(satisfy(&obligations([Obligation::NoDownload]), None)),
+            Some(ReasonCode::PreviewOnly),
+            "a no-download obligation must refuse"
+        );
     }
 
     #[test]
     fn a_watermark_obligation_cannot_be_satisfied_by_original_bytes() {
-        let error = satisfy(&obligations([Obligation::Watermark]), Some("audit request"))
-            .expect_err("original bytes cannot carry a watermark");
-        assert!(matches!(error, Error::PolicyDenied { code: ReasonCode::PreviewOnly, .. }));
+        assert_eq!(
+            refused(satisfy(&obligations([Obligation::Watermark]), Some("audit request"))),
+            Some(ReasonCode::PreviewOnly),
+            "original bytes cannot carry a watermark"
+        );
     }
 
     #[test]
     fn a_justification_is_required_and_whitespace_is_not_one() {
         let required = obligations([Obligation::RequireJustification]);
-        assert!(matches!(
-            satisfy(&required, None),
-            Err(Error::PolicyDenied { code: ReasonCode::DlpJustificationRequired, .. })
-        ));
-        assert!(matches!(
-            satisfy(&required, Some("   ")),
-            Err(Error::PolicyDenied { code: ReasonCode::DlpJustificationRequired, .. })
-        ));
-        assert!(satisfy(&required, Some("Client audit request #4412")).is_ok());
+        assert_eq!(refused(satisfy(&required, None)), Some(ReasonCode::DlpJustificationRequired));
+        assert_eq!(
+            refused(satisfy(&required, Some("   "))),
+            Some(ReasonCode::DlpJustificationRequired)
+        );
+        assert_eq!(refused(satisfy(&required, Some("Client audit request #4412"))), None);
     }
 
     #[test]
     fn approval_and_reclassification_refuse_rather_than_proceed() {
-        assert!(matches!(
-            satisfy(&obligations([Obligation::RequireApproval]), Some("why")),
-            Err(Error::PolicyDenied { code: ReasonCode::DlpApprovalRequired, .. })
-        ));
-        assert!(matches!(
-            satisfy(
+        assert_eq!(
+            refused(satisfy(&obligations([Obligation::RequireApproval]), Some("why"))),
+            Some(ReasonCode::DlpApprovalRequired)
+        );
+        assert_eq!(
+            refused(satisfy(
                 &obligations([Obligation::Reclassify { to: ClassificationRank::new(40) }]),
                 Some("why")
-            ),
-            Err(Error::PolicyDenied { code: ReasonCode::AccessDenied, .. })
-        ));
+            )),
+            Some(ReasonCode::AccessDenied)
+        );
     }
 
     #[test]

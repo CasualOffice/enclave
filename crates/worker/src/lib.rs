@@ -26,6 +26,15 @@
 //! working*, and *OCR configured and broken*; see that module for why the third must never be
 //! reported as the first.
 //!
+//! [`scan`] is the one pass here that is not housekeeping either, and it is the exception to the
+//! constraint above: its absence costs more than index size. It reads a version's text through the
+//! same extraction the indexing pass uses and records what `enclave_dlp`'s detectors found in
+//! `security_facts`, which is the evidence every synchronous DLP decision is taken from
+//! (`docs/06 §12`). That does not weaken the rule — nothing it writes decides *who may see what*,
+//! and a version it has not reached is `unscanned`, whose meaning is the tenant's
+//! `facts_unavailable` policy's to settle rather than this crate's. What it must never do is record
+//! a scan it did not perform; see that module for why an unscannable document gets no row at all.
+//!
 //! [`coverage`] is downstream of everything, because it writes nothing at all: it takes the
 //! index-coverage reading `crates/search/src/health.rs` computes, per tenant, and publishes it, so
 //! that the three rules in `deploy/monitoring/alerts/search.yml` have a producer. Its output is an
@@ -87,6 +96,7 @@ pub mod error;
 pub mod indexing;
 pub mod invalidation;
 pub mod ocr;
+pub mod scan;
 pub mod schedule;
 pub mod tenants;
 
