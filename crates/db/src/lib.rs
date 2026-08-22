@@ -52,6 +52,13 @@
 //!   rather than a control — three copies of a `WHERE` clause are three chances for one of them to
 //!   drop the limit. It sits here for the same reason [`tenants::active_tenants`] does: the
 //!   crate below every domain crate is the only place a shared invariant can be written once.
+//!
+//!   [`conditional_access`] is the second exception, and its argument is the reverse one
+//!   (`ENC-590`): the rules *do* have a domain crate, and `crates/conditional_access` would have to
+//!   reach past this one to read them. `CLAUDE.md` forbids that in the sentence that matters — all
+//!   database access through [`TenantScoped`], no `sqlx::query!` in a domain crate — so the
+//!   statements live here and hold no opinion about what a rule means: the module handles strings
+//!   and JSON text, and the crate that owns the rule types owns their vocabulary.
 //! * **No policy checks.** Authorization is `PolicyEngine::enforce`'s job (`docs/03-LLD.md §12`).
 //!   A guard that also made access decisions would be a second, quieter policy chain.
 //! * **No cursor signature.** [`cursor`] binds a listing position to a tenant and a filter set and
@@ -73,6 +80,7 @@
 //! See `plans/M0-FOUNDATIONS.md` D3 for the decision record behind [`TenantScoped`], and
 //! `docs/02-HLD.md §4` for where this crate sits.
 
+pub mod conditional_access;
 pub mod config;
 pub mod cursor;
 pub mod error;
@@ -84,6 +92,9 @@ pub mod quota;
 pub mod tenant;
 pub mod tenants;
 
+pub use conditional_access::{
+    insert_rule, load_rules, set_rule_mode, withdraw_rule, RuleId, RuleRow,
+};
 pub use config::{ConnectionUrl, DbConfig};
 pub use cursor::{Cursor, FilterFingerprint, InvalidCursor, PageSize};
 pub use error::DbError;

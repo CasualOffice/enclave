@@ -1,6 +1,6 @@
 # 06 — Security, DLP & Access Controls
 
-> **Status:** Draft · **Version:** 2.1 · **Owner:** Security Engineering · **Last updated:** 2026-08-22
+> **Status:** Draft · **Version:** 2.2 · **Owner:** Security Engineering · **Last updated:** 2026-08-22
 > **Authoritative for:** threat model, conditional access, DLP, antivirus, renditions, incidents, privileged operations.
 
 ## 1. Security model
@@ -231,6 +231,36 @@ multi-factor authentication, so it cannot be used to avoid the requirement it do
 **An unknown country is outside every geo-fence and inside none.** `country NOT IN [IN]` matches a
 caller whose location cannot be resolved; `country IN [IN]` does not. Both directions read the same
 way: absence of evidence never satisfies a location requirement.
+
+### 7.5 Where a rule lives, and what its storage may not express
+
+Added after implementation (`ENC-590`); §7 said what a rule decides and never said who writes one or
+where it is kept, and the answer turned out to constrain the rule itself.
+
+**Rules are tenant data; zones are the deployment's.** An administrator writes rules against their
+own tenant, and one `enclave.yaml` serves every tenant on a host — so rules are rows
+(`04-DATA-MODEL.md §12.1`), read per request under that tenant's row-level-security context. Zone
+*definitions* stay in configuration, because a zone names this deployment's networks and is what the
+edge resolves an address against before any tenant is known.
+
+**Storage may not express what the rule types cannot.** §7.4's two rule sets are a *type*
+separation, and a table would dissolve it silently: a JSONB document holds any clause. So the
+audience is a column, it selects which type the document is decoded into, and a document that is not
+that type is refused **by name** rather than having the offending clause dropped. A rule that lost a
+condition would match more requests than the administrator wrote, and every rule in this stage
+denies. For the same reason one undecodable rule fails the whole set rather than being skipped: a
+policy silently missing one refusal is a policy nobody wrote.
+
+**A stale rule set is permissive, so its staleness is bounded in time.** Because there is no `ALLOW`
+effect, every rule here denies or constrains, and a cache that has not yet seen the newest rule
+allows something the administrator has forbidden. Rules are therefore cached per tenant for a short,
+fixed interval rather than until something evicts them, and the interval — not an invalidation
+message — is what an administrator is told: a message reaches the replica that sent it, and a
+deployment is several. Tightening a rule during an incident is the case this bound exists for.
+
+**Removing a rule leaves the rule.** The application role holds no `DELETE` on the table, because one
+such statement lifts every network restriction a tenant has and leaves nothing to say it existed.
+Withdrawal sets a timestamp; the text stays, and it can be read and reinstated.
 
 ## 8. DLP detectors
 
