@@ -291,9 +291,13 @@ antivirus:
 #
 # embedding_model: "/var/lib/enclave/bge-m3"
 #
-# **Setting this requires `search.provider: milvus`** and is refused at startup otherwise. Nothing
-# would fail if it were allowed: the weights would load, no stage would be built, documents would
-# index exactly as they do now, and dense search would return nothing with no error anywhere.
+# **Setting this requires `search.provider: milvus`**, and the *worker* refuses to start otherwise,
+# naming both keys. Nothing would fail if it were allowed: the weights would load, no stage would be
+# built, documents would index exactly as they do now, and dense search would return nothing with no
+# error anywhere.
+#
+# The refusal is the worker's and not the loader's on purpose — `enclave-api` builds no vector stage,
+# so exporting ENCLAVE_EMBEDDING_MODEL in a shell must not stop it booting.
 #
 # **Leaving it unset is a documented absence, not a degradation.** Documents are extracted, chunked
 # and committed, so lexical search works; `index_manifests.embedding_model` records an empty string,

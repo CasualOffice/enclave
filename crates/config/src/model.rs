@@ -249,9 +249,22 @@ impl Config {
     ///   the query side reads candidates from. Its presence is not a claim that this deployment
     ///   embeds.
     ///
-    /// Read by [`check_embedding`](crate::validate::check_embedding), which refuses startup on
-    /// `Incomplete`, and by the worker that builds the stage — one function, so the two cannot
-    /// disagree about what "configured" means.
+    /// # Where the middle state is acted on, and why it is not here
+    ///
+    /// By `enclave_worker::embedding::MountedEmbedder::from_config`, and **not** by a startup
+    /// validator in [`crate::validate`] beside [`check_mounts`](crate::validate::check_mounts).
+    /// That is a correction rather than an omission: the first version of `ENC-661` did put it
+    /// there, and `crates/config/tests/ambient_environment.rs` caught what it did.
+    ///
+    /// [`ConfigLoader`](crate::ConfigLoader) reads the **whole process environment**, and
+    /// `ENCLAVE_EMBEDDING_MODEL` is what CI and every runbook tell an operator to export. A shell
+    /// with the model staged and no vector store therefore made *every* binary in the workspace
+    /// refuse to start — `enclave-api` included, which has no vector stage and no opinion about
+    /// one. That is `ENC-544`'s failure reached through a validator instead of a variable name,
+    /// and `ENC-566`'s too: one key, read by two binaries, only one of which can act on it.
+    ///
+    /// The worker still refuses, loudly, naming both keys. The process that refuses is now the one
+    /// that would have embedded.
     #[must_use]
     pub fn embedding_mounts(&self) -> EmbeddingMounts<'_> {
         match (self.embedding_model.as_deref(), self.search.milvus.is_some()) {

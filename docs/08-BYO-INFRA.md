@@ -680,9 +680,17 @@ adding a second inference runtime, because the absence of a `links` key is the p
 the graph's declared width is not the 1024 this build indexes against. There is no silent
 degradation: a volume that failed to attach is an outage, not a corpus of documents with no vectors.
 
-**A mounted model needs a vector store.** `embedding_model` set with `search.provider: none` is
-refused at startup. Nothing would fail otherwise — the weights would load, no stage would be built,
-documents would index exactly as before — and dense search would return nothing, for months.
+**A mounted model needs a vector store.** `embedding_model` set with `search.provider: none` makes
+**the worker** refuse to start, naming both keys. Nothing would fail otherwise — the weights would
+load, no stage would be built, documents would index exactly as before — and dense search would
+return nothing, for months.
+
+The refusal is the worker's and not the configuration loader's, and the distinction is worth knowing
+because it decides what a shell variable does to unrelated processes. `enclave-api` builds no vector
+stage, so it loads such a configuration without complaint; only the process that would have embedded
+refuses. A loader-level check was tried first and made every binary in the workspace refuse to start
+in any shell that had exported `ENCLAVE_EMBEDDING_MODEL` — which is what CI and this section tell
+you to do.
 
 **What a deployment without the mount gets.** Documents are extracted, chunked and committed to
 `chunk_text`, so lexical search works; `index_manifests.embedding_model` records an empty string,

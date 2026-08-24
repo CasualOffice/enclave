@@ -15,8 +15,7 @@ use core::fmt;
 use serde_yaml::Value;
 
 use crate::model::{
-    AntivirusProvider, Config, DeploymentProfile, EmbeddingMounts, OcrMounts, SearchProvider,
-    StorageProvider,
+    AntivirusProvider, Config, DeploymentProfile, OcrMounts, SearchProvider, StorageProvider,
 };
 use crate::secret_ref::SecretRef;
 
@@ -199,7 +198,6 @@ pub fn validate(config: &Config, raw: &Value) -> Result<(), ValidationReport> {
     report.extend(scan_for_inline_secrets(raw));
     report.extend(check_profile(config));
     report.extend(check_mounts(config));
-    report.extend(check_embedding(config));
     report.extend(check_storage(config));
     report.extend(check_search(config));
     report.extend(check_relocated_keys(raw));
@@ -353,42 +351,6 @@ pub fn check_mounts(config: &Config) -> Vec<Problem> {
              weights to recognise text and PDFium to render a page for them to read. Set both, or \
              neither — with neither, a scanned document is recorded FAILED / no_text_extracted \
              rather than indexed as empty (plans/M3-DISCOVERY.md D24)"
-        ),
-    )]
-}
-
-/// A mounted embedding model needs somewhere to put its vectors (`ENC-661`).
-///
-/// [`Config::embedding_mounts`] carries the argument for why this pair is checked in one direction
-/// only; the short version is that `search.milvus` has purposes that are nothing to do with
-/// embedding, while `embedding_model` has exactly one.
-///
-/// What this catches is an operator who staged 2.2 GB of weights against `search.provider: none`.
-/// Nothing would fail: the worker would load the model, find no `VectorWriter` to build a
-/// `VectorStage` over, and index text exactly as it did before — a deployment paying for a model
-/// it never uses, discovering it when somebody notices dense search has always returned nothing.
-///
-/// **No mount configured is not a problem**, and deliberately so. That is what every deployment has
-/// today, and it is a documented absence rather than a degradation: lexical search still works and
-/// `index_manifests.embedding_model` records `""`.
-///
-/// The path is not checked for existence here, for [`check_mounts`]' reason: a validator that stats
-/// a directory passes in CI and fails in a container whose volume attaches a second after the
-/// process starts, and it cannot tell "not mounted" from "mounted and holding the wrong files".
-#[must_use]
-pub fn check_embedding(config: &Config) -> Vec<Problem> {
-    let EmbeddingMounts::Incomplete { present, missing } = config.embedding_mounts() else {
-        return Vec::new();
-    };
-
-    vec![Problem::new(
-        missing,
-        ProblemKind::InvalidValue,
-        format!(
-            "`{present}` names a mounted embedding model but `{missing}` is not configured, so \
-             there is nowhere for its vectors to go and nothing would be embedded. Configure the \
-             vector store, or remove `{present}` — without it a document is still indexed for \
-             lexical search and its manifest honestly records no embedding model"
         ),
     )]
 }
@@ -985,64 +947,53 @@ integrations:
         assert!(check_search(&Config::default()).is_empty(), "and so is no vector store");
     }
 
-    /// A mounted embedding model with no vector store refuses the startup — and only that way round.
+    /// A mounted embedding model on its own **loads**, and that is the point (`ENC-661`).
     ///
-    /// `ENC-661`. The failure it catches is silent in every direction an operator can look: the
-    /// worker loads 2.2 GB of weights, finds no `VectorWriter`, builds no stage, and indexes text
-    /// exactly as it did before. Nothing errors and dense search returns nothing, for months.
+    /// # The validator this replaced, and why it was wrong
+    ///
+    /// The first version of `ENC-661` added a `check_embedding` here that refused a configuration
+    /// naming `embedding_model` with no `search.milvus`: there would be nowhere for the vectors to
+    /// go, and nothing would report it.
+    ///
+    /// It was the right rule in the wrong process. `ConfigLoader::new` reads the **whole process
+    /// environment**, and `ENCLAVE_EMBEDDING_MODEL` is what CI, `docs/08 §18.1` and every runbook
+    /// tell an operator to export — so a shell with the model staged and no vector store made
+    /// **every binary in the workspace refuse to start**, `enclave-api` included, naming a key the
+    /// operator had not written wrongly. `crates/config/tests/ambient_environment.rs` caught it,
+    /// which is exactly what that file exists for: it is `ENC-544`'s failure recreated by a
+    /// validator instead of by a variable name, and `ENC-566`'s shape too — one key, read by two
+    /// binaries, only one of which can act on it.
+    ///
+    /// The rule now lives in `enclave_worker::embedding::MountedEmbedder::from_config`, which is
+    /// the **worker's** composition root and the only place a vector stage is built. The API has no
+    /// stage and no opinion. Nothing is lost: a deployment that stages a model with no vector store
+    /// still refuses to start — the worker does, loudly, naming both keys — and the process that
+    /// refuses is the one that would have embedded.
     #[test]
-    fn a_model_with_nowhere_to_write_refuses_and_a_store_without_a_model_does_not() {
-        let milvus = || MilvusSettings {
-            uri: "http://milvus:19530".parse().unwrap(),
-            token: None,
-            collection: None,
-        };
-
-        let stranded = Config {
-            embedding_model: Some(std::path::PathBuf::from("/mnt/bge-m3")),
+    fn a_mounted_embedding_model_is_configuration_every_binary_can_load() {
+        let staged = Config {
+            embedding_model: Some(std::path::PathBuf::from("/var/lib/enclave/bge-m3")),
             ..Config::default()
         };
-        assert_eq!(check_embedding(&stranded)[0].path, "search.milvus");
-        assert_eq!(check_embedding(&stranded)[0].kind, ProblemKind::InvalidValue);
 
-        // The positive control, and it is load-bearing rather than decoration: a `check_embedding`
-        // that refused every configuration would satisfy the assertion above, and would refuse
-        // every deployment that exists today — none of which mounts a model.
-        let wired = Config {
-            embedding_model: Some(std::path::PathBuf::from("/mnt/bge-m3")),
-            search: SearchConfig { provider: SearchProvider::Milvus, milvus: Some(milvus()) },
-            ..Config::default()
-        };
-        assert!(check_embedding(&wired).is_empty(), "a fully wired deployment was refused");
-
-        let store_only = Config {
-            search: SearchConfig { provider: SearchProvider::Milvus, milvus: Some(milvus()) },
-            ..Config::default()
-        };
         assert!(
-            check_embedding(&store_only).is_empty(),
-            "a vector store without a model is the ordinary deployment, not a misconfiguration"
+            check_mounts(&staged).is_empty(),
+            "the embedding mount was refused by the OCR pair's check"
         );
         assert!(
-            check_embedding(&Config::default()).is_empty(),
-            "no embedding model is a documented absence"
+            check_search(&staged).is_empty(),
+            "staging an embedding model must not make `search.provider: none` a problem: it is \
+             the ordinary state of every deployment, and refusing it here stops `enclave-api` \
+             booting in any shell that exported ENCLAVE_EMBEDDING_MODEL"
         );
-    }
 
-    /// The refusal names configuration keys and never the operator's filesystem layout.
-    ///
-    /// `CLAUDE.md` rule 10, and the reason both fields on the `Incomplete` arm are `&'static str`:
-    /// there is no way to reach this message with a path somebody wrote.
-    #[test]
-    fn the_embedding_refusal_can_carry_only_key_names() {
-        let stranded = Config {
-            embedding_model: Some(std::path::PathBuf::from("/srv/secret-project/bge-m3")),
-            ..Config::default()
-        };
-        let message = check_embedding(&stranded)[0].detail.clone();
-        assert!(message.contains("embedding_model"), "{message}");
-        assert!(message.contains("search.milvus"), "{message}");
-        assert!(!message.contains("secret-project"), "{message}");
+        // And through the whole of startup validation, which is what a binary actually runs.
+        let raw = serde_yaml::to_value(&staged).expect("the config serialises");
+        assert!(
+            validate(&staged, &raw).is_ok(),
+            "a staged embedding model must not refuse a startup; the refusal belongs in the \
+             worker, where the vector stage is built"
+        );
     }
 
     /// The relocated metrics keys are refused, not ignored, and both of them are.

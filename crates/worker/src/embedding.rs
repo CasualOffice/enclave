@@ -23,10 +23,20 @@
 //! nouns changed: a deployment that staged 2.2 GB of weights against `search.provider: none` would
 //! load them, find no [`VectorWriter`](enclave_search::VectorWriter) to build a stage over, and
 //! index exactly as it did before — with the configuration file saying embedding was on.
-//! `enclave_config::validate::check_embedding` refuses it at startup;
-//! [`MountedEmbedder::from_config`] refuses it again, because a `Config` assembled in code never
-//! passes through the loader and the guard that only exists on one of two paths is the guard that is
-//! missing on the day it matters.
+//!
+//! # This is the **only** guard, and that is deliberate
+//!
+//! Unlike the OCR pair, there is no matching check in `enclave_config::validate`. The first version
+//! of `ENC-661` had one, and `crates/config/tests/ambient_environment.rs` caught what it did:
+//! `ConfigLoader` reads the whole process environment, `ENCLAVE_EMBEDDING_MODEL` is what CI and
+//! every runbook export, and so a shell with the model staged and no vector store made **every**
+//! binary refuse to start — `enclave-api` included, which builds no vector stage and has no opinion
+//! about one. `ENC-544`'s failure through a validator instead of a variable name.
+//!
+//! So the rule lives here, in the composition root of the one process that can act on it, and the
+//! usual "a guard on one of two paths is missing on the day it matters" argument does not apply:
+//! there is no second path. A `Config` assembled in code and a `Config` from the loader reach this
+//! function identically.
 //!
 //! # What "absent" means here, and why it is not a degradation
 //!
