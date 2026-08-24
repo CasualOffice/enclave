@@ -88,6 +88,7 @@ use enclave_core::{
 };
 use enclave_db::{charge_storage, sql, Admitted, Charged, TenantScoped};
 use enclave_events::{Event, EventType, Outbox};
+use enclave_indexing::enqueue;
 use serde_json::json;
 use sqlx::Row as _;
 
@@ -363,7 +364,23 @@ impl VersionService {
         )
         .await?;
 
-        // 5. The audit row, last and in the same transaction. Last because the two writes above are
+        // 5. The index manifest, so the version is queued for indexing (`ENC-643`).
+        //
+        //    In this transaction rather than after it, for the reason the outbox row above is:
+        //    a manifest written outside it is a queue entry for a version that may not exist, and
+        //    a manifest *skipped* because the transaction was slow is a document that is stored,
+        //    readable and permanently unsearchable with nothing reporting it. `enqueue` has been
+        //    unreachable since it was written — 27 test references and no caller — which is how a
+        //    file could pass antivirus, become readable, and never be indexed.
+        //
+        //    Enqueued **before** antivirus has run, deliberately. `enclave_indexing::defer` exists
+        //    precisely so a claimed manifest can return to the queue until its version is
+        //    readable, and that mechanism has no purpose if enqueueing waits for the scan. The
+        //    indexing pass reads through `readable_version`, so nothing here can hand it
+        //    unscanned bytes.
+        enqueue(tx, tenant, new.file_id, version.id).await?;
+
+        // 6. The audit row, last and in the same transaction. Last because the writes above are
         //    what it describes; in the same transaction because an audit row that survived a
         //    rolled-back commit would describe something that never happened.
         let audit =

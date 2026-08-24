@@ -19,6 +19,8 @@ enclave-db = { workspace = true }
 # signature rather than of a comment: `record_in_tx` and `Outbox::publish` both take the connection.
 enclave-audit  = { workspace = true }
 enclave-events = { workspace = true }
+# `ENC-643`: the index manifest is written in the same transaction as the version row.
+enclave-indexing = { workspace = true }
 
 anyhow     = { workspace = true }
 chrono     = { workspace = true }

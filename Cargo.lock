@@ -1788,6 +1788,7 @@ dependencies = [
  "enclave-core",
  "enclave-db",
  "enclave-events",
+ "enclave-indexing",
  "enclave-testing",
  "serde",
  "serde_json",

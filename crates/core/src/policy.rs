@@ -1049,6 +1049,18 @@ impl FactsSnapshot {
         self.resource.exposure()
     }
 
+    /// The rank the resource carries, if anything above or on it is labelled.
+    ///
+    /// Exposed beside [`Self::exposure`] for the same reason: both are properties of the
+    /// *resource* that travelled here with the facts, and a test that cannot read them can only
+    /// assert the comparison a hand-built `ResourceState` makes rather than that the real value
+    /// arrived. `ENC-655` is what that distinction cost — the escalation was unit-tested and dead
+    /// in the binary at the same time, because the provider passed `None` and nothing could see it.
+    #[must_use]
+    pub const fn classification(&self) -> Option<ClassificationRank> {
+        self.resource.classification()
+    }
+
     /// The facts, or what the tenant's policy says to do without them.
     ///
     /// `action` is a property of the attempt, not a choice about how to treat it: there is no

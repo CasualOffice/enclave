@@ -44,14 +44,15 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use enclave_core::{
-    Action, AuthorizationService, BarrierService, ClassificationRank, ClassificationService,
-    ConditionalAccessService, DetectorCategory, DetectorCounts, DetectorSetVersion, DlpService,
-    Error, Exposure, FactsPolicy, FactsSnapshot, FactsStaleness, FactsUnavailable, FileAction,
-    FileId, Obligations, PolicyAuditSink, PolicyDecision, PolicyEngine, ReasonCode, RequestContext,
-    ResourceRef, Result as CoreResult, RetentionService, ScanVersion, SecurityFacts,
-    SecurityFactsProvider, ShareAction, Stage, StageDecision, TenantId, Utc, Uuid, VersionId,
+    Action, AuthorizationService, BarrierService, ClassificationId, ClassificationRank,
+    ClassificationService, ConditionalAccessService, DetectorCategory, DetectorCounts,
+    DetectorSetVersion, DlpService, Error, Exposure, FactsPolicy, FactsSnapshot, FactsStaleness,
+    FactsUnavailable, FileAction, FileId, Obligations, PolicyAuditSink, PolicyDecision,
+    PolicyEngine, ReasonCode, RequestContext, ResourceRef, Result as CoreResult, RetentionService,
+    ScanVersion, SecurityFacts, SecurityFactsProvider, ShareAction, Stage, StageDecision, TenantId,
+    Utc, Uuid, VersionId,
 };
-use enclave_db::{record_facts, DbPool};
+use enclave_db::{assign_classification, define_classification, record_facts, DbPool};
 use enclave_dlp::policy::{ActionScope, Condition, DlpAction, DlpRule, RuleId, RuleSet};
 use enclave_dlp::{
     builtin_set, DisabledDlp, DlpMode, ModedDlp, ObservationSink, PgSecurityFacts,
@@ -743,4 +744,119 @@ async fn a_resource_with_no_content_has_no_facts_and_that_is_not_an_error() {
         .await
         .expect("a scanned file has facts");
     assert_eq!(found.staleness(), FactsStaleness::Fresh);
+}
+
+/// A label the file inherits from its folder makes an unscanned document fail closed, and the
+/// escalation reads that label even when the file has no committed content.
+///
+/// # Why this test exists at the seam rather than in `enclave-core`
+///
+/// `ENC-582` fixed `FactsPolicy::is_forced_closed` to take a rank, and `ENC-574` built the table,
+/// the walk and the vocabulary that produce one. Between them sat `ENC-655`: this provider passed
+/// `None`, so every unit test of the escalation passed and **no deployment could fire it**. A test
+/// that constructs a `ResourceState` by hand proves the comparison; only this one proves the rank
+/// arrives.
+///
+/// # The second half, which is the part that was actually wrong
+///
+/// The label is read *before* `gather` returns early on a file with no committed version. A label
+/// belongs to the resource; facts belong to its content. Written the obvious way — resolve content,
+/// return early, then read the label — a `RESTRICTED` document whose first upload has not finished
+/// is unlabelled to the chain, which is precisely the moment its content is least known.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a live PostgreSQL; CI runs it with --include-ignored"]
+async fn an_inherited_label_reaches_the_escalation_with_or_without_committed_content() {
+    let (db, fixtures, pool) = harness().await;
+    let alpha = fixtures.alpha.id;
+    let mut conn = db.connect().await.expect("harness connection");
+
+    let labelled = content(&mut conn, alpha, fixtures.alpha.owner).await;
+    let plain = content(&mut conn, alpha, fixtures.alpha.owner).await;
+
+    // A file with a label and *no committed version*: the early-return path.
+    let empty = Spine::new(alpha);
+    empty.insert(&mut conn, fixtures.alpha.owner, Utc::now()).await.expect("write a bare spine");
+
+    let restricted = ClassificationId::new_v7();
+    {
+        let mut tx = pool.begin(alpha).await.expect("begin");
+        define_classification(
+            &mut tx,
+            restricted,
+            "RESTRICTED",
+            "Restricted",
+            ClassificationRank::RESTRICTED,
+        )
+        .await
+        .expect("define the label");
+        // On the **folders**, so the escalation is reached by inheritance rather than by a label
+        // sitting on the file itself — the case a walk that stops early would drop.
+        assign_classification(&mut tx, labelled.spine.folder, Some(restricted))
+            .await
+            .expect("label the folder");
+        assign_classification(&mut tx, empty.folder, Some(restricted))
+            .await
+            .expect("label the empty file's folder");
+        tx.commit().await.expect("commit the labels");
+    }
+
+    let reader = provider(&pool, FactsUnavailable::FailOpenAudit);
+    let ctx = RequestContext::system(alpha);
+
+    let rank_of = |resource: ResourceRef| {
+        let reader = Arc::clone(&reader);
+        let ctx = ctx.clone();
+        async move {
+            reader
+                .gather(&ctx, DOWNLOAD, &resource)
+                .await
+                .expect("read the resource state")
+                .classification()
+        }
+    };
+
+    assert_eq!(
+        rank_of(labelled.file_ref()).await,
+        Some(ClassificationRank::RESTRICTED),
+        "the file inherits RESTRICTED from its folder and the provider must carry it"
+    );
+    assert_eq!(
+        rank_of(ResourceRef::file(alpha, empty.file)).await,
+        Some(ClassificationRank::RESTRICTED),
+        "a file whose first upload has not committed still carries its folder's label; reading the \
+         label after the no-content early return is ENC-655"
+    );
+
+    // The control: the same provider, a file in the same tenant with no label anywhere above it.
+    assert_eq!(
+        rank_of(plain.file_ref()).await,
+        None,
+        "an unlabelled file was reported as carrying a rank, so the two answers above are not the \
+         provider labelling everything"
+    );
+
+    // And what the rank is *for*. Under FAIL_OPEN_AUDIT the tenant has asked to proceed without
+    // facts — D27 overrides that for RESTRICTED, and only a real rank can trigger it.
+    //
+    // `payment_download_rule` rather than the default: `RuleSet::evaluate` settles whether any rule
+    // *governs* the action before it asks for facts (`docs/06 §9.3`), so an escalation cannot fire
+    // for an action no rule governs. Written with the external-sharing rule this leg failed, and it
+    // was the test that was wrong — an unlabelled *and* a RESTRICTED download were both permitted
+    // because DLP was never consulted about downloads at all. Worth keeping as a comment because
+    // the failure looked exactly like a dead escalation, which is the bug this test exists to catch.
+    let engine = engine_running(
+        &pool,
+        DlpMode::Enforce,
+        FactsUnavailable::FailOpenAudit,
+        payment_download_rule(),
+    );
+    assert!(
+        refused(&engine, alpha, DOWNLOAD, labelled.file_ref()).await,
+        "an unscanned RESTRICTED document must fail closed even under FAIL_OPEN_AUDIT (D27)"
+    );
+    assert!(
+        !refused(&engine, alpha, DOWNLOAD, plain.file_ref()).await,
+        "the unlabelled file was refused too, so it is the tenant's policy refusing rather than \
+         the RESTRICTED escalation"
+    );
 }

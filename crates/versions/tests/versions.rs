@@ -1103,3 +1103,49 @@ fn restore_of(at: &Fixture, source: VersionId) -> RestoreVersion {
         comment: None,
     }
 }
+
+/// A committed version is queued for indexing, in the same transaction that created it.
+///
+/// # Why this is asserted here rather than in `crates/indexing`
+///
+/// `ENC-643`. `enclave_indexing::enqueue` had 27 test references and no caller in any binary, so
+/// every test of the queue passed against a queue nothing ever wrote to. A file could pass
+/// antivirus, become readable, and never be indexed — stored, visible, permanently unsearchable,
+/// with nothing reporting it. The gap was between two crates, so only a test that commits a real
+/// version and then looks in the manifest table can see it.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL with migrations 0004, 0005 and 0006 applied; CI runs it with --include-ignored"]
+async fn committing_a_version_queues_it_for_indexing() {
+    let (db, pool, alpha, _beta) = setup().await;
+    let committed = commit(&pool, &alpha, &alpha.new_version(VersionBump::Major)).await;
+
+    let mut conn = db.connect().await.expect("connection");
+    let queued: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM index_manifests
+          WHERE tenant_id = $1 AND file_id = $2 AND version_id = $3",
+    )
+    .bind(alpha.tenant.as_uuid())
+    .bind(alpha.file.as_uuid())
+    .bind(committed.version.id.as_uuid())
+    .fetch_one(&mut conn)
+    .await
+    .expect("count the manifests");
+
+    assert_eq!(
+        queued, 1,
+        "the committed version has no index manifest, so the indexing pass will never see it — \
+         which is ENC-643, the state in which a file is stored, readable and unsearchable"
+    );
+
+    // The control: a version that was never committed has no manifest, so the assertion above is
+    // the enqueue rather than a table that answers 1 to everything.
+    let absent: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM index_manifests WHERE tenant_id = $1 AND version_id = $2",
+    )
+    .bind(alpha.tenant.as_uuid())
+    .bind(VersionId::new_v7().as_uuid())
+    .fetch_one(&mut conn)
+    .await
+    .expect("count the manifests");
+    assert_eq!(absent, 0, "a version that was never committed has a manifest");
+}
