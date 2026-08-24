@@ -37,6 +37,22 @@
 //! `TextBatch::texts` documents the positional contract — a provider that reordered or coalesced
 //! would attach vectors to the wrong chunk coordinates, which surfaces as a search result
 //! deep-linking to the wrong page and never as an error.
+//!
+//! # A fixture that could not tell two implementations apart
+//!
+//! `docs/12 §1.2`, and worth the paragraph because the test that failed to fail looked *more*
+//! rigorous than the one that replaced it.
+//!
+//! The first version of [`every_chunk_gets_a_vector_and_it_is_the_chunks_own`] embedded `[A, B]`
+//! and then `[B, A]` and asserted that the vectors swapped with the texts. It **passed with
+//! `vectors.reverse()` inserted into the provider** — the exact defect it names. The two cases it
+//! could not distinguish were *"the vectors are in the order the chunks were given"* and *"the
+//! vectors are in the reverse of that order"*, because a reversal applied to both batches is
+//! symmetric and the two answers still line up.
+//!
+//! What the fixture had to become is **anchored rather than symmetric**: each chunk is embedded
+//! alone, and the batch's vector at each position must equal the vector that chunk produces by
+//! itself. Three chunks and not two, because a two-element reversal is also a swap.
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
@@ -129,33 +145,40 @@ async fn every_chunk_gets_a_vector_and_it_is_the_chunks_own() {
     //    would attach vectors to the wrong chunk coordinates, and the symptom is a search result
     //    deep-linking to the wrong page rather than an error.
     //
-    // Order is checked by embedding the same two texts in both orders and asserting the vectors
-    // swap with them. Asserting "the three vectors differ" would pass against a provider that
-    // reversed the batch.
+    // # How the order assertion is made, and the version of it that proved nothing
+    //
+    // The first version embedded `[A, B]` and `[B, A]` and asserted the vectors swapped with the
+    // texts. **It passed with `vectors.reverse()` inserted into the provider** — a reversal applied
+    // to *both* batches is symmetric, so the two answers still line up. That is `docs/12 §1.2`'s
+    // shape exactly, caught by doing the deliberate violation rather than by reading the test.
+    //
+    // What is here instead is anchored rather than symmetric: each chunk is embedded **alone**, and
+    // the batch's vector at each position must equal the vector that chunk produces by itself.
+    // Three chunks, because a two-element reversal is also a swap and the middle element of three is
+    // the one a reversal leaves in place — so `A` and `C` are what carry the assertion, and `B` is
+    // there to make the batch longer than the permutation it would take to fool it.
     let model = model();
 
-    let forward = model
-        .embed(batch(&["a memorandum about drainage", "a recipe for bread"]))
-        .await
-        .expect("embed");
-    let backward = model
-        .embed(batch(&["a recipe for bread", "a memorandum about drainage"]))
-        .await
-        .expect("embed");
+    let chunks = ["a memorandum about drainage", "the middle chunk", "a recipe for bread"];
 
-    assert_eq!(forward.len(), 2, "a chunk was dropped");
-    assert_eq!(backward.len(), 2, "a chunk was dropped");
+    let batched = model.embed(batch(&chunks)).await.expect("embed");
+    assert_eq!(batched.len(), chunks.len(), "a chunk was dropped");
 
+    for (position, chunk) in chunks.iter().enumerate() {
+        let alone = model.embed(batch(&[chunk])).await.expect("embed");
+        assert_eq!(alone.len(), 1);
+        assert!(
+            distance(batched[position].as_slice(), alone[0].as_slice()) < 1e-4,
+            "the vector at position {position} is not the one `{chunk}` produces on its own, so \
+             the batch was reordered and every chunk's coordinates now point at another chunk's \
+             text"
+        );
+    }
+
+    // And the vectors are genuinely different from each other, so the assertion above is not being
+    // satisfied by a provider that returns one constant for everything.
     assert!(
-        distance(forward[0].as_slice(), backward[1].as_slice()) < 1e-4,
-        "the first chunk's vector did not follow it to the second position"
-    );
-    assert!(
-        distance(forward[1].as_slice(), backward[0].as_slice()) < 1e-4,
-        "the second chunk's vector did not follow it to the first position"
-    );
-    assert!(
-        distance(forward[0].as_slice(), forward[1].as_slice()) > 1e-2,
+        distance(batched[0].as_slice(), batched[2].as_slice()) > 1e-2,
         "two unrelated chunks produced the same vector, so the text is not reaching the model"
     );
 }

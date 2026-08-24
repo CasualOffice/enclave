@@ -12,6 +12,33 @@
 //! ones the collection declares, that a re-index replaces rather than accumulates, that a removal
 //! removes one file, and that the confirmation names the generation the removal *started* with.
 //!
+//! # A fixture that could not tell two implementations apart (`ENC-661`)
+//!
+//! Recorded here rather than in a commit message, because it is the kind of finding
+//! `docs/12 §1.2` exists to produce and the next person to touch
+//! [`the_dense_width_is_the_servers_answer_and_absent_means_absent`] needs it.
+//!
+//! `MilvusIndex::dense_width` was added so `VectorStage::for_collection` could be handed the width
+//! **the server holds** rather than the width this process intended — the composition root sets
+//! `MilvusConfig::dimension` from `enclave_embeddings::model::ACTIVE.dimension`, so passing that
+//! back would compare a constant with itself.
+//!
+//! The first version of the test asked through the same handle that created the collection, and it
+//! **passed with `dense_width` replaced by `Ok(Some(self.config.dimension))`** — the implementation
+//! it exists to forbid. The two cases it could not distinguish were *"the width came from
+//! `describe_collection`"* and *"the width came from our own configuration"*, and they are
+//! indistinguishable by construction: `ensure_collection` creates the collection **at**
+//! `config.dimension`, so the two numbers are equal in any fixture that uses one handle.
+//!
+//! It looked green for the reason a vacuous test always does: every assertion in it was true, and
+//! none of them was true *because of* the mechanism named in the test.
+//!
+//! What the fixture had to become is the production failure itself: the collection is created
+//! through one handle and interrogated through a **second handle configured for a different
+//! width** — which is a process compiled against a different `ACTIVE.dimension` reading a
+//! collection created by an older revision, by hand, or by a restore. That is what `ENC-533` is
+//! about, and it errors at neither end.
+//!
 //! # Two kinds of test, and why the interesting one needs no Milvus
 //!
 //! The ordering that `ENC-520` and `ENC-547` care about is not observable against a real store: the
@@ -407,8 +434,8 @@ async fn a_removal_that_failed_confirms_nothing() {
 #[ignore = "requires a live Milvus (deploy/compose/dev.yml --profile search); CI runs it with \
             --include-ignored"]
 async fn the_dense_width_is_the_servers_answer_and_absent_means_absent() {
-    let config = config();
-    let index = MilvusIndex::new(config);
+    let created = config();
+    let index = MilvusIndex::new(created.clone());
 
     assert_eq!(
         index.dense_width().await.expect("an absent collection is not an error"),
@@ -419,12 +446,30 @@ async fn the_dense_width_is_the_servers_answer_and_absent_means_absent() {
 
     index.ensure_collection().await.expect("provision the collection");
 
+    // **The handle that asks is configured for a different width from the one the collection was
+    // created with**, and that is the whole test rather than an oddity of the fixture.
+    //
+    // The first version asked through the *same* handle, and it passed with `dense_width` replaced
+    // by `Ok(Some(self.config.dimension))` — because `ensure_collection` creates the collection at
+    // `config.dimension`, so the two numbers are equal by construction and the test could not tell
+    // the server's answer from our own. Caught by performing the deliberate violation
+    // (`docs/12 §1.2`), not by reading it.
+    //
+    // The arrangement below is the production failure exactly: a collection created by an older
+    // revision, or by hand, or by a restore, read by a process compiled against a different
+    // `ACTIVE.dimension`. That is what `ENC-533` is about, and it errors at neither end.
+    let mut mismatched = created.clone();
+    mismatched.dimension = DIMENSION * 2;
+    let stale = MilvusIndex::new(mismatched);
+
     assert_eq!(
-        index.dense_width().await.expect("describe the collection"),
+        stale.dense_width().await.expect("describe the collection"),
         Some(DIMENSION),
-        "the width did not come from the server: this collection is {DIMENSION} wide, and a \
-         `dense_width` returning the configured value or the active model's constant would have \
-         answered something else"
+        "the width did not come from the server: the collection is {DIMENSION} wide and the handle \
+         that asked was configured for {}, so a `dense_width` echoing its own configuration would \
+         have answered the wrong number — and the width check built on it would compare a constant \
+         with itself",
+        DIMENSION * 2
     );
 }
 
