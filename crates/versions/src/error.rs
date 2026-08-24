@@ -26,6 +26,20 @@ pub enum VersionsError {
     #[error("versions database failure")]
     Database(#[from] DbError),
 
+    /// The version was written but could not be queued for indexing (`ENC-643`).
+    ///
+    /// A distinct variant rather than folding into [`Self::Database`], because the two ask for
+    /// different things from whoever reads the log: a failure here means the commit rolled back
+    /// and the caller may retry, and it names the one write in this transaction that is not about
+    /// the version itself. Collapsing it would make an indexing-queue outage look like a storage
+    /// outage on the file, which is where an operator would then go looking.
+    ///
+    /// It *does* fail the commit. A version that exists and is not queued is exactly the state
+    /// `ENC-643` describes — stored, readable, permanently unsearchable, with nothing reporting
+    /// it — and this transaction is the only place that can still refuse it cheaply.
+    #[error("the version could not be queued for indexing")]
+    Indexing(#[from] enclave_indexing::IndexingError),
+
     /// A stored row could not be reconstructed.
     ///
     /// Almost always a `CHECK` constraint and a Rust enumeration that have drifted apart. Names the
