@@ -8,6 +8,7 @@
 node_modules/
 web/dist/
 web/.vite/
+web/bench-results/
 *.tsbuildinfo
 npm-debug.log*
 yarn-error.log*

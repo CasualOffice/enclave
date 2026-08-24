@@ -1,0 +1,551 @@
+/* The grouped, virtualized file list.
+ *
+ * Values come from `web/design-system/design-system-v2.html`, which is
+ * authoritative for them (`docs/09 §16a`): the 36 px row, the seven-column
+ * template, the 28 px group header, the classification badge.
+ *
+ * Property *names* do not come from the reference. It is physical-CSS
+ * throughout — `left`, `margin-left:auto`, `text-align:right`, `float` — and
+ * `plans/M5-MVP-GA.md` D35.6 records that as a defect in the reference rather
+ * than a licence to copy it. `en-XB` mirrors direction in CI and would fail on
+ * every one of them. So: values yes, property names no.
+ *
+ * The z-index scale, in full, because an undocumented one becomes `z-index: 9999`:
+ *   1  selected-row accent bar
+ *   2  the pinned group header
+ *   3  the column-header row
+ *   4  a full-surface state (empty, error) covering the list
+ * Nothing in this file may use a value outside that scale.
+ */
+
+.egl {
+  display: flex;
+  flex-direction: column;
+  min-block-size: 0;
+  block-size: 100%;
+  background: var(--sheet);
+  color: var(--fg);
+  font-size: 13px;
+  line-height: 1.45;
+  letter-spacing: -0.006em;
+}
+
+/* The scroll container is the treegrid itself. Putting the column headers
+ * inside it as one always-mounted sticky row is the reference's own structure
+ * (`.ghead{position:sticky;top:0}`) and it does not fight the windowing,
+ * because a single element that is never unmounted has nothing to fight. */
+.egl-scroller {
+  position: relative;
+  flex: 1;
+  min-block-size: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  /* Isolate layout, style and paint. Without this the browser considers the
+   * whole 3.6 million-pixel sizer when the window's transform changes. */
+  contain: layout paint style;
+}
+
+.egl-scroller:focus-visible {
+  outline: 2px solid var(--accent-ring);
+  outline-offset: -2px;
+}
+
+/* ---------------------------------------------------------------- columns */
+
+.egl-columns {
+  position: sticky;
+  inset-block-start: 0;
+  z-index: 3;
+  background: var(--sheet);
+}
+
+.egl-columns-row,
+.egl-row {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) 128px 116px 108px 64px 32px;
+  align-items: center;
+  gap: 8px;
+  padding-inline: 10px 6px;
+}
+
+.egl-columns-row {
+  block-size: var(--egl-columns-h);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--fg4);
+  box-shadow: inset 0 -1px 0 var(--line);
+}
+
+.egl-columns-row > * {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.egl-col-size {
+  text-align: end;
+}
+
+/* ------------------------------------------------------- the pinned header */
+
+/* Zero block-size so it consumes no space in the scroll flow; its child
+ * overflows. That is what lets one element be the group header for whichever
+ * group happens to be at the top, without the window having to know. */
+.egl-sticky {
+  position: sticky;
+  inset-block-start: var(--egl-columns-h);
+  z-index: 2;
+  block-size: 0;
+}
+
+.egl-sticky > * {
+  position: absolute;
+  inset-inline: 0;
+  inset-block-start: 0;
+}
+
+/* --------------------------------------------------------------- the window */
+
+.egl-sizer {
+  position: relative;
+  inline-size: 100%;
+}
+
+.egl-window {
+  position: absolute;
+  inset-inline: 0;
+  inset-block-start: 0;
+  /* The window moves by transform, never by `top`: the only two properties that
+   * skip layout and paint. Everything above this comment is why 100 000 rows
+   * scroll at all. */
+  will-change: transform;
+}
+
+/* ---------------------------------------------------------- group headers */
+
+.egl-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  block-size: var(--egl-header-h);
+  padding-inline: 16px;
+  inline-size: 100%;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--fg3);
+  background: var(--sheet);
+  border: 0;
+  font-family: inherit;
+  text-align: start;
+  cursor: default;
+  letter-spacing: inherit;
+}
+
+.egl-group:hover {
+  color: var(--fg2);
+}
+
+.egl-group:focus-visible {
+  outline: 2px solid var(--accent-ring);
+  outline-offset: -2px;
+  border-radius: var(--r-ctrl);
+}
+
+/* A collapsed group is the only row standing in for everything it hides, so it
+ * is drawn back rather than forward — the reference's own treatment for
+ * `Archive 96` (`color:var(--fg4);font-weight:400`). */
+.egl-group[aria-expanded='false'] {
+  color: var(--fg4);
+  font-weight: 400;
+}
+
+.egl-group-chevron {
+  inline-size: 10px;
+  block-size: 10px;
+  flex: none;
+  color: var(--fg4);
+  /* Rotation, not two icons: one element, one transform, and it degrades to an
+   * instant swap under reduced motion instead of disappearing. */
+  transition: transform 140ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+.egl-group[aria-expanded='false'] .egl-group-chevron {
+  transform: rotate(-90deg);
+}
+
+:root:dir(rtl) .egl-group[aria-expanded='false'] .egl-group-chevron {
+  transform: rotate(90deg);
+}
+
+.egl-group-name {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.egl-group-count {
+  font-family: var(--mono);
+  color: var(--fg4);
+  font-size: 10.5px;
+}
+
+/* ------------------------------------------------------------------- rows */
+
+.egl-row {
+  position: relative;
+  block-size: var(--egl-row-h);
+  cursor: default;
+  font-size: 13px;
+}
+
+.egl-row:hover {
+  background: var(--hover);
+}
+
+.egl-row[aria-selected='true'] {
+  background: var(--selected);
+}
+
+.egl-row[aria-selected='true']::before {
+  content: '';
+  position: absolute;
+  inset-inline-start: 0;
+  inset-block: 6px;
+  inline-size: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+  z-index: 1;
+}
+
+.egl-row > * {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.egl-cell-select {
+  display: flex;
+  justify-content: center;
+}
+
+.egl-name {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-weight: 450;
+  color: var(--fg);
+}
+
+.egl-name-icon {
+  inline-size: 16px;
+  block-size: 16px;
+  flex: none;
+  color: var(--fg3);
+}
+
+.egl-name-icon[data-kind='pdf'] {
+  color: #d0453a;
+}
+.egl-name-icon[data-kind='doc'] {
+  color: #3b6fd4;
+}
+.egl-name-icon[data-kind='xls'] {
+  color: #2e8b57;
+}
+.egl-name-icon[data-kind='ppt'] {
+  color: #d2591c;
+}
+
+.egl-name-text {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.egl-name-ext {
+  color: var(--fg4);
+  font-weight: 400;
+  font-size: 12px;
+}
+
+.egl-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg3);
+  font-size: 12.5px;
+}
+
+.egl-meta-size {
+  justify-content: flex-end;
+  font-variant-numeric: tabular-nums;
+}
+
+.egl-avatar {
+  inline-size: 20px;
+  block-size: 20px;
+  border-radius: 50%;
+  background: var(--sunken);
+  color: var(--fg2);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9.5px;
+  font-weight: 600;
+  flex: none;
+  letter-spacing: 0;
+}
+
+.egl-avatar[data-tone='a'] {
+  background: #e0e7ff;
+  color: #3730a3;
+}
+.egl-avatar[data-tone='b'] {
+  background: #fde7de;
+  color: #9a3412;
+}
+.egl-avatar[data-tone='c'] {
+  background: #dcfce7;
+  color: #166534;
+}
+.egl-avatar[data-tone='d'] {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+/* The classification palette is LOCKED (`docs/09 §16a`). A tenant cannot
+ * recolour it and neither can a design skill. Colour is reinforcement only —
+ * the badge carries its text as well (`docs/09 §15`). */
+.egl-classification {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  block-size: 20px;
+  padding-inline: 7px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0;
+  white-space: nowrap;
+  background: color-mix(in srgb, var(--cc) 11%, transparent);
+  color: color-mix(in srgb, var(--cc) 82%, var(--fg));
+}
+
+.egl-classification::before {
+  content: '';
+  inline-size: 6px;
+  block-size: 6px;
+  border-radius: 50%;
+  background: var(--cc);
+  flex: none;
+}
+
+.egl-classification[data-level='public'] {
+  --cc: var(--c-pub);
+}
+.egl-classification[data-level='internal'] {
+  --cc: var(--c-int);
+}
+.egl-classification[data-level='confidential'] {
+  --cc: var(--c-conf);
+}
+.egl-classification[data-level='highlyConfidential'] {
+  --cc: var(--c-hconf);
+}
+.egl-classification[data-level='restricted'] {
+  --cc: var(--c-restr);
+}
+
+.egl-classification[data-level='unclassified'] {
+  background: transparent;
+  box-shadow: var(--hairline);
+  color: var(--fg2);
+}
+
+.egl-classification[data-level='unclassified']::before {
+  display: none;
+}
+
+.egl-checkbox {
+  inline-size: 14px;
+  block-size: 14px;
+  margin: 0;
+  accent-color: var(--accent);
+  opacity: 0;
+}
+
+.egl-row:hover .egl-checkbox,
+.egl-row[aria-selected='true'] .egl-checkbox,
+.egl-checkbox:focus-visible {
+  opacity: 1;
+}
+
+/* ------------------------------------------------------------ four states */
+
+.egl-state {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding-inline: 32px;
+  text-align: center;
+  background: var(--sheet);
+}
+
+.egl-state-figure {
+  /* The mark's own construction, at rest: a bounded field with a window inside
+   * it (`web/public/BRAND.md`). Drawn from tokens, not an illustration — an
+   * empty state that ships a raster is an empty state nobody re-themes. */
+  inline-size: 44px;
+  block-size: 44px;
+  border-radius: 11px;
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+  position: relative;
+  margin-block-end: 4px;
+  color: var(--fg4);
+}
+
+.egl-state-figure::after {
+  content: '';
+  position: absolute;
+  inset-block-start: 13.75px;
+  inset-inline-start: 13.75px;
+  inline-size: 22px;
+  block-size: 22px;
+  border-radius: 0 5.5px 5.5px 5.5px;
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+}
+
+:dir(rtl) .egl-state-figure::after {
+  border-radius: 5.5px 0 5.5px 5.5px;
+}
+
+.egl-state[data-tone='error'] .egl-state-figure {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 34%, transparent);
+}
+
+.egl-state[data-tone='error'] .egl-state-figure::after {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 34%, transparent);
+}
+
+.egl-state-title {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  margin: 0;
+}
+
+.egl-state-body {
+  color: var(--fg3);
+  font-size: 12.5px;
+  max-inline-size: 46ch;
+  margin: 0;
+}
+
+.egl-state-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-block-start: 6px;
+}
+
+.egl-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  block-size: 28px;
+  padding-inline: 10px;
+  border-radius: var(--r-ctrl);
+  border: 0;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  background: var(--sheet);
+  color: var(--fg);
+  box-shadow: var(--hairline);
+  white-space: nowrap;
+  letter-spacing: -0.006em;
+  transition:
+    transform 120ms cubic-bezier(0.32, 0.72, 0, 1),
+    background-color 120ms ease;
+}
+
+.egl-btn:hover {
+  background: var(--sunken);
+}
+
+/* Tactile: the control moves under the press. One pixel, not a bounce. */
+.egl-btn:active {
+  transform: translateY(1px);
+}
+
+.egl-btn[data-variant='primary'] {
+  background: var(--accent);
+  color: #fff;
+  box-shadow: none;
+}
+
+.egl-btn[data-variant='primary']:hover {
+  filter: brightness(1.08);
+}
+
+.egl-request-id {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-block-start: 12px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--fg4);
+}
+
+.egl-request-id code {
+  background: var(--sunken);
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: var(--fg3);
+  /* A request ID is an opaque token, not prose: it must not reorder next to an
+   * RTL interface (`docs/14 §7`). */
+  unicode-bidi: isolate;
+  direction: ltr;
+}
+
+/* ------------------------------------------------------------- skeletons */
+
+.egl-skeleton-bar {
+  block-size: 10px;
+  border-radius: 4px;
+  background: linear-gradient(90deg, var(--sunken) 25%, var(--g150) 50%, var(--sunken) 75%);
+  background-size: 200% 100%;
+  animation: egl-shimmer 1.4s linear infinite;
+}
+
+@keyframes egl-shimmer {
+  to {
+    background-position: -200% 0;
+  }
+}
+
+/* `docs/09 §12`: reduced motion keeps opacity changes and removes the rest.
+ * A shimmer is decoration on top of a shape that already communicates loading. */
+@media (prefers-reduced-motion: reduce) {
+  .egl-skeleton-bar {
+    animation: none;
+    background: var(--sunken);
+  }
+
+  .egl-group-chevron,
+  .egl-btn {
+    transition: none;
+  }
+}

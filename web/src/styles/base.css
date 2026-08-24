@@ -1,0 +1,55 @@
+/* Document-level defaults.
+ *
+ * Deliberately thin. Everything visual lives in `tokens.css`, which is
+ * extracted from the design reference; this file only sets the things a
+ * document needs before any component exists.
+ */
+
+@import './fonts.css';
+@import './tokens.css';
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  font-size: 16px;
+  /* `docs/09 §15`: user font scaling to 200% must work, so nothing here fixes
+   * a root size in pixels that a browser setting cannot override. 16px is the
+   * default, restated, not a lock. */
+}
+
+body {
+  margin: 0;
+  background: var(--canvas);
+  color: var(--fg);
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.45;
+  letter-spacing: -0.006em;
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: 'cv11', 'ss01';
+}
+
+/* Theme follows the system preference by default, with an explicit override
+ * (`docs/09 §17`). `tokens.css` keys its dark palette off `[data-theme="dark"]`
+ * and nothing else, so the system preference is resolved to that attribute in
+ * `main.tsx` rather than duplicated into a media query here — a second copy of
+ * the palette is a second thing to drift from the reference. */
+:root[data-theme='dark'] {
+  color-scheme: dark;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent-ring);
+  outline-offset: 1px;
+  border-radius: var(--r-ctrl);
+}
+
+#root {
+  block-size: 100vh;
+  display: flex;
+  flex-direction: column;
+}
