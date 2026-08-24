@@ -1,4 +1,4 @@
-import { useT } from '../../i18n/index.tsx';
+import { useT } from '../../../shared/i18n/index.tsx';
 import type { Density } from './geometry.ts';
 
 /* The four states `docs/09 §11` requires, none of which appears anywhere in the

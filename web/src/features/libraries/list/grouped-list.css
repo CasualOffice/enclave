@@ -84,7 +84,7 @@
    * The second of those is a finding about the scale rather than about this
    * rule: in the **light** theme `--fg3` cannot legally carry text at any size
    * the list uses, and the reference leans on it throughout. The dark theme's
-   * `--fg3` (#8A8A84 on #161615) is 5.2:1 and is fine. Logged as `ENC-679` for
+   * `--fg3` (#8A8A84 on #161615) is 5.2:1 and is fine. Logged as `ENC-680` for
    * whoever owns the token values; every quiet text colour in this file is
    * `--fg2` until then. */
   color: var(--fg2);
@@ -175,7 +175,7 @@
  * `Archive 96` (`color:var(--fg4);font-weight:400`). */
 .egl-group[aria-expanded='false'] {
   /* The recession is weight alone, because the colour step below `--fg2` does
-   * not pass AA in the light theme (see the column-header rule, `ENC-679`).
+   * not pass AA in the light theme (see the column-header rule, `ENC-680`).
    * The chevron's rotation and the count carry the rest of the signal. */
   font-weight: 400;
 }
@@ -531,10 +531,27 @@
   transform: translateY(1px);
 }
 
+/* The label on the accent, and why it is not simply white.
+ *
+ * The reference sets `.btn.primary{color:#fff}`, and that was right when the
+ * accent was only ever the light-theme value. It is not right now: `tokens.css`
+ * carries the reference's own dark ladder, and all three dark accents are
+ * *light* — harbor #8B85FF, northwind #2DD4BF, meridian #E5E7EB. White on
+ * #8B85FF is 3.04:1 and axe failed the empty and error routes in dark the
+ * moment the missing dark accent was restored.
+ *
+ * `docs/09 §18` already names the right shape — the branding API returns
+ * "derived contrast-safe foreground pairs" — so this is that pair, derived by
+ * theme rather than invented. When the branding API lands it supplies the value
+ * and this rule reads a token instead. */
 .egl-btn[data-variant='primary'] {
   background: var(--accent);
   color: #fff;
   box-shadow: none;
+}
+
+[data-theme='dark'] .egl-btn[data-variant='primary'] {
+  color: var(--ink);
 }
 
 .egl-btn[data-variant='primary']:hover {

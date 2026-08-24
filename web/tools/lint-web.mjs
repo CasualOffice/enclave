@@ -30,12 +30,12 @@ import { fileURLToPath } from 'node:url';
 
 const WEB_ROOT = fileURLToPath(new URL('..', import.meta.url));
 const SRC = join(WEB_ROOT, 'src');
-const CATALOG = join(SRC, 'i18n', 'catalog.ts');
 
-/** Files exempt from the string-literal rule, with the reason stated. */
-const LITERAL_EXEMPT = new Set([
-  'src/i18n/catalog.ts', // it is the catalog
-]);
+/* The catalog is found rather than named, because a hard-coded path turns a
+ * file move into a crash — and a linter that crashes on a refactor is a linter
+ * somebody comments out of CI. Exactly one is required: two catalogs is two
+ * sources of truth, and zero is the vacuous pass this gate exists to refuse. */
+const CATALOG_SUFFIX = 'i18n/catalog.ts';
 
 const findings = [];
 let filesScanned = 0;
@@ -122,7 +122,26 @@ const files = walk(SRC);
 
 // ---------------------------------------------------------------- the catalog
 
-const catalogSource = readFileSync(CATALOG, 'utf8');
+const catalogs = files
+  .map((file) => relative(WEB_ROOT, file).split('\\').join('/'))
+  .filter((rel) => rel.endsWith(CATALOG_SUFFIX));
+
+if (catalogs.length !== 1) {
+  console.error(
+    `lint:i18n expected exactly one */${CATALOG_SUFFIX} under web/src, found ${catalogs.length}` +
+      (catalogs.length > 0 ? `: ${catalogs.join(', ')}` : ''),
+  );
+  process.exit(2);
+}
+
+const CATALOG_REL = catalogs[0];
+
+/** Files exempt from the string-literal rule, with the reason stated. */
+const LITERAL_EXEMPT = new Set([
+  CATALOG_REL, // it is the catalog
+]);
+
+const catalogSource = readFileSync(join(WEB_ROOT, CATALOG_REL), 'utf8');
 const catalogKeys = new Map();
 {
   const entry = /^\s{2}'([^']+)':\s*\{$/gm;
@@ -140,20 +159,20 @@ const catalogKeys = new Map();
 }
 
 if (catalogKeys.size === 0) {
-  report('src/i18n/catalog.ts', 1, 'i18n/catalog', 'the catalog parsed to zero keys');
+  report(CATALOG_REL, 1, 'i18n/catalog', 'the catalog parsed to zero keys');
 }
 
 for (const [key, meta] of catalogKeys) {
   if (!meta.hasDescription) {
     report(
-      'src/i18n/catalog.ts',
+      CATALOG_REL,
       meta.line,
       'i18n/description',
       `key "${key}" has no translator description (docs/14 §8 rule 5)`,
     );
   }
   if (!meta.hasMessage) {
-    report('src/i18n/catalog.ts', meta.line, 'i18n/message', `key "${key}" has no message`);
+    report(CATALOG_REL, meta.line, 'i18n/message', `key "${key}" has no message`);
   }
 }
 
@@ -262,7 +281,7 @@ for (const file of files) {
 for (const [key, meta] of catalogKeys) {
   if (!referencedKeys.has(key)) {
     report(
-      'src/i18n/catalog.ts',
+      CATALOG_REL,
       meta.line,
       'i18n/orphan-key',
       `key "${key}" is in the catalog and referenced by nothing (docs/14 §8 rule 2)`,

@@ -88,6 +88,48 @@ if (measured.length === 0) {
   process.exit(2);
 }
 
+/* Air-gap check, in the one place that already reads every shipped byte.
+ *
+ * `ENC-135` self-hosts all three families precisely so no page load reaches a
+ * CDN: an external request leaks every user's IP to a third party, breaks an
+ * air-gapped install outright (`docs/08 §18` makes those first-class), and is a
+ * compliance conversation an enterprise security product does not want to have.
+ * A dependency added six months from now that quietly `@import`s a font would
+ * pass every other gate in this repo.
+ *
+ * The rule is deliberately about *fetching positions* rather than about any
+ * string that looks like a URL: `http://www.w3.org/2000/svg` is an XML
+ * namespace identifier and `react.dev` appears inside an error message, and
+ * failing on either would train people to add exceptions. */
+const FETCHING = [
+  /@import\s+(?:url\()?["']?https?:/i,
+  /url\(\s*["']?https?:/i,
+  /["'`]https?:\/\/[^"'`]*\.(?:woff2?|ttf|otf|eot|css)["'`]/i,
+];
+const KNOWN_CDN =
+  /fonts\.googleapis\.com|fonts\.gstatic\.com|cdn\.jsdelivr\.net|unpkg\.com|cdnjs\.cloudflare\.com|use\.typekit\.net|use\.fontawesome\.com/i;
+
+const remote = [];
+for (const { file } of measured) {
+  const text = readFileSync(join(DIST, file), 'utf8');
+  for (const pattern of FETCHING) {
+    const hit = pattern.exec(text);
+    if (hit !== null) remote.push(`${file}: ${hit[0].slice(0, 120)}`);
+  }
+  const cdn = KNOWN_CDN.exec(text);
+  if (cdn !== null) remote.push(`${file}: ${cdn[0]}`);
+}
+
+if (remote.length > 0) {
+  console.error('\ncheck:bundle-size FAILED: the initial payload fetches from another origin.');
+  for (const line of remote) console.error(`  ${line}`);
+  console.error(
+    '\nSelf-host it under web/public and reference it with a same-origin path. ' +
+      'See ENC-135 and docs/08 §18.',
+  );
+  process.exit(1);
+}
+
 const total = measured.reduce((sum, item) => sum + item.bytes, 0);
 const pad = (n) => `${(n / 1024).toFixed(1)} KB`.padStart(9);
 

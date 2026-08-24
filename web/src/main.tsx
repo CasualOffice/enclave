@@ -1,7 +1,7 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
-import { App } from './app.tsx';
-import { I18nProvider } from './i18n/index.tsx';
+import { App } from './app/app.tsx';
+import { I18nProvider } from './shared/i18n/index.tsx';
 import './styles/base.css';
 
 /* `docs/09 §17`: theme follows the system preference, with an explicit

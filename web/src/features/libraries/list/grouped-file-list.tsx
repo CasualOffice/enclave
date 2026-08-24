@@ -1,10 +1,11 @@
 import { memo, useCallback } from 'react';
-import { useT } from '../../i18n/index.tsx';
-import { useFormatters } from '../../i18n/format.ts';
-import { ChevronIcon, FileIcon } from '../icons.tsx';
+import { useT } from '../../../shared/i18n/index.tsx';
+import { useFormatters } from '../../../shared/i18n/format.ts';
+import { ChevronIcon, FileIcon } from '../../../shared/ui/icons.tsx';
 import { DENSITY, type DensityName, type GroupLayout, type GroupSpec } from './geometry.ts';
 import { useGroupedWindow } from './use-grouped-window.ts';
-import { CLASSIFICATION_KEY, type FileRow } from './model.ts';
+import { CLASSIFICATION_KEY } from '../../../entities/classification/model.ts';
+import type { FileRow } from '../../../entities/file/model.ts';
 import {
   EmptyState,
   ErrorState,

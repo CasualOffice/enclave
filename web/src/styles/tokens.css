@@ -39,7 +39,16 @@
 /* Dark theme. Only the tokens whose role changes are redefined. */
 [data-theme="dark"]{--canvas:#0F0F0E;--sheet:#161615;--sunken:#1D1D1B;--hover:rgba(255,255,255,.05);--selected:rgba(255,255,255,.07);--line:rgba(255,255,255,.08);--line-strong:rgba(255,255,255,.14);--fg:#F2F2EF;--fg2:#B5B5AF;--fg3:#8A8A84;--fg4:#5E5E59;--el1:0 0 0 1px rgba(255,255,255,.06),0 1px 2px rgba(0,0,0,.4);--el2:0 0 0 1px rgba(255,255,255,.07),0 8px 24px -4px rgba(0,0,0,.6);--el3:0 0 0 1px rgba(255,255,255,.08),0 24px 64px -12px rgba(0,0,0,.8);--g100:#1D1D1B;--g150:#232321;--g200:#2B2B28}
 
-/* Brand accents, dark. */
+/* Brand accents, dark.
+ *
+ * The default brand's dark accent was missing from this extract while the
+ * reference carried it, so a dark-mode Enclave rendered `#4F46E5` — the light
+ * value, on a near-black sheet — everywhere the other two brands correctly
+ * lightened. Restored from `design-system-v2.html`, which is authoritative.
+ * `ENC-678` records the general case: this file is a hand-extraction, and a
+ * token missing from it reads as a token that does not exist.
+ */
+[data-theme="dark"][data-brand="harbor"],[data-theme="dark"]{--accent:#8B85FF}
 [data-theme="dark"][data-brand="northwind"]{--accent:#2DD4BF}
 [data-theme="dark"][data-brand="meridian"]{--accent:#E5E7EB}
 

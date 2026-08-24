@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
-import { GroupedFileList } from './components/grouped-list/grouped-file-list.tsx';
-import type { DensityName } from './components/grouped-list/geometry.ts';
-import { buildLibrary } from './fixtures/library.ts';
-import { useListViewStore } from './state/list-view-store.ts';
+import { GroupedFileList } from '../features/libraries/list/grouped-file-list.tsx';
+import type { DensityName } from '../features/libraries/list/geometry.ts';
+import { buildLibrary } from '../fixtures/library.ts';
+import { useListViewStore } from '../features/libraries/list-view-store.ts';
 
 /* The first surface.
  *

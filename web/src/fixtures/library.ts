@@ -1,5 +1,6 @@
-import type { GroupSpec } from '../components/grouped-list/geometry.ts';
-import type { ClassificationLevel, FileKind, FileRow } from '../components/grouped-list/model.ts';
+import type { GroupSpec } from '../features/libraries/list/geometry.ts';
+import type { FileKind, FileRow } from '../entities/file/model.ts';
+import type { ClassificationLevel } from '../entities/classification/model.ts';
 
 /* A deterministic library, for the benchmark and for the tests.
  *
