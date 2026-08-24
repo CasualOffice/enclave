@@ -105,6 +105,14 @@ export interface ListError {
   readonly requestId: string;
 }
 
+/* **A policy denial never arrives here.** `docs/09 §11` is explicit about it: a
+ * `403` from DLP, a barrier or conditional access is a successful request with
+ * a refusing answer, not a failure. It renders as denied-explained-inline on
+ * the surface that was refused, with a reason and a remedy, and it never offers
+ * *retry* — retrying a denial is how a user learns the product is broken rather
+ * than that they lack permission. This component is for a read that did not
+ * complete. Routing a refusal into it would be the same defect one layer up. */
+
 export function ErrorState({
   error,
   onRetry,

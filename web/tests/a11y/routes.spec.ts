@@ -61,11 +61,17 @@ for (const surface of SURFACES) {
         .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'])
         .analyze();
 
+      /* The failure summary is kept because a bare rule id sends the next
+       * reader to the axe docs; the summary names the element, the two colours
+       * and the ratio, which is the whole of the fix. */
       const violations = results.violations.map((violation) => ({
         id: violation.id,
         impact: violation.impact,
         help: violation.help,
-        nodes: violation.nodes.slice(0, 4).map((node) => node.target.join(' ')),
+        nodes: violation.nodes.slice(0, 4).map((node) => ({
+          target: node.target.join(' '),
+          summary: node.failureSummary?.replace(/\s+/g, ' ').slice(0, 300) ?? '',
+        })),
       }));
 
       expect(violations, JSON.stringify(violations, null, 2)).toEqual([]);

@@ -134,6 +134,48 @@ const FileRowView = memo(function FileRowView({
   );
 });
 
+function ColumnHeaderRow() {
+  const t = useT();
+  return (
+    <div className="egl-columns-row" role="row" aria-rowindex={1}>
+      <span role="columnheader" />
+      <span role="columnheader">{t('files.column.name')}</span>
+      <span role="columnheader">{t('files.column.modified')}</span>
+      <span role="columnheader">{t('files.column.classification')}</span>
+      <span role="columnheader">{t('files.column.status')}</span>
+      <span role="columnheader" className="egl-col-size">
+        {t('files.column.size')}
+      </span>
+      <span role="columnheader" />
+    </div>
+  );
+}
+
+/**
+ * The column header outside a grid.
+ *
+ * The empty, loading and error states keep the columns so the surface does not
+ * change shape between them — `docs/09 §11`'s no-layout-shift rule reads across
+ * states, not only within one. Without a grid around it the row carries no
+ * `row`/`columnheader` semantics, because there are no cells for it to head.
+ */
+function ColumnChrome() {
+  const t = useT();
+  return (
+    <div className="egl-columns egl-columns-static">
+      <div className="egl-columns-row" aria-hidden="true">
+        <span />
+        <span>{t('files.column.name')}</span>
+        <span>{t('files.column.modified')}</span>
+        <span>{t('files.column.classification')}</span>
+        <span>{t('files.column.status')}</span>
+        <span className="egl-col-size">{t('files.column.size')}</span>
+        <span />
+      </div>
+    </div>
+  );
+}
+
 const NO_SELECTION: ReadonlySet<string> = new Set<string>();
 
 /**
@@ -179,17 +221,45 @@ export function GroupedFileList({
     '--egl-columns-h': `${metrics.columnsHeight}px`,
   } as React.CSSProperties;
 
-  /* The four states come first, and they replace the list rather than sitting
-   * beside it: a surface that shows an error banner above stale rows is a
-   * surface that has told the user two things at once. */
-  let overlay: React.ReactNode = null;
+  /* The four states **replace** the grid; they are not laid over it.
+   *
+   * Two reasons, and the second is the one axe found. A surface that shows an
+   * error banner above stale rows has told the user two things at once. And a
+   * `role="treegrid"` whose children include a status message or an error panel
+   * is a treegrid with children ARIA does not allow — `aria-required-children`,
+   * critical, on every state route. Rendering one or the other settles both. */
   if (status === 'error' && error !== undefined) {
-    overlay = <ErrorState error={error} onRetry={onRetry} />;
-  } else if (status === 'ready' && layout.totalRowCount === 0) {
-    overlay = filtersActive ? (
-      <FilteredEmptyState hiddenCount={unfilteredCount} onClearFilters={onClearFilters} />
-    ) : (
-      <EmptyState onUpload={onUpload} />
+    return (
+      <div className="egl" style={styleVars}>
+        <ColumnChrome />
+        <ErrorState error={error} onRetry={onRetry} />
+      </div>
+    );
+  }
+
+  if (status === 'loading') {
+    return (
+      <div className="egl" style={styleVars}>
+        <ColumnChrome />
+        {/* The skeleton keeps the grid's exact box model, so nothing shifts when
+         * the rows land — but it carries no grid semantics, because there is no
+         * grid yet and claiming one would be the same lie the rest of this
+         * milestone is about. */}
+        <LoadingState density={metrics} />
+      </div>
+    );
+  }
+
+  if (layout.totalRowCount === 0) {
+    return (
+      <div className="egl" style={styleVars}>
+        <ColumnChrome />
+        {filtersActive ? (
+          <FilteredEmptyState hiddenCount={unfilteredCount} onClearFilters={onClearFilters} />
+        ) : (
+          <EmptyState onUpload={onUpload} />
+        )}
+      </div>
     );
   }
 
@@ -204,69 +274,52 @@ export function GroupedFileList({
         aria-label={t('files.list.label')}
         aria-rowcount={1 + layout.groups.length + layout.presentRowCount}
         aria-colcount={7}
-        aria-busy={status === 'loading'}
       >
         <div className="egl-columns" role="rowgroup">
-          <div className="egl-columns-row" role="row" aria-rowindex={1}>
-            <span role="columnheader" />
-            <span role="columnheader">{t('files.column.name')}</span>
-            <span role="columnheader">{t('files.column.modified')}</span>
-            <span role="columnheader">{t('files.column.classification')}</span>
-            <span role="columnheader">{t('files.column.status')}</span>
-            <span role="columnheader" className="egl-col-size">
-              {t('files.column.size')}
-            </span>
-            <span role="columnheader" />
+          <ColumnHeaderRow />
+        </div>
+
+        {/* One element, outside the window, carrying whichever group header
+         * belongs at the top. The window never renders the header it is
+         * showing, so there is no duplicate row in the accessibility tree and
+         * nothing to hide — which is the whole of "sticky headers fight the
+         * windowing", answered by taking the sticky one out of it. */}
+        <div className="egl-sticky" role="rowgroup">
+          <div ref={stickyRef}>
+            {sticky !== undefined && <GroupHeaderRow group={sticky} onToggle={toggleGroup} />}
           </div>
         </div>
 
-        {status === 'loading' ? (
-          <LoadingState density={metrics} />
-        ) : (
-          <>
-            {/* One element, outside the window, carrying whichever group header
-             * belongs at the top. The window never renders that header, so
-             * there is no duplicate row in the accessibility tree and nothing
-             * to hide — which is the whole of "sticky headers fight the
-             * windowing", answered by taking the sticky one out of it. */}
-            <div className="egl-sticky" role="rowgroup">
-              <div ref={stickyRef}>
-                {sticky !== undefined && (
-                  <GroupHeaderRow group={sticky} onToggle={toggleGroup} />
-                )}
-              </div>
-            </div>
+        {/* A spacer, hidden from the accessibility tree, whose only job is to
+         * give the scrollbar something to measure. The rows live in the
+         * absolutely positioned window beside it, so the treegrid's children
+         * stay rowgroups all the way down. */}
+        <div
+          className="egl-spacer"
+          aria-hidden="true"
+          style={{ blockSize: `${layout.totalHeight}px` }}
+        />
 
-            <div
-              className="egl-sizer"
-              role="presentation"
-              style={{ blockSize: `${layout.totalHeight}px` }}
-            >
-              <div className="egl-window" role="rowgroup" ref={windowRef}>
-                {slice.items.map((item) => {
-                  if (item.kind === 'header') {
-                    const group = layout.groups[item.groupIndex];
-                    return group === undefined ? null : (
-                      <GroupHeaderRow key={item.key} group={group} onToggle={toggleGroup} />
-                    );
-                  }
-                  const row = rows[item.rowIndex];
-                  return row === undefined ? null : (
-                    <FileRowView
-                      key={item.key}
-                      row={row}
-                      ariaRowIndex={item.ariaRowIndex}
-                      selected={selected.has(row.id)}
-                      onToggleSelect={onToggleSelect === undefined ? undefined : handleToggleSelect}
-                    />
-                  );
-                })}
-              </div>
-            </div>
-          </>
-        )}
-
-        {overlay}
+        <div className="egl-window" role="rowgroup" ref={windowRef}>
+          {slice.items.map((item) => {
+            if (item.kind === 'header') {
+              const group = layout.groups[item.groupIndex];
+              return group === undefined ? null : (
+                <GroupHeaderRow key={item.key} group={group} onToggle={toggleGroup} />
+              );
+            }
+            const row = rows[item.rowIndex];
+            return row === undefined ? null : (
+              <FileRowView
+                key={item.key}
+                row={row}
+                ariaRowIndex={item.ariaRowIndex}
+                selected={selected.has(row.id)}
+                onToggleSelect={onToggleSelect === undefined ? undefined : handleToggleSelect}
+              />
+            );
+          })}
+        </div>
       </div>
       <RowCountAnnouncement shown={layout.presentRowCount} total={layout.totalRowCount} />
     </div>
