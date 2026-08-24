@@ -110,9 +110,10 @@ use core::fmt;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use enclave_core::{
-    ChunkId, ClassificationRank, FileId, LibraryId, TenantId, VersionId, WorkspaceId,
+    ChunkId, ClassificationOutcome, ClassificationPolicy, ClassificationRank,
+    ClassificationResolution, FileId, LibraryId, TenantId, VersionId, WorkspaceId,
 };
-use enclave_db::DbPool;
+use enclave_db::{effective_classification_on, DbPool};
 use enclave_embeddings::{model::ACTIVE, ClassifiedText, Embedder, ModelId};
 use enclave_indexing::{
     claim, defer, record, write_chunks, BuildVersions, Chunk, ExtractRequest, Extractor, Outcome,
@@ -154,12 +155,20 @@ pub trait FileClassification: Send + Sync {
     ///
     /// [`WorkerError::Unclassified`] when this deployment cannot resolve one, and storage failures
     /// for an implementation that reads a row.
+    ///
+    /// # Why an outcome rather than a rank
+    ///
+    /// `ENC-656`. A rank has no way to say *"nothing is labelled and the tenant told us what that
+    /// means"*, so returning one collapses an assumption into a reading — and the difference is
+    /// the whole of `ENC-574`'s argument. [`ClassificationOutcome`] is `#[must_use]` with no arm a
+    /// caller can mistake for a number, so honouring `Assumed` is a decision this pass has to make
+    /// out loud instead of one it makes by not noticing.
     async fn effective_rank(
         &self,
         conn: &mut PgConnection,
         tenant: TenantId,
         file: FileId,
-    ) -> Result<ClassificationRank>;
+    ) -> Result<ClassificationOutcome>;
 }
 
 /// The classification source a deployment has before it configures one: none.
@@ -190,8 +199,62 @@ impl FileClassification for UnclassifiedFiles {
         _conn: &mut PgConnection,
         _tenant: TenantId,
         _file: FileId,
-    ) -> Result<ClassificationRank> {
+    ) -> Result<ClassificationOutcome> {
         Err(WorkerError::Unclassified)
+    }
+}
+
+/// The classification source a deployment with `migrations/0022` actually has.
+///
+/// Resolves the file's effective rank through `enclave_db::effective_classification_on`, which is
+/// the *same* walk `crates/dlp`'s provider and the policy chain read — one definition of what a
+/// file's label is, rather than a second that drifts. It takes the `&mut PgConnection` the trait
+/// already hands over, so the resolution runs inside the pass's own transaction and cannot observe
+/// a label the rest of the pass did not.
+///
+/// # `Assumed` is honoured here and refused on a request path
+///
+/// [`ClassificationResolution::require_for_indexing`] is the door `ENC-574` built for exactly this
+/// caller, and its argument is worth restating where the assumption is acted on: embedding an
+/// unlabelled document under an assumed rank is not the unrecallable act external sharing is,
+/// because the assumed rank is *written into the collection and routes the provider*. A tenant that
+/// assumes a high rank gets local-only embedding, not a leak. A tenant that assumes a low one has
+/// said, in its own configuration, that unlabelled content is not sensitive.
+///
+/// What this type must never do is turn `Denied` into a rank. Under the default `FAIL_CLOSED` an
+/// unlabelled file is not embedded, which is [`UnclassifiedFiles`]'s behaviour arrived at by
+/// policy rather than by absence — and that is why that type stays rather than being deleted here.
+#[derive(Debug, Clone, Copy)]
+pub struct PgClassification {
+    policy: ClassificationPolicy,
+}
+
+impl PgClassification {
+    /// Reads labels under one tenant policy for unlabelled content.
+    #[must_use]
+    pub const fn new(policy: ClassificationPolicy) -> Self {
+        Self { policy }
+    }
+}
+
+#[async_trait]
+impl FileClassification for PgClassification {
+    async fn effective_rank(
+        &self,
+        conn: &mut PgConnection,
+        tenant: TenantId,
+        file: FileId,
+    ) -> Result<ClassificationOutcome> {
+        // A read failure is an outage, never "unlabelled". The distinction matters more here than
+        // in most places this codebase makes it: under an `Assume` policy, "unlabelled" carries a
+        // rank, so a swallowed error would not refuse — it would embed the document at whatever
+        // rank the tenant nominated for content nobody has labelled.
+        let effective = effective_classification_on(conn, tenant, file).await?;
+        let resolution = match effective {
+            Some(found) => ClassificationResolution::resolved(self.policy, found),
+            None => ClassificationResolution::unlabelled(self.policy),
+        };
+        Ok(resolution.require_for_indexing())
     }
 }
 
@@ -286,7 +349,29 @@ impl VectorStage {
     ) -> Result<ModelId> {
         // The rank first, and by itself. Nothing below is meaningful if this is a guess, so the
         // refusal happens before a byte of text is copied anywhere.
-        let rank = self.ranks.effective_rank(conn, tenant, file.id).await?;
+        //
+        // Three arms, matched exhaustively rather than unwrapped: `ENC-656`'s whole point is that a
+        // rank cannot express *"nothing is labelled and the tenant said what that means"*, and a
+        // `let rank = ...` that flattened `Assumed` into `Labelled` would put an assumption into
+        // the collection with no record that it was one.
+        let rank = match self.ranks.effective_rank(conn, tenant, file.id).await? {
+            ClassificationOutcome::Labelled(effective) => effective.rank(),
+            // Logged at `info` rather than silently taken. The rank is written into the collection
+            // and decides which provider sees the text, so an operator reading back why a document
+            // routed the way it did needs to know the number was configuration, not a label.
+            ClassificationOutcome::Assumed(assumed) => {
+                debug!(
+                    file = %file.id,
+                    rank = assumed.rank().get(),
+                    "no label on this file's chain; embedding at the rank the tenant assumes"
+                );
+                assumed.rank()
+            }
+            // `FAIL_CLOSED`, which is the default: the file is not embedded and not recorded, the
+            // same outcome `UnclassifiedFiles` produces and for a stated reason rather than an
+            // absent service.
+            ClassificationOutcome::Denied { .. } => return Err(WorkerError::Unclassified),
+        };
 
         // The one place chunk text becomes embeddable text. `ClassifiedText` has no method that
         // returns its chunks, so from here the only readers are `TextBatch::<Local>::admit` and

@@ -40,7 +40,10 @@ use async_trait::async_trait;
 use chrono::Utc;
 use core::time::Duration;
 use enclave_config::Config;
-use enclave_core::{FileId, TenantId, UserId, VersionId};
+use enclave_core::{
+    ClassificationOutcome, EffectiveClassification, FileId, LabelSource, TenantId, UserId,
+    VersionId,
+};
 use enclave_db::DbPool;
 use enclave_indexing::{
     enqueue, ChunkBudget, Chunker, ChunkerVersion, ExtractOutcome, ExtractRequest, Extractor,
@@ -612,8 +615,11 @@ impl FileClassification for FixedRank {
         _conn: &mut PgConnection,
         _tenant: TenantId,
         _file: FileId,
-    ) -> core::result::Result<ClassificationRank, WorkerError> {
-        Ok(self.0)
+    ) -> core::result::Result<ClassificationOutcome, WorkerError> {
+        Ok(ClassificationOutcome::Labelled(EffectiveClassification::found(
+            self.0,
+            LabelSource::Resource,
+        )))
     }
 }
 
