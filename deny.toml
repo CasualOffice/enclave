@@ -75,6 +75,7 @@ ignore = [
     # flag it. ENC-137 is why: a suppression that lives in one of the two configs and not the other
     # is discovered when the other gate runs, which is in CI, on somebody else's pull request.
     { id = "RUSTSEC-2026-0002", reason = "milvus-sdk-rust → lru 0.12.5; unsound IterMut is never constructed — the SDK's only lru user (v2/client/cache.rs) has no iter_mut; revisit 2026-11-21 (ENC-526)" },
+    { id = "RUSTSEC-2024-0436", reason = "tokenizers → paste; a proc-macro, so it is not in the binary at run time and sees no attacker input; 0.23.1 is the latest tokenizers; revisit 2026-11-25 (ENC-665)" },
 ]
 
 # ---------------------------------------------------------------------------
