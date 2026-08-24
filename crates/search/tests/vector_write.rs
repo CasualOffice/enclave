@@ -388,6 +388,46 @@ async fn a_removal_that_failed_confirms_nothing() {
 /// that Milvus *accepts* the batch — which is exactly where `ENC-523` found the last defect, and it
 /// found it on the validity masks that a fully-populated fixture never exercises. So one of the two
 /// chunks here has every nullable field absent, and it is asserted for by identity.
+/// The dense width comes back from the **server**, and it is `None` for a collection that is absent.
+///
+/// `ENC-661`. `MilvusIndex::dense_width` exists so `VectorStage::for_collection` can be handed two
+/// independently-sourced facts rather than a constant compared with itself: the composition root
+/// sets `MilvusConfig::dimension` from `enclave_embeddings::model::ACTIVE.dimension`, so passing it
+/// back would prove only that a constant equals itself.
+///
+/// The width used here is [`DIMENSION`] — **8**, not the active model's 1024 — precisely so that a
+/// `dense_width` which returned the configured or the compiled-in value instead of the server's
+/// would fail this by name. That is the whole point of the test; a fixture at 1024 would pass
+/// against all three implementations.
+///
+/// The `None` half is not decoration either. It is a different fact from "the collection exists and
+/// is the wrong width", and collapsing them would make a fresh deployment — where the collection is
+/// about to be created — indistinguishable from a corrupt one.
+#[tokio::test]
+#[ignore = "requires a live Milvus (deploy/compose/dev.yml --profile search); CI runs it with \
+            --include-ignored"]
+async fn the_dense_width_is_the_servers_answer_and_absent_means_absent() {
+    let config = config();
+    let index = MilvusIndex::new(config);
+
+    assert_eq!(
+        index.dense_width().await.expect("an absent collection is not an error"),
+        None,
+        "a collection that does not exist reported a width, so a fresh deployment cannot be told \
+         from one whose collection is the wrong shape"
+    );
+
+    index.ensure_collection().await.expect("provision the collection");
+
+    assert_eq!(
+        index.dense_width().await.expect("describe the collection"),
+        Some(DIMENSION),
+        "the width did not come from the server: this collection is {DIMENSION} wide, and a \
+         `dense_width` returning the configured value or the active model's constant would have \
+         answered something else"
+    );
+}
+
 #[tokio::test]
 #[ignore = "requires a live Milvus (deploy/compose/dev.yml --profile search); CI runs it with \
             --include-ignored"]
