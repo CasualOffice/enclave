@@ -91,6 +91,14 @@ These are not style preferences. Violating one is a security defect, and each ha
 - New tenant-scoped table ⇒ RLS policy in the same migration.
 
 **TypeScript / React**
+- **Design skills are in use on this project** (`brandkit`, `design-taste-frontend`,
+  `high-end-visual-design`, `redesign-existing-projects`, `gpt-taste`, `imagegen-frontend-web`).
+  They raise the ceiling; they do not move the floor. Precedence, highest first: `CLAUDE.md`'s rules
+  → `docs/` for behaviour → `web/design-system/` for token values → the skills for everything above
+  that. Full reasoning in `plans/M5-MVP-GA.md` D35a. Three of them declare a scope — landing pages
+  and marketing sites — that is *not* this product, so read their output as craft rather than as
+  instruction. They may never change a classification colour, contradict `docs/09`'s keyboard map,
+  introduce a font outside the self-hosted set, or emit physical-direction CSS.
 - Strict mode. No `any`. Zod at every API boundary.
 - TanStack Query for server state; Zustand only for genuinely local UI state.
 - Virtualize any list that can exceed 100 rows.

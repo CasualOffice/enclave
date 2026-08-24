@@ -1,6 +1,6 @@
 # M5 — MVP GA
 
-> **Status:** Draft · **Version:** 1.0 · **Owner:** Engineering · **Last updated:** 2026-08-24
+> **Status:** Draft · **Version:** 1.1 · **Owner:** Engineering · **Last updated:** 2026-08-24
 
 `ROADMAP.md`: *"A real team could use this daily. Ship it."* Gate **G1** decides here.
 
@@ -117,6 +117,59 @@ rather than in a component:
 7. **No empty state and no fetch-error state appear anywhere in the reference**, on any of five
    layouts. `docs/09 §11` requires four states per surface. **`docs/09` wins**; the states are
    designed as part of the work rather than discovered during it.
+
+### D35a — The visual-design skills raise the ceiling; they do not move the floor
+
+**Decided by the repo owner, 2026-08-25: the installed design skills are to be used throughout this
+project, not case by case.** They are linked into `~/.claude/skills` and load on restart:
+`brandkit`, `design-taste-frontend`, `high-end-visual-design`, `redesign-existing-projects`,
+`gpt-taste`, `imagegen-frontend-web`.
+
+Used naively they would break things that are already decided, so the precedence is written here
+once rather than argued per pull request. **Three of the six declare a scope that is not this
+product** — `design-taste-frontend`'s own text says *"Landing pages, portfolios, and redesigns. Not
+dashboards, not data tables, not multi-step product UI"*, which is exactly what the M5 shell is;
+`high-end-visual-design` targets marketing sites and carries a *never generate the same layout
+twice* variance mandate, which is the opposite of what a design system exists to do; and
+`redesign-existing-projects` audits an existing interface, which does not yet exist here. That does
+not make them useless. It makes them **sources of craft rather than sources of truth**.
+
+**The order, highest first:**
+
+1. **`CLAUDE.md`'s non-negotiable rules.** Rule 12 in particular: no string literals in `web/src`, no
+   manual date or number formatting, no physical `left`/`right` CSS. A skill that emits
+   `margin-left: auto` or a hand-formatted date is wrong here whatever it looks like, and `en-XB`
+   in CI will say so.
+2. **`docs/` — behaviour.** `docs/09` owns budgets, the keyboard model, accessibility and the four
+   required states. `docs/06 §24` owns denial language. These are commitments with tests behind
+   them.
+3. **`web/design-system/` — token values.** Especially the **locked classification palette**: a
+   tenant cannot recolour `Restricted`, because a user misreading sensitivity at a glance is a
+   security failure, not a taste one. No skill may substitute that scale.
+4. **The skills — everything above the floor.** Spacing rhythm within the 8pt grid, elevation and
+   shadow craft, micro-interaction quality, empty-state and error-state composition (which the
+   reference does not cover at all — see D35.7), typographic hierarchy inside the chosen families,
+   and motion beyond the three durations already fixed.
+
+**Where they are most useful, concretely**, because "use them constantly" should mean something
+specific rather than a vibe:
+
+- **`brandkit` → Q20**, the logo and favicon. The repo has **no mark at all**; three candidates sit
+  in Claude Design. This is brand identity work with nothing above it to conflict with, and it
+  blocks the shell's first pull request.
+- **The four missing states** (D35.7): empty, filtered-empty, fetch-error, offline appear nowhere in
+  the reference, on any of five layouts. `docs/09 §11` requires them and the design does not supply
+  them — so the craft has to come from somewhere, and this is exactly that gap.
+- **`docs/09 §10`'s degraded-search header** (D37), never designed because never reachable.
+- **The D33 *unbuilt* treatment**: a neutral `Later` marker that must read as deliberate rather than
+  broken, and must never be confusable with the denial treatment. That is a visual-design problem
+  with a security consequence.
+- **Micro-interaction and motion polish** on the peek panel, the selection bar and the palette.
+
+**What they may never do:** change a classification colour, contradict `docs/09`'s keyboard map,
+introduce a font outside the self-hosted set (`ENC-135` — an external font request is a network call
+an air-gapped install cannot make), emit physical-direction CSS, or add a dependency that pulls a
+remote asset at runtime. Each of those is already a rule with a reason.
 
 ### D36 — `capabilities` gains a reason per denied action, or the design's hover reasons are a lie
 
