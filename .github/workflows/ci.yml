@@ -489,6 +489,94 @@ jobs:
           cat "${RUNNER_TEMP}/pdfium/args.gn"
           echo "ENCLAVE_PDFIUM=${RUNNER_TEMP}/pdfium/lib" >> "$GITHUB_ENV"
 
+      - name: Cache the converted embedding model
+        # Keyed on the model, the converter version and the *shape* of the mount, so a change to any
+        # of the three misses and rebuilds. The runner's own key is not in it deliberately: the
+        # artefact is platform-independent — a `.rten` graph and a JSON vocabulary — so every job on
+        # every runner shares one entry.
+        id: embedding-model-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/embedding-model
+          key: bge-m3-rten-convert-0.22.0-v1
+
+      - name: Fetch and convert the embedding model
+        # Skipped entirely on a cache hit, which is the ordinary case: this is a 2.2 GB download and
+        # a conversion, and paying it on every run would dominate the job.
+        if: steps.embedding-model-cache.outputs.cache-hit != 'true'
+        # Split from the tests for the reason the two steps above are (`ENC-503`): this is a
+        # transaction with a CDN and a package index, the tests are `ENC-661`'s assertions about our
+        # wiring, and a red check must say which. A failure here means the model was not staged — it
+        # does not mean embedding is broken.
+        #
+        # **Fetched, never committed**, and here the reason is size rather than licence, unlike the
+        # OCR weights: `bge-m3` is MIT, and 2.2 GB of weights is content nobody reviews in a diff and
+        # a layer every image pull would carry. `docs/08-BYO-INFRA.md §18.1` is the operator-facing
+        # copy of this procedure, and the two are meant to stay identical.
+        #
+        # **Why a conversion step exists.** This build compiles `rten` with `default-features = false`
+        # plus `rten_format`, so the ONNX parser is not in the image — an enabled parser nobody uses
+        # is still a parser inside a customer's trust boundary. `rten` therefore loads `.rten` and
+        # BAAI publishes ONNX.
+        #
+        # **The converter version is pinned to the one the runtime ships.** `rten-convert 0.22.0` is
+        # the version in `rten`'s own `v0.24.0` tag, which is the `rten` this workspace locks. A
+        # converter ahead of the runtime writes a format the runtime cannot read, and the failure
+        # surfaces as a model that will not load rather than as a version mismatch.
+        run: |
+          set -euo pipefail
+          mount="${RUNNER_TEMP}/embedding-model"
+          work="${RUNNER_TEMP}/bge-m3-onnx"
+          base=https://huggingface.co/BAAI/bge-m3/resolve/main/onnx
+          mkdir -p "${mount}" "${work}"
+
+          # `model.onnx_data` is the external tensor data and must sit beside `model.onnx`, or the
+          # conversion produces a graph with no weights — which loads, runs, and returns noise. That
+          # is the `ENC-536` failure shape in a different artefact, so it is stated here rather than
+          # discovered.
+          for f in model.onnx model.onnx_data tokenizer.json; do
+            fetched=0
+            for attempt in 1 2 3; do
+              if curl -fsSL --max-time 900 -o "${work}/${f}" "${base}/${f}"; then
+                fetched=1; break
+              fi
+              if [ "$attempt" -lt 3 ]; then
+                # Not `&& sleep`: on the last attempt the test is false, the compound returns
+                # non-zero, and `set -e` kills the step before the message below is printed.
+                sleep $((attempt * 10))
+              fi
+            done
+            if [ "$fetched" -ne 1 ]; then
+              echo "::error title=Embedding model download failed — NETWORK, not a test failure::${f} could not be fetched from ${base} after 3 attempts. The embedding tests in crates/embeddings and crates/worker were NOT evaluated — nothing was asserted and nothing failed. Re-run the job."
+              exit 1
+            fi
+            echo "${f} $(stat -c%s "${work}/${f}") bytes"
+          done
+
+          python3 -m venv "${RUNNER_TEMP}/rten-convert"
+          "${RUNNER_TEMP}/rten-convert/bin/pip" install --quiet 'rten-convert==0.22.0' || {
+            echo "::error title=rten-convert install failed — PACKAGE INDEX, not a test failure::the converter could not be installed, so the embedding model was not staged and the embedding tests were NOT evaluated. Re-run the job."
+            exit 1
+          }
+
+          "${RUNNER_TEMP}/rten-convert/bin/rten-convert" "${work}/model.onnx" "${mount}/model.rten"
+          cp "${work}/tokenizer.json" "${mount}/tokenizer.json"
+          # Freed before the build: the ONNX source is 3.5 GB and this runner has died in the linker
+          # for want of disk before (`ENC-156`).
+          rm -rf "${work}"
+          echo "model.rten $(stat -c%s "${mount}/model.rten") bytes"
+
+      - name: Point the tests at the embedding model
+        # Its own step so it runs on a cache hit as well as after a conversion. Folding it into the
+        # step above would leave `ENCLAVE_EMBEDDING_MODEL` unset on every cached run, and the tests
+        # that need it would silently report as ignored rather than failing — which is exactly the
+        # class of green-for-the-wrong-reason this repository keeps finding.
+        run: |
+          set -euo pipefail
+          test -s "${RUNNER_TEMP}/embedding-model/model.rten"
+          test -s "${RUNNER_TEMP}/embedding-model/tokenizer.json"
+          echo "ENCLAVE_EMBEDDING_MODEL=${RUNNER_TEMP}/embedding-model" >> "$GITHUB_ENV"
+
       - name: Report free disk before building
         # So that the next time this job dies in the linker, the log says why on the line above it
         # rather than leaving a bus error to be diagnosed from first principles (ENC-156).

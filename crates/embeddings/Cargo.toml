@@ -18,11 +18,23 @@ anyhow      = { workspace = true }
 async-trait = { workspace = true }
 thiserror   = { workspace = true }
 
+# The inference runtime and the tokenizer behind `MountedModel` (`ENC-661`). The workspace manifest
+# carries the argument for this pair over `ort`, and `src/mounted.rs` carries the argument for what
+# they are allowed to be handed and what they are allowed to say back.
+rten        = { workspace = true }
+rten-tensor = { workspace = true }
+tokenizers  = { workspace = true }
+# Inference is CPU-bound and synchronous, and `EmbeddingProvider::embed` is `async`. Every forward
+# pass runs on `spawn_blocking` for the reason `crates/indexing/src/ocr.rs` gives about its own
+# engine: a `tokio::time::timeout` cannot interrupt a thread already inside synchronous work, so on
+# a poll thread a slow batch stalls the executor rather than being bounded by anything.
+tokio       = { workspace = true }
+
 [dev-dependencies]
 # The routing tests are async only because the port is; no timers, no I/O, so the current-thread
 # runtime is enough. A panicking remote double needs the panic to unwind on the test's own task,
 # which is what `#[tokio::test]` gives and a spawned task would not.
-tokio = { workspace = true, features = ["rt", "macros"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }
 
 [lints]
 workspace = true

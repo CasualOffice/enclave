@@ -1,6 +1,6 @@
 # 07 — Search & Indexing
 
-> **Status:** Draft · **Version:** 1.8 · **Owner:** Search Engineering · **Last updated:** 2026-08-22
+> **Status:** Draft · **Version:** 1.9 · **Owner:** Search Engineering · **Last updated:** 2026-08-25
 > **Authoritative for:** the indexing pipeline, Milvus schema, permission-aware retrieval, ACL invalidation, rebuild.
 
 ## 1. Position of the index
@@ -94,6 +94,32 @@ Routing is enforced in the `embeddings` crate, not in configuration alone: a req
 | File deleted / purged | Delete by `version_id` filter | — |
 | Library `ai_indexing_enabled` turned off | Delete all chunks for the library | — |
 | Barrier assignment changed | Metadata-only update of `barrier_tokens` | No |
+
+### 3.1 What `embedding_model` records, and the one thing it cannot see
+
+`index_manifests.embedding_model` is compared as a **string** to decide what the row above means by
+"model version change", so it has to be the value that actually changes when the model does. Three
+properties are load-bearing, and the third is a gap rather than a guarantee:
+
+* **It is written from the provider that ran, not from configuration.** `EmbeddingRouter::embed`
+  returns the model id with the vectors, because the route is chosen per batch from the batch's
+  classification — a deployment with a ceiling embeds two files of one tenant with two different
+  models. A manifest stamped from a deployment-wide setting would tell this trigger that a model
+  swap changed nothing for exactly the files it changed.
+* **An empty string is a meaningful value.** A deployment with no embedding model mounted records
+  `""`, which honestly says nothing embedded this document — as distinct from a name that would
+  claim an embedding nothing performed. `08-BYO-INFRA.md §18.1` covers what such a deployment gets.
+* **It cannot see the weights.** The model is mounted at run time, so replacing the files on the
+  volume changes every future document's vectors while this string stays still. Nothing in the
+  system detects that. The honest statement is therefore: **swapping the mounted weights is an
+  operator action that must be accompanied by a deliberate reindex**, and it is recorded here as a
+  gap rather than papered over. It is the same gap `crates/indexing/src/ocr.rs` records for the OCR
+  weights, and it has the same shape for the same reason — a marker computed from a file hash would
+  differ between two replicas mid-rollout, so the reindex it triggered would never converge.
+
+What *is* caught automatically is a change of **width**, which is the failure that errors at neither
+end: the worker reads the collection's dense width back from Milvus at start-up and refuses to run
+if it disagrees with the model this build indexes against (`ENC-533`). See `§9`.
 
 ## 4. Milvus schema
 
