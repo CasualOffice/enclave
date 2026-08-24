@@ -254,6 +254,59 @@ antivirus:
 # than the cores it may use. `docs/11-OPERATIONS.md §3.2` has the numbers.
 
 # ---------------------------------------------------------------------------------------------
+# The embedding model — the third mounted artefact, and the one dense search needs (`ENC-661`).
+# ---------------------------------------------------------------------------------------------
+#
+# `bge-m3` at 1024 dimensions is compiled in as the model this build indexes against
+# (`plans/M3-DISCOVERY.md` Q14), so what a deployment supplies is the **weights**, not a name. There
+# is no `provider` key and no `model` name: neither is a choice this build can honour, and an inert
+# key is a claim an operator acts on.
+#
+# A path and not a credential, for the same reason as the two mounts above.
+#
+# Mounted rather than shipped because it is 2.2 GB — an air-gapped install pays that on every image
+# pull, for content that changes on a different schedule from the code. Unlike the OCR weights this
+# is a size decision and not a licensing one; bge-m3 is MIT.
+#
+# The directory holds two files:
+#
+#   model.rten      the converted weights
+#   tokenizer.json  the model's own vocabulary, copied unchanged from the model repository
+#
+# The conversion is one step and `docs/08-BYO-INFRA.md §18.1` is authoritative for it. In short:
+# `rten` is compiled here **without** its ONNX parser — an enabled parser nobody uses is still a
+# parser inside your trust boundary — so `rten-convert`, at the version the `rten` crate in
+# `Cargo.lock` names, turns BAAI's published ONNX export into a `.rten` graph once.
+#
+#   python3 -m venv /tmp/rten && /tmp/rten/bin/pip install 'rten-convert==0.22.0'
+#   base=https://huggingface.co/BAAI/bge-m3/resolve/main/onnx
+#   mkdir -p /tmp/bge-m3 && cd /tmp/bge-m3
+#   # model.onnx_data is the external tensor data and must sit beside model.onnx.
+#   for f in model.onnx model.onnx_data tokenizer.json; do curl -fL -O "$base/$f"; done
+#   mkdir -p /var/lib/enclave/bge-m3
+#   /tmp/rten/bin/rten-convert model.onnx /var/lib/enclave/bge-m3/model.rten
+#   cp tokenizer.json /var/lib/enclave/bge-m3/tokenizer.json
+#
+# Then, here or as `ENCLAVE_EMBEDDING_MODEL` — the two spellings name the same field:
+#
+# embedding_model: "/var/lib/enclave/bge-m3"
+#
+# **Setting this requires `search.provider: milvus`**, and the *worker* refuses to start otherwise,
+# naming both keys. Nothing would fail if it were allowed: the weights would load, no stage would be
+# built, documents would index exactly as they do now, and dense search would return nothing with no
+# error anywhere.
+#
+# The refusal is the worker's and not the loader's on purpose — `enclave-api` builds no vector stage,
+# so exporting ENCLAVE_EMBEDDING_MODEL in a shell must not stop it booting.
+#
+# **Leaving it unset is a documented absence, not a degradation.** Documents are extracted, chunked
+# and committed, so lexical search works; `index_manifests.embedding_model` records an empty string,
+# which is the honest value for a deployment where nothing embedded; dense retrieval returns
+# nothing, and the worker says so once at start-up.
+#
+# `RTEN_NUM_THREADS` applies here too, and for the same reason as above — it is the same runtime.
+
+# ---------------------------------------------------------------------------------------------
 # Object storage
 # ---------------------------------------------------------------------------------------------
 # `provider: none` is the default and it is a *refusal*, not a fallback: with no store the worker
@@ -331,11 +384,6 @@ search:
 # `denylist_degrade_threshold`) are in that category too: not read yet, so they are not written
 # above.
 # ---------------------------------------------------------------------------------------------
-
-embedding:
-  provider: "local"
-  model: "configured-by-deployment"
-  batch_size: 32
 
 preview:
   sandbox: true

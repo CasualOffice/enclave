@@ -63,6 +63,32 @@ ignore = [
     # stops holding and this entry must be revisited rather than renewed. ENC-176, revisit
     # 2026-11-20.
     "RUSTSEC-2026-0192",
+
+    # RUSTSEC-2024-0436 — `paste` is unmaintained. Not a vulnerability: the advisory records only
+    # that the author has archived the crate, and names no defect in it.
+    #
+    # Reached transitively: enclave-embeddings → tokenizers 0.23.1 → paste (ENC-661).
+    #
+    # The property that decides this one is different from ttf-parser's, and it is stronger:
+    # **`paste` is a proc-macro, so it does not exist at run time at all.** It expands identifiers
+    # during compilation and contributes no code to the binary — `cargo tree -i paste` shows it as
+    # `(proc-macro)`. There is no input for an attacker to control, because by the time this product
+    # runs a document through a tokenizer, `paste` has been gone since the build. An unmaintained
+    # crate matters here in exactly one way — nobody will fix a future soundness bug — and a
+    # soundness bug in an identifier-pasting macro surfaces as a compile error, not as a run-time
+    # defect.
+    #
+    # Alternatives were weighed rather than assumed. There is no newer `tokenizers`: 0.23.1 is the
+    # latest release, so this is not a version we can move off. Writing our own tokenizer for bge-m3
+    # would mean reimplementing XLM-RoBERTa SentencePiece, which is a far larger correctness risk
+    # than an archived build-time macro, and `docs/12 §1.1` is explicit that we integrate other
+    # people's components rather than rebuild them.
+    #
+    # An acceptance, not a resolution. It ends when `tokenizers` drops the dependency, or when
+    # `paste` gains an advisory that names an actual defect — at which point the "it is not in the
+    # binary" argument still holds but should be re-argued rather than renewed. ENC-665, revisit
+    # 2026-11-25.
+    "RUSTSEC-2024-0436",
 ]
 
 # RUSTSEC-2023-0071 (Marvin, `rsa`) was suppressed inline until now. It is deliberately NOT listed:

@@ -63,21 +63,27 @@ pub enum WorkerError {
     #[error("reading object storage failed")]
     Blob(#[from] enclave_storage::StorageError),
 
-    /// A deployment configured one half of the OCR mount pair and not the other (`ENC-546`).
+    /// A deployment configured one half of a mount pair and not the other.
     ///
-    /// Refused rather than half-built. OCR over a scanned PDF needs both volumes — weights to
-    /// recognise text and PDFium to render a page for them to read — and building the stage with one
-    /// of them would index every scanned document as empty while the configuration file said OCR was
-    /// on, which is `plans/M3-DISCOVERY.md` D24 reached through configuration.
+    /// Refused rather than half-built, for two stages now:
     ///
-    /// `enclave_config::validate::check_mounts` refuses the same state at startup. This variant is
-    /// the second guard, for a `Config` that never went through the loader.
+    /// * **OCR** (`ENC-546`). A scanned PDF needs both volumes — weights to recognise text and
+    ///   PDFium to render a page for them to read — and building the stage with one of them would
+    ///   index every scanned document as empty while the configuration file said OCR was on, which
+    ///   is `plans/M3-DISCOVERY.md` D24 reached through configuration.
+    /// * **Embedding** (`ENC-661`). A mounted model with no `search.milvus` has nowhere to put its
+    ///   vectors, so no stage can be built: the deployment loads 2.2 GB of weights and indexes
+    ///   exactly as it did before, with nothing failing and dense search returning nothing.
+    ///
+    /// `enclave_config::validate`'s `check_mounts` and `check_embedding` refuse the same two states
+    /// at startup. This variant is the second guard, for a `Config` that never went through the
+    /// loader.
     ///
     /// Both fields are `&'static str`, so this message can only ever name a configuration *key* —
     /// never the path an operator wrote (`CLAUDE.md` rule 10).
     #[error(
-        "`{present}` is configured but `{missing}` is not; OCR over a scanned PDF needs both \
-         volumes, so set both or neither"
+        "`{present}` is configured but `{missing}` is not; the stage they belong to needs both, \
+         so set both or neither"
     )]
     IncompleteMount {
         /// The mount key that was set.

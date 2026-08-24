@@ -947,6 +947,55 @@ integrations:
         assert!(check_search(&Config::default()).is_empty(), "and so is no vector store");
     }
 
+    /// A mounted embedding model on its own **loads**, and that is the point (`ENC-661`).
+    ///
+    /// # The validator this replaced, and why it was wrong
+    ///
+    /// The first version of `ENC-661` added a `check_embedding` here that refused a configuration
+    /// naming `embedding_model` with no `search.milvus`: there would be nowhere for the vectors to
+    /// go, and nothing would report it.
+    ///
+    /// It was the right rule in the wrong process. `ConfigLoader::new` reads the **whole process
+    /// environment**, and `ENCLAVE_EMBEDDING_MODEL` is what CI, `docs/08 §18.1` and every runbook
+    /// tell an operator to export — so a shell with the model staged and no vector store made
+    /// **every binary in the workspace refuse to start**, `enclave-api` included, naming a key the
+    /// operator had not written wrongly. `crates/config/tests/ambient_environment.rs` caught it,
+    /// which is exactly what that file exists for: it is `ENC-544`'s failure recreated by a
+    /// validator instead of by a variable name, and `ENC-566`'s shape too — one key, read by two
+    /// binaries, only one of which can act on it.
+    ///
+    /// The rule now lives in `enclave_worker::embedding::MountedEmbedder::from_config`, which is
+    /// the **worker's** composition root and the only place a vector stage is built. The API has no
+    /// stage and no opinion. Nothing is lost: a deployment that stages a model with no vector store
+    /// still refuses to start — the worker does, loudly, naming both keys — and the process that
+    /// refuses is the one that would have embedded.
+    #[test]
+    fn a_mounted_embedding_model_is_configuration_every_binary_can_load() {
+        let staged = Config {
+            embedding_model: Some(std::path::PathBuf::from("/var/lib/enclave/bge-m3")),
+            ..Config::default()
+        };
+
+        assert!(
+            check_mounts(&staged).is_empty(),
+            "the embedding mount was refused by the OCR pair's check"
+        );
+        assert!(
+            check_search(&staged).is_empty(),
+            "staging an embedding model must not make `search.provider: none` a problem: it is \
+             the ordinary state of every deployment, and refusing it here stops `enclave-api` \
+             booting in any shell that exported ENCLAVE_EMBEDDING_MODEL"
+        );
+
+        // And through the whole of startup validation, which is what a binary actually runs.
+        let raw = serde_yaml::to_value(&staged).expect("the config serialises");
+        assert!(
+            validate(&staged, &raw).is_ok(),
+            "a staged embedding model must not refuse a startup; the refusal belongs in the \
+             worker, where the vector stage is built"
+        );
+    }
+
     /// The relocated metrics keys are refused, not ignored, and both of them are.
     ///
     /// Nothing under `server:` rejects an unknown key, by design, so an unmigrated file would

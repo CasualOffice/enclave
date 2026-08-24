@@ -394,6 +394,72 @@ impl MilvusIndex {
             .find(|schema| schema.is_partition_key())
             .map(|schema| schema.get_name().to_owned()))
     }
+
+    /// The dense width the **server** says this collection has, read back rather than assumed.
+    ///
+    /// `None` when the collection does not exist, which is a different fact from "it exists and is
+    /// the wrong width" and must not be collapsed into it: a collection that is absent is about to
+    /// be created by [`ensure_collection`](Self::ensure_collection) at whatever width the caller
+    /// passes, so there is nothing yet to disagree with.
+    ///
+    /// # Why this exists at all
+    ///
+    /// `ENC-533`, and `ENC-661` is what made it necessary rather than nice. [`MilvusConfig`]'s
+    /// `dimension` is what a caller *intends*, and the caller reads it from
+    /// `enclave_embeddings::model::ACTIVE.dimension` — so comparing the two is a constant compared
+    /// with itself, which is the shape `VectorStage::for_collection` explicitly asks its caller not
+    /// to hand it. The independent fact is the width the collection was **created** with, possibly
+    /// by an older revision of this code, by hand, or by a restore from a differently-shaped
+    /// backup, and only the server knows it.
+    ///
+    /// The failure it catches errors at neither end. Milvus accepts vectors of the width its
+    /// collection was made with and a model emits the width it was trained at, so a disagreement
+    /// surfaces as retrieval quietly degrading and the correction is a new collection plus every
+    /// chunk of every tenant re-embedded (`docs/07-SEARCH-INDEXING.md §9`).
+    ///
+    /// # Errors
+    ///
+    /// An unreachable store, or a describe that fails. Deliberately **not** an error for a
+    /// collection with no dense field: that is a shape this code did not create, and the caller
+    /// deciding what to do about it needs to tell it apart from an outage.
+    pub async fn dense_width(&self) -> Result<Option<u32>, SearchError> {
+        let client = self
+            .session()
+            .await
+            .ok_or(SearchError::VectorIndex { operation: "connect", retryable: true })?;
+
+        let exists = client
+            .has_collection(
+                sdk::request::collection::HasCollectionRequest::builder()
+                    .collection_name(self.config.collection.clone())
+                    .build()
+                    .map_err(|_| invalid_request("has_collection"))?,
+            )
+            .await
+            .map_err(|error| failed("has_collection", &error))?
+            .exists();
+        if !exists {
+            return Ok(None);
+        }
+
+        let described = client
+            .describe_collection(
+                sdk::request::collection::DescribeCollectionRequest::builder()
+                    .collection_name(self.config.collection.clone())
+                    .build()
+                    .map_err(|_| invalid_request("describe_collection"))?,
+            )
+            .await
+            .map_err(|error| failed("describe_collection", &error))?;
+
+        Ok(described
+            .description()
+            .get_schema()
+            .get_fields()
+            .iter()
+            .find(|schema| schema.get_name() == field::DENSE_VECTOR)
+            .map(FieldSchema::get_dimension))
+    }
 }
 
 #[async_trait]
