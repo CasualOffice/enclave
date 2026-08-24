@@ -222,6 +222,18 @@ impl MountedModel {
         // when it is created, so a mounted model of the wrong width is a reindex discovered late —
         // and it errors at neither end, because Milvus accepts the width it was made with and a
         // model emits the width it was trained at.
+        //
+        // **This check has no test, and that is stated rather than left to be assumed.** Deleting
+        // it fails nothing in the suite, because the only model any test mounts is `bge-m3` and
+        // `bge-m3` is 1024 wide — falsifying it needs a deliberately wrong model, which would be a
+        // binary fixture nobody can review in a diff (`crates/indexing/tests/pdf.rs`'s argument
+        // against exactly that). Recorded because `docs/12 §1.2` says a break that fails nothing is
+        // a result, and because a reader must not mistake this for a covered control.
+        //
+        // What *is* covered is the same disagreement at two later layers, both with real tests:
+        // `VectorStage::for_collection` refuses a collection whose server-reported width is not
+        // `ACTIVE.dimension`, and `VectorStage::write` refuses a batch whose vectors are not the
+        // width the deployment claimed. This is the earliest and least tested of the three.
         let dimension = declared_width(&model, nodes.token_embeddings)
             .ok_or_else(|| unavailable(&weights, "read the output width of"))?;
         if dimension != ACTIVE.dimension as usize {
