@@ -1,0 +1,34 @@
+{
+  "firstPaint": {
+    "firstPaintMs": 128.90000000596046,
+    "domContentLoadedMs": 57.60000002384186,
+    "rowsInDom": 46,
+    "groupsInDom": 2,
+    "contentHeightPx": 3611662,
+    "totalNodes": 776,
+    "budgetMs": 400,
+    "rows": 100000
+  },
+  "scroll": {
+    "frames": 899,
+    "p50": 0.7000000000000455,
+    "p95": 3.2000000000000455,
+    "p99": 4.099999999999909,
+    "max": 6.7000000000000455,
+    "overBudget": 0,
+    "overBudgetRatio": 0,
+    "scrolledPx": 81000,
+    "renderCount": 342,
+    "frameBudgetMs": 16.666666666666668,
+    "rows": 100000
+  },
+  "collapse": {
+    "commitMs": 8.899999976158142,
+    "topBefore": 400000,
+    "topAfter": 388888,
+    "heightBefore": 0,
+    "heightAfter": 3511834,
+    "anchorBefore": "Statement of work 2021-375 — Brightwater Utilities.pdf",
+    "anchorAfter": "Termination notice 2019-970 — Helios Logistics.docx"
+  }
+}
