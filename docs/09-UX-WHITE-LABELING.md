@@ -1,6 +1,6 @@
 # 09 — Production UX, File Views & White-Labeling
 
-> **Status:** Draft · **Version:** 2.0 · **Owner:** Design + Frontend · **Last updated:** 2026-08-18
+> **Status:** Draft · **Version:** 2.1 · **Owner:** Design + Frontend · **Last updated:** 2026-08-25
 > **Authoritative for:** application UX standards, view types, admin UX, branding, accessibility.
 > Localization mechanics live in `14-I18N-L10N.md`. **Token values** live in
 > `web/design-system/design-system-v2.html`, the visual reference, and are extracted to
@@ -42,23 +42,39 @@ non-critical request, and code-split admin and editor routes out of the main bun
 ## 3. Main shell
 
 ```text
-+--------------------------------------------------------------------------+
-| ◱ Logo   Workspace ▾        ⌕ Search (⌘K)          + New    ⚙    Avatar  |
-+--------------+-----------------------------------------------------------+
-| Home         |  Breadcrumb / View switcher / Filter / Sort               |
-| Files        | ---------------------------------------------------------|
-| Lists        |                                                           |
-| Pages        |              Content region (virtualized)                 |
-| Activity     |                                                           |
-| Favorites    |                                                           |
-| Shared       |                                                           |
-| Trash        |                                                           |
-|              |                                                           |
-| Admin        |                                                           |
-+--------------+-----------------------------------------------------------+
-| Selection bar: 3 selected · Download · Move · Share · Delete · ✕         |
-+--------------------------------------------------------------------------+
++----------------+---------------------------------------------------------+
+| ⌕ Search  ⌘K   |  Breadcrumb · classification · avatars · Share · panel   | 38
+| Home           | --------------------------------------------------------|
+| ▸ Libraries    |  Saved views · Filter · Display · Upload · New           | 42
+|   · Contracts  | --------------------------------------------------------|
+|   · Finance    |                                                          |
+| Favorites      |            Content region (virtualized)                  |
+| Shared         |            rows 36 · compact 30                          |
+| Trash          |                                                          |
+|                |                                                          |
+| ---            |                                                          |
+| Admin          |                                                          |
+| ◱ user         |                                                          |
++----------------+---------------------------------------------------------+
+       232                    sheet, inset 8, radius 14
 ```
+
+**There is no top bar.** An earlier revision of this section drew one — logo, workspace switcher,
+search, `+ New`, settings, avatar — and it was implemented from that drawing. It is gone: the
+workspace switcher, search and the user chip live in the sidebar, and `+ New` lives in the view bar
+beside the content it creates. This paragraph exists because a diagram is what a reader implements,
+and this one was wrong for a whole milestone (`ENC-676`).
+
+**Geometry**, from `web/design-system/`, which is authoritative for these values: sidebar 232 px and
+borderless, sitting on the canvas rather than on a surface; the content region is a raised **sheet**,
+inset 8 px, radius 14; a 38 px location bar and a 42 px view bar; rows 36 px, compact 30 px.
+
+**Idle is zero chrome.** There is no persistent command bar. Actions live in three places and
+nowhere else: the view bar, the row menu, and a **floating selection bar** that exists only while
+something is selected — count, four to six actions with single-key shortcuts, overflow, clear.
+
+**Surfaces are separated by shadow, not by rule.** `box-shadow: 0 0 0 1px rgba(20,20,18,.07)`; no
+CSS borders on surfaces and no vertical dividers between panes.
 
 The shell persists across navigation; only the content region swaps. Navigation never triggers a
 full page reload, and scroll position, selection and expansion state survive back/forward.
@@ -90,9 +106,26 @@ affordance rather than silently diverging.
 ## 5. Command bar and command palette
 
 Context-aware actions: New, Upload, Open, Share, Download, Move, Copy, Rename, Automate, Details,
-More. Actions appear based on selection, ACL, DLP, conditional access and classification — sourced
-from the `capabilities` object the API returns (`05-API.md §7`), so the UI and the server can never
-disagree.
+More. Which actions apply is decided by selection, ACL, DLP, conditional access and classification —
+sourced from the `capabilities` object the API returns (`05-API.md §7`), so the UI and the server can
+never disagree.
+
+**A denied action is shown, disabled, with its reason — not hidden** (`ENC-676`). An earlier revision
+read as *actions appear based on…*, i.e. hide what is refused. That is wrong for the reason
+`06-SECURITY-DLP-ACCESS.md §24` already gives: a hidden action is indistinguishable from one that
+does not exist, so a user who cannot download learns nothing, asks nobody, and files no request. The
+reason is a stable code plus a user-safe sentence and one remedy — **never the rule that matched**
+(`CLAUDE.md` rule 10).
+
+That requires the API to say *why*, which it does not yet: `capabilities` is nine booleans with no
+reason attached to a `false`. `ENC-674` closes it. Until it does, a disabled action with an invented
+client-side explanation is worse than no explanation, because the client is re-deriving a permission
+decision — which the React conventions forbid outright.
+
+**Disabled-because-denied and disabled-because-unbuilt are different treatments and may never look
+alike** (`plans/M5-MVP-GA.md` D33, `ENC-673`). A denial is focusable, carries a remedy, and speaks in
+the present tense about the user. An unbuilt surface is not focusable, offers no remedy, and speaks
+in the future tense about the product.
 
 `⌘K` / `Ctrl+K` opens a command palette spanning navigation, actions on the current selection, recent
 files and search. Every command in the palette shows its keyboard shortcut, which is how users learn
@@ -108,24 +141,51 @@ The product is fully operable without a mouse.
 | `/` | Focus search |
 | `↑ ↓` | Move selection · `Shift` extends · `⌘` toggles |
 | `→ ←` | Expand/collapse in tree; next/previous column in grid |
-| `Enter` | Open · `Space` preview |
+| `Enter` | Open · `Space` peek |
+| `J` `K` | Walk the list with the peek panel open, without closing it |
 | `⌘A` | Select all in view |
 | `R` `M` `C` `S` | Rename, Move, Copy, Share on the selection |
+| `L R` | Apply a classification label to the selection |
 | `Del` | Move to trash (with undo) |
-| `I` | Toggle details panel |
+| `I` | Toggle details panel · `⌘\` pins it open |
+| `⌘J` | Ask — **registered and disabled until M7** (`plans/M5-MVP-GA.md` D33) |
 | `?` | Keyboard shortcut reference |
 | `Esc` | Close panel/dialog, clear selection |
+
+**This table wins over the design reference where the two disagree** (`ENC-676`). The reference binds
+`⌫` rather than `Del`, drops `/`, and reads `Space` as peek rather than preview. Three of those are
+absorbed above — `Space` opens the peek, which *is* the preview surface, and `J`/`K`, `⌘\`, `L R`
+and `⌘J` are additions worth having. `Del` and `/` stay as written.
+
+The reason the keyboard map is the one place `docs/` overrules the design: it is an accessibility
+commitment with tests behind it, and it is the only surface a screen-reader user cannot work around
+by clicking something else.
 
 Focus is always visible, focus order follows visual order, and focus returns to the triggering
 element when a dialog closes.
 
 ## 7. Details panel
 
-A right-side panel, not a separate page: Preview, Info, Metadata, People, Permissions, Versions,
-Activity, Comments, DLP, Retention, Sharing.
+A **transient peek**, not a docked pane: `Space` or a click inside the sheet opens it, `Esc` closes
+it, `⌘\` pins it open, and `J`/`K` walk the list without closing it. 372 px, resizable between 320
+and 520, and its width persists.
 
-The panel is resizable, its width persists, and its tab selection persists per resource type. Routine
-work — renaming, retagging, checking who has access — happens here without losing the list behind it.
+**Five tabs:** Preview, Details, Access, Versions, Activity.
+
+An earlier revision specified a docked, resizable pane with **eleven** tabs — Preview, Info,
+Metadata, People, Permissions, Versions, Activity, Comments, DLP, Retention, Sharing. That is
+superseded (`plans/M5-MVP-GA.md` D34, `ENC-676`), and the four that lose a tab are re-placed rather
+than dropped:
+
+- **DLP status and retention are inline treatments on Details.** They are facts *about* the file —
+  what was detected in category terms, what obligation applies, when it may be deleted — not
+  workspaces of their own. A tab implies somewhere to go and work; there is nothing to do there.
+- **Sharing is already a dialog**, and was before this change.
+- **Comments defer with the milestone that owns them.** There is no comments crate.
+
+Fewer tabs is also the cheaper answer for accessibility: one focus model, one ARIA tree, one keyboard
+map. Peek-before-open is the interaction this product is built around — routine work happens without
+losing the list behind it — and eleven tabs is a second application inside a panel.
 
 ## 8. Upload UX
 
@@ -180,6 +240,17 @@ Every surface defines all four states, and they are reviewed as part of the feat
 Loading states never cause cumulative layout shift; the reserved skeleton and the loaded row share
 the same box model.
 
+**`web/design-system/design-system-v2.html` shows none of these** — not empty, not filtered-empty,
+not error, on any of its five layouts (`ENC-676`). That is a gap in the reference rather than a
+licence to skip them: the reference is authoritative for *token values*, not for which states exist,
+and this section is authoritative for that. Do not read a surface's absence from the reference as
+permission to ship three states.
+
+Note also what the reference *does* show, which is a different thing: **denied-explained-inline is a
+policy refusal, not a failure.** A `403` from DLP is a successful request with a refusing answer. It
+does not use the error state, and it never offers *retry* — retrying a policy denial is how a user
+learns the product is broken rather than that they lack permission.
+
 ## 12. Motion
 
 Motion clarifies causality; it never entertains. Durations 120–200 ms, standard easing, and only on
@@ -188,7 +259,9 @@ removes all non-essential animation, keeping only opacity changes.
 
 ## 13. Density and layout
 
-Two densities, user-selectable and remembered: Comfortable (48 px rows) and Compact (36 px rows).
+Two densities, user-selectable and remembered: **Default (36 px rows)** and **Compact (30 px rows)**, named as the Display popover names them.
+
+An earlier revision said Comfortable 48 / Compact 36. `web/design-system/` is authoritative for token values and carries 36/30; density is appearance, so the design wins and this line follows it (`ENC-676`). Recorded rather than silently corrected because 48 was implemented from this sentence.
 An 8 px spacing scale, a 4 px radius scale, and a type ramp of six sizes. Tables align numbers right
 and dates in a fixed-width font so columns scan cleanly.
 
@@ -302,3 +375,12 @@ The interface is fully localizable and layout-independent of language: no concat
 text baked into images, no assumptions about text length or date/number format, and full RTL support.
 Mechanics, locale negotiation, translation workflow and search-language handling are specified in
 `14-I18N-L10N.md`.
+
+---
+
+## Change log
+
+| Version | Date | Change |
+|---|---|---|
+| 2.1 | 2026-08-25 | **Seven contradictions with `web/design-system/` resolved before the shell was built** (`ENC-676`, `plans/M5-MVP-GA.md` D35). The design wins on appearance, this document wins on behaviour, and each conflict is annotated where it was settled rather than silently edited. §3's shell diagram **drew a top bar the design retired** — replaced, with a note, because a diagram is what a reader implements and this one was wrong for a milestone. §7's docked eleven-tab panel became the design's five-tab transient peek (D34); DLP and retention are inline on Details, Sharing is already a dialog, Comments defer with the milestone that owns them. §13's densities became 36/30 from 48/36. §6's keyboard map **overrules the design**, absorbing `J`/`K`, `⌘\`, `L R` and a disabled `⌘J`, because it is an accessibility commitment and the one surface a screen-reader user cannot work around. §5 now says a denied action is **shown, disabled and explained** rather than hidden, per `06 §24` — and notes that `capabilities` cannot yet supply the reason (`ENC-674`), so inventing one client-side is forbidden. §11 records that the reference shows **none** of the empty or error states, which is a gap in the reference rather than permission to ship three. |
+| 2.0 | 2026-08-18 | White-labeling model, brand contract, and the v2 design system as the token authority. |
