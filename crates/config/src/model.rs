@@ -137,6 +137,35 @@ pub struct Config {
     /// A path and not a secret, for the reason given on [`ocr_models`](Self::ocr_models); and a
     /// top-level key so that this field and `ENCLAVE_PDFIUM` are one spelling.
     pub pdfium: Option<PathBuf>,
+
+    /// Directory holding the mounted embedding model, or `None` to embed nothing (`ENC-661`).
+    ///
+    /// It holds `model.rten` and `tokenizer.json` — the converted `bge-m3` weights
+    /// (`plans/M3-DISCOVERY.md` Q14) and the vocabulary they were trained against.
+    /// `docs/08-BYO-INFRA.md §18.1` gives the conversion, reproducibly, because
+    /// `crates/embeddings` loads `.rten` and BAAI publishes ONNX.
+    ///
+    /// **What a deployment gets when this is absent:** exactly what every deployment got before
+    /// `ENC-661`. No [`VectorStage`](../../enclave_worker/indexing/struct.VectorStage.html) is
+    /// built, text still reaches `chunk_text` so lexical search works, and
+    /// `index_manifests.embedding_model` records `""` — which `BuildVersions` documents as the
+    /// honest value for a deployment where nothing has embedded. Dense retrieval returns nothing,
+    /// and the worker says so once at start-up rather than leaving it to be inferred from an empty
+    /// collection.
+    ///
+    /// **Mounted rather than shipped**, and here the reason is size rather than licensing:
+    /// `bge-m3` is 2.2 GB, and `docs/08-BYO-INFRA.md §18` covers air-gapped installs where a
+    /// multi-gigabyte layer on every image pull is a real cost. `crates/embeddings/src/mounted.rs`
+    /// carries the argument, and `crates/indexing/src/ocr.rs` carries the stronger, licensing-based
+    /// version of it for the OCR weights.
+    ///
+    /// **A path, not a secret**, for the reason argued on [`ocr_models`](Self::ocr_models), and
+    /// therefore deliberately absent from [`Config::secret_refs`]. **A top-level key**, also for
+    /// that field's reason: the loader derives an environment override from the field path, so a
+    /// nested `embedding.local.model` would be spelled `ENCLAVE_EMBEDDING__LOCAL__MODEL` while
+    /// CI, `crates/embeddings/tests/mounted.rs` and every runbook say `ENCLAVE_EMBEDDING_MODEL`.
+    /// Two spellings for one directory is the drift this repository keeps finding in other forms.
+    pub embedding_model: Option<PathBuf>,
 }
 
 impl Config {
@@ -195,6 +224,72 @@ impl Config {
             (None, Some(_)) => OcrMounts::Incomplete { present: "pdfium", missing: "ocr_models" },
         }
     }
+
+    /// What this deployment has staged for embedding, and whether it has anywhere to put the
+    /// result (`ENC-661`).
+    ///
+    /// A tri-state for [`ocr_mounts`](Self::ocr_mounts)' reason: collapsing "nothing is configured"
+    /// and "half of it is" into one `None` gives an operator who staged 2.2 GB of weights a
+    /// perfectly quiet deployment that embeds nothing, while the configuration file says embedding
+    /// is on.
+    ///
+    /// # Why the pair is asymmetric, unlike the OCR one
+    ///
+    /// The two OCR mounts are two halves of one capability, so either without the other is a
+    /// mistake in both directions. This pair is not symmetric, and pretending it were would refuse
+    /// every deployment that exists today:
+    ///
+    /// * **A model with no vector store is a mistake.** There is nowhere for the vectors to go —
+    ///   `VectorStage` takes a `VectorWriter` and `MilvusIndex` is the only one — so the stage
+    ///   cannot be built and the weights are loaded, resident and unused. That is
+    ///   [`Incomplete`](EmbeddingMounts::Incomplete).
+    /// * **A vector store with no model is the ordinary case**, and it is
+    ///   [`Absent`](EmbeddingMounts::Absent). `search.milvus` has purposes that have nothing to do
+    ///   with embedding: it is what the coverage probe takes its census through, and it is where
+    ///   the query side reads candidates from. Its presence is not a claim that this deployment
+    ///   embeds.
+    ///
+    /// Read by [`check_embedding`](crate::validate::check_embedding), which refuses startup on
+    /// `Incomplete`, and by the worker that builds the stage — one function, so the two cannot
+    /// disagree about what "configured" means.
+    #[must_use]
+    pub fn embedding_mounts(&self) -> EmbeddingMounts<'_> {
+        match (self.embedding_model.as_deref(), self.search.milvus.is_some()) {
+            (None, _) => EmbeddingMounts::Absent,
+            (Some(model), true) => EmbeddingMounts::Mounted { model },
+            (Some(_), false) => {
+                EmbeddingMounts::Incomplete { present: "embedding_model", missing: "search.milvus" }
+            }
+        }
+    }
+}
+
+/// What a deployment has staged for embedding.
+///
+/// See [`Config::embedding_mounts`] for why the middle state is spelled out and why this pair is
+/// asymmetric where [`OcrMounts`] is not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmbeddingMounts<'a> {
+    /// No embedding model is configured — the default, and nothing embeds.
+    ///
+    /// Not a degradation to notice: text still reaches `chunk_text`, lexical search still works,
+    /// and `index_manifests.embedding_model` honestly records `""`.
+    Absent,
+    /// A model is mounted and there is a vector store to write to. The path has **not** been
+    /// checked to exist; that happens at the mount, which is the only place that can tell "absent"
+    /// from "present and unloadable".
+    Mounted {
+        /// Directory holding `model.rten` and `tokenizer.json`.
+        model: &'a Path,
+    },
+    /// A model with nowhere to put its vectors. Refused at startup — the field names are
+    /// `&'static str` so a message built from them can never carry a configured value.
+    Incomplete {
+        /// The key that was set.
+        present: &'static str,
+        /// The key that was not.
+        missing: &'static str,
+    },
 }
 
 /// The state of the two volumes OCR over a scanned PDF needs.
@@ -1314,6 +1409,69 @@ mod tests {
             pdfium.ocr_mounts(),
             OcrMounts::Incomplete { present: "pdfium", missing: "ocr_models" }
         );
+    }
+
+    #[test]
+    fn the_embedding_mount_is_spelled_the_way_the_environment_spells_it() {
+        // The same argument as the two OCR keys above, applied before a second spelling can exist:
+        // `crates/embeddings/tests/mounted.rs`, `crates/worker/tests/embedding_mount.rs`, CI's fetch
+        // step and `docs/08 §18.1` all say `ENCLAVE_EMBEDDING_MODEL`, and a nested
+        // `embedding.local.model` would be reachable only as `ENCLAVE_EMBEDDING__LOCAL__MODEL`.
+        //
+        // Deliberate violation: renaming the field, or nesting it under a section, fails this test
+        // by name — the derived path stops matching the variable everything else sets.
+        let loaded = crate::ConfigLoader::new()
+            .with_env([
+                ("ENCLAVE_EMBEDDING_MODEL", "/mnt/enclave/bge-m3"),
+                ("ENCLAVE_SEARCH__PROVIDER", "milvus"),
+                ("ENCLAVE_SEARCH__MILVUS__URI", "http://milvus:19530"),
+            ])
+            .load()
+            .unwrap();
+
+        assert_eq!(
+            loaded.config().embedding_mounts(),
+            EmbeddingMounts::Mounted { model: Path::new("/mnt/enclave/bge-m3") }
+        );
+    }
+
+    #[test]
+    fn a_model_with_nowhere_to_put_its_vectors_is_reported_as_half_a_mount() {
+        // `ENC-661`. The operator staged 2.2 GB of weights against `search.provider: none`: nothing
+        // fails, no stage is built, and dense search has always returned nothing. `Absent` here
+        // would be that silence.
+        let model =
+            Config { embedding_model: Some(PathBuf::from("/mnt/bge-m3")), ..Config::default() };
+        assert_eq!(
+            model.embedding_mounts(),
+            EmbeddingMounts::Incomplete { present: "embedding_model", missing: "search.milvus" }
+        );
+    }
+
+    #[test]
+    fn a_vector_store_without_a_model_is_the_ordinary_deployment_and_not_a_problem() {
+        // The asymmetry with `ocr_mounts`, asserted rather than left to the doc comment — and it is
+        // the assertion that stops this check refusing every deployment that exists today.
+        // `search.milvus` is what the coverage probe takes its census through and what the query
+        // side reads candidates from; its presence is not a claim that anything embeds.
+        //
+        // Without this test, an implementation that reported `Incomplete` in both directions would
+        // satisfy the one above and break every existing configuration.
+        let store = Config {
+            search: SearchConfig {
+                provider: SearchProvider::Milvus,
+                milvus: Some(MilvusSettings {
+                    uri: "http://milvus:19530".parse().unwrap(),
+                    token: None,
+                    collection: None,
+                }),
+            },
+            ..Config::default()
+        };
+        assert_eq!(store.embedding_mounts(), EmbeddingMounts::Absent);
+
+        // And the default — neither — is `Absent` too, which is what every deployment has.
+        assert_eq!(Config::default().embedding_mounts(), EmbeddingMounts::Absent);
     }
 
     #[test]
