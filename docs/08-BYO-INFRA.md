@@ -1,6 +1,6 @@
 # 08 — BYO Infrastructure & Configuration
 
-> **Status:** Draft · **Version:** 2.4 · **Owner:** Platform Engineering · **Last updated:** 2026-08-22
+> **Status:** Draft · **Version:** 2.5 · **Owner:** Platform Engineering · **Last updated:** 2026-08-25
 > **Authoritative for:** provider traits, BYO infrastructure, configuration model and precedence.
 
 ## 1. Principle
@@ -433,10 +433,16 @@ search:
   overfetch_factor: 3
   denylist_degrade_threshold: 10000
 
-embedding:
-  provider: "local"
-  model: "configured-by-deployment"
-  batch_size: 32
+# The embedding model is a **mounted directory**, not a name: `bge-m3` is compiled in as the
+# model this build indexes against (`plans/M3-DISCOVERY.md` Q14), and what a deployment supplies
+# is the weights. `§18.1` is the conversion and what a deployment without it gets.
+#
+# A top-level key rather than `embedding.model`, so that this and `ENCLAVE_EMBEDDING_MODEL` are one
+# spelling — the same reason `ocr_models` and `pdfium` are top level. A path, not a credential.
+#
+# Setting this with `search.provider: none` is refused at startup: there would be nowhere for the
+# vectors to go, and nothing would report it.
+embedding_model: "/var/lib/enclave/bge-m3"
 
 antivirus:
   provider: "clamav"
@@ -609,6 +615,87 @@ backups, previews and renditions, embedding endpoints, LLM endpoints, and logs. 
 configuration whose providers contradict a tenant's declared residency, rather than discovering the
 violation during an audit.
 
+### 18.1 Staging the embedding model
+
+`plans/M3-DISCOVERY.md` Q14 chose **`bge-m3`, 1024 dimensions, mounted rather than baked into the
+image**. `crates/embeddings/src/model.rs` argues the model choice and `crates/embeddings/src/mounted.rs`
+argues the delivery; what follows is the operator half — how the mount is produced, and what a
+deployment gets if it is absent.
+
+**Why it is mounted.** The weights are 2.2 GB. An air-gapped install pays that on every image pull,
+for content that changes on a different schedule from the code, and changing models would otherwise
+mean rebuilding and re-certifying an image. (The OCR weights are mounted for a *stronger* reason —
+they are CC-BY-SA-4.0 and `deny.toml`'s allowlist is permissive-only. `bge-m3` is MIT, so this is a
+size decision rather than a licensing one.)
+
+**The mount is one directory holding two files:**
+
+| File | What it is |
+|---|---|
+| `model.rten` | the converted weights |
+| `tokenizer.json` | the model's own vocabulary, copied unchanged from the model repository |
+
+Point `embedding_model` at that directory, or set `ENCLAVE_EMBEDDING_MODEL`. It is a path and not a
+credential, so it is not a `vault://` reference and does not appear in `secret_refs()`.
+
+**Why a conversion step exists at all.** This build takes `rten` with `default-features = false`
+plus `rten_format`, so the ONNX parser is not compiled in — an enabled parser nobody uses is still a
+parser inside a customer's trust boundary, which is the same argument the `image` and `pdfium-render`
+pins make. `rten` therefore loads `.rten` and BAAI publishes ONNX, and the gap is closed once, by
+the operator, with a published tool.
+
+**The conversion.** `rten-convert` is the converter shipped by the `rten` project; its version tracks
+the runtime, and **the version to install is the one the `rten` crate in `Cargo.lock` names** — for
+`rten 0.24.0` that is `rten-convert 0.22.0`, which is the version in `rten`'s own `v0.24.0` tag.
+Python 3.10 or newer.
+
+```bash
+python3 -m venv /tmp/rten && /tmp/rten/bin/pip install 'rten-convert==0.22.0'
+
+# The published export. `model.onnx` is the graph; `model.onnx_data` is its external
+# tensor data and must sit beside it, or the conversion silently produces a model with
+# no weights.
+base=https://huggingface.co/BAAI/bge-m3/resolve/main/onnx
+mkdir -p /tmp/bge-m3 && cd /tmp/bge-m3
+for f in model.onnx model.onnx_data tokenizer.json; do curl -fL -O "${base}/${f}"; done
+
+mkdir -p /var/lib/enclave/bge-m3
+/tmp/rten/bin/rten-convert model.onnx /var/lib/enclave/bge-m3/model.rten
+cp tokenizer.json /var/lib/enclave/bge-m3/tokenizer.json
+```
+
+The result is ~2.27 GB, roughly the size of the ONNX it came from — the conversion re-containers the
+weights, it does not quantize them.
+
+**What can go wrong, and why it is a decision rather than a workaround.** `rten` is a smaller project
+than ONNX Runtime, and a model whose graph uses an operator it does not implement will fail to
+convert or fail to run. `bge-m3` does not: its published export is opset 11 and twenty-eight operator
+types, all supported, and the workspace's own tests run a forward pass against the result. **If a
+future model fails here, that reopens the runtime choice** — it is not something to route around by
+adding a second inference runtime, because the absence of a `links` key is the property that let
+`rten` into this image at all (`Cargo.toml`).
+
+**Verifying the mount.** The worker refuses to start if the directory is missing either file, if
+`model.rten` is not a graph with `input_ids`, `attention_mask` and `token_embeddings` nodes, or if
+the graph's declared width is not the 1024 this build indexes against. There is no silent
+degradation: a volume that failed to attach is an outage, not a corpus of documents with no vectors.
+
+**A mounted model needs a vector store.** `embedding_model` set with `search.provider: none` is
+refused at startup. Nothing would fail otherwise — the weights would load, no stage would be built,
+documents would index exactly as before — and dense search would return nothing, for months.
+
+**What a deployment without the mount gets.** Documents are extracted, chunked and committed to
+`chunk_text`, so lexical search works; `index_manifests.embedding_model` records an empty string,
+which is the honest value for a deployment where nothing embedded; and dense retrieval returns
+nothing. The worker says so once at start-up rather than leaving it to be inferred from an empty
+collection.
+
+**Changing the model later is a reindex, not a configuration edit** (`07-SEARCH-INDEXING.md §9`). The
+collection's dense width is fixed when it is created, so a different width needs a new collection and
+every chunk of every tenant re-embedded. The worker reads the collection's width back from the server
+at start-up and refuses a disagreement, so the mistake is caught at deploy time rather than as
+retrieval quietly degrading.
+
 ## 19. Deployment profiles
 
 **Community** — single node, local filesystem or MinIO, Milvus standalone, ClamAV embedded.
@@ -641,5 +728,6 @@ Maker/checker approval may be required per scope (`06-SECURITY-DLP-ACCESS.md §2
 
 | Version | Date | Change |
 |---|---|---|
+| 2.5 | 2026-08-25 | `§18.1` is new: how an operator produces the mounted `bge-m3` model, reproducibly. The conversion step exists because this build compiles `rten` without its ONNX parser — an enabled parser nobody uses is still a parser inside a customer's trust boundary — so `rten-convert` closes the gap once, at the version the `rten` crate in `Cargo.lock` names. `§15`'s `embedding:` block is replaced by a top-level `embedding_model` path: Q14 settled *which* model, so what a deployment supplies is the weights and not a name, and a top-level key makes the field and `ENCLAVE_EMBEDDING_MODEL` one spelling. `provider` and `batch_size` are gone rather than left unread — an inert key is a claim an operator acts on. A mounted model with `search.provider: none` is now refused at startup, because nothing else would report it (`ENC-661`). |
 | 2.4 | 2026-08-22 | `§15` gains a modelled `storage:` and `search:` section and a `metrics:` section. `storage.profile: "tenant-default"` is replaced by a deployment-wide `storage.s3` block, because `§4`'s `storage_profiles` table does not exist and the key named a row nothing could resolve (`ENC-562`); `search.milvus` carries the URI and token, and never the embedding width (`ENC-563`). `server.metrics_port` / `server.metrics_bind` move to `metrics.api_port` / `metrics.worker_port` / `metrics.bind` and the old keys are refused at startup — both binaries read the single old key, so one file on one host made the second process to start die with `Address already in use` (`ENC-566`). |
 | 2.3 | 2026-08-22 | Earlier revisions predate this table. |
