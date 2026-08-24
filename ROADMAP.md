@@ -328,9 +328,10 @@ name — `ENC-303` on DLP detectors, `ENC-306` on the audit coverage sweep.
 
 **Goal.** A real team could use this daily. Ship it.
 
-**Tracker:** nothing logged yet — M5 has not been broken into rows. Two Phase 2 items depend on it
-by name (ENC-310 on the web shell, ENC-318 on i18n scaffolding), and it is the milestone gate G1
-decides at, so this list is doing real work despite carrying no IDs.
+**Plan:** [`plans/M5-MVP-GA.md`](plans/M5-MVP-GA.md) — D33–D38 locked, Q20–Q23 open.
+
+**Tracker:** ENC-671 … ENC-676. Two Phase 2 items depend on this milestone by name (ENC-310 on the
+web shell, ENC-318 on i18n scaffolding), and it is the milestone gate G1 decides at.
 
 **Steps**
 
