@@ -53,13 +53,18 @@ use std::sync::Arc;
 
 use anyhow::Context as _;
 use enclave_antivirus::ScanPolicy;
+use enclave_core::ClassificationPolicy;
+use enclave_embeddings::model::ACTIVE;
 use enclave_indexing::{
     BoundedExtractor, ChunkBudget, Chunker, ChunkerVersion, ExtractorVersion, MediaTypeRouter,
     PdfTextExtractor, PlainTextExtractor,
 };
 use enclave_preview::RenderBudget;
 use enclave_search::health::{CoverageFloor, IndexCensus};
+use enclave_search::{MilvusConfig, MilvusIndex};
 use enclave_storage::S3BlobStore;
+use enclave_worker::embedding::MountedEmbedder;
+use enclave_worker::indexing::{PgClassification, VectorStage};
 use enclave_worker::ocr::MountedOcr;
 use enclave_worker::schedule::{
     AvRunner, ContentScanner, IndexRunner, PipelineRunner, ScanRunner, Scheduler, VersionScanner,
@@ -175,7 +180,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let mut scheduler = Scheduler::new(Arc::new(DbTenants::new(db.clone())));
-    if let Some(passes) = content_passes(config, &registry, db.clone()).await? {
+    if let Some(passes) = content_passes(config, &registry, &secrets, db.clone()).await? {
         scheduler = scheduler
             .with_antivirus(passes.antivirus)
             .with_indexing(passes.indexing)
@@ -261,6 +266,7 @@ struct ContentPasses {
 async fn content_passes(
     config: &enclave_config::Config,
     registry: &enclave_config::SecretRegistry,
+    secrets: &enclave_config::ResolvedSecrets,
     pool: enclave_db::DbPool,
 ) -> anyhow::Result<Option<ContentPasses>> {
     // Before the store, so that a provider this build cannot honour refuses the start-up whatever
@@ -356,19 +362,37 @@ async fn content_passes(
     // are one set of numbers rather than two that agree until somebody tunes one.
     let extractor: Arc<dyn enclave_indexing::Extractor> = Arc::new(BoundedExtractor::new(router));
 
-    let indexing = Arc::new(PipelineRunner::new(
+    // `ENC-661`. Built before the runner because the runner's `embedding_model` argument depends
+    // on whether there is one: a deployment that embeds records the model it embeds with, and one
+    // that does not records `""`.
+    let vectors = vector_stage(config, secrets).await?;
+
+    // The model this deployment embeds with, or `""` when it embeds nothing — which is what
+    // `BuildVersions` documents as the honest value for that case, and what every deployment
+    // recorded before this row.
+    //
+    // It is a **fallback**, not the recorded value: `index_pass` replaces it with the `ModelId` the
+    // provider that ran actually returned, for every file that produced vectors. What is left for
+    // this string to answer is the file that produced *no* chunks — a `SKIPPED` or `FAILED`
+    // manifest — where naming a model would claim an embedding nothing performed. So it stays `""`
+    // in that case too, and `ACTIVE.id` here is the deployment-level fact for anything that reaches
+    // the column by another route.
+    let embedding_model = if vectors.is_some() { ACTIVE.id } else { "" };
+
+    let mut runner = PipelineRunner::new(
         pool.clone(),
         Arc::clone(&extractor),
         Chunker::new(CHUNKER, ChunkBudget::default()),
         ocr.clone(),
         Arc::clone(&store),
-        // Nothing embeds yet, and `""` is what `BuildVersions` documents as the honest value for
-        // that. A model name written here before anything used it would be a claim about a manifest
-        // that no embedding produced.
-        "",
+        embedding_model,
         RenderBudget::DEFAULT,
         INDEX_BATCH,
-    ));
+    );
+    if let Some(stage) = vectors {
+        runner = runner.with_vectors(stage);
+    }
+    let indexing = Arc::new(runner);
 
     // The detectors this deployment runs, and the version stamped onto every row they produce.
     // `enclave_dlp::builtin_set()` is the same constructor `crates/api/src/main.rs` reads the
@@ -404,6 +428,158 @@ async fn content_passes(
     ));
 
     Ok(Some(ContentPasses { antivirus, indexing, scanning }))
+}
+
+/// The embedding-and-vector-write stage, or `None` when this deployment embeds nothing.
+///
+/// `ENC-661`, and the function that makes `crates/embeddings` reachable from a running process for
+/// the first time. Before it, `PipelineRunner` was constructed with no [`VectorStage`] and `""` as
+/// the model name, with a comment saying that was the honest value because nothing embedded.
+///
+/// # The width is read back from the server, not from what we intended
+///
+/// [`VectorStage::for_collection`] asks for *"the width the collection was **created** with —
+/// `MilvusConfig::dimension`, not a number chosen here — so that this is a comparison of two
+/// independently-sourced facts rather than a constant compared with itself."*
+///
+/// Handing it `MilvusConfig::dimension` would fail that instruction exactly. This process sets that
+/// field from [`ACTIVE.dimension`](enclave_embeddings::model::ACTIVE) three lines earlier, so
+/// comparing them proves only that a constant equals itself. The independently-sourced fact is what
+/// **Milvus** says the collection's dense field is, which may have been created by an older
+/// revision of this code, by hand, or by a restore — so [`MilvusIndex::dense_width`] asks it.
+///
+/// # Why this one path refuses to start when Milvus is down
+///
+/// [`index_census`] deliberately does not, and the asymmetry is the point rather than an
+/// inconsistency. A census that cannot be taken is a *reported* gap: `coverage::probe_pass` counts
+/// the tenant `unreadable` and an operator sees it. There is no equivalent report available here.
+/// An operator who mounted 2.2 GB of weights has declared that this deployment does dense
+/// retrieval, and the two ways to start without confirming the collection are to write vectors into
+/// a collection of unknown width — silently degraded retrieval, corrected only by re-embedding
+/// every chunk of every tenant (`docs/07 §9`) — or to skip the stage and index everything with no
+/// vectors, which is the invisible absence this whole row exists to remove. Refusing is the only
+/// option that is loud.
+///
+/// It costs nothing for a deployment that has not mounted a model: the first line returns `None`
+/// before Milvus is touched at all.
+///
+/// # Why the collection is provisioned here
+///
+/// [`MilvusIndex::ensure_collection`] had no caller outside tests, so a deployment that mounted a
+/// model would have found the collection missing on its first upsert — every file failing, claimed
+/// and retried, with the cause three layers down in an SDK error. It is idempotent (a
+/// `has_collection` and a describe against a correct collection), it runs once at start-up, and it
+/// creates the collection at `ACTIVE.dimension` so the read-back below has something true to
+/// confirm. It also verifies the partition key, which is a cost defect that is otherwise invisible
+/// until somebody profiles it.
+///
+/// # Errors
+///
+/// A mount that is configured and cannot be loaded, a model with no vector store
+/// ([`MountedEmbedder::from_config`] refuses both), an unreachable or unprovisionable Milvus, and a
+/// collection whose dense width is not the active model's.
+async fn vector_stage(
+    config: &enclave_config::Config,
+    secrets: &enclave_config::ResolvedSecrets,
+) -> anyhow::Result<Option<VectorStage>> {
+    let Some(embedder) = MountedEmbedder::from_config(config)
+        .context("build the embedding provider from the mounted model")?
+    else {
+        tracing::info!(
+            "no embedding model is mounted (`embedding_model` is unset), so no vector stage is \
+             wired and nothing is embedded. Documents are still extracted, chunked and committed \
+             to `chunk_text`, so lexical search works and `index_manifests.embedding_model` \
+             honestly records an empty model; dense retrieval returns nothing. Stage the converted \
+             weights (docs/08-BYO-INFRA.md §18.1) to enable it."
+        );
+        return Ok(None);
+    };
+
+    // Unreachable via the loader — `check_embedding` refuses a model with no store, and
+    // `MountedEmbedder::from_config` refuses it again — so this is the third guard and it exists
+    // because the two above are about `Config`, and this is about what could be built from it.
+    let milvus = milvus_config(config, secrets)?
+        .context("an embedding model is mounted but `search.milvus` names no vector store")?;
+
+    let index = MilvusIndex::new(milvus.clone());
+    index
+        .ensure_collection()
+        .await
+        .context("provision the vector collection this deployment embeds into")?;
+
+    let collection = index
+        .dense_width()
+        .await
+        .context("read back the vector collection's dense width")?
+        .context(
+            "the vector collection has no dense field, so it was not created by this code and \
+             nothing here can say what its vectors mean",
+        )?;
+
+    tracing::info!(
+        model = ACTIVE.id,
+        dimension = collection,
+        collection = %milvus.collection,
+        "embedding is enabled; indexed documents reach the vector store"
+    );
+
+    let stage = VectorStage::for_collection(
+        embedder.into_embedder(),
+        // `ENC-656`. The same walk the policy chain and `crates/dlp`'s provider read, so there is
+        // one definition of a file's label rather than a second that drifts.
+        //
+        // `fail_closed()` and not a configured mode, because the mode is **per tenant** and this is
+        // a deployment-wide composition root with no tenant in hand. It is the safe direction: an
+        // unlabelled file is not embedded rather than embedded at a rank nobody chose. A tenant that
+        // wants `ASSUME_RANK` has nowhere to say so yet — `ENC-662`.
+        Box::new(PgClassification::new(ClassificationPolicy::fail_closed())),
+        // A second handle over the same configuration rather than a shared one. `MilvusIndex::new`
+        // touches nothing, and the alternative — one `Arc` behind both the census and the writer —
+        // would need `VectorWriter` implemented for `Arc<MilvusIndex>` purely to save an object that
+        // holds a URI and a lazily-opened session.
+        Box::new(MilvusIndex::new(milvus)),
+        collection,
+    )
+    .context("wire the vector stage against the collection this deployment writes to")?;
+
+    Ok(Some(stage))
+}
+
+/// The Milvus configuration this deployment names, or `None` when it names none.
+///
+/// One function so the coverage probe and the vector stage cannot disagree about which collection,
+/// which endpoint or which credential they mean. Two `MilvusIndex` handles over one configuration is
+/// two cheap objects; two *configurations* would be a census counting a different collection from
+/// the one the pass writes, and the symptom of that is a coverage gauge that never rises.
+///
+/// # The dimension is not configuration
+///
+/// [`ACTIVE.dimension`](enclave_embeddings::model::ACTIVE) supplies it and `search:` deliberately
+/// has no key for it — `docs/08-BYO-INFRA.md §15` says so where an operator will read it. The width
+/// is fixed when the collection is created and a mismatch errors at neither end, so a configurable
+/// width is a way to write that mistake down. What this value is *for* is creating the collection;
+/// checking an existing one against it is [`MilvusIndex::dense_width`]'s job, because a value we
+/// supplied cannot check itself.
+///
+/// # Errors
+///
+/// A `search.milvus.token` that resolved to something that is not UTF-8.
+fn milvus_config(
+    config: &enclave_config::Config,
+    secrets: &enclave_config::ResolvedSecrets,
+) -> anyhow::Result<Option<MilvusConfig>> {
+    let Some(section) = config.search.milvus.as_ref() else { return Ok(None) };
+
+    let mut milvus = MilvusConfig::new(section.uri.to_string(), ACTIVE.dimension);
+    if let Some(collection) = section.collection.as_ref() {
+        milvus.collection.clone_from(collection);
+    }
+    if let Some(token) = secrets.get("search.milvus.token") {
+        milvus.token =
+            Some(token.expose_str().context("search.milvus.token is not valid UTF-8")?.to_owned());
+    }
+
+    Ok(Some(milvus))
 }
 
 /// The scanner this deployment configured, or a refusal to start.
@@ -534,7 +710,7 @@ fn index_census(
     config: &enclave_config::Config,
     secrets: &enclave_config::ResolvedSecrets,
 ) -> anyhow::Result<Option<Arc<dyn IndexCensus>>> {
-    let Some(section) = config.search.milvus.as_ref() else {
+    let Some(milvus) = milvus_config(config, secrets)? else {
         tracing::warn!(
             "no vector store is configured (`search.provider` is `none`), so the coverage probe is \
              not scheduled and `enclave_search_index_observed_chunks` will have no series. A \
@@ -545,19 +721,7 @@ fn index_census(
         return Ok(None);
     };
 
-    let mut milvus = enclave_search::MilvusConfig::new(
-        section.uri.to_string(),
-        enclave_embeddings::model::ACTIVE.dimension,
-    );
-    if let Some(collection) = section.collection.as_ref() {
-        milvus.collection.clone_from(collection);
-    }
-    if let Some(token) = secrets.get("search.milvus.token") {
-        milvus.token =
-            Some(token.expose_str().context("search.milvus.token is not valid UTF-8")?.to_owned());
-    }
-
-    Ok(Some(Arc::new(enclave_search::MilvusIndex::new(milvus))))
+    Ok(Some(Arc::new(MilvusIndex::new(milvus))))
 }
 
 /// Translates the configuration's database section into the `db` crate's own type.
