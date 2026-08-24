@@ -234,6 +234,48 @@ milvus-sdk-rust = "2.6.0"
 ocrs         = "0.12.2"
 rten         = { version = "0.24.0", default-features = false, features = ["rten_format"] }
 
+# text embedding — the same runtime, a second time
+#
+# `ENC-661`. `plans/M3-DISCOVERY.md` Q14 chose `bge-m3` mounted at run time and nothing loaded the
+# weights, because there was no inference runtime on the embedding side at all. Q12's criteria were
+# applied a second time rather than re-argued, and they select the runtime that is already here:
+# `rten` is pure Rust, permissive across its tree, and — the decisive property, exactly as for OCR —
+# **declares no `links` key**. `ort` (ONNX Runtime) does declare `links = "onnxruntime"`, which is
+# the property that disqualified `tesseract` and `leptess`: a crate with a `links` key cannot
+# coexist with a second crate claiming the same native library, and it puts a large C++ runtime
+# inside the D17 worker whose whole design is about not trusting parsers.
+#
+# So there is one inference runtime in this image and not two. The cost is that a model has to be
+# **converted** to `.rten` before it can be loaded — `rten` is a smaller project than ONNX Runtime
+# and an unsupported operator in a model's graph is a real possibility. For `bge-m3` it is not: the
+# published ONNX export uses opset 11 and twenty-eight operator types, all of which `rten` 0.24
+# implements, and `docs/08-BYO-INFRA.md §18.1` records the conversion so an operator can reproduce
+# it. A model whose graph `rten` cannot run is a decision to reopen, not a workaround to write.
+#
+# `rten-tensor` is not a separate choice. It is the tensor type `rten::Model::run` takes and
+# returns, published in lockstep with `rten`, and `rten` does not re-export it — so a caller that
+# builds an input has to name it.
+rten-tensor  = "0.24.0"
+
+# The tokenizer half of the same decision, and it has to be the model's own.
+#
+# A `.rten` graph takes token ids, not text. `bge-m3` is XLM-RoBERTa — a SentencePiece unigram
+# vocabulary of 250k pieces — and its `tokenizer.json` is the only thing that turns a chunk into the
+# ids those weights were trained against. Approximating it is not an option in the way an
+# approximate chunker would be: a wrong tokenization does not fail, it produces a perfectly
+# well-formed 1024-wide vector of the wrong text, which is the shape `crates/indexing/src/ocr.rs`
+# records for the wrong OCR weights — noise that reads as content.
+#
+# Same three properties as above. Apache-2.0, no `links` key anywhere in its subtree, and pure Rust
+# **only with `default-features = false`**: the default set enables `onig` (Oniguruma, a C regex
+# engine, whose `onig_sys` does declare `links`) and `esaxx_fast` (which turns on `esaxx-rs/cpp` and
+# compiles C++). Neither is needed to *load* a trained tokenizer, so both stay off and `fancy-regex`
+# — pure Rust — is the pattern backend. That is not a tuning preference; it is the same `links`
+# argument that chose the runtime, and turning the default features back on would quietly undo it.
+#
+# It brings `rayon`, which `rten` already brought, so the note on `rten` above covers it.
+tokenizers   = { version = "0.23", default-features = false, features = ["fancy-regex"] }
+
 # pdf page rasterisation
 #
 # `ENC-537`. OCR needs pixels and nothing in this repository turned a PDF page into any, so the

@@ -78,14 +78,21 @@
 //!
 //! # What is deliberately not here
 //!
-//! **No weights, but the model is now decided.** Q14 is answered — [`model::ACTIVE`] is `bge-m3`
-//! at 1024 dimensions, delivered by mount rather than baked into the image ([`model::DELIVERY`]).
-//! That fixes the width the Milvus collection is created with and the string
-//! `index_manifests.embedding_model` records; changing it later is a full reindex (`docs/07 §9`),
-//! which is why it was settled before the first production index rather than after.
+//! **No weights in this repository, and the inference is now here.** Q14 is answered —
+//! [`model::ACTIVE`] is `bge-m3` at 1024 dimensions, delivered by mount rather than baked into the
+//! image ([`model::DELIVERY`]). That fixes the width the Milvus collection is created with and the
+//! string `index_manifests.embedding_model` records; changing it later is a full reindex
+//! (`docs/07 §9`), which is why it was settled before the first production index rather than after.
 //!
-//! What is still absent is the *inference*: this crate ships [`NoLocalModel`] and
-//! [`NoRemoteProvider`], in the deny-by-default shape `crates/core`'s policy stages and
+//! [`MountedModel`] (`ENC-661`) is the local provider that loads those weights and runs the forward
+//! pass, so a deployment that has staged the model embeds and one that has not does not. **What is
+//! still absent is any *remote* provider**: [`NoRemoteProvider`] is the only
+//! `EmbeddingProvider<Remote>` in the workspace, so every deployment today is
+//! [`EmbeddingRouter::air_gapped`] whether or not it says so.
+//!
+//! [`NoLocalModel`] stays, and that is not vestigial. It is what a deployment has before it mounts
+//! anything and what one has when the model volume fails to attach, and it refuses rather than
+//! returning an empty vector — the deny-by-default shape `crates/core`'s policy stages and
 //! `crates/preview::NoRenderer` use. A deployment without weights refuses to index rather than
 //! indexing nothing, which is the distinction the three guards above exist to hold.
 //!
@@ -101,6 +108,7 @@
 pub mod error;
 pub mod locality;
 pub mod model;
+pub mod mounted;
 pub mod provider;
 pub mod router;
 pub mod text;
@@ -108,6 +116,7 @@ pub mod text;
 pub use error::{EmbeddingError, Result};
 pub use locality::{Local, Locality, Remote};
 pub use model::{EmbeddingModel, ACTIVE, DELIVERY};
+pub use mounted::MountedModel;
 pub use provider::{
     Availability, Embedding, EmbeddingProvider, ModelId, NoLocalModel, NoRemoteProvider,
 };
