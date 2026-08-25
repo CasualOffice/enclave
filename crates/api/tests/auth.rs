@@ -403,6 +403,20 @@ async fn k12_an_unknown_address_and_a_wrong_password_are_indistinguishable() {
 /// The fixtures give both tenants the same local parts and the same password, so the only thing
 /// that can refuse this is tenancy. The positive control is in the same test: the *same* credential
 /// on beta's own host succeeds.
+///
+/// # Which mechanism this test actually proves — recorded because it is not the obvious one
+///
+/// `docs/12-TESTING.md §1.2` asks that a deliberate violation which fails nothing be written down
+/// rather than quietly reworded. Removing the application-level `u.tenant_id = $1` predicate from
+/// `SELECT_ACCOUNT_BY_EMAIL` leaves **this test green**: the lookup runs inside
+/// `TenantScoped::begin(alpha)`, so beta's `users` row is not filtered out — it is not visible to
+/// the transaction at all. What holds the property here is **row-level security**, layer 1 of
+/// `docs/04-DATA-MODEL.md §3`.
+///
+/// Layer 2, the predicate itself, is held by the unit test
+/// `routes::auth::tests::every_query_carries_its_own_tenant_predicate`, which does fail on that
+/// edit — verified, not assumed. Both layers are asserted; they are just asserted in two places,
+/// and a reader who assumed this test covered both would delete the wrong one.
 #[tokio::test]
 #[ignore = "requires a live PostgreSQL; CI runs it with --include-ignored"]
 async fn k13_a_beta_user_cannot_authenticate_on_alphas_host() {
