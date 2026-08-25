@@ -16,6 +16,7 @@ pub mod me;
 pub mod metrics_listener;
 pub mod preview;
 pub mod refusal;
+pub mod routes;
 pub mod state;
 
 use std::sync::Arc;
@@ -112,6 +113,30 @@ pub fn router(state: ApiState, delivery: Delivery) -> Router {
         .route("/api/v1/libraries/{id}/items", get(content::browse))
         .route("/api/v1/files/{id}", get(content::file_metadata))
         .route("/api/v1/files/{id}/versions", get(content::file_versions))
+        // Upload (docs/05-API.md §8). The bytes never pass through here: `POST /uploads` decides,
+        // then hands back signed URLs the client writes to directly, which is why the API's memory
+        // is flat for a 5 GB upload and a 5 KB one alike. `complete` answers `202 SCANNING` and
+        // cannot answer anything else — rule 9 is a property of the state machine, not of this
+        // registration (crates/api/src/routes/uploads.rs).
+        .route("/api/v1/uploads", post(routes::uploads::create))
+        .route("/api/v1/uploads/{id}/complete", post(routes::uploads::complete))
+        .route(
+            "/api/v1/uploads/{id}",
+            get(routes::uploads::progress).delete(routes::uploads::abort),
+        )
+        // Sharing (docs/05-API.md §10). Creating a link is a `file.share` question and creating one
+        // that leaves the tenant is a `file.share_external` question; they are separate actions
+        // because external sharing is the highest-consequence grant in the system, and the handler
+        // picks between them from the requested audience alone.
+        //
+        // `GET /shares/{token}` — the unauthenticated redemption — is **not** registered. It has no
+        // way to resolve a token to a tenant: `share_links` is under FORCE row-level security, so
+        // the digest lookup sees one tenant on a scoped connection and raises on an unscoped one,
+        // and the only connection that would work is refused outside `crates/db` by the no-raw-pool
+        // gate. `ENC-692` carries the finding and the two candidate designs; registering a route
+        // that could only 503 is the ENC-170 shape this router already refuses to have.
+        .route("/api/v1/files/{id}/shares", get(routes::shares::list).post(routes::shares::create))
+        .route("/api/v1/shares/{id}", patch(routes::shares::update).delete(routes::shares::revoke))
         // Delivery (docs/05-API.md §9). Download is a POST because it has side effects: it spends
         // a share-link budget, writes an audit row, and may demand a justification. Preview is a
         // separate route because it is a separate permission — collapsing them is the failure the
