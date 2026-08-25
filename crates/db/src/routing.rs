@@ -74,10 +74,7 @@ use crate::DbError;
 /// [`DbError::PlatformNotConfigured`] when the deployment has no platform DSN — which is a
 /// deployment that cannot sign anyone in and should say so loudly rather than resolve every host to
 /// nothing — and [`DbError::Query`] for a statement failure.
-pub async fn resolve_routed_tenant(
-    pool: &DbPool,
-    host: &str,
-) -> Result<Option<TenantId>, DbError> {
+pub async fn resolve_routed_tenant(pool: &DbPool, host: &str) -> Result<Option<TenantId>, DbError> {
     let Some(slug) = routing_slug(host) else { return Ok(None) };
 
     let mut conn = pool.platform_connection().await?;
@@ -139,7 +136,10 @@ mod tests {
     fn the_leftmost_label_is_the_slug() {
         assert_eq!(routing_slug("tenant-alpha.enclave.example").as_deref(), Some("tenant-alpha"));
         assert_eq!(routing_slug("TENANT-ALPHA.Enclave.Example").as_deref(), Some("tenant-alpha"));
-        assert_eq!(routing_slug("tenant-alpha.enclave.example:8443").as_deref(), Some("tenant-alpha"));
+        assert_eq!(
+            routing_slug("tenant-alpha.enclave.example:8443").as_deref(),
+            Some("tenant-alpha")
+        );
         assert_eq!(routing_slug("tenant-alpha.enclave.example.").as_deref(), Some("tenant-alpha"));
         assert_eq!(routing_slug("  tenant-beta.enclave.example  ").as_deref(), Some("tenant-beta"));
     }

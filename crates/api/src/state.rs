@@ -38,6 +38,16 @@ pub struct ApiState {
     /// cache because it reads no rules. There is nothing to invalidate, and that is a posture
     /// rather than a gap (`ENC-633`).
     pub dlp_rule_cache: Option<SharedDlpRuleCache>,
+    /// What `/api/v1/auth/*` issues, rotates and revokes with (`ENC-685`).
+    ///
+    /// Not `Option`, for [`crate::Delivery`]'s reason: the routes register unconditionally, so a
+    /// dependency a deployment could omit would be an unexplained `500` rather than a refusal. A
+    /// deployment that has wired no token service carries
+    /// [`AuthSurface::unconfigured`](crate::routes::auth::AuthSurface::unconfigured), which refuses
+    /// every route with `503` and says so at start-up — distinguishable from a wrong password,
+    /// which is the property that matters when someone is deciding whether to look at the
+    /// configuration or at the user.
+    pub auth: Arc<crate::routes::auth::AuthSurface>,
     /// Where a refusal *this layer* takes is recorded (`ENC-606`).
     ///
     /// Not `Option`, and not a builder step that a deployment could forget. `ENC-606` was a class
@@ -84,8 +94,22 @@ impl ApiState {
             edge: Arc::new(Edge::untrusting()),
             rule_cache: None,
             dlp_rule_cache: None,
+            auth: Arc::new(crate::routes::auth::AuthSurface::unconfigured()),
             audit,
         }
+    }
+
+    /// Supplies the authentication surface `/api/v1/auth/*` runs on.
+    ///
+    /// A builder step rather than a constructor argument for the same reason [`ApiState::with_edge`]
+    /// is one — and with a consequence that is loud rather than quiet when it is forgotten: every
+    /// auth route answers `503` and `main.rs` warns about it at boot. That is the direction to fail
+    /// in; the alternative, a surface assembled from defaults, would be a deployment issuing tokens
+    /// signed by a key nobody chose.
+    #[must_use]
+    pub fn with_auth(mut self, auth: crate::routes::auth::AuthSurface) -> Self {
+        self.auth = Arc::new(auth);
+        self
     }
 
     /// Supplies the sink handler refusals are recorded into.

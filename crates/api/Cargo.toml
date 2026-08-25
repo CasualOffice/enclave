@@ -22,6 +22,9 @@ enclave-classification = { workspace = true }
 enclave-dlp = { workspace = true }
 enclave-retention = { workspace = true }
 enclave-files = { workspace = true }
+# `normalize_email` on the login path: the writer of `users.normalized_email` and its reader must
+# fold identically, or a login lookup finds a second row for the same person (crates/identity).
+enclave-identity = { workspace = true }
 # The rendition pipeline, behind `PreviewPipeline`.
 enclave-preview = { workspace = true }
 enclave-versions = { workspace = true }

@@ -1346,6 +1346,7 @@ dependencies = [
  "enclave-dlp",
  "enclave-events",
  "enclave-files",
+ "enclave-identity",
  "enclave-information_barriers",
  "enclave-observability",
  "enclave-preview",
