@@ -457,6 +457,25 @@ impl Answer {
         serde_json::from_str(&self.body).expect("a JSON body")
     }
 
+    /// The body, in a form that is useful in a failure message.
+    ///
+    /// A rendition is a few hundred kilobytes of PNG, and `assert!(.., "{}", answer.body)` on one
+    /// buries the assertion under it — which is how a legible failure becomes a scroll. Binary
+    /// bodies are reported by size and type, which is all a reader needs: the interesting question
+    /// about them is answered by the assertions, not by the bytes.
+    fn snippet(&self) -> String {
+        let media = self.content_type.as_deref().unwrap_or("no content type");
+        if media.starts_with("image/") || media.starts_with("application/pdf") {
+            return format!("<{} bytes of {media}>", self.bytes.len());
+        }
+        let head: String = self.body.chars().take(400).collect();
+        if head.len() < self.body.len() {
+            format!("{head}…")
+        } else {
+            head
+        }
+    }
+
     /// Asserts that nothing in the response could be followed to the original bytes.
     ///
     /// The whole body is searched as text rather than field by field: a URL that leaked through a
@@ -465,12 +484,12 @@ impl Answer {
         assert!(
             !self.body.contains("http://") && !self.body.contains("https://"),
             "a delivery response must carry no URL: {}",
-            self.body
+            self.snippet()
         );
         assert!(
             !self.body.contains(&content.object_key),
             "a response must never carry an object key: {}",
-            self.body
+            self.snippet()
         );
     }
 }
@@ -635,7 +654,7 @@ async fn a2_export_is_deniable_independently_of_download() {
         refused.status,
         StatusCode::FORBIDDEN,
         "a caller with `download` and no `export` was served an export: {}",
-        refused.body
+        refused.snippet()
     );
     assert_eq!(refused.json()["error"]["code"], "ACCESS_DENIED");
     refused.carries_no_original(&content);
@@ -647,7 +666,7 @@ async fn a2_export_is_deniable_independently_of_download() {
         allowed.status,
         StatusCode::OK,
         "the download control failed, so the export refusal proves nothing: {}",
-        allowed.body
+        allowed.snippet()
     );
 
     // And the converse caller, which is the half a naive download-blocking policy misses.
@@ -656,7 +675,7 @@ async fn a2_export_is_deniable_independently_of_download() {
         exported.status,
         StatusCode::OK,
         "a caller with `export` was refused an export: {}",
-        exported.body
+        exported.snippet()
     );
     assert_eq!(exported.content_type.as_deref(), Some("image/png"));
     assert_eq!(exported.bytes, stub_rendition(), "the export carried something else");
@@ -667,7 +686,7 @@ async fn a2_export_is_deniable_independently_of_download() {
         denied_download.status,
         StatusCode::FORBIDDEN,
         "a caller with `export` and no `download` was served the original: {}",
-        denied_download.body
+        denied_download.snippet()
     );
 
     // One URL, minted for one authorized download, and nothing else. The export path reached the
@@ -716,25 +735,25 @@ async fn a2_print_is_deniable_independently_of_download() {
         refused.status,
         StatusCode::FORBIDDEN,
         "a caller with `download` and no `print` was granted a print token: {}",
-        refused.body
+        refused.snippet()
     );
     assert!(
         refused.json()["token"].is_null(),
         "a refused print request still carried a token: {}",
-        refused.body
+        refused.snippet()
     );
     refused.carries_no_original(&content);
 
     // The control: the same caller's download works.
     let allowed = post_download(&app, &downloader_bearer, content.file).await;
-    assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.body);
+    assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.snippet());
 
     let granted = post_print_token(&app, &printer_bearer, content.file).await;
     assert_eq!(
         granted.status,
         StatusCode::OK,
         "a caller with `print` was refused a print grant: {}",
-        granted.body
+        granted.snippet()
     );
     let grant_body = granted.json();
     assert_eq!(grant_body["expiresIn"], 120, "the grant's lifetime is its revocation window");
@@ -753,7 +772,7 @@ async fn a2_print_is_deniable_independently_of_download() {
         denied_download.status,
         StatusCode::FORBIDDEN,
         "a caller with `print` and no `download` was served the original: {}",
-        denied_download.body
+        denied_download.snippet()
     );
 
     // Two grants for the same caller and the same file are two different capabilities. A handler
@@ -811,7 +830,7 @@ async fn a_thumbnail_is_answered_by_the_preview_permission_and_no_other() {
         StatusCode::FORBIDDEN,
         "a caller denied `preview` was served a thumbnail — the route is asking some other \
          question: {}",
-        refused.body
+        refused.snippet()
     );
     refused.carries_no_original(&content);
 
@@ -822,7 +841,7 @@ async fn a_thumbnail_is_answered_by_the_preview_permission_and_no_other() {
         served.status,
         StatusCode::OK,
         "a caller with `preview` was refused a thumbnail: {}",
-        served.body
+        served.snippet()
     );
     assert_eq!(served.content_type.as_deref(), Some("image/png"));
     assert_eq!(served.bytes, stub_rendition());
@@ -892,7 +911,7 @@ async fn no_original_url_is_generated_on_the_export_or_thumbnail_path() {
 
     for (name, answer) in [("export", &export), ("thumbnail", &thumbnail), ("print-token", &print)]
     {
-        assert_eq!(answer.status, StatusCode::OK, "{name} was refused: {}", answer.body);
+        assert_eq!(answer.status, StatusCode::OK, "{name} was refused: {}", answer.snippet());
         answer.carries_no_original(&content);
     }
     // The controls: the two rendition paths returned the pipeline's bytes, so "nothing reached the
@@ -954,13 +973,13 @@ async fn a_no_download_obligation_refuses_an_export_and_permits_a_print_grant() 
         export.status,
         StatusCode::FORBIDDEN,
         "an export is a downloadable representation and NO_DOWNLOAD must refuse it: {}",
-        export.body
+        export.snippet()
     );
     assert_eq!(
         export.json()["error"]["code"],
         "PREVIEW_ONLY",
         "the caller is told they may view but not take away: {}",
-        export.body
+        export.snippet()
     );
     export.carries_no_original(&content);
 
@@ -970,7 +989,7 @@ async fn a_no_download_obligation_refuses_an_export_and_permits_a_print_grant() 
         StatusCode::OK,
         "a print grant carries no bytes and no URL, so NO_DOWNLOAD constrains nothing about it — \
          refusing here would be rule 6's collapse arriving through the obligation set: {}",
-        print.body
+        print.snippet()
     );
 
     assert!(store.touched().is_empty(), "saw {:?}", store.touched());
@@ -1056,7 +1075,7 @@ async fn a_watermark_obligation_is_discharged_in_the_bytes_or_refuses_the_delive
         marked.status,
         StatusCode::OK,
         "a watermark is dischargeable on a raster export, so it must succeed: {}",
-        marked.body
+        marked.snippet()
     );
     assert_ne!(
         marked.bytes,
@@ -1071,7 +1090,7 @@ async fn a_watermark_obligation_is_discharged_in_the_bytes_or_refuses_the_delive
         StatusCode::FORBIDDEN,
         "a PDF export carrying a watermark obligation was served, and nothing in crates/preview \
          can have marked it (ENC-723): {}",
-        unmarkable.body
+        unmarkable.snippet()
     );
     unmarkable.carries_no_original(&content);
 
@@ -1103,7 +1122,7 @@ async fn a_watermark_obligation_is_discharged_in_the_bytes_or_refuses_the_delive
         StatusCode::FORBIDDEN => {
             assert_eq!(thumbnail.json()["error"]["code"], "ACCESS_DENIED");
         }
-        other => panic!("a watermarked thumbnail answered {other}: {}", thumbnail.body),
+        other => panic!("a watermarked thumbnail answered {other}: {}", thumbnail.snippet()),
     }
 
     assert!(store.touched().is_empty(), "saw {:?}", store.touched());
@@ -1146,7 +1165,7 @@ async fn t1_a_file_in_another_tenant_is_reported_as_absent_on_all_three_routes()
             StatusCode::NOT_FOUND,
             "{name} answered a cross-tenant id with something other than 404, so it confirms the \
              file exists: {}",
-            answer.body
+            answer.snippet()
         );
         assert_eq!(answer.json()["error"]["code"], "NOT_FOUND");
         answer.carries_no_original(&beta);
@@ -1194,7 +1213,7 @@ async fn content_antivirus_has_not_cleared_is_delivered_by_none_of_the_three() {
             answer.status,
             StatusCode::NOT_FOUND,
             "{name} served or granted content antivirus has not cleared: {}",
-            answer.body
+            answer.snippet()
         );
         answer.carries_no_original(&content);
     }
@@ -1259,14 +1278,14 @@ async fn the_real_router_serves_all_three_routes_rather_than_failing_opaquely() 
             answer.status,
             StatusCode::INTERNAL_SERVER_ERROR,
             "the {name} route answered 500 — its dependency is not wired: {}",
-            answer.body
+            answer.snippet()
         );
         assert_eq!(
             answer.status,
             StatusCode::SERVICE_UNAVAILABLE,
             "an unconfigured deployment must say the service cannot do this yet, not that the \
              file is missing: {}",
-            answer.body
+            answer.snippet()
         );
         answer.carries_no_original(&content);
     }
@@ -1278,7 +1297,7 @@ async fn the_real_router_serves_all_three_routes_rather_than_failing_opaquely() 
         print.status,
         StatusCode::OK,
         "the print-token route is not reachable through the real router: {}",
-        print.body
+        print.snippet()
     );
     assert!(print.json()["token"].as_str().is_some_and(|token| !token.is_empty()));
 
