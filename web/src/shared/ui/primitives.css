@@ -1,0 +1,435 @@
+/* The primitive layer.
+ *
+ * `docs/17 §11`: `shared/ui` holds primitives only — things with no domain
+ * knowledge. A component that knows what a classification is lives in
+ * `entities/classification`, not here.
+ *
+ * Every value is lifted from `web/design-system/enclave-client-prototype.html`,
+ * which is authoritative for appearance. Every *property name* is logical, which
+ * the prototype's inline styles are not: it is `left`, `margin-left:auto` and
+ * `text-align:right` throughout, and `en-XB` mirrors direction in CI. Copy its
+ * values, never its property names (`docs/17 §8`).
+ *
+ * The z-index scale for the whole application, in one place, because an
+ * undocumented one becomes `z-index: 9999`:
+ *
+ *   1  in-surface accents (a selected row's bar)
+ *   2  pinned rows inside a scroller (group headers)
+ *   3  a scroller's own sticky chrome (column headers)
+ *   10 the floating selection bar
+ *   20 popovers and menus
+ *   30 dialogs and their scrim
+ *   40 the command palette
+ *   50 toasts
+ *
+ * Nothing may invent a value outside it.
+ */
+
+/* ------------------------------------------------------------------ button */
+
+.ui-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  block-size: 28px;
+  padding-inline: 10px;
+  border-radius: var(--r-ctrl);
+  border: 0;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: -0.006em;
+  white-space: nowrap;
+  cursor: pointer;
+  background: var(--sheet);
+  color: var(--fg);
+  box-shadow: var(--hairline);
+  transition:
+    transform 120ms cubic-bezier(0.32, 0.72, 0, 1),
+    background-color 120ms ease,
+    filter 120ms ease;
+}
+
+.ui-btn:hover {
+  background: var(--sunken);
+}
+
+/* Tactile: the control moves under the press. One pixel, not a bounce. */
+.ui-btn:active {
+  transform: translateY(1px);
+}
+
+.ui-btn[data-variant='primary'] {
+  background: var(--accent);
+  /* Not `#fff`. The three dark accents are light and white on #8B85FF is
+   * 3.04:1 — `docs/09 §18`'s derived contrast-safe pair, in `tokens.css`. */
+  color: var(--on-accent);
+  box-shadow: none;
+}
+
+.ui-btn[data-variant='primary']:hover {
+  background: var(--accent);
+  filter: brightness(1.08);
+}
+
+.ui-btn[data-variant='ghost'] {
+  background: transparent;
+  color: var(--fg2);
+  box-shadow: none;
+}
+
+.ui-btn[data-variant='ghost']:hover {
+  background: var(--hover);
+  color: var(--fg);
+}
+
+.ui-btn[data-variant='soft'] {
+  background: var(--accent-soft);
+  color: var(--accent);
+  box-shadow: none;
+}
+
+.ui-btn[data-variant='danger'] {
+  background: var(--danger);
+  color: #fff;
+  box-shadow: none;
+}
+
+.ui-btn[data-size='sm'] {
+  block-size: 24px;
+  padding-inline: 8px;
+  font-size: 12px;
+}
+
+.ui-btn[data-size='lg'] {
+  block-size: 36px;
+  padding-inline: 14px;
+  font-size: 13px;
+  border-radius: calc(var(--r-ctrl) + 2px);
+}
+
+/* --------------------------------------------------------------------------
+ * The three ways a control can be non-actionable (`docs/17 §6`).
+ *
+ * These are SECURITY treatments, not styling, and the rule is that they may
+ * never look alike. A user who learns that dimmed means "not written yet" on
+ * five harmless surfaces carries that habit to the one where dimmed means
+ * "DLP refused this", and stops reading it. `ENC-673` asserts that denied and
+ * unbuilt never share a class.
+ *
+ *   denied   — policy refused. Focusable, keeps its colour, carries a reason
+ *              and a remedy. The user can still find out why and ask.
+ *   unbuilt  — the product does not have it yet. NOT focusable, neutral, no
+ *              remedy, future tense about the product rather than about you.
+ *   busy     — in flight. Focusable, no reason, and it will resolve on its own.
+ * -------------------------------------------------------------------------- */
+
+.ui-btn[data-state='denied'] {
+  cursor: not-allowed;
+  /* Keeps full colour: a denial is information, and greying it out is how it
+   * stops being read. The reason beside it does the work. */
+  box-shadow:
+    var(--hairline),
+    inset 0 0 0 1px color-mix(in srgb, var(--danger) 22%, transparent);
+  color: var(--fg2);
+}
+
+.ui-btn[data-state='denied']:hover {
+  background: var(--sheet);
+}
+
+.ui-btn[data-state='unbuilt'] {
+  cursor: default;
+  opacity: 0.45;
+  /* Never the denial colour, and never focusable — `tabIndex={-1}` is set by
+   * the component, not here, because focus order is behaviour. */
+  box-shadow: var(--hairline);
+  color: var(--fg3);
+}
+
+.ui-btn[data-state='unbuilt']:hover {
+  background: var(--sheet);
+}
+
+.ui-btn[data-state='busy'] {
+  cursor: progress;
+  color: var(--fg2);
+}
+
+.ui-btn[data-state='busy']:active,
+.ui-btn[data-state='denied']:active,
+.ui-btn[data-state='unbuilt']:active {
+  transform: none;
+}
+
+/* The denial's reason and its one remedy, rendered as text beside the control.
+ *
+ * `docs/06 §24`: a stable code, a user-safe sentence, a remediation, and
+ * **nothing about which policy matched**. The remedy is a real button, not a
+ * line of prose, because "Connect to the VPN" that a user cannot act on is a
+ * description of their problem rather than a way out of it — and because
+ * `aria-disabled` plus `title` is not a screen-reader path (`docs/09 §15`). */
+.ui-denial {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  /* Full colour, never dimmed: a denial is information, and greying it out is
+   * how it stops being read. */
+  color: var(--fg2);
+}
+
+.ui-denial-remedy {
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 0;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* A neutral marker on an unbuilt control. Deliberately not a pill in any
+ * semantic colour — `plans/M5-MVP-GA.md` D33 requires it to read as deliberate
+ * rather than broken, and never as a refusal. */
+.ui-later {
+  display: inline-flex;
+  align-items: center;
+  block-size: 18px;
+  padding-inline: 7px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0;
+  background: var(--sunken);
+  /* `--fg3` on `--sunken` is 3.79:1 at this size and fails AA.
+   *
+   * It had never been reported because in the sidebar the chip sits inside a
+   * container with `opacity: .5`, and axe cannot see through that — so the
+   * marker was failing everywhere it was actually legible and passing
+   * everywhere it was not. `ENC-682` again, and a good argument for putting a
+   * primitive on a route of its own rather than only inside its first caller. */
+  color: var(--fg2);
+  white-space: nowrap;
+}
+
+/* The release note beside an unbuilt control. Future tense, about the product,
+ * and never offered as something the user can act on. */
+.ui-later-note {
+  font-size: 11.5px;
+  color: var(--fg2);
+}
+
+/* -------------------------------------------------------------- icon button */
+
+.ui-iconbtn {
+  inline-size: 26px;
+  block-size: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--r-ctrl);
+  border: 0;
+  background: transparent;
+  color: var(--fg3);
+  cursor: pointer;
+  padding: 0;
+  transition: background-color 120ms ease;
+}
+
+.ui-iconbtn:hover {
+  background: var(--hover);
+  color: var(--fg);
+}
+
+/* --------------------------------------------------------------------- pill */
+
+.ui-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  block-size: 20px;
+  padding-inline: 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0;
+  white-space: nowrap;
+  background: var(--sunken);
+  color: var(--fg2);
+}
+
+/* The tinted variants are mixed against `--fg` rather than left at the raw
+ * semantic colour, for the same reason the classification badge is: the raw
+ * colour on its own 12% tint is under 4.5:1 for `warn` and `ok`. */
+.ui-pill[data-tone='info'] {
+  background: color-mix(in srgb, var(--info) 12%, transparent);
+  color: color-mix(in srgb, var(--info) 72%, var(--fg));
+}
+
+.ui-pill[data-tone='warn'] {
+  background: color-mix(in srgb, var(--warn) 14%, transparent);
+  color: color-mix(in srgb, var(--warn) 66%, var(--fg));
+}
+
+.ui-pill[data-tone='danger'] {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: color-mix(in srgb, var(--danger) 74%, var(--fg));
+}
+
+.ui-pill[data-tone='ok'] {
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+  color: color-mix(in srgb, var(--ok) 70%, var(--fg));
+}
+
+.ui-pill[data-tone='accent'] {
+  background: var(--accent-soft);
+  color: color-mix(in srgb, var(--accent) 78%, var(--fg));
+}
+
+.ui-pill[data-tone='outline'] {
+  background: transparent;
+  box-shadow: var(--hairline);
+  color: var(--fg2);
+}
+
+/* ------------------------------------------------------------------ avatar */
+
+.ui-avatar {
+  inline-size: 20px;
+  block-size: 20px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0;
+  flex: none;
+  background: var(--sunken);
+  color: var(--fg2);
+}
+
+.ui-avatar[data-size='lg'] {
+  inline-size: 26px;
+  block-size: 26px;
+  font-size: 11px;
+}
+
+/* The four tints are token pairs so they flip with the theme. Taking the
+ * background from one theme and the foreground from the other is how a legible
+ * chip becomes an illegible one. */
+.ui-avatar[data-tone='a'] {
+  background: var(--av-a-bg);
+  color: var(--av-a-fg);
+}
+.ui-avatar[data-tone='b'] {
+  background: var(--av-b-bg);
+  color: var(--av-b-fg);
+}
+.ui-avatar[data-tone='c'] {
+  background: var(--av-c-bg);
+  color: var(--av-c-fg);
+}
+.ui-avatar[data-tone='d'] {
+  background: var(--av-d-bg);
+  color: var(--av-d-fg);
+}
+
+/* A stack overlaps inward, which is a logical direction, not a physical one. */
+.ui-avatar-stack {
+  display: inline-flex;
+}
+
+.ui-avatar-stack .ui-avatar {
+  margin-inline-start: -6px;
+  box-shadow: 0 0 0 2px var(--sheet);
+}
+
+.ui-avatar-stack .ui-avatar:first-child {
+  margin-inline-start: 0;
+}
+
+/* --------------------------------------------------------------------- kbd */
+
+.ui-kbd {
+  font-family: var(--mono);
+  font-size: 10px;
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--sunken);
+  color: var(--fg2);
+  box-shadow: inset 0 -1px 0 var(--line-strong);
+  white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------- skeleton */
+
+.ui-skeleton {
+  block-size: 10px;
+  border-radius: 4px;
+  background: linear-gradient(90deg, var(--sunken) 25%, var(--g150) 50%, var(--sunken) 75%);
+  background-size: 200% 100%;
+  animation: ui-shimmer 1.4s linear infinite;
+}
+
+@keyframes ui-shimmer {
+  to {
+    background-position: -200% 0;
+  }
+}
+
+/* ------------------------------------------------------------------ motion */
+
+/* The prototype's two entrances, named. `docs/09 §12`: 120-200 ms, standard
+ * easing, only on enter/exit, expansion and position change. */
+@keyframes ui-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.ui-in {
+  animation: ui-in 0.25s both;
+}
+
+/* `docs/09 §12` and `docs/17`: reduced motion keeps opacity and removes the
+ * rest. A shimmer and a rise are both decoration on top of something that
+ * already communicates without them. */
+@media (prefers-reduced-motion: reduce) {
+  .ui-skeleton {
+    animation: none;
+    background: var(--sunken);
+  }
+
+  .ui-in {
+    animation: none;
+  }
+
+  .ui-btn,
+  .ui-iconbtn {
+    transition: none;
+  }
+}
+
+/* --------------------------------------------------------------- utilities */
+
+/* Visually hidden, still announced. For live regions and for the label of a
+ * control whose visible form is an icon. */
+.ui-sr-only {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}

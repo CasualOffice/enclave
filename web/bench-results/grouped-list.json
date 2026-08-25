@@ -1,0 +1,43 @@
+{
+  "firstPaint": {
+    "firstPaintMs": 165.89999997615814,
+    "domContentLoadedMs": 78.09999999403954,
+    "rowsInDom": 46,
+    "groupsInDom": 2,
+    "contentHeightPx": 3611662,
+    "totalNodes": 948,
+    "budgetMs": 400,
+    "rows": 100000
+  },
+  "scroll": {
+    "frames": 899,
+    "p50": 1.5,
+    "p95": 5.399999999999977,
+    "p99": 7.799999999999983,
+    "max": 8.700000000000045,
+    "overBudget": 0,
+    "overBudgetRatio": 0,
+    "scrolledPx": 81000,
+    "renderCount": 342,
+    "frameBudgetMs": 16.666666666666668,
+    "rows": 100000
+  },
+  "collapseInside": {
+    "commitMs": 10.200000017881393,
+    "topBefore": 400000,
+    "topAfter": 388888,
+    "heightBefore": 3611662,
+    "heightAfter": 3511834,
+    "pinnedName": "Brightwater Utilities — Amendments 2021",
+    "nowPinned": "Brightwater Utilities — Amendments 2021",
+    "collapsed": true
+  },
+  "collapseBelow": {
+    "anchorBefore": "Security questionnaire response 2021-129 — Brightwater Utilities.docx",
+    "anchorAfter": "Security questionnaire response 2021-129 — Brightwater Utilities.docx",
+    "topBefore": 488000,
+    "topAfter": 488000,
+    "heightBefore": 3611662,
+    "heightAfter": 3599494
+  }
+}
