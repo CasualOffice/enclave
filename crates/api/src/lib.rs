@@ -16,6 +16,7 @@ pub mod me;
 pub mod metrics_listener;
 pub mod preview;
 pub mod refusal;
+pub mod routes;
 pub mod state;
 
 use std::sync::Arc;
@@ -118,6 +119,11 @@ pub fn router(state: ApiState, delivery: Delivery) -> Router {
         // split exists to prevent (docs/01-PRD.md §18).
         .route("/api/v1/files/{id}/download", post(download::download))
         .route("/api/v1/files/{id}/preview", get(preview::preview))
+        // Search (docs/05-API.md §11). A POST because the query is a body — a filter set in a URL
+        // is a tenant's document titles in every proxy log — and because it is not idempotent in
+        // the sense that matters here: it writes an audit row. Every result it returns has been
+        // confirmed against PostgreSQL by `enclave_search::PostFilter` (CLAUDE.md rule 5).
+        .route("/api/v1/search", post(routes::search::search))
         // Administration (docs/05-API.md §14). Registered here rather than in a router of its own
         // so that `main.rs` needs no second line to serve it: the routes need nothing the rest of
         // the surface does not already have, and the one thing they *can* use — the rule cache —

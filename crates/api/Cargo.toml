@@ -21,6 +21,9 @@ enclave-information_barriers = { workspace = true }
 enclave-classification = { workspace = true }
 enclave-dlp = { workspace = true }
 enclave-retention = { workspace = true }
+# `POST /api/v1/search`. The post-filter, the lexical generator and the degraded envelope all live
+# there; this crate holds none of that logic and must not grow any (crates/api/src/routes/search.rs).
+enclave-search = { workspace = true }
 enclave-files = { workspace = true }
 # The rendition pipeline, behind `PreviewPipeline`.
 enclave-preview = { workspace = true }
