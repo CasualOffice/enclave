@@ -111,10 +111,27 @@ describe('sliceWindow', () => {
   });
 
   it('never renders the header it is pinning', () => {
-    const slice = sliceWindow(layout, 10_000, 900, 240);
-    expect(slice.stickyGroupIndex).toBe(1);
-    const headers = slice.items.filter((item) => item.kind === 'header');
-    expect(headers.map((item) => item.groupIndex)).not.toContain(slice.stickyGroupIndex);
+    /* Two positions, and the second is the one that matters.
+     *
+     * Deep inside a group the pinned header is far above the window anyway, so
+     * the guard is not exercised — deleting it left this green. The real case
+     * is just past a group boundary, where the pinned header is still inside
+     * the overscan band and *would* be rendered a second time. A duplicate row
+     * in the accessibility tree is the failure; watching it fail is what found
+     * that the first version of this test could not see it. */
+    const deep = sliceWindow(layout, 10_000, 900, 240);
+    expect(deep.stickyGroupIndex).toBe(1);
+    expect(
+      deep.items.filter((item) => item.kind === 'header').map((item) => item.groupIndex),
+    ).not.toContain(deep.stickyGroupIndex);
+
+    const justPast = sliceWindow(layout, layout.groups[1]!.top + 8, 900, 240);
+    expect(justPast.stickyGroupIndex).toBe(1);
+    const headers = justPast.items.filter((item) => item.kind === 'header');
+    // The positive control: other headers in range *are* rendered, so this is
+    // not passing because nothing is rendered at all.
+    expect(headers.length).toBeGreaterThan(0);
+    expect(headers.map((item) => item.groupIndex)).not.toContain(justPast.stickyGroupIndex);
   });
 
   it('pushes the pinned header off as the next one arrives', () => {
@@ -190,16 +207,23 @@ describe('the scroll anchor', () => {
   it('holds the viewport still when a group ABOVE it collapses', () => {
     const before = buildLayout(GROUPS, none, D);
     const rowsTop = before.groups[3]!.top + D.headerHeight;
-    const scrollTop = rowsTop + 2 * D.rowHeight;
+    /* Deliberately 13 px *past* a row boundary rather than on one. The first
+     * version of this test scrolled to an exact multiple of the row height, so
+     * deleting the `+ anchor.delta` term from `scrollTopForAnchor` left it
+     * green — the restore was wrong by up to 35 px and this assertion could not
+     * see it. Watching it fail is what found that; a zero delta is the one
+     * value that proves nothing. */
+    const scrollTop = rowsTop + 2 * D.rowHeight + 13;
     const anchor = anchorAt(before, scrollTop)!;
+    expect(anchor.delta).toBe(13);
 
     const after = buildLayout(GROUPS, new Set(['b']), D);
     const restored = scrollTopForAnchor(after, anchor, viewport);
 
-    // The same row is at the top of the viewport, and the scroll position moved
-    // by exactly the height that was removed above it.
+    // The same row is at the top of the viewport, offset by the same 13 px, and
+    // the scroll position moved by exactly the height removed above it.
     const afterRowsTop = after.groups[3]!.top + D.headerHeight;
-    expect(restored).toBe(afterRowsTop + 2 * D.rowHeight);
+    expect(restored).toBe(afterRowsTop + 2 * D.rowHeight + 13);
     expect(scrollTop - restored).toBe(1000 * D.rowHeight);
   });
 
