@@ -1,20 +1,20 @@
 {
   "firstPaint": {
-    "firstPaintMs": 97.7999999821186,
-    "domContentLoadedMs": 39.099999994039536,
+    "firstPaintMs": 165.89999997615814,
+    "domContentLoadedMs": 78.09999999403954,
     "rowsInDom": 46,
     "groupsInDom": 2,
     "contentHeightPx": 3611662,
-    "totalNodes": 947,
+    "totalNodes": 948,
     "budgetMs": 400,
     "rows": 100000
   },
   "scroll": {
     "frames": 899,
-    "p50": 0.5,
-    "p95": 3.400000000000091,
-    "p99": 4.100000000000023,
-    "max": 6.400000000000091,
+    "p50": 1.5,
+    "p95": 5.399999999999977,
+    "p99": 7.799999999999983,
+    "max": 8.700000000000045,
     "overBudget": 0,
     "overBudgetRatio": 0,
     "scrolledPx": 81000,
@@ -23,7 +23,7 @@
     "rows": 100000
   },
   "collapseInside": {
-    "commitMs": 8.599999994039536,
+    "commitMs": 10.200000017881393,
     "topBefore": 400000,
     "topAfter": 388888,
     "heightBefore": 3611662,

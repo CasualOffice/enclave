@@ -35,7 +35,7 @@ const API_CLASSIFICATION = {
 } as const satisfies Record<string, ClassificationLevel>;
 
 export const ApiClassification = z
-  .enum(Object.keys(API_CLASSIFICATION) as [keyof typeof API_CLASSIFICATION])
+  .enum(['PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'HIGHLY_CONFIDENTIAL', 'RESTRICTED', 'UNCLASSIFIED'])
   .transform((value): ClassificationLevel => API_CLASSIFICATION[value]);
 
 /**

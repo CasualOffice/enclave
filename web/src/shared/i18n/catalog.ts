@@ -613,6 +613,16 @@ export const catalog = {
     description:
       'Placeholder in the query field. The design reference adds “— or ask a question…”; that is deliberately absent, because asking a question is M7 and the field must not promise it.',
   },
+  'key.commandK': {
+    message: '⌘K',
+    description:
+      'Key cap for the command palette, shown beside Search in the sidebar. A key cap is a user-facing string like any other: it reads “Ctrl+K” on Windows and Linux and the modifier glyph is not universal, so it is translated rather than hard-coded.',
+  },
+  'key.commandJ': {
+    message: '⌘J',
+    description:
+      'Key cap for Ask, shown beside it in the sidebar. Same reasoning as key.commandK. The binding itself is registered and disabled until M7 (plans/M5-MVP-GA.md D33).',
+  },
   'search.key.escape': {
     message: 'Esc',
     description:

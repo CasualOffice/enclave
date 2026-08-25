@@ -24,8 +24,9 @@ interface NavItem {
   readonly label: MessageKey;
   readonly icon: IconName;
   readonly route?: RouteName;
-  /** A keyboard shortcut, shown so users learn it (`docs/09 §5`). */
-  readonly shortcut?: string;
+  /** A keyboard shortcut, shown so users learn it (`docs/09 §5`). A catalog key:
+   *  a key cap reads 'Ctrl+K' on Windows and the modifier glyph is not universal. */
+  readonly shortcut?: MessageKey;
   readonly trailing?: string;
   /**
    * `docs/09 §5` and `plans/M5-MVP-GA.md` D33: a surface the product does not
@@ -40,11 +41,21 @@ interface NavItem {
   readonly dot?: string;
 }
 
+/**
+ * The signed-in user, until `GET /api/v1/me` is wired.
+ *
+ * A fixture rather than a literal in the markup: `initials` is carried, never
+ * derived by splitting the name on whitespace, because name order is not
+ * universal (`docs/14 §6`) and "Nair Priya" would produce "NP" from one culture
+ * and "PN" from another for the same person.
+ */
+const VIEWER = { name: 'Priya Nair', initials: 'PN', tone: 'a' } as const;
+
 const PRIMARY: readonly NavItem[] = [
-  { label: 'nav.search', icon: 's', route: 'search', shortcut: '⌘K' },
+  { label: 'nav.search', icon: 's', route: 'search', shortcut: 'key.commandK' },
   { label: 'nav.inbox', icon: 'inbox', unbuilt: true },
   { label: 'nav.home', icon: 'home', route: 'home' },
-  { label: 'nav.ask', icon: 'spark', route: 'ask', shortcut: '⌘J' },
+  { label: 'nav.ask', icon: 'spark', route: 'ask', shortcut: 'key.commandJ' },
 ];
 
 const WORKSPACE: readonly NavItem[] = [
@@ -105,7 +116,7 @@ function NavLink({ item }: { item: NavItem }) {
       {label}
       {item.shortcut !== undefined && (
         <span className="shell-navlink-trailing">
-          <Kbd>{item.shortcut}</Kbd>
+          <Kbd>{t(item.shortcut)}</Kbd>
         </span>
       )}
       {item.trailing !== undefined && (
@@ -153,8 +164,12 @@ export function Shell({ children }: { children: ReactNode }) {
 
         <div className="shell-nav-foot">
           <a className="shell-navlink" href="#" aria-label={t('nav.signOut')}>
-            <Avatar initials="PN" tone="a" />
-            Priya Nair
+            <Avatar initials={VIEWER.initials} tone={VIEWER.tone} />
+            {/* A person's name is data, not a message. `docs/14 §6`: display the
+             * full name as provided, never assume given-name-first ordering and
+             * never split on whitespace — which also means it never goes in the
+             * catalog, because there is nothing to translate. */}
+            <bdi dir="auto">{VIEWER.name}</bdi>
           </a>
           <div className="shell-prefs">
             <span className="shell-seg" role="group" aria-label={t('theme.light')}>

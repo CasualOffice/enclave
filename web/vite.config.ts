@@ -33,6 +33,10 @@ export default defineConfig({
     environment: 'jsdom',
     include: ['tests/unit/**/*.test.{ts,tsx}'],
     globals: false,
+    /* Unmounts between tests. Without it every `render()` stacked into one
+     * document and absence assertions were evaluated against other tests' DOM
+     * — see the file for what that cost. */
+    setupFiles: ['./tests/setup.ts'],
     restoreMocks: true,
   },
   plugins: [react()],

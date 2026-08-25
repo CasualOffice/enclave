@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react';
+import { notifyUrlChanged } from '../shared/url-state.ts';
 
 /* Routing, without a router.
  *
@@ -49,6 +50,10 @@ let snapshot = currentRoute();
 function notify(): void {
   snapshot = currentRoute();
   for (const listener of listeners) listener();
+  /* `pushState` fires no event, so anything reading the query string from
+   * `shared/url-state` would go stale on every in-app navigation. Features may
+   * not import this module (`docs/17 §2`), so this has to push to them. */
+  notifyUrlChanged();
 }
 
 if (typeof window !== 'undefined') {

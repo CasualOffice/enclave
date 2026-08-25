@@ -108,6 +108,11 @@ function blankComments(source) {
   return out;
 }
 
+/** A line with its comments already blanked, trimmed. */
+function trimmedCode(line) {
+  return line.trim();
+}
+
 function walk(dir) {
   const out = [];
   for (const entry of readdirSync(dir)) {
@@ -254,8 +259,7 @@ for (const file of files) {
 
     if (LITERAL_EXEMPT.has(rel)) return;
 
-    // JSX text between tags: `>Some words<`, at least two letters and a space
-    // or a lone capitalised word. Numbers, entities and punctuation are fine.
+    // JSX text between tags on one line: `>Some words<`.
     const jsxText = line.match(/>\s*([A-Za-z][A-Za-z',.!?-]*(?:\s+[A-Za-z][A-Za-z',.!?-]*)*)\s*</);
     if (jsxText !== null && /[A-Za-z]{2}/.test(jsxText[1])) {
       report(
@@ -264,6 +268,31 @@ for (const file of files) {
         'i18n/no-literal',
         `user-facing literal ${JSON.stringify(jsxText[1])} in JSX — put it in the catalog`,
       );
+    }
+
+    /* JSX text on a line of its own, which the rule above cannot see.
+     *
+     * Prettier puts prose on its own line whenever the element wraps, so this
+     * is not an edge case — it is the common shape. The gate missed a name
+     * rendered in the application shell for exactly this reason, and a rule
+     * that only catches the unwrapped half of a formatter's output is a rule
+     * whose coverage depends on line length.
+     *
+     * A line qualifies when it is prose and nothing else: no angle brackets,
+     * braces, quotes, operators or call syntax, and it sits between a tag that
+     * opened above and one that closes below. Anything with code in it is left
+     * to the rule above rather than guessed at. */
+    if (ext === '.tsx' && /^[A-Za-z][A-Za-z ',.!?’-]*$/.test(trimmedCode(line))) {
+      const opensAbove = /[>{]\s*$/.test(lines[index - 1] ?? '');
+      const closesBelow = /^\s*[<}]/.test(lines[index + 1] ?? '');
+      if (opensAbove && closesBelow && /[A-Za-z]{2}/.test(line)) {
+        report(
+          rel,
+          number,
+          'i18n/no-literal',
+          `user-facing literal ${JSON.stringify(trimmedCode(line))} on its own line — put it in the catalog`,
+        );
+      }
     }
 
     const attr = line.match(USER_FACING_ATTRS);
