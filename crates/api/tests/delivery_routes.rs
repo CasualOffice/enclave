@@ -540,8 +540,12 @@ async fn post_print_token(app: &Router, bearer: &str, file: FileId) -> Answer {
 }
 
 async fn get_thumbnail(app: &Router, bearer: &str, file: FileId) -> Answer {
+    get_thumbnail_sized(app, bearer, file, "256").await
+}
+
+async fn get_thumbnail_sized(app: &Router, bearer: &str, file: FileId, size: &str) -> Answer {
     let request = Request::builder()
-        .uri(format!("/api/v1/files/{}/thumbnail?size=256", file.as_uuid()))
+        .uri(format!("/api/v1/files/{}/thumbnail?size={size}", file.as_uuid()))
         .header("authorization", format!("Bearer {bearer}"))
         .body(Body::empty())
         .expect("request");
@@ -868,6 +872,19 @@ async fn a_thumbnail_is_answered_by_the_preview_permission_and_no_other() {
         "a thumbnail is viewing, not taking away"
     );
     served.carries_no_original(&content);
+
+    // The caller-controlled parameter is bounded at the edge, and asserted over HTTP rather than
+    // only against `validate_size`: a unit test on a validator proves the validator, not that the
+    // handler calls it — and a handler that had stopped calling it would keep every unit test in
+    // `routes::delivery::tests` green.
+    let oversized = get_thumbnail_sized(&app, &viewer_bearer, content.file, "1024").await;
+    assert_eq!(
+        oversized.status,
+        StatusCode::BAD_REQUEST,
+        "an unbounded size reached the pipeline: {}",
+        oversized.snippet()
+    );
+    assert_eq!(oversized.json()["error"]["code"], "VALIDATION_FAILED");
 
     // Both thumbnail requests are recorded against `file.preview`, which is what makes the audit
     // trail readable: an auditor asking who previewed this file sees them.
