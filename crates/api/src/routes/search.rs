@@ -421,6 +421,13 @@ pub async fn search(
 
     // Trimmed before anything is read for it: a hit past the page is a hit whose title, path and
     // capabilities nobody is going to see.
+    //
+    // `has_more` is *confirmed hits beyond this page*, which under-reports at exactly one boundary:
+    // a caller whose matches exceed the candidate budget gets `has_more` from what the budget held
+    // rather than from what the tenant holds. That is the safe direction of the two — it can only
+    // say "no more" when the generator was never asked — and it is the direction `ENC-697` closes
+    // with a cursor rather than with a count, because the count is the thing `docs/05-API.md §6`
+    // refuses to return.
     let hits = confirmed.hits();
     let page_size = limit as usize;
     let has_more = hits.len() > page_size;
