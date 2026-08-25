@@ -248,11 +248,35 @@ M4 with `SecurityFacts`.
 
 ---
 
+### D39 — Dark mode is already specified; nothing here invents a colour
+
+`ENC-661`'s brand work reported the favicon at **1.92:1** against Chrome's dark tab strip and flagged
+a dark-mode `--accent` as an open decision, on the grounds that `web/src/styles/tokens.css` does not
+define one. **That was true of the extracted file and false of the source.**
+`web/design-system/design-system-v2.html` carries a full dark ladder for all three brands:
+
+| brand | light | dark |
+|---|---|---|
+| `harbor` (default) | `#4F46E5` | `#8B85FF` |
+| `northwind` | `#0F766E` | `#2DD4BF` |
+| `meridian` | `#111827` | `#E5E7EB` |
+
+The favicon now switches on `prefers-color-scheme`, which takes it from **1.92:1 to 3.96:1** on a
+dark tab strip while staying at 351 bytes. No value was invented, which is what D35a rule 3 requires.
+
+**The general lesson is worth more than the fix:** `tokens.css` is *extracted* from the reference,
+and a token absent from the extract reads as a token that does not exist. Anyone reading only the
+extract will reach the same wrong conclusion. `web/design-system/README.md` already says to change
+the HTML first and re-extract; this is the first evidence of what happens when the extract lags.
+Logged as `ENC-678` — the extraction should be a checked step rather than a remembered one.
+
+---
+
 ## 7. Open questions
 
 | # | Question | Needs deciding by | Owner |
 |---|---|---|---|
 | Q20 | Which logo — gate, strata or orbit? Three variants exist in Claude Design and the repo has no mark or favicon at all | Before the shell's first PR | Owner |
-| Q21 | Is the location bar's avatar stack *people with access* (ACL data, available now) or *presence* (nothing in the tree, and a real-time subsystem M5 does not have)? | Before the location bar is built | Owner |
+| ~~Q21~~ | **Answered 2026-08-25: people with access, and presence is rejected on principle rather than on availability.** The repo owner's argument is the stronger one and is recorded because it settles the question permanently: *presence earns its place in real-time **editing**, where knowing someone else is in the document right now changes what you do next. It earns nothing in a document workspace, where the useful question is who **can** open this, not who happens to be looking.* So this is not deferred until a real-time subsystem exists — it is decided, and building presence later would not change it. ACL data, available now. Named limitation so it is not rediscovered: an access stack on a heavily-shared folder is long, so it truncates with a count and the full list lives in the peek panel's Access tab | — | Closed |
 | Q22 | The Display popover offers a **Board** layout that `docs/09 §4` does not list among its view types. Ship it, or drop it from the design? | Before step 2 | Owner |
-| Q23 | Sign-in shows passkey and SSO as the two primary buttons and email as the third. Under D33 the first two are disabled, which leaves the primary action disabled and the fallback carrying the screen. Is that acceptable for GA, or does sign-in get its own M5 treatment? | Before the sign-in route | Owner |
+| ~~Q23~~ | **Answered 2026-08-25: not a problem — the premise was wrong.** Email sign-in **and sign-up** both work in M5; SSO is per-workspace configuration rather than a missing primary button. So the sign-in screen has a working primary path and D33's disabled treatment applies only to passkey, which is genuinely M6. The concern that the screen would be carried by a fallback does not arise | — | Closed |
