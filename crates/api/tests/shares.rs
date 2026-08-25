@@ -803,7 +803,14 @@ async fn revoking_is_idempotent_and_closes_the_link_for_good() {
 }
 
 /// A caller who may read the file but holds none of the share actions is refused on every one of
-/// them, and the refusals leave rows.
+/// the four, and the refusals leave rows.
+///
+/// The `PATCH` and `DELETE` legs are here because of a deliberate break that failed nothing
+/// (`docs/12 §1.2`). Removing `authorize` from both handlers left every other test in this file
+/// green: `governing_resource` reads the link inside a tenant-scoped transaction, so row-level
+/// security still answered `404` across tenants, and every other fixture's caller held the grant.
+/// The case that RLS cannot cover is a second member of the **same** tenant who has learned a link
+/// id — from a URL, a screenshot, an audit export — and only the chain can refuse them.
 #[tokio::test]
 #[ignore = "requires a live PostgreSQL; CI runs it with --include-ignored"]
 async fn the_share_actions_are_not_implied_by_reading_the_file() {
@@ -847,7 +854,61 @@ async fn the_share_actions_are_not_implied_by_reading_the_file() {
         "reading a file must not imply reading its links: {body}"
     );
 
+    // The member — who holds the management grants — mints a link, and the viewer tries to change
+    // and revoke it. Both are ids the viewer could plausibly have; neither is in another tenant, so
+    // row-level security has nothing to say and the chain is the only thing that can refuse.
+    let (status, created) = call(
+        &harness,
+        alpha.tenant,
+        fixtures.alpha.member,
+        "POST",
+        &uri,
+        Some(share_body("INTERNAL")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let id = created["id"].as_str().expect("id").to_owned();
+
+    let (status, body) = call(
+        &harness,
+        alpha.tenant,
+        fixtures.alpha.viewer,
+        "PATCH",
+        &format!("/api/v1/shares/{id}"),
+        Some(serde_json::json!({ "allowDownload": false })),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "reading a file must not imply patching its links: {body}"
+    );
+
+    let (status, body) = call(
+        &harness,
+        alpha.tenant,
+        fixtures.alpha.viewer,
+        "DELETE",
+        &format!("/api/v1/shares/{id}"),
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "reading a file must not imply revoking its links: {body}"
+    );
+
+    // Nothing the viewer attempted changed the link. The control that this is not vacuous is the
+    // `201` above: the link demonstrably exists and demonstrably has these values.
+    let (_status, listed) =
+        call(&harness, alpha.tenant, fixtures.alpha.member, "GET", &uri, None).await;
+    assert_eq!(listed["items"][0]["allowDownload"], true, "the refused patch changed the link");
+    assert!(listed["items"][0]["revokedAt"].is_null(), "the refused delete revoked the link");
+
     let rows = audit_rows(&db, alpha.tenant).await;
     assert!(rows.iter().any(|(a, o)| a == "file.share" && o == "DENY"), "{rows:?}");
     assert!(rows.iter().any(|(a, o)| a == "share.read" && o == "DENY"), "{rows:?}");
+    assert!(rows.iter().any(|(a, o)| a == "share.update" && o == "DENY"), "{rows:?}");
+    assert!(rows.iter().any(|(a, o)| a == "share.revoke" && o == "DENY"), "{rows:?}");
 }
