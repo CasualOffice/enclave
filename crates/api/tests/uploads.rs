@@ -863,6 +863,98 @@ async fn aborting_releases_the_staged_bytes_and_marks_the_row() {
     assert_eq!(harness.store.deleted(), 1);
 }
 
+/// The three `/uploads/{id}` methods are decided by the chain, not by knowing the id.
+///
+/// This test exists because of a deliberate break that failed nothing (`docs/12 §1.2`). Removing
+/// the `authorize` call from `abort` left every other test in this file green: the session lookup
+/// is tenant-scoped, so row-level security still answered `404` across tenants, and every caller in
+/// the remaining fixtures held the grant. Only `xtask policy-routing` caught it — and a structural
+/// gate that proves `enforce` is *reachable* cannot prove that it *decides*.
+///
+/// So the missing case is a second member of the **same** tenant, holding nothing on the library.
+/// RLS cannot help there: the row is theirs to read. Each refusal is paired with the same call by
+/// the granted member, so none of them is a statement about a route that refuses everyone.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL; CI runs it with --include-ignored"]
+async fn a_session_cannot_be_completed_or_aborted_by_a_caller_the_chain_refuses() {
+    let (db, fixtures, _pool, alpha_library, _beta) = setup().await;
+    let harness = harness(&db).await;
+    let alpha = fixtures.alpha.id;
+
+    let open_session = async |name: &'static str| {
+        let (status, issued) = call(
+            &harness,
+            alpha,
+            fixtures.alpha.member,
+            "POST",
+            "/api/v1/uploads",
+            Some(upload_body(alpha_library, name, 64)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{issued}");
+        issued["uploadId"].as_str().expect("uploadId").to_owned()
+    };
+
+    let deletes_before = harness.store.deleted();
+    let mut probed = Vec::new();
+
+    // `viewer` is a real user in this tenant. The session row is visible to their transaction —
+    // RLS has nothing to say about it — so the only thing that can refuse them is the chain.
+    //
+    // A fresh pair of sessions per method, because `complete` and `abort` both settle the one they
+    // act on: reusing a session would make the third control a `409` rather than a success, and a
+    // control that does not succeed is not a control.
+    for (method, suffix) in [("GET", ""), ("POST", "/complete"), ("DELETE", "")] {
+        let for_viewer = open_session("Viewer Probe.pdf").await;
+        let for_member = open_session("Member Control.pdf").await;
+        let body = (method == "POST")
+            .then(|| serde_json::json!({ "sizeBytes": 64, "sha256": DIGEST_HEX }));
+
+        let (refused, response) = call(
+            &harness,
+            alpha,
+            fixtures.alpha.viewer,
+            method,
+            &format!("/api/v1/uploads/{for_viewer}{suffix}"),
+            body.clone(),
+        )
+        .await;
+        assert_eq!(
+            refused,
+            StatusCode::NOT_FOUND,
+            "{method} on a session in the caller's own tenant was not decided by the chain: \
+             {response}"
+        );
+
+        let (allowed, response) = call(
+            &harness,
+            alpha,
+            fixtures.alpha.member,
+            method,
+            &format!("/api/v1/uploads/{for_member}{suffix}"),
+            body,
+        )
+        .await;
+        assert!(
+            allowed.is_success(),
+            "{method} did not succeed for the granted member, so the refusal above proves \
+             nothing: {response}"
+        );
+
+        probed.push(for_viewer);
+    }
+
+    assert_eq!(
+        harness.store.deleted(),
+        deletes_before + 1,
+        "exactly one delete — the granted member's — reached the store"
+    );
+    // Every session the viewer tried is exactly as the member left it.
+    for id in probed {
+        assert_eq!(stored_state(&db, &id).await, "CREATED");
+    }
+}
+
 /// A session id from the other tenant is `404` on every one of the three `/uploads/{id}` methods,
 /// and nothing about it reaches the store.
 ///
