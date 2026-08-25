@@ -678,7 +678,11 @@ async fn a2_export_is_deniable_independently_of_download() {
         exported.snippet()
     );
     assert_eq!(exported.content_type.as_deref(), Some("image/png"));
-    assert_eq!(exported.bytes, stub_rendition(), "the export carried something else");
+    assert!(
+        exported.bytes == stub_rendition(),
+        "the export carried something other than the rendition the pipeline produced ({} bytes)",
+        exported.bytes.len()
+    );
     exported.carries_no_original(&content);
 
     let denied_download = post_download(&app, &exporter_bearer, content.file).await;
@@ -844,7 +848,11 @@ async fn a_thumbnail_is_answered_by_the_preview_permission_and_no_other() {
         served.snippet()
     );
     assert_eq!(served.content_type.as_deref(), Some("image/png"));
-    assert_eq!(served.bytes, stub_rendition());
+    assert!(
+        served.bytes == stub_rendition(),
+        "the thumbnail carried something other than the rendition the pipeline produced ({} bytes)",
+        served.bytes.len()
+    );
     assert_eq!(
         served.cache_control.as_deref(),
         Some("private, no-store"),
@@ -916,8 +924,8 @@ async fn no_original_url_is_generated_on_the_export_or_thumbnail_path() {
     }
     // The controls: the two rendition paths returned the pipeline's bytes, so "nothing reached the
     // store" is not the trivially true statement of a handler that produced nothing.
-    assert_eq!(export.bytes, stub_rendition());
-    assert_eq!(thumbnail.bytes, stub_rendition());
+    assert!(export.bytes == stub_rendition(), "the export served no rendition");
+    assert!(thumbnail.bytes == stub_rendition(), "the thumbnail served no rendition");
 
     assert!(
         store.touched().is_empty(),
@@ -1077,10 +1085,11 @@ async fn a_watermark_obligation_is_discharged_in_the_bytes_or_refuses_the_delive
         "a watermark is dischargeable on a raster export, so it must succeed: {}",
         marked.snippet()
     );
-    assert_ne!(
-        marked.bytes,
-        stub_rendition(),
-        "the export carried the base rendition unchanged — the watermark obligation was dropped"
+    assert!(
+        marked.bytes != stub_rendition(),
+        "the export carried the base rendition unchanged ({} bytes) — the watermark obligation \
+         was recorded and then dropped",
+        marked.bytes.len()
     );
     marked.carries_no_original(&content);
 
@@ -1114,10 +1123,11 @@ async fn a_watermark_obligation_is_discharged_in_the_bytes_or_refuses_the_delive
     // correct.
     let thumbnail = get_thumbnail(&app, &bearer, content.file).await;
     match thumbnail.status {
-        StatusCode::OK => assert_ne!(
-            thumbnail.bytes,
-            stub_rendition(),
-            "the thumbnail carried the base rendition unchanged under a watermark obligation"
+        StatusCode::OK => assert!(
+            thumbnail.bytes != stub_rendition(),
+            "the thumbnail carried the base rendition unchanged ({} bytes) under a watermark \
+             obligation",
+            thumbnail.bytes.len()
         ),
         StatusCode::FORBIDDEN => {
             assert_eq!(thumbnail.json()["error"]["code"], "ACCESS_DENIED");
