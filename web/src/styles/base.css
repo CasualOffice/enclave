@@ -7,6 +7,8 @@
 
 @import './fonts.css';
 @import './tokens.css';
+/* The mark's loading motion, from the prototype (`ENC-135`, `web/public/BRAND.md`). */
+@import '/logo-loader.css';
 
 *,
 *::before,

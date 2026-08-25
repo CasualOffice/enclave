@@ -1,0 +1,168 @@
+import { z } from 'zod';
+
+/* One API client. Every request goes through it (`docs/17 §9`).
+ *
+ * It owns four cross-cutting concerns so that no feature has to remember them,
+ * and one of the four is a security rule rather than a convenience:
+ *
+ * 1. **Tenant identity is never sent by the client** (`CLAUDE.md` rule 3). It
+ *    comes from the verified token or from custom-domain routing at the
+ *    gateway. There is no tenant parameter in any signature here, and there
+ *    must never be one — the shape makes the mistake unrepresentable rather
+ *    than merely forbidden.
+ * 2. **Idempotency keys** on every mutation (`docs/05 §…`), generated here.
+ * 3. **Step-up interception**: a `401` carrying a step-up challenge is not a
+ *    failure, it is a prompt.
+ * 4. **Request ID capture** from every response, so the error state can offer a
+ *    copyable correlation ID (`docs/09 §11`).
+ *
+ * And one shape rule: **Zod parses at this boundary and nowhere else**
+ * (`docs/17 §3`). Nothing downstream re-validates and nothing downstream sees
+ * `unknown`.
+ */
+
+/** The stable error envelope from `docs/05 §5`. */
+export const ApiErrorBody = z.object({
+  code: z.string(),
+  /** An English default. The client renders its own localized string keyed by `code` (`docs/14 §5`). */
+  message: z.string(),
+  remediation: z.string().optional(),
+  requestId: z.string().optional(),
+});
+
+export type ApiErrorBody = z.infer<typeof ApiErrorBody>;
+
+/**
+ * What went wrong, in the only three shapes a surface has to tell apart.
+ *
+ * `docs/17 §7`: **a denial is not a failure.** A `403` from DLP, a barrier or
+ * conditional access is a successful request with a refusing answer. It renders
+ * as denied-explained-inline with a reason and a remedy, and it **never offers
+ * retry** — retrying a denial is how a user concludes the product is broken
+ * rather than that they lack permission. Keeping them separate in the type is
+ * what stops a `catch` block from collapsing them.
+ */
+export type ApiFailure =
+  | {
+      readonly kind: 'denied';
+      readonly code: string;
+      readonly message: string;
+      readonly remediation?: string | undefined;
+      readonly requestId: string;
+    }
+  | {
+      readonly kind: 'stepUp';
+      readonly code: string;
+      readonly requestId: string;
+    }
+  | {
+      readonly kind: 'failed';
+      readonly code: string;
+      readonly retryable: boolean;
+      readonly requestId: string;
+    };
+
+export class ApiError extends Error {
+  readonly failure: ApiFailure;
+
+  constructor(failure: ApiFailure) {
+    super(failure.code);
+    this.name = 'ApiError';
+    this.failure = failure;
+  }
+}
+
+const REQUEST_ID_HEADER = 'x-request-id';
+
+/** Where the API lives. Same origin by default: the SPA is served by the gateway. */
+const BASE = '/api/v1';
+
+export interface RequestOptions {
+  readonly method?: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE';
+  readonly body?: unknown;
+  readonly signal?: AbortSignal;
+}
+
+/**
+ * A cross-tenant or barrier denial arrives as `404`, not `403` (`CLAUDE.md`
+ * rule 7) — a `403` would confirm the resource exists. So a `404` is reported
+ * as *not found* and nothing here tries to be cleverer about it.
+ */
+function classify(status: number, body: ApiErrorBody | null, requestId: string): ApiFailure {
+  const code = body?.code ?? `http_${status}`;
+  if (status === 401 && code.startsWith('step_up')) {
+    return { kind: 'stepUp', code, requestId };
+  }
+  if (status === 403) {
+    return {
+      kind: 'denied',
+      code,
+      message: body?.message ?? '',
+      remediation: body?.remediation,
+      requestId,
+    };
+  }
+  return {
+    kind: 'failed',
+    code,
+    // 4xx is the caller's problem and will not fix itself; 5xx and network are
+    // worth another attempt, and only those get a retry affordance.
+    retryable: status >= 500 || status === 0 || status === 408 || status === 429,
+    requestId,
+  };
+}
+
+export async function request<T>(
+  path: string,
+  schema: z.ZodType<T>,
+  options: RequestOptions = {},
+): Promise<T> {
+  const method = options.method ?? 'GET';
+  const headers: Record<string, string> = { accept: 'application/json' };
+
+  if (options.body !== undefined) {
+    headers['content-type'] = 'application/json';
+    // Every mutation is idempotent, so a retry after a timeout cannot double a
+    // move, a share or a delete.
+    headers['idempotency-key'] = crypto.randomUUID();
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(`${BASE}${path}`, {
+      method,
+      headers,
+      // The session cookie is HttpOnly and the client never reads it. There is
+      // no token in JavaScript to steal, and no tenant field to forge.
+      credentials: 'same-origin',
+      ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    });
+  } catch {
+    throw new ApiError({ kind: 'failed', code: 'network', retryable: true, requestId: '' });
+  }
+
+  const requestId = response.headers.get(REQUEST_ID_HEADER) ?? '';
+
+  if (!response.ok) {
+    const parsed = ApiErrorBody.safeParse(await response.json().catch(() => null));
+    throw new ApiError(classify(response.status, parsed.success ? parsed.data : null, requestId));
+  }
+
+  const payload: unknown = await response.json().catch(() => null);
+  const parsed = schema.safeParse(payload);
+  if (!parsed.success) {
+    /* A parse failure is an error state, not a crash and not a silent default
+     * (`docs/17 §3`). Catching it into `{}` would give a row every capability
+     * `false`, which reads as *policy denied everything* — the wrong story told
+     * confidently. */
+    throw new ApiError({
+      kind: 'failed',
+      code: 'response_shape',
+      retryable: false,
+      requestId,
+    });
+  }
+
+  return parsed.data;
+}

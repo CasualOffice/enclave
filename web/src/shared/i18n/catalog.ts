@@ -74,6 +74,78 @@ export const catalog = {
     description: 'Accessible name of a file row’s selection checkbox. "name" is the file name.',
   },
 
+  'app.checkingAccess': {
+    message: 'Checking your access…',
+    description:
+      'Shown beside the animated mark while a route settles or a policy decision is in flight. Names what is happening rather than saying "loading": the policy chain is deciding.',
+  },
+  'app.brand': {
+    message: 'Enclave',
+    description:
+      'The untenanted product name in the sidebar. Replaced by the tenant’s own name from the branding API (docs/09 §18), so this is a fallback rather than a fixed string.',
+  },
+  'nav.search': {
+    message: 'Search',
+    description: 'Sidebar navigation: the search surface. Shortcut ⌘K is shown beside it.',
+  },
+  'nav.inbox': {
+    message: 'Inbox',
+    description:
+      'Sidebar navigation: items awaiting the user’s action. Carries an unread count as a trailing number.',
+  },
+  'nav.home': { message: 'Home', description: 'Sidebar navigation: the landing surface.' },
+  'nav.ask': {
+    message: 'Ask',
+    description:
+      'Sidebar navigation: the AI surface, which reads the user’s own documents. Shortcut ⌘J.',
+  },
+  'nav.files': {
+    message: 'Files',
+    description: 'Sidebar navigation: the file libraries of the current workspace.',
+  },
+  'nav.lists': { message: 'Lists', description: 'Sidebar navigation: structured list surfaces.' },
+  'nav.pages': { message: 'Pages', description: 'Sidebar navigation: authored page surfaces.' },
+  'nav.activity': {
+    message: 'Activity',
+    description: 'Sidebar navigation: the workspace activity feed.',
+  },
+  'nav.favorites': { message: 'Favorites', description: 'Sidebar navigation: the user’s starred items.' },
+  'nav.shared': {
+    message: 'Shared with me',
+    description: 'Sidebar navigation: items other people have shared with this user.',
+  },
+  'nav.trash': {
+    message: 'Trash',
+    description: 'Sidebar navigation: deleted items, still restorable.',
+  },
+  'nav.admin': {
+    message: 'Admin',
+    description: 'Sidebar navigation: the administrative surface. Only shown to administrators.',
+  },
+  'nav.section.personal': {
+    message: 'Personal',
+    description: 'Sidebar section heading above the current user’s own surfaces.',
+  },
+  'nav.workspaceSwitcher': {
+    message: 'Switch workspace',
+    description: 'Accessible name of the brand button at the top of the sidebar, which opens the workspace switcher.',
+  },
+  'nav.signOut': {
+    message: 'Sign out',
+    description: 'Accessible name of the user chip at the foot of the sidebar.',
+  },
+  'theme.light': { message: 'Light', description: 'Theme toggle: the light theme.' },
+  'theme.dark': { message: 'Dark', description: 'Theme toggle: the dark theme.' },
+  'later.chip': {
+    message: 'Later',
+    description:
+      'Neutral marker on a control the product does not have yet. Must never read as a refusal — it is about the product’s roadmap, not about this user’s permissions (plans/M5-MVP-GA.md D33). Future tense.',
+  },
+  'later.arrivesLater': {
+    message: 'Arrives in a later release',
+    description:
+      'The description associated with an unbuilt control. Future tense, about the product. Never offers a remedy, because there is nothing the user can do.',
+  },
   'classification.public': {
     message: 'Public',
     description:

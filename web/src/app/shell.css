@@ -1,0 +1,192 @@
+/* The shell frame.
+ *
+ * `docs/09 §3`, as rewritten by `ENC-676`: **there is no top bar.** An earlier
+ * revision drew one and it was implemented from that drawing for a whole
+ * milestone. The workspace switcher, search and the user chip live in the
+ * sidebar; `+ New` lives in the view bar beside the content it creates.
+ *
+ * Geometry, from the prototype, which is authoritative for it: sidebar 232 px
+ * and borderless, sitting on the canvas rather than on a surface; the content
+ * region is a raised sheet, inset 8 px, radius 14. Surfaces are separated by
+ * shadow, not by rule — no CSS borders on surfaces, no vertical dividers
+ * between panes.
+ *
+ * Every property name here is logical. The prototype is `margin-left:auto` and
+ * `padding:5px 8px 5px 20px` throughout; `en-XB` mirrors direction in CI.
+ */
+
+.shell {
+  display: grid;
+  grid-template-columns: 232px 1fr;
+  block-size: 100%;
+  min-block-size: 0;
+  background: var(--canvas);
+}
+
+/* -------------------------------------------------------------- the sidebar */
+
+.shell-nav {
+  padding-block: 12px;
+  padding-inline: 10px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  color: var(--fg2);
+  min-inline-size: 0;
+  overflow: auto;
+}
+
+.shell-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: var(--r-ctrl);
+  cursor: pointer;
+  margin-block-end: 8px;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  inline-size: 100%;
+  text-align: start;
+  color: var(--accent);
+}
+
+.shell-brand:hover {
+  background: var(--hover);
+}
+
+.shell-brand-name {
+  font-weight: 500;
+  color: var(--fg);
+  font-size: 13px;
+}
+
+.shell-navlink {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-block: 5px;
+  padding-inline: 8px;
+  border-radius: var(--r-ctrl);
+  text-decoration: none;
+  color: var(--fg2);
+  font-size: 12.5px;
+  min-block-size: 26px;
+  cursor: pointer;
+  border: 0;
+  background: transparent;
+  font-family: inherit;
+  inline-size: 100%;
+  text-align: start;
+}
+
+.shell-navlink:hover {
+  background: var(--hover);
+  color: var(--fg);
+}
+
+.shell-navlink[aria-current='page'] {
+  background: var(--selected);
+  color: var(--fg);
+}
+
+/* A library entry sits one step in, and its indent is logical so it mirrors. */
+.shell-navlink[data-nested='true'] {
+  padding-inline-start: 20px;
+}
+
+.shell-navlink svg {
+  color: var(--fg3);
+}
+
+.shell-navlink[aria-current='page'] svg {
+  color: var(--fg);
+}
+
+.shell-navlink-trailing {
+  margin-inline-start: auto;
+  font-size: 11px;
+  color: var(--fg3);
+  font-family: var(--mono);
+}
+
+.shell-navgroup {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--fg3);
+  padding-block: 14px 4px;
+  padding-inline: 8px;
+  font-weight: 500;
+}
+
+.shell-nav-foot {
+  margin-block-start: auto;
+  padding-block-start: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* A classification dot beside a library. Colour is reinforcement; the library's
+ * own name and the badge on its rows carry the label in text (`docs/09 §15`). */
+.shell-lib-dot {
+  inline-size: 7px;
+  block-size: 7px;
+  border-radius: 50%;
+  flex: none;
+  margin-inline: 1px 3px;
+}
+
+/* ---------------------------------------------------------------- the sheet */
+
+.shell-sheet {
+  margin-block: 8px;
+  margin-inline: 0 8px;
+  background: var(--sheet);
+  border-radius: var(--r-sheet);
+  box-shadow: var(--el1);
+  display: flex;
+  flex-direction: column;
+  min-inline-size: 0;
+  min-block-size: 0;
+  overflow: hidden;
+  position: relative;
+}
+
+/* ------------------------------------------------------------- the settings */
+
+.shell-prefs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-block: 2px 0;
+  padding-inline: 8px;
+}
+
+.shell-seg {
+  display: inline-flex;
+  gap: 2px;
+  background: var(--sunken);
+  padding: 2px;
+  border-radius: 999px;
+}
+
+.shell-seg button {
+  border: 0;
+  font: inherit;
+  font-size: 11px;
+  color: var(--fg2);
+  padding: 2px 8px;
+  border-radius: 999px;
+  cursor: pointer;
+  background: transparent;
+}
+
+.shell-seg button[aria-pressed='true'] {
+  background: var(--sheet);
+  color: var(--fg);
+  box-shadow: var(--el1);
+}

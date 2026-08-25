@@ -20,9 +20,11 @@
     "check:bundle-size": "npm run build && node tools/check-bundle-size.mjs"
   },
   "dependencies": {
+    "@tanstack/react-query": "^5.102.3",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-intl": "^7.1.11",
+    "zod": "^4.4.3",
     "zustand": "^5.0.8"
   },
   "devDependencies": {
