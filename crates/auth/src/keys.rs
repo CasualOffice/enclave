@@ -25,7 +25,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE_NO_PAD};
 use base64::Engine as _;
 use chrono::{DateTime, Utc};
 use ed25519_dalek::pkcs8::{DecodePrivateKey, EncodePrivateKey};
@@ -348,6 +348,113 @@ pub trait KeyProvider: Send + Sync + fmt::Debug {
     async fn verification_keys(&self) -> Result<Vec<PublicSigningKey>, KeyProviderError>;
 }
 
+/// A shared provider is a provider.
+///
+/// Without this, a binary that has decided *which* provider to build — and therefore holds an
+/// `Arc<dyn KeyProvider>` — cannot hand it to `EnclaveTokenService`, whose key parameter is a
+/// generic bound rather than a trait object. The alternatives were to make the service's key
+/// parameter `Arc<dyn KeyProvider>` (a `dyn` call on the signing path for every deployment, to
+/// serve the composition step) or to duplicate the whole service construction once per concrete
+/// provider in `main.rs` (which is how the two arms drift). One blanket implementation is cheaper
+/// than both and adds no indirection that was not already there.
+#[async_trait]
+impl<T: KeyProvider + ?Sized> KeyProvider for std::sync::Arc<T> {
+    async fn active_signing_key(&self) -> Result<PrivateSigningKey, KeyProviderError> {
+        (**self).active_signing_key().await
+    }
+
+    async fn verification_keys(&self) -> Result<Vec<PublicSigningKey>, KeyProviderError> {
+        (**self).verification_keys().await
+    }
+}
+
+/// A [`KeyProvider`] over key material a deployment supplied by reference (`ENC-687`).
+///
+/// # Rule 11, and what this type does and does not hold
+///
+/// `auth.signing_keys.key_ref` in `enclave.yaml` is a `vault://` or `env://` reference and never a
+/// value; `enclave_config::SecretRegistry` resolves it at start-up and `crates/api/src/main.rs`
+/// hands the resolved bytes here. So the key exists as a value in exactly one place — this
+/// process's memory, inside a [`PrivateSigningKey`] whose buffer is [`Zeroizing`] and whose
+/// [`fmt::Debug`] is written by hand. It is never in a file in this repository, a fixture, or a
+/// configuration document.
+///
+/// # Why the material is base64, and why the encoding is not configurable
+///
+/// PKCS#8 DER is binary and a secret store hands back a string. One encoding, stated once: standard
+/// base64 of the DER document, with or without padding, whitespace ignored so that a value pasted
+/// out of a terminal still loads. Accepting PEM as well would mean this crate parsing a format
+/// whose armour is exactly the string `CLAUDE.md` rule 11's secrets gate refuses to let into the
+/// tree, so no test could ever exercise that branch — a branch no test can reach is a branch that
+/// is wrong.
+///
+/// # One key, and what that costs
+///
+/// A deployment configured this way signs and verifies with a single key, so rotation is an
+/// operator action — write the new key, restart — rather than the overlap window
+/// [`KeyStatus::Retiring`] describes. The database table for a rotating set exists
+/// (`signing_keys`) and nothing reads it; that provider is `ENC-708`. The important half is here:
+/// what this deployment signs with is a key an operator chose and can revoke, not one a process
+/// generated for itself.
+#[derive(Debug)]
+pub struct ConfiguredKeyProvider {
+    key: PrivateSigningKey,
+}
+
+impl ConfiguredKeyProvider {
+    /// Loads the key from resolved secret material.
+    ///
+    /// `activates_at` is the deployment's own "as of", normally `Utc::now()`. It is a parameter
+    /// rather than read from the clock so that the provider is testable at the retirement boundary
+    /// without moving the system clock — the reasoning [`crate::Clock`] gives, applied here.
+    ///
+    /// # Errors
+    ///
+    /// [`KeyProviderError::Malformed`] when the material is not base64, or is not an Ed25519
+    /// PKCS#8 document. The error carries **nothing** derived from the material: a diagnostic that
+    /// echoed the first bytes back would put key material into a start-up log.
+    pub fn from_base64_pkcs8(
+        material: &str,
+        activates_at: DateTime<Utc>,
+    ) -> Result<Self, KeyProviderError> {
+        let compact: String = material.chars().filter(|c| !c.is_whitespace()).collect();
+        let der = STANDARD
+            .decode(compact.as_bytes())
+            .or_else(|_| STANDARD_NO_PAD.decode(compact.as_bytes()))
+            .map_err(|_| KeyProviderError::Malformed)?;
+        let der = Zeroizing::new(der);
+        let key = PrivateSigningKey::from_pkcs8_der(&der, KeyStatus::Active, activates_at, None)?;
+        Ok(Self { key })
+    }
+
+    /// The identifier this deployment's tokens will carry, for the start-up banner.
+    ///
+    /// A `kid` is public information — it names a key and authorises nothing — which is what makes
+    /// it the one thing about the key that may be logged.
+    #[must_use]
+    pub const fn kid(&self) -> &KeyId {
+        self.key.kid()
+    }
+}
+
+#[async_trait]
+impl KeyProvider for ConfiguredKeyProvider {
+    async fn active_signing_key(&self) -> Result<PrivateSigningKey, KeyProviderError> {
+        // Rebuilt from the DER rather than cloned, so `PrivateSigningKey` keeps having no `Clone`
+        // and the number of live copies of the material stays something the type system bounds.
+        PrivateSigningKey::from_pkcs8_der(
+            self.key.pkcs8_der(),
+            self.key.public().status,
+            self.key.public().activates_at,
+            self.key.public().retires_at,
+        )
+    }
+
+    async fn verification_keys(&self) -> Result<Vec<PublicSigningKey>, KeyProviderError> {
+        Ok(vec![self.key.public().clone()])
+    }
+}
+
 /// On-disk index of the development key set.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct KeyIndex {
@@ -625,5 +732,106 @@ mod tests {
         }
         #[cfg(not(unix))]
         let _ = key;
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // `ConfiguredKeyProvider` — the deployment-supplied key (`ENC-687`)
+    // ---------------------------------------------------------------------------------------
+
+    /// Key material as a secret store would hand it back.
+    ///
+    /// **Generated at run time, never a literal.** `CLAUDE.md` rule 11 has no test exemption, and a
+    /// base64 Ed25519 private key committed to this file would be exactly the thing the secrets
+    /// gate exists to keep out — the fact that it is a throwaway is not the point, because a gate
+    /// with exceptions is one people learn to route around.
+    fn generated_material() -> (String, KeyId) {
+        let key = PrivateSigningKey::generate(Utc::now()).expect("generate");
+        (STANDARD.encode(key.pkcs8_der().as_slice()), key.kid().clone())
+    }
+
+    /// The round trip that makes the whole mechanism worth having: material out of a secret store
+    /// signs, and the public half it publishes verifies what it signed.
+    #[tokio::test]
+    async fn configured_material_produces_a_key_that_signs_and_verifies() {
+        let (material, kid) = generated_material();
+        let provider = ConfiguredKeyProvider::from_base64_pkcs8(&material, Utc::now())
+            .expect("well-formed material must load");
+
+        assert_eq!(provider.kid(), &kid, "the identifier is derived, not assigned");
+
+        let signing = provider.active_signing_key().await.expect("a configured key is active");
+        assert_eq!(signing.kid(), &kid);
+
+        let published = provider.verification_keys().await.expect("publishes its public half");
+        let set = KeySet::new(published);
+        assert!(
+            set.verification_key(&kid, Utc::now()).is_some(),
+            "a verifier built from this provider must accept the key it signs with"
+        );
+        // The positive control for that lookup: an identifier the provider never published is not
+        // in the set, so the assertion above is not passing against a set that accepts anything.
+        let (_, other) = generated_material();
+        assert!(set.verification_key(&other, Utc::now()).is_none());
+    }
+
+    /// Padding and whitespace are what a value pasted out of a terminal or a `vault` read looks
+    /// like, and both must load.
+    #[tokio::test]
+    async fn material_loads_with_or_without_padding_and_through_whitespace() {
+        let (padded, kid) = generated_material();
+        let unpadded = padded.trim_end_matches('=').to_owned();
+        let wrapped = padded
+            .as_bytes()
+            .chunks(64)
+            .map(|line| String::from_utf8_lossy(line).into_owned())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        for spelling in [padded.clone(), unpadded, wrapped] {
+            let provider = ConfiguredKeyProvider::from_base64_pkcs8(&spelling, Utc::now())
+                .expect("every spelling of the same bytes is the same key");
+            assert_eq!(provider.kid(), &kid);
+        }
+    }
+
+    /// Material that is not a key is refused, and the refusal carries none of it.
+    ///
+    /// The second half is the security property. A start-up diagnostic that echoed the first bytes
+    /// back to help an operator would put key material into a log — and the operator who most needs
+    /// that help is the one who has just pasted the *right* key into the *wrong* field.
+    #[test]
+    fn malformed_material_is_refused_without_echoing_any_of_it() {
+        let (good, _) = generated_material();
+
+        // Not base64 at all.
+        assert!(ConfiguredKeyProvider::from_base64_pkcs8("not base64 !!", Utc::now()).is_err());
+        // Valid base64, not a PKCS#8 document.
+        let noise = STANDARD.encode([7_u8; 48]);
+        let error = ConfiguredKeyProvider::from_base64_pkcs8(&noise, Utc::now())
+            .expect_err("random bytes are not an Ed25519 key");
+        let rendered = format!("{error} {error:?}");
+        assert!(
+            !rendered.contains(&noise[..16]),
+            "the refusal echoed the material it was given: {rendered}"
+        );
+        assert!(!rendered.contains(&good[..16]));
+
+        // The positive control: the same call with real material succeeds, so the three refusals
+        // above are not a function that refuses everything.
+        assert!(ConfiguredKeyProvider::from_base64_pkcs8(&good, Utc::now()).is_ok());
+    }
+
+    /// The private half must not reach a log through this type either.
+    #[test]
+    fn a_configured_provider_prints_no_key_material() {
+        let (material, kid) = generated_material();
+        let provider =
+            ConfiguredKeyProvider::from_base64_pkcs8(&material, Utc::now()).expect("loads");
+        let rendered = format!("{provider:?}");
+        assert!(!rendered.contains(&material[..16]), "{rendered}");
+        // The positive control: `Debug` produces something, and the `kid` — which is public
+        // information — is what it is allowed to say.
+        assert!(rendered.contains("PrivateSigningKey"), "{rendered}");
+        let _ = kid;
     }
 }

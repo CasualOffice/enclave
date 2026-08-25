@@ -50,3 +50,11 @@ sbom.json
 .DS_Store
 Thumbs.db
 .claude/worktrees/
+
+# Development JWT signing keys, generated on first run by `LocalFileKeyProvider`.
+#
+# `deploy/README.md` and `deploy/config/enclave.example.yaml` have both said this directory was
+# git-ignored since M0, and it was not: the provider writes `<kid>.pkcs8.der` and `index.json`, and
+# the rules above match `*.pem` and `*.key`. Found wiring the key provider into the binary
+# (`ENC-687`), where the directory first acquired a caller.
+/deploy/config/dev-keys/
