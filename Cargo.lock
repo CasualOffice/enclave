@@ -1350,6 +1350,7 @@ dependencies = [
  "enclave-observability",
  "enclave-preview",
  "enclave-retention",
+ "enclave-search",
  "enclave-storage",
  "enclave-testing",
  "enclave-versions",
