@@ -282,20 +282,31 @@ test(`collapse: a group below the viewport does not move it, ${ROWS} rows`, asyn
       return element?.closest('.egl-row')?.querySelector('.egl-name-text')?.textContent ?? null;
     };
 
-    scroller.scrollTop = 400_000;
-    await frame();
-    await frame();
+    /* Hunt for a scroll position with a group boundary in view.
+     *
+     * Groups in the fixture run to hundreds of rows, so an arbitrary deep
+     * offset usually lands mid-group with no other header in the window at all
+     * — which is what the first version of this did, and it failed with "no
+     * group header below the viewport top" rather than silently testing
+     * nothing. Stepping until one appears is the honest fix. */
+    const headerBelow = (): HTMLButtonElement | undefined =>
+      [...document.querySelectorAll<HTMLButtonElement>('.egl-window .egl-group')].find(
+        (header) => header.getBoundingClientRect().top > scroller.getBoundingClientRect().top + 120,
+      );
+
+    let found: HTMLButtonElement | undefined;
+    for (let top = 400_000; top < 900_000 && found === undefined; top += 2_000) {
+      scroller.scrollTop = top;
+      await frame();
+      await frame();
+      found = headerBelow();
+    }
+    if (found === undefined) throw new Error('no group boundary found in half the list');
 
     const anchorBefore = rowAtProbe();
     const topBefore = scroller.scrollTop;
     const heightBefore = scroller.scrollHeight;
-
-    /* A group header rendered inside the window and comfortably below the
-     * viewport top — i.e. a group whose rows all sit after the anchor. */
-    const below = [...document.querySelectorAll<HTMLButtonElement>('.egl-window .egl-group')].find(
-      (header) => header.getBoundingClientRect().top > scroller.getBoundingClientRect().top + 120,
-    );
-    if (below === undefined) throw new Error('no group header below the viewport top');
+    const below = found;
 
     below.click();
     await frame();

@@ -1,20 +1,20 @@
 {
   "firstPaint": {
-    "firstPaintMs": 128.90000000596046,
-    "domContentLoadedMs": 57.60000002384186,
+    "firstPaintMs": 97.7999999821186,
+    "domContentLoadedMs": 39.099999994039536,
     "rowsInDom": 46,
     "groupsInDom": 2,
     "contentHeightPx": 3611662,
-    "totalNodes": 776,
+    "totalNodes": 947,
     "budgetMs": 400,
     "rows": 100000
   },
   "scroll": {
     "frames": 899,
-    "p50": 0.7000000000000455,
-    "p95": 3.2000000000000455,
-    "p99": 4.099999999999909,
-    "max": 6.7000000000000455,
+    "p50": 0.5,
+    "p95": 3.400000000000091,
+    "p99": 4.100000000000023,
+    "max": 6.400000000000091,
     "overBudget": 0,
     "overBudgetRatio": 0,
     "scrolledPx": 81000,
@@ -22,13 +22,22 @@
     "frameBudgetMs": 16.666666666666668,
     "rows": 100000
   },
-  "collapse": {
-    "commitMs": 8.899999976158142,
+  "collapseInside": {
+    "commitMs": 8.599999994039536,
     "topBefore": 400000,
     "topAfter": 388888,
-    "heightBefore": 0,
+    "heightBefore": 3611662,
     "heightAfter": 3511834,
-    "anchorBefore": "Statement of work 2021-375 — Brightwater Utilities.pdf",
-    "anchorAfter": "Termination notice 2019-970 — Helios Logistics.docx"
+    "pinnedName": "Brightwater Utilities — Amendments 2021",
+    "nowPinned": "Brightwater Utilities — Amendments 2021",
+    "collapsed": true
+  },
+  "collapseBelow": {
+    "anchorBefore": "Security questionnaire response 2021-129 — Brightwater Utilities.docx",
+    "anchorAfter": "Security questionnaire response 2021-129 — Brightwater Utilities.docx",
+    "topBefore": 488000,
+    "topAfter": 488000,
+    "heightBefore": 3611662,
+    "heightAfter": 3599494
   }
 }

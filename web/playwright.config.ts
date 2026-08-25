@@ -21,7 +21,20 @@ export default defineConfig({
   webServer: {
     command: 'npm run build && npm run preview',
     url: 'http://127.0.0.1:4174',
-    reuseExistingServer: process.env['CI'] === undefined,
+    /* Never reuse, not even locally.
+     *
+     * The default is to reuse a running dev server off CI, and it cost two
+     * sessions real time: `npm run build && npm run preview` is the command,
+     * so a preview left running from an earlier build keeps serving *that*
+     * build, and the suite reports green against code that is no longer in the
+     * tree. Both a deliberately broken virtualizer and a deliberately broken
+     * scroll restore passed that way before anyone noticed the server was
+     * stale — which is the same "reads as passing while inspecting nothing"
+     * failure this whole milestone is about, one layer down in the harness.
+     *
+     * The cost is about a second of rebuild per run. That is cheaper than one
+     * misleading result. */
+    reuseExistingServer: false,
     timeout: 180_000,
   },
   use: {
