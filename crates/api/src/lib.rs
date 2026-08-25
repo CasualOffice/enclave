@@ -107,6 +107,16 @@ impl Delivery {
 pub fn router(state: ApiState, delivery: Delivery) -> Router {
     let Delivery { store, preview } = delivery;
     Router::new()
+        // Authentication (docs/05-API.md §3). The first three are the credential exchange the
+        // chain's auth stage presupposes and are on the policy-routing allowlist by name; the last
+        // four are authenticated and go through the chain like everything else.
+        .route("/api/v1/auth/login", post(routes::auth::login))
+        .route("/api/v1/auth/mfa/verify", post(routes::auth::mfa_verify))
+        .route("/api/v1/auth/refresh", post(routes::auth::refresh))
+        .route("/api/v1/auth/logout", post(routes::auth::logout))
+        .route("/api/v1/auth/logout-all", post(routes::auth::logout_all))
+        .route("/api/v1/auth/sessions", get(routes::auth::sessions))
+        .route("/api/v1/auth/sessions/{sid}", delete(routes::auth::revoke_session))
         // Identity (docs/05-API.md §3).
         .route("/api/v1/me", get(me::me))
         // Files and folders (docs/05-API.md §7).

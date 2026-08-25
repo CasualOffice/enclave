@@ -97,6 +97,7 @@ pub mod migrate;
 pub mod normalize;
 pub mod pool;
 pub mod quota;
+pub mod routing;
 pub mod security_facts;
 pub mod tenant;
 pub mod tenants;
@@ -121,6 +122,7 @@ pub use quota::{
     release_storage, storage_quota, Admitted, Charged, Corrected, Enforcement, Observation,
     Refused, Released, StorageQuota, StorageReconciliation,
 };
+pub use routing::resolve_routed_tenant;
 pub use security_facts::{external_exposure, load_facts, record_facts, resolve_content};
 pub use tenant::TenantScoped;
 pub use tenants::active_tenants;

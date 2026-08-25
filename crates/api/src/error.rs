@@ -31,6 +31,24 @@ struct ErrorDetail {
     remediation: String,
     request_id: String,
     details: Vec<serde_json::Value>,
+    /// The named members `docs/05-API.md` specifies for particular codes — see [`Envelope`]'s note
+    /// and [`step_up_members`]. Flattened, so they sit beside `code` exactly as the document shows,
+    /// and skipped when empty so every other refusal's body is unchanged.
+    #[serde(flatten, skip_serializing_if = "serde_json::Map::is_empty")]
+    members: serde_json::Map<String, serde_json::Value>,
+}
+
+/// The `acr` and `maxAge` that `docs/05-API.md §3.3` shows on a `STEP_UP_REQUIRED` refusal.
+///
+/// Constants rather than values from the denial, because `ReasonCode` carries neither and the
+/// conditional-access stage has no way to express "this rule wanted `phr` within 60 seconds" yet.
+/// They are the document's own numbers, so a client written against `§3.3` works today and keeps
+/// working when the stage can vary them (`ENC-688`).
+fn step_up_members() -> serde_json::Map<String, serde_json::Value> {
+    let mut members = serde_json::Map::new();
+    let _ = members.insert("acr".to_owned(), serde_json::json!("mfa"));
+    let _ = members.insert("maxAge".to_owned(), serde_json::json!(300));
+    members
 }
 
 /// An error on its way to a client, carrying the request id for correlation.
@@ -156,8 +174,14 @@ impl IntoResponse for ApiError {
             }
         };
 
-        let body =
-            ErrorBody { error: ErrorDetail { code, message, remediation, request_id, details } };
+        let members = match &self.error {
+            Error::PolicyDenied { code: ReasonCode::StepUpRequired, .. } => step_up_members(),
+            _ => serde_json::Map::new(),
+        };
+
+        let body = ErrorBody {
+            error: ErrorDetail { code, message, remediation, request_id, details, members },
+        };
         (status, Json(body)).into_response()
     }
 }
@@ -181,6 +205,15 @@ impl IntoResponse for ApiError {
 /// `ENC-603`'s conditional-access rule decoder puts the clause it refused: *`unknown variant
 /// `posture_below`*` is the whole diagnostic value of a strict decoder, and an administrator who is
 /// told only "the rule was rejected" is an administrator who goes back to `psql`.
+///
+/// # `members`, and why it is not a second `details`
+///
+/// `docs/05-API.md §3.1` and `§3.3` specify two refusals whose bodies carry named members beside
+/// `code`: `MFA_REQUIRED` has `challengeId` and `methods`, `STEP_UP_REQUIRED` has `acr` and
+/// `maxAge`. They are not per-field validation diagnoses, so `details` is the wrong shape for them,
+/// and the web shell's api client is written against the spellings the document shows. `members`
+/// carries exactly those, and every value put in one is server-generated — a challenge id, an enum
+/// name, a number — never an echo of anything the caller sent.
 #[derive(Debug)]
 pub(crate) struct Envelope {
     status: StatusCode,
@@ -188,23 +221,45 @@ pub(crate) struct Envelope {
     message: &'static str,
     remediation: &'static str,
     details: Vec<serde_json::Value>,
+    members: serde_json::Map<String, serde_json::Value>,
 }
 
 impl Envelope {
     /// Describes a refusal. Every string is a literal — see the type's note.
-    pub(crate) const fn new(
+    pub(crate) fn new(
         status: StatusCode,
         code: &'static str,
         message: &'static str,
         remediation: &'static str,
     ) -> Self {
-        Self { status, code, message, remediation, details: Vec::new() }
+        Self {
+            status,
+            code,
+            message,
+            remediation,
+            details: Vec::new(),
+            members: serde_json::Map::new(),
+        }
     }
 
     /// Attaches the `details` array — validation fields, or the diagnostic facts of a `501`.
     pub(crate) fn with_details(mut self, details: Vec<serde_json::Value>) -> Self {
         self.details = details;
         self
+    }
+
+    /// Attaches one named member beside `code`, for the two refusals `docs/05-API.md` specifies
+    /// with extra fields. See the type's note for the bound on what may go in one.
+    pub(crate) fn with_member(mut self, name: &'static str, value: serde_json::Value) -> Self {
+        let _replaced = self.members.insert(name.to_owned(), value);
+        self
+    }
+
+    /// The named members, for a test that must assert the document's spelling. Test-only, as
+    /// [`Envelope::status`].
+    #[cfg(test)]
+    pub(crate) const fn members(&self) -> &serde_json::Map<String, serde_json::Value> {
+        &self.members
     }
 
     /// The status this envelope will be sent with.
@@ -235,15 +290,21 @@ impl Envelope {
 
     /// Renders it, stamping the request id that ties a client's report to a log line.
     pub(crate) fn into_response(self, request_id: RequestId) -> Response {
-        let body = serde_json::json!({
-            "error": {
-                "code": self.code,
-                "message": self.message,
-                "remediation": self.remediation,
-                "requestId": request_id.to_string(),
-                "details": self.details,
+        let mut error = serde_json::Map::new();
+        let _ = error.insert("code".to_owned(), serde_json::json!(self.code));
+        let _ = error.insert("message".to_owned(), serde_json::json!(self.message));
+        let _ = error.insert("remediation".to_owned(), serde_json::json!(self.remediation));
+        let _ = error.insert("requestId".to_owned(), serde_json::json!(request_id.to_string()));
+        let _ = error.insert("details".to_owned(), serde_json::json!(self.details));
+        // Extended last so that a member can never overwrite one of the five `§5` requires. A
+        // future `with_member("code", …)` would be a refusal whose stable code the caller cannot
+        // rely on, and this ordering makes it a no-op rather than a silent redefinition.
+        for (name, value) in self.members {
+            if !error.contains_key(&name) {
+                let _ = error.insert(name, value);
             }
-        });
+        }
+        let body = serde_json::json!({ "error": error });
         (self.status, [(header::CACHE_CONTROL, NO_STORE)], Json(body)).into_response()
     }
 }
