@@ -835,9 +835,21 @@ jobs:
           fi
 
   # --------------------------------------------------------------------------
-  # Web gates — pending until web/ exists. Grouped in one job because they share
-  # a single dependency and a single "does web/ exist" answer; each still names
-  # its own rule in its own step.
+  # Web gates. Three of docs/12 §5's structural gates and two of M5's exit
+  # criteria live here.
+  #
+  # This job used to guard every one of its steps on `web/package.json`
+  # existing, emit a `GATE PENDING … NOT ENFORCED` warning when it did not, and
+  # **exit zero** — which renders as a green check beside every gate that is
+  # genuinely enforcing something. `web/package.json` did not exist for the
+  # whole of M0 through M4, so the i18n rule, the bundle budget and the
+  # accessibility criterion all read as passing while inspecting nothing.
+  #
+  # That is `ENC-543` a second time (`ENC-677`). The conditional is gone rather
+  # than updated: a branch that cannot fire is one nobody notices rotting, and
+  # the fix for "the gate had an escape hatch" is not a better escape hatch.
+  # If `web/` is ever absent, `npm ci` fails and the job goes red, which is the
+  # correct answer — the frontend is not optional after M5.
   # --------------------------------------------------------------------------
   web-gates:
     name: "RULE: i18n catalog, bundle budget and axe pass on web/"
@@ -845,33 +857,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Detect the web workspace
-        id: detect
-        run: |
-          set -euo pipefail
-          if [ -f web/package.json ]; then
-            echo "present=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "present=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: PENDING notice
-        if: steps.detect.outputs.present != 'true'
-        run: |
-          set -euo pipefail
-          {
-            echo "### ⏳ PENDING — web structural gates"
-            echo ""
-            echo "\`web/\` does not exist yet (frontend lands in **M6**). Not enforced:"
-            echo ""
-            echo "- **i18n** — no untranslated user-facing string literals in \`web/src\` (docs/14-I18N-L10N.md §8)"
-            echo "- **Bundle size** — main bundle ≤ 250 KB gzipped (docs/12-TESTING.md §5)"
-            echo "- **Accessibility** — axe passes on every primary route"
-          } >> "$GITHUB_STEP_SUMMARY"
-          echo "::warning title=GATE PENDING: web structural gates::i18n, bundle size and accessibility are NOT ENFORCED — web/ does not exist yet (M6). Pending, not passing."
-
       - name: Set up Node
-        if: steps.detect.outputs.present == 'true'
         uses: actions/setup-node@v7
         with:
           node-version: "20"
@@ -879,23 +865,55 @@ jobs:
           cache-dependency-path: web/package-lock.json
 
       - name: Install web dependencies
-        if: steps.detect.outputs.present == 'true'
         working-directory: web
         run: npm ci
 
       - name: "RULE: no untranslated user-facing strings in web/src"
-        if: steps.detect.outputs.present == 'true'
         working-directory: web
+        # Also enforces the rest of docs/14 §8: no manual Intl-bypassing date or
+        # number formatting, no physical left/right CSS, a translator
+        # description on every key, and no orphaned or missing catalog keys.
+        # The script exits 2 rather than 0 if it scans zero files or finds zero
+        # catalog keys — a linter that inspected nothing has not passed, it has
+        # abstained, and that distinction is the whole of ENC-677.
         run: npm run lint:i18n
 
-      - name: "RULE: main bundle <= 250 KB gzipped"
-        if: steps.detect.outputs.present == 'true'
+      - name: TypeScript strict
         working-directory: web
+        # CLAUDE.md's TypeScript conventions are a build-breaking contract, not
+        # a preference. tsc is the only thing that can hold them.
+        run: npm run typecheck
+
+      - name: Unit tests
+        working-directory: web
+        run: npm test
+
+      - name: "RULE: main bundle <= 250 KB gzipped"
+        working-directory: web
+        # Measures the whole initial payload — the entry chunk, everything it
+        # statically imports, and their CSS — not just the entry chunk, because
+        # measuring one file lets a regression hide behind an import. It also
+        # asserts that nothing in that payload fetches from another origin: no
+        # @import of a remote stylesheet, no url(https:), no known font or icon
+        # CDN. ENC-135 self-hosts three families precisely so no page load
+        # reaches one, and a dependency added later that quietly @imports a font
+        # would pass every other gate in this repo.
         run: npm run check:bundle-size
 
-      - name: "RULE: axe passes on every primary route"
-        if: steps.detect.outputs.present == 'true'
+      - name: Install the browser axe runs in
         working-directory: web
+        # Real Chromium, not jsdom. Half of docs/09 §15 — 4.5:1 text contrast,
+        # 3:1 for UI components, visible focus at 3:1 — depends on computed
+        # style and layout, and jsdom has neither. A jsdom axe run would pass
+        # while enforcing only the half that does not need a renderer, which is
+        # this job's own failure mode wearing a different hat.
+        run: npx playwright install --with-deps chromium
+
+      - name: "RULE: axe passes on every primary route"
+        working-directory: web
+        # Iterates a declared list of primary routes, in both themes, and fails
+        # if that list is empty — an accessibility gate that walks zero routes
+        # is the vacuous pass again.
         run: npm run test:a11y
 
   # --------------------------------------------------------------------------
@@ -939,7 +957,11 @@ jobs:
             echo "## Structural gates"
             echo ""
             echo "Gates reporting ⏳ PENDING above are **not enforced yet**. They are wired and will"
-            echo "start blocking the moment their dependency lands (ENC-105/106, ENC-110, M1, M6)."
+            echo "start blocking the moment their dependency lands."
+            echo ""
+            echo "The **web gates no longer have a pending branch** (\`ENC-677\`). i18n, the bundle"
+            echo "budget and axe now either run or the job goes red; there is no path on which they"
+            echo "report green without having inspected anything."
           } >> "$GITHUB_STEP_SUMMARY"
           if echo "$NEEDS" | grep -qE '"result"[[:space:]]*:[[:space:]]*"(failure|cancelled|skipped)"'; then
             echo "::error title=Structural gate failed::A structural rule was broken — the failing check's name is the rule. One exception, and it names itself: if the failing job stopped in its 'Fetch dependencies' step, the registry was unavailable and that job's rule was never evaluated. Its annotation says so explicitly; anything else is a real finding."
