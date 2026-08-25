@@ -27,8 +27,16 @@ export type ControlState =
   | { readonly kind: 'ready' }
   /** Policy refused it. Focusable, keeps its colour, carries the server's reason. */
   | { readonly kind: 'denied'; readonly reason: string; readonly remedy?: MessageKey }
-  /** The product does not have it yet. Not focusable, neutral, no remedy. */
-  | { readonly kind: 'unbuilt'; readonly note: MessageKey }
+  /**
+   * The product does not have it yet. Not focusable, neutral, no remedy.
+   *
+   * Two strings, not one. D33 specifies a **short neutral chip** *and* a release
+   * note reached through `aria-describedby`, and collapsing them meant either a
+   * chip long enough to be a sentence or a description short enough to be
+   * useless. `chip` defaults to the shared `Later` marker so a caller only
+   * writes the note.
+   */
+  | { readonly kind: 'unbuilt'; readonly note: MessageKey; readonly chip?: MessageKey }
   /** In flight. Resolves on its own; no reason, because there is nothing to explain. */
   | { readonly kind: 'busy' };
 
@@ -45,6 +53,27 @@ export interface ButtonProps
   readonly state?: ControlState;
   /** Hide the label visually, keeping it as the accessible name. */
   readonly iconOnly?: boolean;
+  /**
+   * `submit` where the control submits a form.
+   *
+   * Defaulted to `button` and previously hard-coded to it, which meant a form
+   * had no submit control and therefore no implicit submission — a two-field
+   * sign-in form where `Enter` does nothing. Found by the sign-in session, which
+   * had to wire `Enter` by hand.
+   */
+  readonly type?: 'button' | 'submit';
+  /**
+   * The id given to the rendered reason or release note.
+   *
+   * A **public contract**, not an implementation detail: a caller that wants a
+   * second control — a text field beside its send button — to share one
+   * explanation needs to name the id, and the alternative is repeating the note
+   * per control, which is how a marker becomes wallpaper. Defaults to a value
+   * derived from `label`; pass it when two controls share one note.
+   */
+  readonly describedById?: string;
+  /** Invoked when a denied control is activated, to surface the remedy. */
+  readonly onRemedy?: (() => void) | undefined;
 }
 
 export function Button({
@@ -55,18 +84,25 @@ export function Button({
   size = 'md',
   state = READY,
   iconOnly = false,
+  type = 'button',
+  describedById,
+  onRemedy,
   ...rest
 }: ButtonProps) {
   const t = useT();
   const text = t(label, values);
-  const reasonId = state.kind === 'denied' ? `${label}-reason` : undefined;
-  const noteId = state.kind === 'unbuilt' ? `${label}-note` : undefined;
+  /* Distinct default ids per kind. The two states are mutually exclusive, so
+   * one id would have worked — but callers assert against these names, and a
+   * shared `-explain` suffix made a denial and a release note indistinguishable
+   * in a test that was specifically checking they never are. */
+  const reasonId = state.kind === 'denied' ? (describedById ?? `${label}-reason`) : undefined;
+  const noteId = state.kind === 'unbuilt' ? (describedById ?? `${label}-note`) : undefined;
 
   return (
     <>
       <button
         {...rest}
-        type="button"
+        type={type}
         className="ui-btn"
         data-variant={variant}
         data-size={size}
@@ -91,16 +127,50 @@ export function Button({
        * plus `title` is not a reliable screen-reader path (`docs/09 §15`), and a
        * tooltip is not a reason a keyboard user can reach. */}
       {state.kind === 'denied' && (
-        <span id={reasonId} className="ui-sr-only">
-          {state.reason}
+        <span id={reasonId} className="ui-denial">
+          <span className="ui-denial-reason">{state.reason}</span>
+          {/* **The remedy, rendered.** `docs/09 §5` and D33 both require "reason
+           * + one remedy", and this component accepted a `remedy` in its type
+           * and dropped it — which made the remedy half of the contract
+           * unimplementable by any caller while looking implemented. Found by
+           * the Ask session reading the type against the doc. */}
+          {state.remedy !== undefined && (
+            <button type="button" className="ui-denial-remedy" onClick={onRemedy}>
+              {t(state.remedy)}
+            </button>
+          )}
         </span>
       )}
       {state.kind === 'unbuilt' && (
-        <span id={noteId} className="ui-later">
-          {t(state.note)}
-        </span>
+        <>
+          <LaterChip note={state.chip ?? 'later.chip'} />
+          {/* The release note, which is what `aria-describedby` points at. Kept
+           * separate from the chip so the chip can stay one word and the note
+           * can be a sentence — D33 asks for both. */}
+          <span id={noteId} className="ui-later-note">
+            {t(state.note)}
+          </span>
+        </>
       )}
     </>
+  );
+}
+
+/**
+ * The neutral marker on a control the product does not have yet.
+ *
+ * A component rather than a bare `<span className="ui-later">`, because five
+ * features hand-writing the same span is exactly how a marker drifts — and this
+ * one may not drift: D33's whole cost is that *unbuilt* and *denied* stay
+ * distinguishable, and two of five copies picking up a semantic colour is how
+ * that erodes.
+ */
+export function LaterChip({ note, id }: { note: MessageKey; id?: string | undefined }) {
+  const t = useT();
+  return (
+    <span id={id} className="ui-later">
+      {t(note)}
+    </span>
   );
 }
 

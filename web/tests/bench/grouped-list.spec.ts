@@ -55,7 +55,7 @@ test.afterAll(() => {
 });
 
 test(`first paint: ${ROWS} rows, grouped`, async ({ page }) => {
-  await page.goto(`/?rows=${ROWS}`);
+  await page.goto(`/library?rows=${ROWS}`);
   await page.waitForSelector('.egl-row');
 
   const measurement = await page.evaluate(() => {
@@ -97,7 +97,7 @@ test(`first paint: ${ROWS} rows, grouped`, async ({ page }) => {
 });
 
 test(`scroll: ${ROWS} rows, grouped, sustained`, async ({ page }) => {
-  await page.goto(`/?rows=${ROWS}`);
+  await page.goto(`/library?rows=${ROWS}`);
   await page.waitForSelector('.egl-row');
 
   const stats: FrameStats = await page.evaluate(
@@ -190,64 +190,138 @@ test(`scroll: ${ROWS} rows, grouped, sustained`, async ({ page }) => {
   expect(stats.renderCount).toBeLessThan(stats.frames * 0.6);
 });
 
-test(`collapse: a large group above the viewport, ${ROWS} rows`, async ({ page }) => {
-  await page.goto(`/?rows=${ROWS}`);
+test(`collapse: the group the viewport is inside, ${ROWS} rows`, async ({ page }) => {
+  /* Collapsing the group you are *in* removes the rows under you, so the anchor
+   * they belong to no longer exists. The documented answer is to land on that
+   * group's header (`scrollTopForAnchor`), which is where a user would expect
+   * to be. Asserted here rather than assumed, because the first version of this
+   * test claimed to be collapsing a group *above* the viewport and was in fact
+   * doing this — the pinned group is by definition the one containing the
+   * scroll position. The genuine above-the-viewport case is arithmetic and is
+   * pinned exactly in tests/unit/geometry.test.ts; what a browser adds here is
+   * the timing and the end-to-end sanity. */
+  await page.goto(`/library?rows=${ROWS}`);
   await page.waitForSelector('.egl-row');
 
   const measurement = await page.evaluate(async () => {
     const scroller = document.querySelector<HTMLElement>('.egl-scroller');
     if (scroller === null) throw new Error('no scroller');
+    const frame = () => new Promise((resolve) => requestAnimationFrame(resolve));
 
-    // Deep enough that several groups sit above the viewport.
     scroller.scrollTop = 400_000;
-    await new Promise((resolve) => requestAnimationFrame(resolve));
-    await new Promise((resolve) => requestAnimationFrame(resolve));
+    await frame();
+    await frame();
 
-    const anchorBefore = document
-      .querySelectorAll('.egl-row')[3]
-      ?.querySelector('.egl-name-text')?.textContent;
     const topBefore = scroller.scrollTop;
-
-    // The header of the group that is currently pinned is above the viewport by
-    // definition, so collapsing it removes height from above the scroll
-    // position — the case D38 names.
-    const stickyHeader = document.querySelector<HTMLButtonElement>('.egl-sticky .egl-group');
-    if (stickyHeader === null) throw new Error('no pinned group header');
+    const heightBefore = scroller.scrollHeight;
+    const pinned = document.querySelector<HTMLButtonElement>('.egl-sticky .egl-group');
+    if (pinned === null) throw new Error('no pinned group header');
+    const pinnedName = pinned.querySelector('.egl-group-name')?.textContent ?? null;
 
     const start = performance.now();
-    stickyHeader.click();
-    await new Promise((resolve) => requestAnimationFrame(resolve));
+    pinned.click();
+    await frame();
     const commitMs = performance.now() - start;
-    await new Promise((resolve) => requestAnimationFrame(resolve));
+    await frame();
+
+    const nowPinned =
+      document.querySelector('.egl-sticky .egl-group')?.querySelector('.egl-group-name')
+        ?.textContent ?? null;
 
     return {
       commitMs,
       topBefore,
       topAfter: scroller.scrollTop,
-      heightBefore: 0,
+      heightBefore,
       heightAfter: scroller.scrollHeight,
-      anchorBefore: anchorBefore ?? null,
-      anchorAfter:
-        document.querySelectorAll('.egl-row')[3]?.querySelector('.egl-name-text')?.textContent ??
-        null,
+      pinnedName,
+      nowPinned,
+      collapsed:
+        document.querySelector('.egl-sticky .egl-group')?.getAttribute('aria-expanded') === 'false',
     };
   });
 
-  results['collapse'] = measurement;
-
+  results['collapseInside'] = measurement;
   console.log(
-    [
-      '',
-      `  collapse commit        ${measurement.commitMs.toFixed(2)} ms  (budget ${FRAME_BUDGET_MS.toFixed(2)} ms, one frame)`,
-      `  scrollTop              ${measurement.topBefore} -> ${measurement.topAfter}`,
-      '',
-    ].join('\n'),
+    `\n  collapse commit        ${measurement.commitMs.toFixed(2)} ms  (budget ${FRAME_BUDGET_MS.toFixed(2)} ms, one frame)` +
+      `\n  scrollTop              ${measurement.topBefore} -> ${measurement.topAfter}\n`,
   );
 
   // `docs/09 §2`: a click's visible acknowledgement is under 100 ms. A collapse
   // that rebuilt an index of 100 000 entries would not make it.
   expect(measurement.commitMs).toBeLessThan(100);
-  // Height was removed from above the viewport, so the scroll position must
-  // have moved with it rather than staying put and sliding the content.
+  expect(measurement.heightAfter).toBeLessThan(measurement.heightBefore);
   expect(measurement.topAfter).toBeLessThan(measurement.topBefore);
+  // The positive control: something was actually pinned, so the identity check
+  // below is not comparing two nulls.
+  expect(measurement.pinnedName).not.toBeNull();
+  // We landed on that same group's header, and it is now collapsed.
+  expect(measurement.nowPinned).toBe(measurement.pinnedName);
+  expect(measurement.collapsed).toBe(true);
+});
+
+test(`collapse: a group below the viewport does not move it, ${ROWS} rows`, async ({ page }) => {
+  /* The other half, and the one that catches a re-clamp: removing height
+   * *below* the scroll position must move nothing at all. A naive
+   * implementation that recomputed scrollTop from a row index, or that let the
+   * browser clamp against the new content height, fails this while passing
+   * every timing assertion above it. */
+  await page.goto(`/library?rows=${ROWS}`);
+  await page.waitForSelector('.egl-row');
+
+  const measurement = await page.evaluate(async () => {
+    const scroller = document.querySelector<HTMLElement>('.egl-scroller');
+    if (scroller === null) throw new Error('no scroller');
+    const frame = () => new Promise((resolve) => requestAnimationFrame(resolve));
+
+    const rowAtProbe = (): string | null => {
+      const box = scroller.getBoundingClientRect();
+      // Below the sticky column header (30) and the pinned group header (28),
+      // which together overlay the top of the scrollport.
+      const element = document.elementFromPoint(box.left + 240, box.top + 30 + 28 + 18);
+      return element?.closest('.egl-row')?.querySelector('.egl-name-text')?.textContent ?? null;
+    };
+
+    scroller.scrollTop = 400_000;
+    await frame();
+    await frame();
+
+    const anchorBefore = rowAtProbe();
+    const topBefore = scroller.scrollTop;
+    const heightBefore = scroller.scrollHeight;
+
+    /* A group header rendered inside the window and comfortably below the
+     * viewport top — i.e. a group whose rows all sit after the anchor. */
+    const below = [...document.querySelectorAll<HTMLButtonElement>('.egl-window .egl-group')].find(
+      (header) => header.getBoundingClientRect().top > scroller.getBoundingClientRect().top + 120,
+    );
+    if (below === undefined) throw new Error('no group header below the viewport top');
+
+    below.click();
+    await frame();
+    await frame();
+
+    return {
+      anchorBefore,
+      anchorAfter: rowAtProbe(),
+      topBefore,
+      topAfter: scroller.scrollTop,
+      heightBefore,
+      heightAfter: scroller.scrollHeight,
+    };
+  });
+
+  results['collapseBelow'] = measurement;
+  console.log(
+    `\n  collapse below         scrollTop ${measurement.topBefore} -> ${measurement.topAfter}` +
+      `\n  row at the probe       ${measurement.anchorAfter === measurement.anchorBefore ? 'unchanged' : 'MOVED'}\n`,
+  );
+
+  // Something actually collapsed.
+  expect(measurement.heightAfter).toBeLessThan(measurement.heightBefore);
+  // The positive control, so the identity check is not two nulls.
+  expect(measurement.anchorBefore).not.toBeNull();
+  // Nothing above the viewport changed, so nothing about the view may change.
+  expect(measurement.topAfter).toBe(measurement.topBefore);
+  expect(measurement.anchorAfter).toBe(measurement.anchorBefore);
 });

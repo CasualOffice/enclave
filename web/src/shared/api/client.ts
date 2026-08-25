@@ -28,9 +28,31 @@ export const ApiErrorBody = z.object({
   message: z.string(),
   remediation: z.string().optional(),
   requestId: z.string().optional(),
+  /** Present only on a step-up challenge, and only then. */
+  challengeId: z.string().optional(),
+  methods: z.array(z.string()).optional(),
 });
 
 export type ApiErrorBody = z.infer<typeof ApiErrorBody>;
+
+/**
+ * `docs/05 §5` nests it: `{"error": {"code": …}}`.
+ *
+ * The first version of this parsed `{code: …}` at the top level, which against
+ * a real server would have failed every parse and degraded every error to
+ * `http_403` / `http_500` — silently discarding `message` and `remediation`, so
+ * the *denied* path would have rendered an empty sentence in production while
+ * every test passed. Found by the sign-in session reading this against the doc
+ * rather than against the fixture. The unwrap accepts the bare shape too, so a
+ * handler that has not been updated is not a second failure mode.
+ */
+const ApiErrorEnvelope = z.union([z.object({ error: ApiErrorBody }), ApiErrorBody]);
+
+function unwrapError(payload: unknown): ApiErrorBody | null {
+  const parsed = ApiErrorEnvelope.safeParse(payload);
+  if (!parsed.success) return null;
+  return 'error' in parsed.data ? parsed.data.error : parsed.data;
+}
 
 /**
  * What went wrong, in the only three shapes a surface has to tell apart.
@@ -54,6 +76,12 @@ export type ApiFailure =
       readonly kind: 'stepUp';
       readonly code: string;
       readonly requestId: string;
+      /* The challenge has to survive the classification or there is nothing to
+       * answer it with. The first version dropped both of these, which made the
+       * step-up branch unimplementable — a user with MFA enabled could not have
+       * signed in at all. */
+      readonly challengeId: string | undefined;
+      readonly methods: readonly string[];
     }
   | {
       readonly kind: 'failed';
@@ -88,10 +116,21 @@ export interface RequestOptions {
  * rule 7) — a `403` would confirm the resource exists. So a `404` is reported
  * as *not found* and nothing here tries to be cleverer about it.
  */
+/** `docs/05` writes error codes in SCREAMING_SNAKE. Matched case-insensitively
+ *  because the first version tested `code.startsWith('step_up')` against
+ *  `STEP_UP_REQUIRED` and therefore never matched once. */
+const STEP_UP_CODES = /^(step_up_required|mfa_required)$/i;
+
 function classify(status: number, body: ApiErrorBody | null, requestId: string): ApiFailure {
   const code = body?.code ?? `http_${status}`;
-  if (status === 401 && code.startsWith('step_up')) {
-    return { kind: 'stepUp', code, requestId };
+  if (status === 401 && STEP_UP_CODES.test(code)) {
+    return {
+      kind: 'stepUp',
+      code,
+      requestId,
+      challengeId: body?.challengeId,
+      methods: body?.methods ?? [],
+    };
   }
   if (status === 403) {
     return {
@@ -145,8 +184,8 @@ export async function request<T>(
   const requestId = response.headers.get(REQUEST_ID_HEADER) ?? '';
 
   if (!response.ok) {
-    const parsed = ApiErrorBody.safeParse(await response.json().catch(() => null));
-    throw new ApiError(classify(response.status, parsed.success ? parsed.data : null, requestId));
+    const body = unwrapError(await response.json().catch(() => null));
+    throw new ApiError(classify(response.status, body, requestId));
   }
 
   const payload: unknown = await response.json().catch(() => null);

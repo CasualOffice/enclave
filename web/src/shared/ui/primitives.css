@@ -163,6 +163,36 @@
   transform: none;
 }
 
+/* The denial's reason and its one remedy, rendered as text beside the control.
+ *
+ * `docs/06 §24`: a stable code, a user-safe sentence, a remediation, and
+ * **nothing about which policy matched**. The remedy is a real button, not a
+ * line of prose, because "Connect to the VPN" that a user cannot act on is a
+ * description of their problem rather than a way out of it — and because
+ * `aria-disabled` plus `title` is not a screen-reader path (`docs/09 §15`). */
+.ui-denial {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  /* Full colour, never dimmed: a denial is information, and greying it out is
+   * how it stops being read. */
+  color: var(--fg2);
+}
+
+.ui-denial-remedy {
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 0;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 /* A neutral marker on an unbuilt control. Deliberately not a pill in any
  * semantic colour — `plans/M5-MVP-GA.md` D33 requires it to read as deliberate
  * rather than broken, and never as a refusal. */
@@ -176,8 +206,22 @@
   font-weight: 500;
   letter-spacing: 0;
   background: var(--sunken);
-  color: var(--fg3);
+  /* `--fg3` on `--sunken` is 3.79:1 at this size and fails AA.
+   *
+   * It had never been reported because in the sidebar the chip sits inside a
+   * container with `opacity: .5`, and axe cannot see through that — so the
+   * marker was failing everywhere it was actually legible and passing
+   * everywhere it was not. `ENC-682` again, and a good argument for putting a
+   * primitive on a route of its own rather than only inside its first caller. */
+  color: var(--fg2);
   white-space: nowrap;
+}
+
+/* The release note beside an unbuilt control. Future tense, about the product,
+ * and never offered as something the user can act on. */
+.ui-later-note {
+  font-size: 11.5px;
+  color: var(--fg2);
 }
 
 /* -------------------------------------------------------------- icon button */

@@ -199,7 +199,13 @@ const PHYSICAL_CSS = [
   /(^|[;{\s])(border-(?:top|bottom)-(?:left|right)-radius)\s*:/,
   /text-align\s*:\s*(left|right)\b/,
   /\bfloat\s*:\s*(left|right)\b/,
-  /\b(marginLeft|marginRight|paddingLeft|paddingRight|borderLeft|borderRight|textAlign)\s*:/,
+  /\b(marginLeft|marginRight|paddingLeft|paddingRight|borderLeft|borderRight)\s*:/,
+  /* `textAlign` in a style object is only wrong when its *value* is physical.
+   * The first version banned the property outright, which failed
+   * `style={{ textAlign: 'start' }}` — correct code, rejected. A rule that
+   * refuses the right answer is a rule people route around, and routing around
+   * this one means turning it off for the file. */
+  /\btextAlign\s*:\s*['"`](left|right)['"`]/,
 ];
 
 const referencedKeys = new Set();

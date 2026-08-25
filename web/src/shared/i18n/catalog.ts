@@ -233,6 +233,1290 @@ export const catalog = {
     message: 'Copy request ID',
     description: 'Accessible name of the button that copies the request ID to the clipboard.',
   },
+
+  'home.greeting.morning': {
+    message: 'Good morning, {name}',
+    description:
+      'Page heading on Home, shown before noon in the reader’s own timezone. "name" is the form of address the user is called by, supplied by the server — never assembled in the client, because name order is not universal (docs/14 §6).',
+  },
+  'home.greeting.afternoon': {
+    message: 'Good afternoon, {name}',
+    description: 'Page heading on Home, from noon until 18:00 in the reader’s own timezone.',
+  },
+  'home.greeting.evening': {
+    message: 'Good evening, {name}',
+    description:
+      'Page heading on Home, from 18:00 until midnight in the reader’s own timezone. Also used through the night; there is no separate late-night greeting.',
+  },
+  'home.subline': {
+    message:
+      '{date} · {workspace} · {attention, plural, =0 {nothing needs your attention} one {# thing needs your attention} other {# things need your attention}}',
+    description:
+      'The line under the Home greeting. "date" arrives already formatted by Intl and is never re-formatted here; "workspace" is the workspace name; "attention" is how many items are waiting on this user in this workspace. The middle dot is a separator and may be replaced by whatever separates list items in the target language.',
+  },
+  'home.attention.title': {
+    message: 'Needs your attention',
+    description:
+      'Section heading on Home over the approvals, reviews and signatures waiting on this user. About the user, present tense.',
+  },
+  'home.attention.requestedBy': {
+    message: 'Requested by {name}',
+    description:
+      'Second line of an item in the "Needs your attention" list. "name" is the person who sent the request. Followed by the age of the request as a separate relative time.',
+  },
+  'home.attention.action.approve': {
+    message: 'Approve',
+    description:
+      'Action on an approval waiting on this user. Currently unbuilt (there is no approvals backend), so it renders with a neutral Later chip and is not focusable — never with the denial treatment.',
+  },
+  'home.attention.action.review': {
+    message: 'Review',
+    description: 'Action on a document sent to this user to read and comment on. Currently unbuilt.',
+  },
+  'home.attention.action.sign': {
+    message: 'Sign',
+    description: 'Action on a document waiting for this user’s signature. Currently unbuilt.',
+  },
+  'home.attention.empty': {
+    message: 'Nothing is waiting on you in this workspace.',
+    description:
+      'Shown in place of the "Needs your attention" list when it is empty but the rest of Home is not. A statement of fact, not congratulation — the user may simply be new.',
+  },
+  'home.recent.title': {
+    message: 'Continue working',
+    description:
+      'Section heading on Home over the files this user opened most recently, newest first.',
+  },
+  'home.recent.empty': {
+    message: 'You have not opened anything in this workspace yet.',
+    description:
+      'Shown in place of the "Continue working" list when this user has no history in this workspace.',
+  },
+  'home.recent.laterNote': {
+    message: 'Opening a file from here arrives in a later release.',
+    description:
+      'Explains the neutral Later chip beside the "Continue working" heading: the rows are readable but not yet openable. Future tense, about the product, and it offers no remedy — it is not a refusal (docs/17 §6).',
+  },
+  'home.asks.title': {
+    message: 'Recent asks',
+    description:
+      'Section heading on Home over the questions this user recently put to Ask, the assistant surface.',
+  },
+  'home.asks.empty': {
+    message: 'You have not asked anything yet.',
+    description: 'Shown in place of the "Recent asks" row when this user has no ask history.',
+  },
+  'home.asks.laterNote': {
+    message: 'Re-running an ask arrives with Ask, in a later release.',
+    description:
+      'Explains the neutral Later chip beside the "Recent asks" heading. Ask itself is a later milestone, so the pills record what was asked without being able to run it again.',
+  },
+  'home.state.loading': {
+    message: 'Loading your workspace',
+    description:
+      'Announced while Home’s skeleton is on screen. The skeleton itself is decorative and hidden from assistive technology.',
+  },
+  'home.state.empty.title': {
+    message: 'Your workspace is quiet',
+    description:
+      'Heading of Home’s empty state: nothing is waiting, nothing has been opened, nothing has been asked. Usually a brand-new workspace.',
+  },
+  'home.state.empty.body': {
+    message:
+      'Home gathers what is waiting on you, what you were last working on, and what you have asked. Add a file to a library and it starts filling up.',
+    description:
+      'Body of Home’s new-empty state. Says what the surface is for and names the one action that starts it (docs/09 §11).',
+  },
+  'home.state.empty.action': {
+    message: 'Upload a file',
+    description:
+      'The one action on Home’s new-empty state. Currently unbuilt, so it carries a neutral Later chip rather than a refusal.',
+  },
+  'home.state.scoped.title': {
+    message: 'Nothing here, but not nothing everywhere',
+    description:
+      'Heading of Home’s scoped-empty state: this workspace is empty for this user, while other workspaces are not. Home’s equivalent of "no results for these filters" — the scope is the workspace rather than a filter bar.',
+  },
+  'home.state.scoped.body': {
+    message:
+      '{count, plural, one {# item is waiting for you in another workspace.} other {# items are waiting for you in other workspaces.}}',
+    description:
+      'Body of Home’s scoped-empty state. "count" is how many attention items the current workspace scope is hiding, so the user can tell "I am done" from "I am looking in the wrong place".',
+  },
+  'home.state.scoped.action': {
+    message: 'Switch workspace',
+    description:
+      'Action on Home’s scoped-empty state — the equivalent of clearing a filter. Currently unbuilt, so it carries a neutral Later chip.',
+  },
+  'home.state.error.title': {
+    message: 'Home could not be loaded',
+    description:
+      'Heading of Home’s fetch-error state. Names what failed, not why. A policy refusal never reaches this state (docs/09 §11).',
+  },
+  'home.state.error.body': {
+    message: 'The request did not complete. Nothing has changed.',
+    description:
+      'Body of the retryable fetch-error state on Home. Reassures that a failed read changed nothing.',
+  },
+  'home.state.error.bodyFinal': {
+    message: 'The request cannot be retried from here. Contact support with the request ID below.',
+    description: 'Body of Home’s fetch-error state when the failure is not retryable.',
+  },
+  'home.state.error.retry': {
+    message: 'Try again',
+    description:
+      'Retry action on Home’s fetch-error state. Present only when the failure is retryable, and never on a policy denial — retrying a denial teaches a user the product is broken rather than that they lack permission (docs/17 §7).',
+  },
+  'home.state.error.requestId': {
+    message: 'Request ID',
+    description:
+      'Label for the copyable correlation ID on Home’s error state (docs/09 §11). The value itself is not translated.',
+  },
+
+  /* ------------------------------------------------------------------- ask
+   *
+   * The Ask surface has no backend in M5 (`plans/M5-MVP-GA.md` D33), so the
+   * tense of every string here is load-bearing. `ask.*` copy is **future tense
+   * and about the product** — "an answer will show its sources". A denial's
+   * copy is present tense and about the user — "downloading this file is
+   * restricted outside the corporate network". A translator who collapses the
+   * two has erased a security distinction, so each description says so.
+   */
+  'ask.heading': {
+    message: 'Ask',
+    description:
+      'Heading of the Ask surface — the AI that reads the user’s own documents. Same word as the sidebar entry (nav.ask), kept separate because a heading and a navigation label diverge in languages that inflect.',
+  },
+  'ask.arrivesInM7': {
+    message: 'Arrives in a later release',
+    description:
+      'The release note on every unbuilt control on the Ask surface. FUTURE tense, about the PRODUCT, and it offers no remedy — there is nothing the user can do to obtain it (plans/M5-MVP-GA.md D33). It must never be translated as a refusal or as anything the user could act on; that phrasing belongs to a policy denial, and confusing the two erases a security signal.',
+  },
+  'ask.empty.title': {
+    message: 'Ask across your libraries',
+    description:
+      'Heading of the Ask surface when nothing has been asked. Says what the surface is for (docs/09 §11).',
+  },
+  'ask.empty.body': {
+    message:
+      'Ask a question in your own words. Answers will be drawn only from documents you can already open, and every ask is audited.',
+    description:
+      'Body of the Ask empty state. Future tense on the answering, present tense on the auditing, because the audit trail is a standing property of the product and the answering is not built yet.',
+  },
+  'ask.shape.caption': {
+    message: 'What an answer will look like',
+    description:
+      'Caption above the wireframe that shows the shape of an answer without generating one. Future tense: no answer exists yet and none is being fabricated.',
+  },
+  'ask.shape.body': {
+    message:
+      'An answer arrives with its sources beside it. Each source names the document and the page or section the passage came from, and links straight to it. A document you may only preview stays preview-only inside an answer.',
+    description:
+      'States the source-and-citation contract (docs/09 §10) while the surface is unbuilt, so the promise is made even though no answer can be produced. "preview-only" refers to the preview permission, which is a different permission from download.',
+  },
+  'ask.composer.label': {
+    message: 'Your question',
+    description:
+      'Accessible name of the Ask composer’s text field. The field is present but inert until the surface is built.',
+  },
+  'ask.composer.placeholder': {
+    message: 'Ask a question about your documents',
+    description: 'Placeholder inside the Ask composer’s text field.',
+  },
+  'ask.composer.send': {
+    message: 'Send question',
+    description:
+      'Accessible name of the Ask composer’s send button, whose visible form is an arrow icon.',
+  },
+  'ask.composer.scope.libraries': {
+    message: 'Every library you can open',
+    description:
+      'Scope chip on the Ask composer, stating the default breadth of an ask. Describes the access rule rather than naming a library, because the scope picker is not built yet.',
+  },
+  'ask.composer.scope.anyDate': {
+    message: 'Any date',
+    description:
+      'Scope chip on the Ask composer, stating the default date range. Not a formatted date — it is the absence of a date filter.',
+  },
+  'ask.state.loading': {
+    message: 'Searching the documents you can open',
+    description:
+      'Announced while an ask is in flight and the answer skeleton is on screen. Names what is happening — a search bounded by the user’s access — rather than saying "loading".',
+  },
+  'ask.state.scopeEmpty.title': {
+    message: 'Nothing in scope',
+    description:
+      'Heading of the Ask filtered-empty state: the scope chips exclude every document, so there is nothing to answer from.',
+  },
+  'ask.state.scopeEmpty.body': {
+    message:
+      '{count, plural, one {# document is outside the current scope.} other {# documents are outside the current scope.}}',
+    description:
+      'Body of the Ask filtered-empty state. "count" is how many documents the unscoped ask could have read, so a narrow scope is distinguishable from an empty workspace. It is never a count of documents the user cannot open — that number is not disclosed.',
+  },
+  'ask.state.scopeEmpty.action': {
+    message: 'Widen the scope',
+    description: 'Action on the Ask filtered-empty state. Clears the scope chips.',
+  },
+  'ask.state.error.title': {
+    message: 'This question could not be answered',
+    description:
+      'Heading of the Ask fetch-error state. A failure of the request, never a policy refusal — a refusal is a successful request with a refusing answer and renders inline instead (docs/09 §11).',
+  },
+  'ask.state.error.body': {
+    message: 'The request did not complete. Nothing was asked of your documents.',
+    description:
+      'Body of the retryable Ask error state. Reassures that a failed ask read nothing and recorded nothing.',
+  },
+  'ask.state.error.bodyFinal': {
+    message: 'This question cannot be retried from here. Contact support with the request ID below.',
+    description: 'Body of the Ask error state when the failure is not retryable.',
+  },
+  'ask.state.error.retry': {
+    message: 'Ask again',
+    description:
+      'Retry action on the Ask error state. Present only for a failed request — a policy denial never offers retry (docs/09 §11).',
+  },
+  'ask.state.error.requestId': {
+    message: 'Request ID',
+    description:
+      'Label for the copyable correlation ID on the Ask error state (docs/09 §11). The value itself is not translated.',
+  },
+  'auth.title': {
+    message: 'Sign in to {brand}',
+    description:
+      'Heading of the sign-in screen. "brand" is the tenant’s product name from the branding API (docs/09 §18), falling back to app.brand. It is display text only — the tenant is resolved at the gateway and is never chosen on this screen.',
+  },
+  'auth.subtitle': {
+    message: 'Use your work email address and password.',
+    description:
+      'One line under the sign-in heading. Says what the primary path is. Must never suggest that the address selects a workspace or organisation — it does not (CLAUDE.md rule 3).',
+  },
+  'auth.email.label': {
+    message: 'Email address',
+    description:
+      'Label above the email field on sign-in. Rendered above the input and stays visible while typing; the placeholder is a hint, never the label.',
+  },
+  'auth.email.placeholder': {
+    message: 'name@example.com',
+    description:
+      'Placeholder hint in the sign-in email field. Translate the shape of a local address if that helps; do not translate it into a real domain.',
+  },
+  'auth.password.label': {
+    message: 'Password',
+    description: 'Label above the password field on sign-in.',
+  },
+  'auth.submit': {
+    message: 'Sign in',
+    description: 'Primary action on the sign-in screen. The email path, which is the working path in M5.',
+  },
+  'auth.submitting': {
+    message: 'Signing in…',
+    description:
+      'Label of the sign-in button while the request is in flight. The button stays focusable and carries aria-busy; it is not disabled.',
+  },
+  'auth.or': {
+    message: 'or',
+    description:
+      'The word in the rule separating the primary email path from the alternative sign-in methods. Decorative and hidden from screen readers.',
+  },
+  'auth.continueWithSso': {
+    message: 'Continue with {provider}',
+    description:
+      'Label of a federated sign-in button. "provider" is the workspace’s own display name for its identity provider, from configuration (docs/13 §3.2) — tenant data, not product copy, so it is not translated.',
+  },
+  'auth.continueWithPasskey': {
+    message: 'Continue with a passkey',
+    description:
+      'Label of the passkey sign-in button, which is not built yet (plans/M5-MVP-GA.md D33, M6). The label describes the eventual action; the neutral Later chip beside it carries the fact that it does not exist yet.',
+  },
+  'auth.passkey.later': {
+    message: 'Passkeys arrive in a later release.',
+    description:
+      'Neutral note under the unbuilt passkey button. Future tense, about the product, never about this user’s permissions, and it offers no remedy — there is nothing the user can do (plans/M5-MVP-GA.md D33). Must never read like a policy refusal.',
+  },
+  'auth.refused': {
+    message: 'That email address and password do not match.',
+    description:
+      'The single sentence shown for EVERY refused sign-in — unknown address, wrong password, locked account alike. It must stay identical in all of those cases and must never name which field was wrong or whether the account exists; that is an account-enumeration control, not copy. Translations must not add a diagnosis.',
+  },
+  'auth.success.title': {
+    message: 'You’re signed in',
+    description: 'Heading of the sign-in success state, shown briefly before the workspace loads.',
+  },
+  'auth.success.body': {
+    message: 'Taking you to your workspace…',
+    description: 'Body of the sign-in success state.',
+  },
+  'auth.error.title': {
+    message: 'Sign-in could not be completed',
+    description:
+      'Heading of the sign-in FETCH-ERROR state — the request did not complete (network, 5xx, unparseable response). Never used for a refused sign-in, which is a completed request with a refusing answer.',
+  },
+  'auth.error.body': {
+    message: 'The request did not complete. Nothing has changed and you are not signed in.',
+    description:
+      'Body of the retryable sign-in error state. Reassures that a failed request left no state behind.',
+  },
+  'auth.error.bodyFinal': {
+    message: 'The request cannot be retried from here. Contact support with the request ID below.',
+    description: 'Body of the sign-in error state when the failure is not retryable.',
+  },
+  'auth.error.retry': {
+    message: 'Try again',
+    description:
+      'Retry action on the sign-in error state. Present only for a failed request — a refused sign-in and a policy denial never offer retry (docs/09 §11, docs/17 §7).',
+  },
+  'auth.error.requestId': {
+    message: 'Request ID',
+    description:
+      'Label for the copyable correlation ID on the sign-in error state (docs/09 §11). The value itself is not translated.',
+  },
+  'auth.error.copy': {
+    message: 'Copy request ID',
+    description:
+      'Action that copies the sign-in request ID to the clipboard. An accelerator only — the ID is selectable text as well.',
+  },
+  'auth.legal.support': {
+    message: 'Support',
+    description:
+      'Footer link on the sign-in screen. The destination is the tenant’s configured support URL (docs/09 §18); the link is not rendered when none is configured.',
+  },
+  'auth.legal.privacy': {
+    message: 'Privacy',
+    description: 'Footer link on the sign-in screen, to the tenant’s configured privacy URL.',
+  },
+  'auth.legal.terms': {
+    message: 'Terms',
+    description: 'Footer link on the sign-in screen, to the tenant’s configured terms URL.',
+  },
+
+  /* ------------------------------------------------------------------ search
+   *
+   * Owned by `features/search`. Two groups are worth a translator’s attention
+   * before the rest: `search.retrieval.*`, which tells a user that this search
+   * matched words rather than meaning and must stay calm rather than alarming;
+   * and `search.state.*`, which are the four states of `docs/09 §11`.
+   */
+
+  'search.title': {
+    message: 'Search',
+    description:
+      'The screen’s heading. Visually hidden — the sheet has no top bar (docs/09 §3) — and read by a screen reader on entry.',
+  },
+  'search.input.label': {
+    message: 'Search',
+    description: 'Accessible name of the query field. The field carries no visible label.',
+  },
+  'search.input.placeholder': {
+    message: 'Search files, people and metadata',
+    description:
+      'Placeholder in the query field. The design reference adds “— or ask a question…”; that is deliberately absent, because asking a question is M7 and the field must not promise it.',
+  },
+  'search.key.escape': {
+    message: 'Esc',
+    description:
+      'Key cap shown beside the query field; the Escape key clears the query. Translate to the label printed on that key locally — French keyboards read “Échap”.',
+  },
+  'search.key.arrows': {
+    message: '↑↓',
+    description: 'Key cap for the up and down arrow keys, shown in the keyboard hint bar.',
+  },
+  'search.key.enter': {
+    message: '⏎',
+    description:
+      'Key cap for the Enter/Return key, shown in the keyboard hint bar. A glyph rather than a word; replace with the local convention where a glyph is not used.',
+  },
+  'search.results.label': {
+    message: 'Search results',
+    description:
+      'Accessible name of the results list. The list is virtualized, so this is how a screen-reader user knows what they have entered.',
+  },
+  'search.results.count': {
+    message: '{count, plural, =0 {No results} one {# result} other {# results}}',
+    description:
+      'How many results the query returned in total, at the end of the filter row. "count" is the total, not the number currently rendered.',
+  },
+  'search.results.counting': {
+    message: 'Searching…',
+    description: 'Stands in for the result count while the query is still running.',
+  },
+  'search.foot.navigate': {
+    message: 'move between results',
+    description:
+      'Keyboard hint in the footer, shown after the ↑↓ key cap. Lower case: it completes the key cap rather than starting a sentence.',
+  },
+  'search.foot.open': {
+    message: 'open',
+    description: 'Keyboard hint in the footer, shown after the Enter key cap.',
+  },
+  'search.foot.access': {
+    message: 'Results respect your access',
+    description:
+      'Standing reassurance at the end of the footer. Every result has been post-filtered against the user’s permissions on the server (CLAUDE.md rule 5); this states that fact and must never imply results were dropped for any other reason.',
+  },
+  'search.filter.type': {
+    message: 'Type',
+    description: 'Leading half of the file-type filter chip. A noun, not a verb.',
+  },
+  'search.filter.classification': {
+    message: 'Classification',
+    description:
+      'Leading half of the sensitivity filter chip. It filters to a ceiling — “Confidential” means at most Confidential.',
+  },
+  'search.filter.modified': {
+    message: 'Modified',
+    description: 'Leading half of the last-changed-date filter chip.',
+  },
+  'search.filter.workspace': {
+    message: 'Workspace',
+    description:
+      'Leading half of the workspace filter chip. Its values are workspace names supplied by the server and are never translated.',
+  },
+  'search.filter.any': {
+    message: 'Any',
+    description:
+      'The value half of a filter chip that is not narrowing anything. Must read as “no restriction”, never as “unknown”.',
+  },
+  'search.filter.type.pdf': {
+    message: 'PDF',
+    description: 'File-type filter value: PDF documents.',
+  },
+  'search.filter.type.doc': {
+    message: 'Document',
+    description: 'File-type filter value: word-processing documents (.docx, .doc).',
+  },
+  'search.filter.type.xls': {
+    message: 'Spreadsheet',
+    description: 'File-type filter value: spreadsheets (.xlsx, .xls).',
+  },
+  'search.filter.type.ppt': {
+    message: 'Presentation',
+    description: 'File-type filter value: presentations (.pptx, .ppt).',
+  },
+  'search.filter.modified.any': {
+    message: 'Any time',
+    description: 'Date filter value: no date restriction. The default.',
+  },
+  'search.filter.modified.week': {
+    message: 'Past 7 days',
+    description: 'Date filter value: files changed within the last seven days.',
+  },
+  'search.filter.modified.month': {
+    message: 'Past 30 days',
+    description: 'Date filter value: files changed within the last thirty days.',
+  },
+  'search.filter.modified.year': {
+    message: 'Past year',
+    description: 'Date filter value: files changed within the last year.',
+  },
+  'search.filter.change': {
+    message: 'Change the {filter} filter. Currently {value}',
+    description:
+      'Accessible name of the button that opens a filter chip’s menu. "filter" is the chip’s name (Type, Classification…); "value" is its current setting.',
+  },
+  'search.filter.remove': {
+    message: 'Remove the {filter} filter',
+    description:
+      'Accessible name of the ✕ on an active filter chip. Each chip is removable on its own (docs/09 §10), so this names which one.',
+  },
+  'search.answer.title': {
+    message: 'Answers drawn from these documents, with their sources',
+    description:
+      'The AI-answer slot above the results, shown in the unbuilt treatment with a “Later” chip. Future tense about the product, never about this user’s permissions: the feature is M7, not refused (docs/17 §6). Never word it as though an answer were being withheld.',
+  },
+  'search.retrieval.head': {
+    message: 'Matching on words, not meaning',
+    description:
+      'Heading of the degraded-search header (docs/09 §10). This is not an error and must not be translated with alarm vocabulary — no “failed”, “problem”, “error”. It states how the search ran.',
+  },
+  'search.retrieval.stillSearched': {
+    message:
+      'Every file you can open is still being searched — by name, by metadata, and by the words inside it.',
+    description:
+      'First line of the degraded-search header, and deliberately the reassuring one: coverage is unchanged and only the matching is narrower. Keep it first in translation.',
+  },
+  'search.retrieval.lexical': {
+    message:
+      'A document that says “terminate for convenience” will not be found by searching “cancel the contract”. Finding a document by what it means arrives in a later release.',
+    description:
+      'Second line, shown when this deployment has no semantic retrieval at all — a product state, so future tense about the product. Replace the quoted example with a natural pair in your language: two ways of saying the same thing that share no words.',
+  },
+  'search.retrieval.degraded': {
+    message:
+      'A document that says “terminate for convenience” will not be found by searching “cancel the contract” right now. Finding a document by what it means is temporarily unavailable; it comes back on its own, and there is nothing to retry.',
+    description:
+      'Second line, shown when semantic retrieval was reachable but is not right now — present tense, about the system, and explicitly no remedy, because retrying a fallback that already returned real results teaches a user the product is broken. Replace the quoted example as above.',
+  },
+  'search.result.locationPage': {
+    message: 'p.{page}',
+    description:
+      'Where in a document the match sits, when only a page number is known. Abbreviate as your language abbreviates “page”; the value is a number.',
+  },
+  'search.result.locationPageSection': {
+    message: 'p.{page} · {section}',
+    description:
+      'Where in a document the match sits. "section" is the document’s own section path (“3.2 Topology”) and is never translated. Reorder the two parts if your language reads them the other way.',
+  },
+  'search.result.noExcerpt': {
+    message: 'No matching passage to show',
+    description:
+      'Shown in place of a result’s excerpt when the API returned none. This is normal rather than a fault (docs/05 §11): a metadata-only caller gets no excerpt, and the lexical path emits none when it cannot locate the matched term. Never phrase it as an error or as content being withheld.',
+  },
+  'search.state.new.title': {
+    message: 'Search everything you can open',
+    description:
+      'Heading of the empty state before anything has been searched (docs/09 §11, “empty (new)”).',
+  },
+  'search.state.new.body': {
+    message:
+      'Files and the words inside them — by name, by who changed them, by workspace, file type or classification. Start typing in the field above.',
+    description:
+      'Body of the empty (new) state. Says what the surface is for and names the one action that starts it, which is typing in the field directly above.',
+  },
+  'search.state.loading': {
+    message: 'Searching',
+    description:
+      'Announced while the skeleton rows are on screen. The skeletons themselves are decorative.',
+  },
+  'search.state.noResults.title': {
+    message: 'No results for “{query}”',
+    description:
+      'Heading of the empty state when a query returned nothing. "query" is the user’s own text, quoted verbatim.',
+  },
+  'search.state.noResults.advice': {
+    message: 'Check the spelling, or search for fewer words.',
+    description:
+      'Body of the no-results state when no filters are active and the search matched on meaning as well as on words.',
+  },
+  'search.state.noResults.lexicalAdvice': {
+    message:
+      'This search matched the words you typed rather than what they mean, so try the words the document itself would use — and check the spelling.',
+    description:
+      'Body of the no-results state when retrieval was word-matching only. It repeats the point the degraded-search header makes, because this is the moment the user is actually stuck.',
+  },
+  'search.state.noResults.filtered': {
+    message:
+      '{count, plural, =0 {Nothing matches this search, with or without the filters below.} one {# result matches this search without the filters below.} other {# results match this search without the filters below.}}',
+    description:
+      'Body of the no-results state when filters are active. "count" is how many results the same query returns unfiltered — the number that separates “the filters are too narrow” from “this query finds nothing”, which are different problems with different fixes.',
+  },
+  'search.state.noResults.filterList': {
+    message: 'Filters applied to this search',
+    description:
+      'Accessible name of the list of active filters on the no-results state, so a screen-reader user hears which filters are narrowing the query.',
+  },
+  'search.state.noResults.clearFilters': {
+    message: 'Clear filters',
+    description: 'Action on the no-results state. Restores the same query with no filters.',
+  },
+  'search.state.error.title': {
+    message: 'This search could not be run',
+    description:
+      'Heading of the fetch-error state. Says what failed, not why — the reason belongs with the request ID a support agent can look up.',
+  },
+  'search.state.error.body': {
+    message:
+      'The request did not complete. Nothing has changed, and no results are being withheld from you.',
+    description:
+      'Body of the retryable fetch-error state. The second clause is load-bearing: this state must never be mistaken for a policy denial, which is a successful request with a refusing answer and looks completely different (docs/09 §11).',
+  },
+  'search.state.error.bodyFinal': {
+    message: 'The request cannot be retried from here. Contact support with the request ID below.',
+    description: 'Body of the fetch-error state when the failure is not retryable.',
+  },
+  'search.state.error.retry': {
+    message: 'Try again',
+    description:
+      'Retry action on the fetch-error state. Present only when the failure is retryable, and never on a policy denial or on the degraded-search header.',
+  },
+  'search.state.error.requestId': {
+    message: 'Request ID',
+    description:
+      'Label for the copyable correlation ID on the search error state (docs/09 §11). The value itself is not translated.',
+  },
+
+  /* ------------------------------------------------------------------ admin
+   *
+   * `docs/14 §4`: keys are namespaced and stable, never derived from English
+   * text, and every one carries a description. The hard case on this surface is
+   * the policy-as-a-sentence builder: a sentence assembled from fragments around
+   * its controls is exactly the concatenation `§4` forbids, so each clause is
+   * **one** ICU message and its controls arrive as placeholders. A translator
+   * moves `{categories}` wherever their language wants it and the chips follow.
+   */
+
+  'admin.nav.label': {
+    message: 'Administration sections',
+    description: 'Accessible name of the 200px section rail on the admin screen.',
+  },
+  'admin.nav.security': {
+    message: 'Security',
+    description:
+      'Heading of the security group in the admin rail, and the first step of the breadcrumb above the policy.',
+  },
+  'admin.nav.detectors': {
+    message: 'Detectors',
+    description:
+      'Heading of the detectors group in the admin rail. A detector is what finds sensitive data in a file; a policy decides what happens next.',
+  },
+  'admin.nav.dlp': {
+    message: 'Data loss prevention',
+    description:
+      'Rail entry and breadcrumb step for the DLP surface. Spelled out rather than abbreviated because the abbreviation is English-specific.',
+  },
+  'admin.nav.conditionalAccess': {
+    message: 'Conditional access',
+    description: 'Rail entry for the conditional-access surface, which this release does not have.',
+  },
+  'admin.nav.classification': {
+    message: 'Classification',
+    description:
+      'Rail entry for the classification surface, which this release does not have. The scheme of sensitivity labels, not one file’s label.',
+  },
+  'admin.nav.barriers': {
+    message: 'Information barriers',
+    description: 'Rail entry for the ethical-wall surface, which this release does not have.',
+  },
+  'admin.nav.incidents': {
+    message: 'Incidents',
+    description: 'Rail entry for the DLP incident queue, which this release does not have.',
+  },
+  'admin.nav.detectorsBuiltIn': {
+    message: 'Built-in detectors',
+    description: 'Rail entry for the detectors shipped with the product. Not in this release.',
+  },
+  'admin.nav.detectorsCustom': {
+    message: 'Custom detectors',
+    description: 'Rail entry for detectors a tenant defines itself. Not in this release.',
+  },
+  'admin.crumb.label': {
+    message: 'Breadcrumb',
+    description: 'Accessible name of the trail above the policy title.',
+  },
+
+  'admin.dlp.pageTitle': {
+    message: 'Data loss prevention',
+    description:
+      'The page heading of the DLP policy screen. Same words as the rail entry, different context: this one is an H1 and may be translated differently.',
+  },
+  'admin.dlp.rules.title': {
+    message: 'Policies',
+    description: 'Heading above the list of this tenant’s DLP policies in the admin rail.',
+  },
+  'admin.dlp.rules.searchLabel': {
+    message: 'Search policies',
+    description:
+      'Accessible name and placeholder of the box that narrows the policy list. Used for both, so it must read as a label and as a prompt.',
+  },
+  'admin.dlp.rules.decodeError': {
+    message: 'Cannot be decoded',
+    description:
+      'Marker beside a stored policy the evaluator can no longer read. Such a policy fails every request in the tenant until it is withdrawn, so it is called out rather than listed silently.',
+  },
+  'admin.dlp.status.draft': {
+    message: 'Draft',
+    description:
+      'State of a policy that has never been written to the server. It refuses nothing and nobody is affected by it yet.',
+  },
+  'admin.dlp.status.inForce': {
+    message: 'In force',
+    description: 'State of a policy the policy chain is evaluating on every request.',
+  },
+  'admin.dlp.modeNote': {
+    message:
+      'Whether DLP records, warns or refuses is configured once for the whole tenant. It is not a setting on this policy.',
+    description:
+      'Sentence under the policy heading. It exists because administrators expect a per-policy simulate/enforce switch and there is none; a switch that was accepted and ignored would be an administrator believing a policy rehearses while it decides.',
+  },
+  'admin.auditor.pill': {
+    message: 'Auditor',
+    description:
+      'Marker shown when the screen is rendered for a read-only auditor. Describes the viewer’s role, not a restriction placed on them.',
+  },
+  'admin.auditor.note': {
+    message: 'You are seeing the same screen without its editing controls.',
+    description:
+      'Sentence shown in read-only auditor mode. Present tense and about the viewer, because it is about what they can do rather than about the product’s roadmap.',
+  },
+
+  'admin.dlp.band.identity': {
+    message: 'This policy',
+    description: 'Band heading above the policy’s name and evaluation priority.',
+  },
+  'admin.dlp.band.when': {
+    message: 'When',
+    description:
+      'Band heading above the conditions. First word of the sentence the builder composes; the clauses beneath finish it.',
+  },
+  'admin.dlp.band.whenHint': {
+    message: 'all of these are true',
+    description:
+      'Hint beside the "When" band heading. It says the clauses are joined by AND, which is why no conjunction is drawn between them.',
+  },
+  'admin.dlp.band.then': {
+    message: 'Then',
+    description: 'Band heading above the effect and what a refused person is told.',
+  },
+  'admin.dlp.band.where': {
+    message: 'Where',
+    description: 'Band heading above the policy’s reach across the tenant.',
+  },
+
+  'admin.dlp.clause.name': {
+    message: 'It is called {name}.',
+    description:
+      'Identity clause of the policy sentence. "name" is a text field the administrator types in, rendered inline in the sentence.',
+  },
+  'admin.dlp.clause.priority': {
+    message: 'It is evaluated at priority {priority}.',
+    description:
+      'Identity clause. "priority" is a number field rendered inline. Priority decides which reason code a refused person sees when two policies refuse, not whether a policy fires.',
+  },
+  'admin.dlp.clause.classification': {
+    message: 'The file is classified {level} or higher.',
+    description:
+      'Condition clause. "level" is the sensitivity-threshold control rendered inline as a badge in the locked classification colour.',
+  },
+  'admin.dlp.clause.categories': {
+    message: 'The file contains {categories}.',
+    description:
+      'Condition clause. "categories" is a list of detector-category chips joined by the locale’s own "or". Never a matched value — a category is a term, a match is a secret.',
+  },
+  'admin.dlp.clause.scope': {
+    message: 'The attempted action is {actions}.',
+    description:
+      'Condition clause. "actions" is a list of governed-action chips joined by the locale’s own "or".',
+  },
+  'admin.dlp.clause.effect': {
+    message: 'The effect is {effect}.',
+    description: 'Effect clause. "effect" is the control that chooses what the policy does.',
+  },
+  'admin.dlp.clause.reason': {
+    message: 'The person is told the reason code {code} and the sentence below.',
+    description:
+      'Effect clause. "code" is a stable machine-readable code such as DLP_BLOCKED and is never translated.',
+  },
+  'admin.dlp.clause.noRefusal': {
+    message: 'This effect changes the request rather than refusing it, so nobody is turned away.',
+    description:
+      'Replaces the reason-code clause when the chosen effect does not refuse anything — a watermark, a read-only session, an audit record.',
+  },
+  'admin.dlp.clause.messageUnbuilt': {
+    message: 'Wording written for this policy, instead of the wording keyed to the reason code',
+    description:
+      'A builder clause the product does not have yet. Future tense and about the product; it must never read as a refusal aimed at this administrator, and it offers no remedy because there is nothing they can do.',
+  },
+  'admin.dlp.clause.obligationsUnbuilt': {
+    message: 'Extra effects on the same policy, such as notifying security or opening an incident',
+    description:
+      'A builder clause the product does not have yet. Future tense, about the product, no remedy.',
+  },
+  'admin.dlp.clause.whereUnbuilt': {
+    message: 'Narrowing a policy to particular workspaces or libraries, or excepting one',
+    description:
+      'A builder clause the product does not have yet. Future tense, about the product, no remedy.',
+  },
+
+  'admin.dlp.chip.nameLabel': {
+    message: 'Policy name',
+    description: 'Accessible name of the text field inside the identity clause.',
+  },
+  'admin.dlp.chip.priorityLabel': {
+    message: 'Evaluation priority',
+    description: 'Accessible name of the number field inside the identity clause.',
+  },
+  'admin.dlp.chip.classificationLabel': {
+    message: 'Classification threshold',
+    description: 'Accessible name of the sensitivity-level control inside the condition clause.',
+  },
+  'admin.dlp.chip.effectLabel': {
+    message: 'What this policy does',
+    description: 'Accessible name of the effect control inside the effect clause.',
+  },
+  'admin.dlp.chip.addCategory': {
+    message: 'Add a detector category',
+    description:
+      'Accessible name and visible label of the control that adds a category to the condition clause.',
+  },
+  'admin.dlp.chip.addScope': {
+    message: 'Add an action to govern',
+    description:
+      'Accessible name and visible label of the control that adds a governed action to the condition clause.',
+  },
+  'admin.dlp.chip.removeCategory': {
+    message: 'Remove {category}',
+    description:
+      'Accessible name of the × on a detector-category chip. "category" is the already-translated category term.',
+  },
+  'admin.dlp.chip.removeScope': {
+    message: 'Remove {action}',
+    description:
+      'Accessible name of the × on a governed-action chip. "action" is the already-translated action term.',
+  },
+
+  'admin.dlp.category.paymentCard': {
+    message: 'payment card numbers',
+    description:
+      'Detector category. Lower case because it reads inside a sentence ("The file contains payment card numbers"). It names a kind of data and never a value.',
+  },
+  'admin.dlp.category.aadhaar': {
+    message: 'Aadhaar numbers',
+    description:
+      'Detector category: the Indian national identity number. Names the kind, never a value.',
+  },
+  'admin.dlp.category.apiKey': {
+    message: 'API keys',
+    description: 'Detector category. Names the kind, never a value.',
+  },
+  'admin.dlp.category.bankAccount': {
+    message: 'bank account numbers',
+    description: 'Detector category. Names the kind, never a value.',
+  },
+  'admin.dlp.category.healthId': {
+    message: 'health identifiers',
+    description: 'Detector category. Names the kind, never a value.',
+  },
+  'admin.dlp.category.credential': {
+    message: 'credentials',
+    description:
+      'Detector category covering passwords and secrets found in a document. Names the kind, never a value.',
+  },
+
+  'admin.dlp.scope.externalSharing': {
+    message: 'external sharing',
+    description:
+      'A governed action: sharing a file with somebody outside the organisation. Lower case because it reads inside a sentence.',
+  },
+  'admin.dlp.scope.publicLink': {
+    message: 'a public link',
+    description: 'A governed action: creating a link anybody with the URL can open.',
+  },
+  'admin.dlp.scope.download': {
+    message: 'download',
+    description:
+      'A governed action. Download, preview, print, export and sync are five different permissions and are never collapsed into one.',
+  },
+  'admin.dlp.scope.export': {
+    message: 'export',
+    description: 'A governed action: taking the content out in another format.',
+  },
+  'admin.dlp.scope.print': {
+    message: 'print',
+    description: 'A governed action.',
+  },
+  'admin.dlp.scope.sync': {
+    message: 'sync to a device',
+    description: 'A governed action: keeping a local copy on a desktop or phone.',
+  },
+  'admin.dlp.scope.exposesContent': {
+    message: 'anything that exposes content',
+    description:
+      'A governed action covering every surface that lets content leave. Broader than the named ones and used when a tenant wants the widest reach.',
+  },
+
+  'admin.dlp.action.block': {
+    message: 'Block',
+    description: 'Policy effect: refuse the attempt outright.',
+  },
+  'admin.dlp.action.quarantine': {
+    message: 'Quarantine',
+    description: 'Policy effect: refuse the attempt and hold the file for review.',
+  },
+  'admin.dlp.action.warn': {
+    message: 'Warn',
+    description: 'Policy effect: let the attempt through, having told the person what was found.',
+  },
+  'admin.dlp.action.audit': {
+    message: 'Audit',
+    description: 'Policy effect: let the attempt through and record it.',
+  },
+  'admin.dlp.action.requireJustification': {
+    message: 'Require a justification',
+    description: 'Policy effect: let the attempt through once a reason has been recorded.',
+  },
+  'admin.dlp.action.requireApproval': {
+    message: 'Require approval',
+    description: 'Policy effect: hold the attempt until somebody else approves it.',
+  },
+  'admin.dlp.action.noDownload': {
+    message: 'Prevent download',
+    description: 'Policy effect: allow preview but not a copy of the original.',
+  },
+  'admin.dlp.action.readOnly': {
+    message: 'Make read-only',
+    description: 'Policy effect: allow viewing but not editing.',
+  },
+  'admin.dlp.action.watermark': {
+    message: 'Watermark',
+    description: 'Policy effect: stamp the viewer’s identity across the rendition.',
+  },
+  'admin.dlp.action.notifySecurity': {
+    message: 'Notify security',
+    description: 'Policy effect: alert the security team and let the attempt through.',
+  },
+  'admin.dlp.action.removeShare': {
+    message: 'Remove the share',
+    description: 'Policy effect: withdraw the sharing link or grant that carried the file out.',
+  },
+
+  'admin.dlp.denial.blocked.message': {
+    message: 'This action is not permitted on this file.',
+    description:
+      'What a refused person is shown for the reason code DLP_BLOCKED. Says nothing about which policy matched, its conditions or its thresholds — that is a leak, not a courtesy.',
+  },
+  'admin.dlp.denial.blocked.remediation': {
+    message:
+      'Ask the file’s owner to share it another way, or request an exception from your security administrator.',
+    description: 'The one remedy offered with DLP_BLOCKED. An action the person can actually take.',
+  },
+  'admin.dlp.denial.justification.message': {
+    message: 'This action needs a reason recorded before it can go ahead.',
+    description: 'What a person is shown for the reason code DLP_JUSTIFICATION_REQUIRED.',
+  },
+  'admin.dlp.denial.justification.remediation': {
+    message: 'Enter why you need it. Your reason is recorded in the audit log.',
+    description:
+      'The remedy for DLP_JUSTIFICATION_REQUIRED. It says plainly that the reason is recorded, because collecting one quietly is worse than refusing.',
+  },
+  'admin.dlp.denial.approval.message': {
+    message: 'This action needs an approval before it can go ahead.',
+    description: 'What a person is shown for the reason code DLP_APPROVAL_REQUIRED.',
+  },
+  'admin.dlp.denial.approval.remediation': {
+    message: 'Send it for approval, or ask your security administrator.',
+    description: 'The remedy for DLP_APPROVAL_REQUIRED.',
+  },
+
+  'admin.dlp.preview.title': {
+    message: 'What a refused person sees',
+    description:
+      'Heading of the panel that previews the denial this policy would produce. Shown to the administrator writing the policy, not to the refused person.',
+  },
+  'admin.dlp.preview.codeLabel': {
+    message: 'Reason code',
+    description: 'Label before the stable machine-readable code in the denial preview.',
+  },
+  'admin.dlp.preview.none': {
+    message:
+      'This effect changes the request rather than refusing it, so nobody is shown a denial.',
+    description: 'Replaces the denial preview when the chosen effect refuses nothing.',
+  },
+  'admin.dlp.preview.note': {
+    message:
+      'A denial names a stable code, a sentence and one remedy. It never names this policy, its conditions or its thresholds.',
+    description:
+      'Sentence under the denial preview. It states the rule the preview obeys, so an administrator does not go looking for a field to add the policy name to.',
+  },
+
+  'admin.dlp.sim.heading': {
+    message: 'Simulation',
+    description: 'Heading of the section that rehearses the policy against recent activity.',
+  },
+  'admin.dlp.sim.title': {
+    message: 'Rehearsed against the last {days, plural, one {# day} other {# days}}',
+    description: 'Heading of the results. "days" is the length of the window the rehearsal covered.',
+  },
+  'admin.dlp.sim.ranAt': {
+    message: 'Run {when}',
+    description:
+      'Timestamp beside the results. "when" is an already-formatted relative time; the absolute time is in the tooltip.',
+  },
+  'admin.dlp.sim.run': {
+    message: 'Test against the last {days, plural, one {# day} other {# days}}',
+    description:
+      'Action that starts the rehearsal. "days" is the window, currently 30. Shown on a policy that has never been rehearsed.',
+  },
+  'admin.dlp.sim.rerun': {
+    message: 'Run it again',
+    description: 'Action that repeats the rehearsal, after an edit or to refresh the window.',
+  },
+  'admin.dlp.sim.running': {
+    message: 'Rehearsing this policy against recent activity',
+    description: 'Announced while the results are being computed and the skeleton is on screen.',
+  },
+  'admin.dlp.sim.stale': {
+    message:
+      'This rehearsal describes the policy as it was before your last edit. Run it again before putting it in force.',
+    description:
+      'Shown when the policy changed after being rehearsed. A result that no longer describes the policy on screen is worse than no result.',
+  },
+  'admin.dlp.sim.empty.title': {
+    message: 'Not rehearsed yet',
+    description: 'Heading shown before a policy has ever been simulated.',
+  },
+  'admin.dlp.sim.empty.body': {
+    message:
+      'A policy that refuses anything is never put in force before it has been rehearsed against real activity.',
+    description: 'Body shown before a policy has ever been simulated. Says why the step exists.',
+  },
+  'admin.dlp.sim.stat.wouldRefuse': {
+    message: 'Attempts it would have refused',
+    description:
+      'Label of the headline number: how often this policy would have turned somebody away.',
+  },
+  'admin.dlp.sim.stat.attempts': {
+    message: 'Attempts it would have matched',
+    description:
+      'Label of the number of attempts whose conditions matched, refused or not. Larger than the refused count for a non-blocking effect.',
+  },
+  'admin.dlp.sim.stat.people': {
+    message: 'People affected',
+    description: 'Label of the count of distinct people who would have met this policy.',
+  },
+  'admin.dlp.sim.stat.files': {
+    message: 'Files involved',
+    description: 'Label of the count of distinct files that would have matched.',
+  },
+  'admin.dlp.sim.blastRadius': {
+    message:
+      'This affects {files, plural, one {# file} other {# files}} across {libraries, plural, one {# library} other {# libraries}}.',
+    description:
+      'The reach of the policy, stated before it is applied rather than after. One message with two plural categories, never a count glued to a noun.',
+  },
+  'admin.dlp.sim.byWorkspace': {
+    message: 'Would refuse, by workspace',
+    description: 'Heading of the breakdown of refusals across workspaces.',
+  },
+  'admin.dlp.sim.barRow': {
+    message:
+      '{workspace} — {count, plural, one {# attempt} other {# attempts}} refused. That is {share, number, percent} of everything matched.',
+    description:
+      'The spoken form of one bar in the breakdown, for screen readers. "workspace" is a name, "count" the refusals there, "share" a fraction between 0 and 1.',
+  },
+  'admin.dlp.sim.events': {
+    message: 'Sample events',
+    description: 'Heading of the list of individual attempts the rehearsal would have refused.',
+  },
+  'admin.dlp.sim.event': {
+    message: '{person} attempted {action} on {resource}.',
+    description:
+      'One rehearsed attempt. "person" is a display name, "action" an already-translated governed action, "resource" a document title. The document’s contents never appear.',
+  },
+  'admin.dlp.sim.eventCategories': {
+    message: 'Detected: {categories}.',
+    description:
+      'What the detectors found in that attempt. "categories" is a list of category terms joined by the locale’s own "and" — the kinds of data, never the data.',
+  },
+  'admin.dlp.sim.noValues': {
+    message:
+      'Detector categories only. A matched value is never shown here, exported, or written to the audit log.',
+    description:
+      'Sentence under the sample events. It tells an administrator not to go looking for the matched values, because their absence is deliberate rather than a gap.',
+  },
+
+  'admin.dlp.diff.title': {
+    message: 'Field-level diff',
+    description: 'Heading of the panel comparing the policy in force with the edited one.',
+  },
+  'admin.dlp.diff.field': {
+    message: 'Field',
+    description: 'Column header of the diff: which part of the policy the row is about.',
+  },
+  'admin.dlp.diff.before': {
+    message: 'In force now',
+    description: 'Column header of the diff: the value the policy chain is using today.',
+  },
+  'admin.dlp.diff.after': {
+    message: 'After this change',
+    description: 'Column header of the diff: the value it would use once the change is in force.',
+  },
+  'admin.dlp.diff.unset': {
+    message: 'Not set',
+    description:
+      'Stands in for a field with no value. Distinct from an empty list, which would mean something different.',
+  },
+  'admin.dlp.diff.newPolicy': {
+    message: 'This policy has never been written, so every field is an addition.',
+    description: 'Shown above the diff when there is nothing to compare against.',
+  },
+  'admin.dlp.diff.changedCount': {
+    message:
+      '{count, plural, =0 {No field differs from the policy in force.} one {# field differs from the policy in force.} other {# fields differ from the policy in force.}}',
+    description: 'Summary above the diff. "count" is how many rows changed.',
+  },
+  'admin.dlp.diff.makerCheckerUnbuilt': {
+    message: 'A second administrator approving the change before it takes effect',
+    description:
+      'A step the product does not have yet. Future tense, about the product, no remedy — never the treatment used when policy has refused this administrator something.',
+  },
+  'admin.dlp.diff.confirm': {
+    message: 'I have read every row above.',
+    description:
+      'Label of the confirmation the administrator must tick before the policy can be put in force. First person, because they are the one asserting it.',
+  },
+  'admin.dlp.field.name': {
+    message: 'Name',
+    description: 'Diff row: the policy’s name, which is also its identity to the evaluator.',
+  },
+  'admin.dlp.field.priority': {
+    message: 'Priority',
+    description: 'Diff row: the evaluation priority.',
+  },
+  'admin.dlp.field.scope': {
+    message: 'Actions governed',
+    description: 'Diff row: which attempts this policy has anything to say about.',
+  },
+  'admin.dlp.field.classification': {
+    message: 'Classification threshold',
+    description: 'Diff row: the sensitivity level at or above which the policy applies.',
+  },
+  'admin.dlp.field.categories': {
+    message: 'Detector categories',
+    description: 'Diff row: the kinds of sensitive data the policy looks for.',
+  },
+  'admin.dlp.field.action': {
+    message: 'Effect',
+    description: 'Diff row: what the policy does when it matches.',
+  },
+
+  'admin.dlp.gate.title': {
+    message: 'Before this policy can be put in force',
+    description:
+      'Heading of the checklist of remaining steps. It is a path with steps left in it, not a refusal.',
+  },
+  'admin.dlp.gate.simulate': {
+    message: 'Rehearse it against recent activity',
+    description: 'Checklist step: run the simulation.',
+  },
+  'admin.dlp.gate.simulateWhy': {
+    message: 'A policy that refuses anything is never enforced before it has been simulated.',
+    description: 'Why the simulation step exists, shown beneath it.',
+  },
+  'admin.dlp.gate.simulateOptional': {
+    message: 'This effect refuses nothing, so a rehearsal is not required for it.',
+    description:
+      'Replaces the reason under the simulation step when the chosen effect does not refuse. The step is then already satisfied.',
+  },
+  'admin.dlp.gate.diff': {
+    message: 'Read the field-level diff and confirm it',
+    description: 'Checklist step: tick the confirmation under the diff.',
+  },
+  'admin.dlp.gate.diffWhy': {
+    message: 'A security-sensitive change is confirmed field by field, not in summary.',
+    description: 'Why the diff step exists, shown beneath it.',
+  },
+  'admin.dlp.gate.stepUp': {
+    message: 'Re-authenticate with a second factor',
+    description:
+      'Checklist step the product does not have yet. Future tense, about the product, no remedy.',
+  },
+  'admin.dlp.gate.stepUpWhy': {
+    message:
+      'Writing a DLP policy is a privileged operation and needs recent multi-factor authentication.',
+    description: 'Why the step-up step exists, shown beneath it.',
+  },
+  'admin.dlp.gate.done': {
+    message: 'Done',
+    description: 'Status of a checklist step that is satisfied.',
+  },
+  'admin.dlp.gate.outstanding': {
+    message: 'Outstanding',
+    description:
+      'Status of a checklist step still to do. Neutral: nothing has been refused, the step simply has not happened.',
+  },
+  'admin.dlp.commit.putInForce': {
+    message: 'Put this policy in force',
+    description:
+      'The action that would write the policy and start the policy chain evaluating it. Named for what it does rather than "Save", because a saved policy here begins refusing people.',
+  },
+
+  'admin.dlp.json.title': {
+    message: 'The same policy, as it is stored',
+    description: 'Heading of the JSON view, for power users and for copying between tenants.',
+  },
+  'admin.dlp.json.note': {
+    message:
+      'The vocabulary the policy chain decodes. It follows the builder above; it is not a second place to edit.',
+    description:
+      'Sentence under the JSON heading. Says the view is read-only and why, so nobody looks for a save button.',
+  },
+  'admin.dlp.json.label': {
+    message: 'The stored policy, as JSON',
+    description:
+      'Accessible name of the scrollable JSON block, which is focusable so it can be scrolled by keyboard.',
+  },
+
+  'admin.state.loading': {
+    message: 'Loading policies',
+    description:
+      'Announced while the policy skeleton is on screen. The skeleton itself is decorative.',
+  },
+  'admin.state.empty.title': {
+    message: 'No DLP policies yet',
+    description: 'Heading of the empty state for a tenant that has never written a DLP policy.',
+  },
+  'admin.state.empty.body': {
+    message:
+      'A policy decides what happens when a file holding sensitive data is shared, downloaded or exported. Write the first one.',
+    description:
+      'Body of the empty state. Says what the surface is for and names the one action that starts it.',
+  },
+  'admin.state.empty.action': {
+    message: 'New policy',
+    description:
+      'Primary action on the empty state, and the accessible name of the + beside the policy list.',
+  },
+  'admin.state.filtered.title': {
+    message: 'No policies match this search',
+    description: 'Heading of the empty state when the search box excludes everything.',
+  },
+  'admin.state.filtered.body': {
+    message:
+      '{count, plural, one {# policy is hidden by the search.} other {# policies are hidden by the search.}}',
+    description:
+      'Body of the filtered-empty state. "count" is how many policies exist unfiltered, so an over-narrow search reads differently from a tenant with none.',
+  },
+  'admin.state.filtered.action': {
+    message: 'Clear the search',
+    description: 'Action on the filtered-empty state. Restores the whole list.',
+  },
+  'admin.state.error.title': {
+    message: 'These policies could not be loaded',
+    description: 'Heading of the fetch-error state. Says what failed, not why.',
+  },
+  'admin.state.error.body': {
+    message: 'The request did not complete. Nothing has changed.',
+    description: 'Body of the retryable fetch-error state. A failed read changed nothing.',
+  },
+  'admin.state.error.bodyFinal': {
+    message: 'The request cannot be retried from here. Contact support with the request ID below.',
+    description: 'Body of the fetch-error state when the failure is not retryable.',
+  },
+  'admin.state.error.retry': {
+    message: 'Try again',
+    description:
+      'Retry action on the fetch-error state. Present only when the failure is retryable, and never on a refusal.',
+  },
+  'admin.state.error.requestId': {
+    message: 'Request ID',
+    description:
+      'Label for the copyable correlation ID on the admin error state. The value is not translated.',
+  },
+  'admin.state.denied.title': {
+    message: 'You cannot open this surface',
+    description:
+      'Heading when the policy chain refused the request. Present tense and about this person, because a refusal is about them — unlike the neutral "Later" marker, which is about the product.',
+  },
+  'admin.state.denied.noReason': {
+    message:
+      'The server refused this request and sent no explanation with it. Your security administrator can say why.',
+    description:
+      'Shown when a refusal arrives without the user-safe sentence the error envelope normally carries. It reports the absence rather than guessing at a reason, because a client-invented reason is a second authority.',
+  },
+  'admin.state.denied.codeLabel': {
+    message: 'Reason code',
+    description: 'Label before the stable refusal code on the denied state.',
+  },
+  'admin.state.fixture': {
+    message: 'Review fixture',
+    description:
+      'Marker shown when the screen is rendering sample data because no server answered. It must never be mistaken for a tenant’s real policies.',
+  },
+  'admin.state.fixtureNote': {
+    message: 'No gateway is answering, so these are sample policies rather than this tenant’s.',
+    description: 'Sentence beside the review-fixture marker, saying why the data is not real.',
+  },
 } as const satisfies Record<string, CatalogEntry>;
 
 export type MessageKey = keyof typeof catalog;

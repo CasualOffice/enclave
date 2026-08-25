@@ -116,7 +116,13 @@
   align-items: center;
   gap: 6px;
   font-size: 11px;
-  color: var(--fg3);
+  /* `--fg3` here is 4.02:1 against `--canvas` and fails `docs/09 §15`. Found by
+   * running axe on a route that has no list on it — the library routes were
+   * green because their own violations were already fixed, and this one sat in
+   * the shell behind them the whole time. `ENC-682` is the general case; this is
+   * one more instance of it, and it will keep producing them until the scale is
+   * settled. */
+  color: var(--fg2);
   padding-block: 14px 4px;
   padding-inline: 8px;
   font-weight: 500;

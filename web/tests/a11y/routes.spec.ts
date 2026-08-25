@@ -19,27 +19,53 @@ interface Surface {
 const SURFACES: readonly Surface[] = [
   {
     name: 'library list, grouped, 5k rows',
-    url: '/?rows=5000',
+    url: '/library?rows=5000',
     ready: '[role="treegrid"] [role="row"][aria-level], [role="treegrid"] .egl-row',
   },
   {
     name: 'library list, compact density',
-    url: '/?rows=2000&density=compact',
+    url: '/library?rows=2000&density=compact',
     ready: '.egl-row',
   },
   {
     name: 'library list, a group collapsed',
-    url: '/?rows=2000&collapse=g0',
+    url: '/library?rows=2000&collapse=g0',
     ready: '.egl-group[aria-expanded="false"]',
   },
-  { name: 'library list, loading', url: '/?surface=loading', ready: '[role="status"]' },
-  { name: 'library list, empty', url: '/?surface=empty', ready: '[data-state="empty"]' },
+  { name: 'library list, loading', url: '/library?surface=loading', ready: '[role="status"]' },
+  { name: 'library list, empty', url: '/library?surface=empty', ready: '[data-state="empty"]' },
   {
     name: 'library list, filtered empty',
-    url: '/?surface=filtered-empty&rows=4213',
+    url: '/library?surface=filtered-empty&rows=4213',
     ready: '[data-state="filtered-empty"]',
   },
-  { name: 'library list, fetch error', url: '/?surface=error', ready: '[data-state="error"]' },
+  { name: 'library list, fetch error', url: '/library?surface=error', ready: '[data-state="error"]' },
+
+  /* Ask, all four of its states. It is the D33 surface — every control on it is
+   * *unbuilt* rather than denied — so it is also where the unbuilt treatment is
+   * checked against a real renderer rather than only in jsdom. */
+  { name: 'ask, unbuilt', url: '/ask', ready: '[data-screen="ask"][data-state="unbuilt"]' },
+  { name: 'ask, loading', url: '/ask?surface=loading', ready: '[data-screen="ask"] [role="status"]' },
+  {
+    name: 'ask, scope empty',
+    url: '/ask?surface=scope-empty',
+    ready: '[data-screen="ask"] [data-state="filtered-empty"]',
+  },
+  {
+    name: 'ask, fetch error',
+    url: '/ask?surface=error',
+    ready: '[data-screen="ask"] [data-state="error"]',
+  },
+
+  /* Sign-in, which is the first paint anyone ever sees and the only route that
+   * renders outside the shell. Its refused state is listed separately from its
+   * failed state on purpose: they are different things and `docs/09 §11` only
+   * gives the second one a retry. */
+  { name: 'sign in, resting form', url: '/signin', ready: '[data-signin-state="idle"]' },
+  { name: 'sign in, loading', url: '/signin?state=loading', ready: '[data-signin-state="submitting"]' },
+  { name: 'sign in, refused', url: '/signin?state=refused', ready: '[data-signin-state="refused"]' },
+  { name: 'sign in, fetch error', url: '/signin?state=failed', ready: '[data-signin-state="failed"]' },
+  { name: 'sign in, success', url: '/signin?state=success', ready: '[data-signin-state="success"]' },
 ];
 
 test('the surface list is not empty', () => {
