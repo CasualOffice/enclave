@@ -209,6 +209,18 @@ the suite.
 | K8 | `alg: none`, algorithm confusion and unsigned tokens are rejected |
 | K9 | Privileged scopes fail closed when the denylist store is unavailable |
 | K10 | The refresh cookie is `HttpOnly`, `Secure`, `SameSite=Strict`, path-scoped |
+| K11 | **The refresh token leaves the server in the cookie and nowhere else.** An assertion about an absence, so it never stands alone: the same run asserts that the cookie *does* carry a token and that the body *does* carry a usable access token, so "not in the body" means withheld rather than never produced. `SessionResponse` has no field it could occupy, which is the structural half; the deliberate break — adding one — fails the test by name. `crates/api/tests/auth.rs` (`ENC-685`) |
+| K12 | **An unknown address and a wrong password are one answer.** Same status, same `code`, same `message`, same `remediation`; only `requestId` differs, and that difference is asserted so the comparison is not passing against two empty bodies. The timing half is `PasswordHasher::verify_absent`, which `crates/api/src/routes/auth.rs::verify_password` is the single branch point for. `crates/api/tests/auth.rs` |
+| K13 | **A `tenant-beta` credential does not authenticate on `tenant-alpha`'s host**, and the same credential on beta's own host does. The mechanism is recorded on the test rather than assumed: with the application `tenant_id` predicate deleted the integration test still passes, because row-level security makes the other tenant's row invisible to the transaction — layer 2 is held by the unit test `every_query_carries_its_own_tenant_predicate`, which does fail. `crates/api/tests/auth.rs` |
+| K14 | **A challenged login carries no token and no refresh cookie**, and completing the challenge produces both — the control that makes the absence mean "withheld". The challenge is single use: a wrong code spends it, and the right code afterwards is refused. `crates/api/tests/auth.rs` |
+| K15 | **A refresh without a matching double-submit CSRF token is refused**, header-absent and header-mismatched alike, while the same request with the matching header rotates. `crates/api/tests/auth.rs` |
+| K16 | **A refresh family that is not the caller's cannot be revoked and is not confirmed to exist.** Another tenant's family, another user's family in the same tenant, and an id nobody holds all answer `404`; the caller's own answers `204` in the same run, so the `404`s are about ownership rather than about the endpoint refusing everything. `403` is asserted against — it would confirm the session id exists (`CLAUDE.md` rule 7). `crates/api/tests/auth.rs` |
+| K17 | **`POST /auth/logout-all` bumps `token_epoch` as well as revoking the families**, because only the epoch reaches access tokens already issued; and the clearing cookie carries the same `Path` and attributes as the setting one, or the browser keeps the original and the user is not signed out. `crates/api/tests/auth.rs` |
+
+T6 (`§4.1`) is enforced on the authentication routes by `AuthenticatedHere`: an access token presented
+on a host routed to a different tenant is `401 TOKEN_NOT_VALID_HERE`, with the same token on its own
+host accepted in the same run. Moving it into `crate::auth::Authenticated`, so it covers every route
+rather than these four, is `ENC-689`.
 
 ### 4.7 Sync and editing
 
