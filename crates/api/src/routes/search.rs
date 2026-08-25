@@ -682,6 +682,15 @@ struct Metadata {
 /// `crates/search/src/lexical.rs`'s reason: RLS is the control, and the predicate is what makes the
 /// index usable and the statement readable as tenant-scoped.
 ///
+/// **And it is not load-bearing, which was checked rather than assumed.** Deleting `f.tenant_id = $1`
+/// from the statement below — and from both joins — fails **no test in this file or in
+/// `crates/api/tests/search.rs`**, because row-level security under the `enclave_app` role holds the
+/// property on its own. That is the fifth time this workspace has performed that deliberate
+/// violation and watched nothing happen (`docs/12-TESTING.md §1.2` counted four), and it is recorded
+/// here rather than papered over, because the honest reading of the line above is *this predicate is
+/// for the planner and for the reader; RLS is the control*. A test that could tell them apart would
+/// have to run as a role RLS does not apply to, which is not a role any request path holds.
+///
 /// `status = 'AVAILABLE'` and `deleted_at IS NULL` are restated here even though the generator
 /// already applies them, because time passes between the two and `CLAUDE.md` rule 9 is not a
 /// property to assert once: a file that entered `SCANNING` since it was proposed drops out of the
