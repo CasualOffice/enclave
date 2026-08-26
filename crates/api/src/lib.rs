@@ -158,6 +158,14 @@ pub fn router(state: ApiState, delivery: Delivery) -> Router {
         // the sense that matters here: it writes an audit row. Every result it returns has been
         // confirmed against PostgreSQL by `enclave_search::PostFilter` (CLAUDE.md rule 5).
         .route("/api/v1/search", post(routes::search::search))
+        // The other three of rule 6's five verbs (`ENC-719`–`ENC-721`). Each asks the chain a
+        // different question — `file.export`, `file.print`, `file.preview` — and none of them can
+        // reach a `BlobStore`: `export` and `thumbnail` hold only the rendition pipeline, and
+        // `print_token` holds neither, because it mints a capability rather than serving a byte.
+        // `crates/api/src/routes/delivery.rs` carries the reasoning for each.
+        .route("/api/v1/files/{id}/thumbnail", get(routes::delivery::thumbnail))
+        .route("/api/v1/files/{id}/export", post(routes::delivery::export))
+        .route("/api/v1/files/{id}/print-token", post(routes::delivery::print_token))
         // Administration (docs/05-API.md §14). Registered here rather than in a router of its own
         // so that `main.rs` needs no second line to serve it: the routes need nothing the rest of
         // the surface does not already have, and the one thing they *can* use — the rule cache —

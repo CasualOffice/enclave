@@ -46,6 +46,12 @@ enclave-storage = { workspace = true }
 
 anyhow       = { workspace = true }
 async-trait  = { workspace = true }
+# A print grant is 256 bits from the OS CSPRNG, returned once, and retained only as its SHA-256
+# (`crates/api/src/routes/delivery.rs`, ENC-720). Same three crates and the same treatment
+# `crates/auth` gives a refresh token, because it is the same problem.
+base64       = { workspace = true }
+rand         = { workspace = true }
+sha2         = { workspace = true }
 axum         = { workspace = true }
 chrono       = { workspace = true }
 serde        = { workspace = true }
