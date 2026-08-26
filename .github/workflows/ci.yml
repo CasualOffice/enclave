@@ -789,7 +789,8 @@ jobs:
       # every pull request rather than only in the message of a failure.
       - name: Every registered route answers an authenticated caller
         run: |
-          cargo test --locked -p enclave-api --test reachability -- --nocapture --test-threads=1
+          cargo test --locked -p enclave-api --test reachability -- \
+            --include-ignored --nocapture --test-threads=1
 
   # Single required check for branch protection. Without it, adding a job means
   # remembering to add it to the protected-branch list, and a forgotten job is a

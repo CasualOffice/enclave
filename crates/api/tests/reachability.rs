@@ -1155,7 +1155,14 @@ impl Fixtures {
 }
 
 /// **The test.** Every registered route, against the binary, with a token it minted itself.
+///
+/// `#[ignore]` for the reason every database-backed test in this crate carries it — it needs a
+/// live PostgreSQL and CI runs it with `--include-ignored`, in a job of its own. The two checks
+/// above are deliberately *not* ignored: they read source and nothing else, so the derived route
+/// list is compared against the router on every machine and in every job that compiles this
+/// crate, whether or not a database is anywhere near it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a live PostgreSQL; CI runs it with --include-ignored"]
 async fn every_registered_route_answers_an_authenticated_caller() {
     let db = TestDb::start().await.unwrap_or_else(|error| {
         panic!(
