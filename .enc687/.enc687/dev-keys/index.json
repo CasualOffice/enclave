@@ -1,0 +1,10 @@
+{
+  "keys": [
+    {
+      "kid": "T6XNwC9wt0erI2kdWVOpcQ",
+      "status": "ACTIVE",
+      "activates_at": "2026-08-25T21:56:21.047132Z",
+      "retires_at": null
+    }
+  ]
+}

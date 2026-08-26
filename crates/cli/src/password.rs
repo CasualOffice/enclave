@@ -54,8 +54,7 @@ const SELECT_TENANT: &str =
 /// No status filter, unlike the login path's statement. The two are asking different questions: a
 /// login must not reveal whether a suspended account exists, and an operator setting a password on
 /// a suspended account should be told it is suspended rather than told it does not exist.
-const SELECT_USER: &str =
-    "SELECT id, status, deleted_at IS NOT NULL AS deleted FROM users \
+const SELECT_USER: &str = "SELECT id, status, deleted_at IS NOT NULL AS deleted FROM users \
      WHERE tenant_id = $1 AND normalized_email = $2";
 
 /// Writes the credential.
@@ -120,9 +119,7 @@ pub(crate) async fn run(target: &Target, args: &SetPasswordArgs) -> anyhow::Resu
         .fetch_optional(&mut conn)
         .await
         .context("look up the account")?
-        .with_context(|| {
-            format!("`{}` is not an account in `{}`", args.email, args.tenant)
-        })?;
+        .with_context(|| format!("`{}` is not an account in `{}`", args.email, args.tenant))?;
 
     // Reported rather than refused. Setting a password on a suspended account is a legitimate
     // preparation for reinstating it, and an operator who is told the account exists but cannot
@@ -243,7 +240,10 @@ mod tests {
     /// statement. The behavioural half is `crates/cli/tests/set_password.rs`.
     #[test]
     fn the_upsert_replaces_an_existing_credential_and_clears_the_lockout() {
-        assert!(UPSERT_CREDENTIAL.contains("ON CONFLICT (user_id) DO UPDATE"), "{UPSERT_CREDENTIAL}");
+        assert!(
+            UPSERT_CREDENTIAL.contains("ON CONFLICT (user_id) DO UPDATE"),
+            "{UPSERT_CREDENTIAL}"
+        );
         assert!(UPSERT_CREDENTIAL.contains("failed_attempts = 0"), "{UPSERT_CREDENTIAL}");
         assert!(UPSERT_CREDENTIAL.contains("locked_until = NULL"), "{UPSERT_CREDENTIAL}");
         // Whether the row was created is reported to the operator, so the statement has to say.

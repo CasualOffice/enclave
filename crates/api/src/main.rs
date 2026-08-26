@@ -388,15 +388,17 @@ fn build_key_provider(
                 )?
                 .expose_str()
                 .context("auth.signing_keys.key_ref did not resolve to text")?;
-            let provider =
-                enclave_auth::ConfiguredKeyProvider::from_base64_pkcs8(material, chrono::Utc::now())
-                    // The adapter's error carries nothing derived from the material and this
-                    // context adds nothing either: what an operator needs is the field name and the
-                    // expected encoding, and anything more specific describes the key.
-                    .context(
-                        "auth.signing_keys.key_ref resolved to something that is not the base64 of \
+            let provider = enclave_auth::ConfiguredKeyProvider::from_base64_pkcs8(
+                material,
+                chrono::Utc::now(),
+            )
+            // The adapter's error carries nothing derived from the material and this
+            // context adds nothing either: what an operator needs is the field name and the
+            // expected encoding, and anything more specific describes the key.
+            .context(
+                "auth.signing_keys.key_ref resolved to something that is not the base64 of \
                          an Ed25519 PKCS#8 document",
-                    )?;
+            )?;
             // A `kid` is public information — it names a key and authorises nothing — so it is the
             // one thing about the key that may be logged, and logging it is what lets an operator
             // confirm which key a replica picked up after a rotation.
@@ -599,8 +601,10 @@ fn unenforcing_stages(dlp_mode: enclave_dlp::DlpMode) -> Vec<String> {
     // would reasonably conclude that a network rule applies for the whole life of a session. It
     // applies to each request and not to the rotation, and that difference is a fourteen-day window
     // rather than a ten-minute one. `ENC-709` closes it, behind `ENC-689`.
-    stages.push(format!("{REFRESH_GUARD_STAGE} (every refresh is permitted — a session outlives the \
-         network rule that allowed it, up to the refresh lifetime)"));
+    stages.push(format!(
+        "{REFRESH_GUARD_STAGE} (every refresh is permitted — a session outlives the \
+         network rule that allowed it, up to the refresh lifetime)"
+    ));
 
     stages
 }
@@ -799,9 +803,11 @@ mod tests {
     /// developer testing against a real key would be running a code path production does not.
     #[test]
     fn a_configured_reference_is_the_source_from_every_profile_and_every_bind() {
-        for profile in
-            [DeploymentProfile::Community, DeploymentProfile::Production, DeploymentProfile::Enterprise]
-        {
+        for profile in [
+            DeploymentProfile::Community,
+            DeploymentProfile::Production,
+            DeploymentProfile::Enterprise,
+        ] {
             for bind in [LOOPBACK, ROUTABLE, ANY] {
                 assert_eq!(
                     SigningKeys::choose(true, profile, bind),
@@ -843,7 +849,11 @@ mod tests {
             "`cargo run` on a laptop has to work, or the mechanism is a wall rather than a door"
         );
         assert_eq!(
-            SigningKeys::choose(false, DeploymentProfile::Community, IpAddr::V6(Ipv6Addr::LOCALHOST)),
+            SigningKeys::choose(
+                false,
+                DeploymentProfile::Community,
+                IpAddr::V6(Ipv6Addr::LOCALHOST)
+            ),
             SigningKeys::Development,
             "an IPv6 loopback bind is the same deployment as an IPv4 one"
         );

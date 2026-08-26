@@ -76,7 +76,9 @@ use enclave_auth::{
     AuthError, DenylistStore, EpochStore, RefreshRecord, RefreshTokenStore, RevokeReason,
     SessionFacts, SessionFactsProvider, StoreUnavailable,
 };
-use enclave_core::{Actor, ClientType, Dependency, DeviceId, ScopeSet, SessionId, TenantId, UserId};
+use enclave_core::{
+    Actor, ClientType, Dependency, DeviceId, ScopeSet, SessionId, TenantId, UserId,
+};
 use sqlx::postgres::PgRow;
 use sqlx::Row as _;
 use uuid::Uuid;
@@ -806,7 +808,10 @@ mod tests {
     fn a_storage_failure_is_not_an_authentication_failure() {
         let error = malformed();
         assert!(!error.is_authentication_failure());
-        assert!(error.reason_code().is_none(), "the caller did nothing wrong and must learn nothing");
+        assert!(
+            error.reason_code().is_none(),
+            "the caller did nothing wrong and must learn nothing"
+        );
         // The positive control: something that *is* the caller's fault still says so.
         assert!(AuthError::InvalidCredentials.is_authentication_failure());
     }

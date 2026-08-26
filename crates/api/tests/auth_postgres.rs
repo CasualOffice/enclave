@@ -339,8 +339,12 @@ async fn k3_a_rotation_consumes_the_old_row_and_inserts_the_successor() {
     let alpha = &harness.fixtures.alpha;
     let session = sign_in(&harness, &alpha.slug, &format!("owner@{}.example", alpha.slug)).await;
 
-    let response =
-        harness.app.clone().oneshot(refresh_request(&alpha.slug, &session)).await.expect("response");
+    let response = harness
+        .app
+        .clone()
+        .oneshot(refresh_request(&alpha.slug, &session))
+        .await
+        .expect("response");
     assert_eq!(response.status(), StatusCode::OK, "a live refresh token must rotate");
     let rotated = set_cookies(&response);
     let successor =
@@ -518,12 +522,20 @@ async fn k4_a_replayed_token_revokes_every_row_in_the_family() {
     let session = sign_in(&harness, &alpha.slug, &format!("owner@{}.example", alpha.slug)).await;
 
     // Rotate once, so the presented token is consumed rather than unknown.
-    let first =
-        harness.app.clone().oneshot(refresh_request(&alpha.slug, &session)).await.expect("response");
+    let first = harness
+        .app
+        .clone()
+        .oneshot(refresh_request(&alpha.slug, &session))
+        .await
+        .expect("response");
     assert_eq!(first.status(), StatusCode::OK, "positive control: the first refresh succeeds");
 
-    let replay =
-        harness.app.clone().oneshot(refresh_request(&alpha.slug, &session)).await.expect("response");
+    let replay = harness
+        .app
+        .clone()
+        .oneshot(refresh_request(&alpha.slug, &session))
+        .await
+        .expect("response");
     assert_eq!(replay.status(), StatusCode::UNAUTHORIZED);
     let body = json_body(replay).await;
     assert_eq!(body["error"]["code"], "SESSION_REPLAY", "{body}");
@@ -593,8 +605,12 @@ async fn the_token_epoch_is_re_read_at_rotation_rather_than_copied_forward() {
         .await
         .expect("bump");
 
-    let response =
-        harness.app.clone().oneshot(refresh_request(&alpha.slug, &session)).await.expect("response");
+    let response = harness
+        .app
+        .clone()
+        .oneshot(refresh_request(&alpha.slug, &session))
+        .await
+        .expect("response");
     assert_eq!(response.status(), StatusCode::OK);
     let body = json_body(response).await;
     let rotated = body["accessToken"].as_str().expect("an access token");
@@ -656,8 +672,12 @@ async fn auth_time_is_unchanged_by_a_rotation() {
 
     // First rotation: the presented row is the original, whose `issued_at` *is* the authentication.
     // Its successor is stamped now, an hour later.
-    let first =
-        harness.app.clone().oneshot(refresh_request(&alpha.slug, &session)).await.expect("response");
+    let first = harness
+        .app
+        .clone()
+        .oneshot(refresh_request(&alpha.slug, &session))
+        .await
+        .expect("response");
     assert_eq!(first.status(), StatusCode::OK, "positive control: the aged family still refreshes");
     let cookies = set_cookies(&first);
     let second_session = Session {
