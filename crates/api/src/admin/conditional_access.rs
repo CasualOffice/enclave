@@ -82,6 +82,7 @@ use crate::auth::Authenticated;
 use crate::error::{ApiError, Envelope, NO_STORE};
 use crate::refusal::{none_dischargeable, Refused};
 use crate::state::ApiState;
+use crate::state::StepUpPolicy;
 
 /// How recently a privileged mutation's caller must have authenticated.
 ///
@@ -298,7 +299,7 @@ pub async fn create_rule(
 ) -> Result<Response, ApiError> {
     let request_id = ctx.request_id;
     enforce(&state, &ctx, WRITE_ACTION).await?;
-    if let Err(envelope) = require_step_up(&ctx) {
+    if let Err(envelope) = require_step_up(&ctx, state.step_up) {
         return Ok(envelope.into_response(request_id));
     }
     let author = match author(&ctx) {
@@ -369,7 +370,7 @@ pub async fn change_rule_mode(
 ) -> Result<Response, ApiError> {
     let request_id = ctx.request_id;
     enforce(&state, &ctx, WRITE_ACTION).await?;
-    if let Err(envelope) = require_step_up(&ctx) {
+    if let Err(envelope) = require_step_up(&ctx, state.step_up) {
         return Ok(envelope.into_response(request_id));
     }
 
@@ -449,7 +450,7 @@ pub async fn withdraw_rule(
 ) -> Result<Response, ApiError> {
     let request_id = ctx.request_id;
     enforce(&state, &ctx, WRITE_ACTION).await?;
-    if let Err(envelope) = require_step_up(&ctx) {
+    if let Err(envelope) = require_step_up(&ctx, state.step_up) {
         return Ok(envelope.into_response(request_id));
     }
     let id = rule_id(&id).ok_or_else(|| ApiError::new(Error::NotFound, request_id))?;
@@ -541,10 +542,12 @@ async fn enforce(state: &ApiState, ctx: &RequestContext, action: Action) -> Resu
 /// `RequireMfa` effect that every deployment holds for one action, and there it would be audited as
 /// the denial it is. That is `ENC-620`, and it is a change to `crates/conditional_access`, which
 /// this task does not own.
-fn require_step_up(ctx: &RequestContext) -> Result<(), Envelope> {
-    if ctx.auth_strength.meets(AuthStrength::MultiFactor)
-        && ctx.auth_age(chrono::Utc::now()).num_seconds() <= STEP_UP_MAX_AGE_SECS
-    {
+fn require_step_up(ctx: &RequestContext, policy: StepUpPolicy) -> Result<(), Envelope> {
+    // `policy` rather than a constant: `security.mfa.admins_required` existed, was documented, and
+    // was read by nothing, so this demanded a second factor the binary's `MfaVerifier` could never
+    // check. A tenant administrator was refused their own policy surface for want of a factor they
+    // had no way to present (`ENC-771`).
+    if policy.satisfied_by(ctx.auth_strength, ctx.auth_age(chrono::Utc::now()).num_seconds()) {
         return Ok(());
     }
 
@@ -562,7 +565,7 @@ fn require_step_up(ctx: &RequestContext) -> Result<(), Envelope> {
     )
     .with_details(vec![serde_json::json!({
         "acr": "mfa",
-        "maxAge": STEP_UP_MAX_AGE_SECS,
+        "maxAge": policy.max_age_secs(),
     })]))
 }
 
@@ -1136,7 +1139,10 @@ mod tests {
     #[test]
     fn a_privileged_mutation_needs_a_second_factor_and_a_recent_one() {
         let tenant = TenantId::new_v7();
-        assert!(require_step_up(&admin(tenant)).is_ok(), "the control: an MFA session just now");
+        assert!(
+            require_step_up(&admin(tenant), StepUpPolicy::Required { max_age_secs: 900 }).is_ok(),
+            "the control: an MFA session just now"
+        );
 
         let mut single = admin(tenant);
         single.auth_strength = AuthStrength::SingleFactor;

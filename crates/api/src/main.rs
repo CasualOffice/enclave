@@ -10,6 +10,50 @@ use anyhow::Context as _;
 use enclave_api::{metrics_listener, router, unconfigured_stages, ApiState, Delivery, Edge};
 use enclave_core::PolicyEngine;
 
+/// What a privileged administrative action demands, from `security.mfa`.
+///
+/// # Why this refuses to start rather than warning
+///
+/// `security.mfa.admins_required` defaults to `true` and, until `ENC-771`, was read by nothing:
+/// `require_step_up` compared against a hard-coded constant. So every `/admin/**` mutation demanded
+/// a second factor, the binary wired an `MfaVerifier` that refuses every code, and **no principal in
+/// any deployment could satisfy it**. A tenant administrator got `403 STEP_UP_REQUIRED` naming a
+/// factor they had no way to present, on the surface that configures the product's own controls.
+///
+/// The reachability smoke test found it on its first run, which is the argument for that test: five
+/// routes were registered, reached the policy chain, passed every unit test, and could not be used.
+///
+/// A requirement nobody can satisfy is not a stricter control — it is a surface that does not
+/// exist, announced as a permissions error. So the pairing is refused at start-up rather than
+/// discovered by an operator: either configure a verifier, or say in configuration that
+/// administrators do not need one. Both are defensible; the silent third state is not.
+fn step_up_policy(
+    config: &enclave_config::Config,
+    mfa_verifier_configured: bool,
+) -> anyhow::Result<enclave_api::state::StepUpPolicy> {
+    use enclave_api::state::StepUpPolicy;
+
+    if !config.security.mfa.admins_required {
+        tracing::warn!(
+            "security.mfa.admins_required is false: an administrative action needs only the \
+             session that signed in, and a stolen admin session is a policy change"
+        );
+        return Ok(StepUpPolicy::NotRequired);
+    }
+
+    anyhow::ensure!(
+        mfa_verifier_configured,
+        "security.mfa.admins_required is true and no MFA verifier is configured, so every \
+         /api/v1/admin/** mutation would answer 403 STEP_UP_REQUIRED to every caller including a \
+         tenant administrator, with no way for anyone to satisfy it. Configure a verifier, or set \
+         security.mfa.admins_required: false to say that administrators do not need one (ENC-771)"
+    );
+
+    let max_age_secs =
+        i64::try_from(config.security.mfa.step_up_max_age.as_secs()).unwrap_or(i64::MAX);
+    Ok(StepUpPolicy::Required { max_age_secs })
+}
+
 /// The `iss` this deployment mints and the `iss` it verifies — one value, one source.
 ///
 /// # Why this is a function rather than two expressions
@@ -234,7 +278,11 @@ async fn main() -> anyhow::Result<()> {
         config.auth.access_token.audience.as_str(),
         keys,
     )
-    .with_edge(edge);
+    .with_edge(edge)
+    // `false`: this binary constructs no `MfaVerifier` at all — `AuthSurface` is built below with
+    // its own `UnavailableMfa`, which refuses every code (`ENC-688`). The day a verifier is wired,
+    // this argument becomes the question of whether one was, and nothing else here changes.
+    .with_step_up(step_up_policy(config, false)?);
 
     // The authentication surface (`ENC-687`). `ApiState::new` leaves `AuthSurface::unconfigured` in
     // place, which registers every route and refuses every one of them with `503` — the shape
