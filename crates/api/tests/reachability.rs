@@ -264,7 +264,8 @@ const SPECS: &[Spec] = &[
         expect: Expect::Unreachable {
             status: 500,
             tracker: "ENC-770",
-            why: "`crates/api/src/main.rs` composes `Delivery::unconfigured()` unconditionally and \
+            why:
+                "`crates/api/src/main.rs` composes `Delivery::unconfigured()` unconditionally and \
                   never reads the `storage:` section of enclave.yaml, so the handler asks an \
                   `UnconfiguredBlobStore` to stage a part and is told `no object storage is \
                   configured`. The whole write path is dead in the shipped binary, and it answers \
@@ -622,7 +623,11 @@ fn registered_routes() -> Vec<Registration> {
 
         let path = string_literal(call).expect("a route registration with no path literal");
         for (method, handler) in method_routers(call) {
-            routes.push(Registration { method: method.to_uppercase(), path: path.clone(), handler });
+            routes.push(Registration {
+                method: method.to_uppercase(),
+                path: path.clone(),
+                handler,
+            });
         }
     }
     routes
@@ -814,14 +819,10 @@ fn module_path(file: &Path) -> String {
 /// milestone; a spec whose route was deleted fails here rather than silently asserting nothing.
 #[test]
 fn every_registered_route_has_a_request_specification() {
-    let registered: BTreeSet<(String, String)> = registered_routes()
-        .into_iter()
-        .map(|route| (route.method, route.path))
-        .collect();
-    let specified: BTreeSet<(String, String)> = SPECS
-        .iter()
-        .map(|spec| (spec.method.to_owned(), spec.path.to_owned()))
-        .collect();
+    let registered: BTreeSet<(String, String)> =
+        registered_routes().into_iter().map(|route| (route.method, route.path)).collect();
+    let specified: BTreeSet<(String, String)> =
+        SPECS.iter().map(|spec| (spec.method.to_owned(), spec.path.to_owned())).collect();
 
     // The positive control. "The two sets are equal" also holds when both are empty, which is what
     // a parser that silently stopped matching would produce.
@@ -832,10 +833,13 @@ fn every_registered_route_has_a_request_specification() {
          source it reads",
         registered.len()
     );
+    // One named route, as the second half of the same control — a parse that returned forty
+    // plausible-looking entries from the wrong file would still pass the count. `login` and not
+    // `/me`, deliberately: an anchor naming a route this test also specifies would report the
+    // *deletion* of that route as "the parser broke", which is the diff below's job to say.
     assert!(
-        registered.contains(&("POST".to_owned(), "/api/v1/auth/login".to_owned()))
-            && registered.contains(&("GET".to_owned(), "/api/v1/me".to_owned())),
-        "the parse found neither the login route nor /me, so it is not reading the router"
+        registered.contains(&("POST".to_owned(), "/api/v1/auth/login".to_owned())),
+        "the parse did not find POST /api/v1/auth/login, so it is not reading the router"
     );
 
     let unspecified: Vec<_> = registered.difference(&specified).collect();
@@ -917,7 +921,8 @@ impl Server {
     /// both DSNs, the `*_env` spellings for the rest — so the recipe in `README.md` and the one
     /// exercised here cannot drift into two different things.
     fn start(database_url: &str) -> Self {
-        let directory = std::env::temp_dir().join(format!("enclave-reachability-{}", std::process::id()));
+        let directory =
+            std::env::temp_dir().join(format!("enclave-reachability-{}", std::process::id()));
         let _ignored = std::fs::remove_dir_all(&directory);
         std::fs::create_dir_all(&directory).expect("create the scratch directory");
 
@@ -1065,7 +1070,8 @@ fn try_request(
     let mut stream = TcpStream::connect(SocketAddr::from(([127, 0, 0, 1], port))).ok()?;
     stream.set_read_timeout(Some(Duration::from_secs(30))).ok()?;
 
-    let mut request = format!("{method} {target} HTTP/1.1\r\nHost: {HOST}\r\nConnection: close\r\n");
+    let mut request =
+        format!("{method} {target} HTTP/1.1\r\nHost: {HOST}\r\nConnection: close\r\n");
     for (name, value) in headers {
         request.push_str(&format!("{name}: {value}\r\n"));
     }
@@ -1223,8 +1229,12 @@ async fn every_registered_route_answers_an_authenticated_caller() {
     );
     let token = json_string(&login.body, "accessToken")
         .unwrap_or_else(|| panic!("login answered 200 with no accessToken: {}", login.body));
-    let cookies: Vec<String> =
-        login.cookies.iter().filter_map(|cookie| cookie.split(';').next()).map(str::to_owned).collect();
+    let cookies: Vec<String> = login
+        .cookies
+        .iter()
+        .filter_map(|cookie| cookie.split(';').next())
+        .map(str::to_owned)
+        .collect();
     let csrf = cookies
         .iter()
         .find_map(|cookie| cookie.strip_prefix("enclave_csrf="))
@@ -1277,10 +1287,11 @@ async fn every_registered_route_answers_an_authenticated_caller() {
     assert!(
         failures.is_empty(),
         "\n{} of {} registered routes are unreachable to a caller who holds every grant. Each of \
-         these was answered by the composed binary, not by a router a test assembled:\n\n{}\n\nThe \
-         server's log:\n{}",
+         these was answered by the composed binary, not by a router a test assembled.{}\n\n{}\n\n\
+         The server's log:\n{}",
         failures.len(),
         SPECS.len(),
+        breadth_hint(failures.len(), SPECS.len()),
         failures.join("\n\n"),
         server.log(),
     );
@@ -1298,6 +1309,25 @@ fn probe_order() -> Vec<&'static Spec> {
         u8::from(spec.path == "/api/v1/auth/logout" || spec.path == "/api/v1/auth/logout-all")
     });
     order
+}
+
+/// A sentence about the *breadth* of the failure, which is the thing a per-route message cannot
+/// say and the thing that points at the right layer.
+///
+/// Written after watching the issuer break: pointing `ApiState`'s issuer at a second string makes
+/// **thirty-six of forty-seven** routes answer `403 ACCESS_DENIED`, and each one on its own reads
+/// as a permissions problem — which is exactly where the four hours went the first time. One route
+/// refused is an authorization question; most of them refused at once is a question about the
+/// token, upstream of authorization entirely.
+fn breadth_hint(failed: usize, total: usize) -> &'static str {
+    if failed * 2 > total {
+        return "\n\n  Most of the surface failed at once. Before reading any single route below: \
+                that is the signature of a defect *upstream* of authorization, not of many \
+                separate permission bugs. The token this deployment mints and the token it \
+                verifies must agree on `iss` and `aud` — see `access_token_issuer` in \
+                crates/api/src/main.rs, which exists because they once did not.";
+    }
+    ""
 }
 
 /// What is wrong with one answer, or `None`.
@@ -1353,10 +1383,8 @@ fn verdict(spec: &Spec, response: &Response) -> Option<String> {
 /// exemption that lives only in a `const` is one nobody meets, and "this endpoint cannot be reached
 /// by anybody" is a sentence that belongs in the log of every run.
 fn print_quarantine() {
-    let quarantined: Vec<&Spec> = SPECS
-        .iter()
-        .filter(|spec| matches!(spec.expect, Expect::Unreachable { .. }))
-        .collect();
+    let quarantined: Vec<&Spec> =
+        SPECS.iter().filter(|spec| matches!(spec.expect, Expect::Unreachable { .. })).collect();
     println!(
         "\n  {} route(s) are UNREACHABLE in the composed binary and are asserted to stay that way \
          until their row is closed:",
@@ -1422,4 +1450,3 @@ mod parse {
         assert_eq!(module_path(&api_src().join("routes").join("mod.rs")), "routes");
     }
 }
-
