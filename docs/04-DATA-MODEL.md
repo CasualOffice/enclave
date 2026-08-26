@@ -31,6 +31,7 @@
 | Access control | `acl_entries`, `role_definitions`, `role_assignments` |
 | Security | `classifications`, `security_facts`, `dlp_policies`, `dlp_incidents`, `conditional_access_policies`, `conditional_access_rules`, `network_zones`, `trusted_proxies`, `barrier_segments`, `barrier_assignments` |
 | Compliance | `retention_policies`, `retention_assignments`, `legal_holds`, `legal_hold_items`, `records` |
+| Workflows | `workflow_definitions`, `workflow_instances`, `workflow_steps` |
 | Audit | `audit_events`, `config_versions` |
 | Search | `index_manifests`, `retrieval_denylist`, `chunk_text` |
 | Delivery | `renditions`, `sync_devices`, `sync_cursors`, `editor_sessions`, `notifications` |
@@ -1416,6 +1417,233 @@ CREATE TABLE records (
 );
 ```
 
+### 13.1 Workflows — as created
+
+`migrations/0024_workflows.sql`. `docs/15-WORKFLOWS-AND-SIGNING.md §2`–`§5` is authoritative for
+what a workflow *means*; `§7` of that document sketches these tables and this section is the
+reconciled form — the one the migration applies. `ENC-739`.
+
+Under **Compliance** rather than a section of its own for two reasons. It is where the shape
+belongs: an approval workflow governs a document's lifecycle exactly as retention, legal hold and a
+record declaration do, and a reader asking *what decides whether this contract may be published* is
+already here. And a new top-level section would renumber `§§18`–`§20`, which `docs/03-LLD.md`,
+`crates/events/src/outbox.rs` and `migrations/0001` all cite by number — the cross-reference form
+`docs/README.md §1` asks for is only checkable while the numbers hold still. **`§13.2` is reserved
+for the signing tables** of `docs/15 §7`, which `migrations/0025` applies.
+
+```sql
+CREATE TABLE workflow_definitions (
+    tenant_id     UUID NOT NULL REFERENCES tenants (id),
+    id            UUID NOT NULL,
+    scope_type    TEXT NOT NULL CHECK (scope_type IN ('TENANT','WORKSPACE','LIBRARY')),
+    scope_id      UUID,                              -- NULL exactly when scope_type = 'TENANT'
+    name          TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 200),
+    version       INT NOT NULL CHECK (version >= 1),
+    definition    JSONB NOT NULL CHECK (
+                      jsonb_typeof(definition) = 'object'
+                      AND jsonb_typeof(definition -> 'stages') = 'array'
+                      AND jsonb_array_length(definition -> 'stages') > 0),
+    enabled       BOOLEAN NOT NULL DEFAULT TRUE,
+    allow_self_approval BOOLEAN NOT NULL DEFAULT FALSE,
+    delegation    TEXT NOT NULL DEFAULT 'ONCE' CHECK (delegation IN ('FORBIDDEN','ONCE')),
+    on_new_version TEXT NOT NULL DEFAULT 'INVALIDATE'
+                   CHECK (on_new_version IN ('INVALIDATE','CONTINUE')),
+    created_by    UUID NOT NULL,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, id),
+    CONSTRAINT workflow_definitions_scope_target
+        CHECK ((scope_type = 'TENANT') = (scope_id IS NULL)),
+    CONSTRAINT workflow_definitions_author_fkey
+        FOREIGN KEY (tenant_id, created_by) REFERENCES users (tenant_id, id)
+);
+
+-- docs/15 §7's UNIQUE (tenant_id, scope_type, scope_id, name, version), as an index over a
+-- COALESCE. As a constraint it does not hold: scope_id is NULL for every TENANT-scoped row, NULLs
+-- are distinct in a unique constraint, and so the one scope where a name collision is most likely
+-- is the one it does not constrain. The trick is `uq_files_sibling_name`'s, from §8.
+CREATE UNIQUE INDEX uq_workflow_definitions_version
+    ON workflow_definitions (
+        tenant_id, scope_type,
+        COALESCE(scope_id, '00000000-0000-0000-0000-000000000000'::uuid), name, version);
+CREATE INDEX idx_workflow_definitions_scope
+    ON workflow_definitions (tenant_id, scope_type, scope_id) WHERE enabled;
+
+CREATE TABLE workflow_instances (
+    tenant_id     UUID NOT NULL REFERENCES tenants (id),
+    id            UUID NOT NULL,
+    definition_id UUID NOT NULL,
+    definition_version INT NOT NULL CHECK (definition_version >= 1),
+    resource_id   UUID NOT NULL,                     -- a file; see below
+    version_id    UUID NOT NULL,                     -- NOT NULL; see below
+    state         TEXT NOT NULL
+                  CHECK (state IN ('DRAFT','RUNNING','COMPLETED','REJECTED','CANCELLED','EXPIRED')),
+    current_stage INT NOT NULL DEFAULT 0 CHECK (current_stage >= 0),
+    started_by    UUID NOT NULL,
+    started_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    due_at        TIMESTAMPTZ,
+    completed_at  TIMESTAMPTZ,
+    outcome_reason TEXT CHECK (outcome_reason IS NULL OR length(outcome_reason) BETWEEN 1 AND 2000),
+    -- Pinned from the definition at start. See below.
+    allow_self_approval BOOLEAN NOT NULL,
+    delegation    TEXT NOT NULL CHECK (delegation IN ('FORBIDDEN','ONCE')),
+    on_new_version TEXT NOT NULL CHECK (on_new_version IN ('INVALIDATE','CONTINUE')),
+    revision      BIGINT NOT NULL DEFAULT 1 CHECK (revision >= 1),
+    PRIMARY KEY (tenant_id, id),
+    CONSTRAINT workflow_instances_cancellation_reason
+        CHECK (state <> 'CANCELLED' OR outcome_reason IS NOT NULL),
+    CONSTRAINT workflow_instances_completion_time
+        CHECK ((state IN ('COMPLETED','REJECTED','CANCELLED','EXPIRED'))
+               = (completed_at IS NOT NULL)),
+    CONSTRAINT workflow_instances_definition_fkey
+        FOREIGN KEY (tenant_id, definition_id) REFERENCES workflow_definitions (tenant_id, id),
+    CONSTRAINT workflow_instances_resource_fkey
+        FOREIGN KEY (tenant_id, resource_id) REFERENCES files (tenant_id, id),
+    CONSTRAINT workflow_instances_version_fkey
+        FOREIGN KEY (tenant_id, version_id) REFERENCES file_versions (tenant_id, id),
+    CONSTRAINT workflow_instances_starter_fkey
+        FOREIGN KEY (tenant_id, started_by) REFERENCES users (tenant_id, id)
+);
+
+-- docs/15 §5's idempotent triggering, as a constraint rather than a read-then-write: two concurrent
+-- deliveries both read "no instance" and both insert. docs/15 §12 W4.
+CREATE UNIQUE INDEX uq_workflow_instances_trigger
+    ON workflow_instances (tenant_id, definition_id, resource_id, version_id);
+CREATE INDEX idx_workflow_instances_open
+    ON workflow_instances (tenant_id, state, due_at) WHERE state = 'RUNNING';
+CREATE INDEX idx_workflow_instances_resource
+    ON workflow_instances (tenant_id, resource_id, started_at DESC);
+
+CREATE TABLE workflow_steps (
+    tenant_id     UUID NOT NULL REFERENCES tenants (id),
+    id            UUID NOT NULL,
+    instance_id   UUID NOT NULL,
+    stage         INT NOT NULL CHECK (stage >= 0),
+    position      INT NOT NULL CHECK (position >= 0),
+    step_type     TEXT NOT NULL CHECK (step_type IN ('APPROVAL','REVIEW','SIGNATURE','TASK')),
+    assignee_id   UUID NOT NULL,
+    delegated_to  UUID,
+    delegated_at  TIMESTAMPTZ,
+    delegation_reason TEXT CHECK (
+        delegation_reason IS NULL OR length(delegation_reason) BETWEEN 1 AND 2000),
+    state         TEXT NOT NULL CHECK (state IN (
+                      'PENDING','ASSIGNED','APPROVED','REJECTED','SIGNED','DECLINED','SKIPPED',
+                      'EXPIRED')),
+    decided_by    UUID,
+    decision_at   TIMESTAMPTZ,
+    comment       TEXT CHECK (comment IS NULL OR length(comment) BETWEEN 1 AND 4000),
+    due_at        TIMESTAMPTZ,
+    config        JSONB NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(config) = 'object'),
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, id),
+    CONSTRAINT workflow_steps_one_row_per_assignee
+        UNIQUE (tenant_id, instance_id, stage, position, assignee_id),
+    CONSTRAINT workflow_steps_decision_complete
+        CHECK ((state IN ('APPROVED','REJECTED','SIGNED','DECLINED'))
+               = (decided_by IS NOT NULL AND decision_at IS NOT NULL)),
+    CONSTRAINT workflow_steps_delegation_complete
+        CHECK ((delegated_to IS NOT NULL)
+               = (delegated_at IS NOT NULL AND delegation_reason IS NOT NULL)),
+    CONSTRAINT workflow_steps_delegate_is_not_assignee
+        CHECK (delegated_to IS NULL OR delegated_to <> assignee_id),
+    CONSTRAINT workflow_steps_instance_fkey
+        FOREIGN KEY (tenant_id, instance_id) REFERENCES workflow_instances (tenant_id, id),
+    CONSTRAINT workflow_steps_assignee_fkey
+        FOREIGN KEY (tenant_id, assignee_id) REFERENCES users (tenant_id, id),
+    CONSTRAINT workflow_steps_delegate_fkey
+        FOREIGN KEY (tenant_id, delegated_to) REFERENCES users (tenant_id, id),
+    CONSTRAINT workflow_steps_decider_fkey
+        FOREIGN KEY (tenant_id, decided_by) REFERENCES users (tenant_id, id)
+);
+
+CREATE INDEX idx_workflow_steps_assignee
+    ON workflow_steps (tenant_id, assignee_id, state) WHERE state = 'ASSIGNED';
+CREATE INDEX idx_workflow_steps_delegate
+    ON workflow_steps (tenant_id, delegated_to, state)
+    WHERE state = 'ASSIGNED' AND delegated_to IS NOT NULL;
+CREATE INDEX idx_workflow_steps_instance
+    ON workflow_steps (tenant_id, instance_id, stage, position);
+```
+
+All three have RLS enabled *and* forced with a `tenant_isolation` policy per `§3.2`, and
+`enclave_app` holds `SELECT, INSERT, UPDATE` and **no `DELETE`** — `§12.1`'s argument applied to
+these rows: an instance is the record of who was asked to approve what and what they said, and one
+statement removes the evidence that an approval was refused. Cancellation is the withdrawal, it
+keeps the row, and `docs/15 §4` requires it to carry a reason.
+
+#### One row per assignee, which is what makes a quorum countable
+
+`docs/15 §2`'s tree is `Stage[] → Step[] → assignees`, with the quorum on the step. A step with
+three assignees is therefore **three rows sharing `(stage, position)`**, and a quorum is a `count`
+over that key. The alternative — one row per step with a running total — is a second source of
+truth that a hand-repaired row silently desynchronises, and the desynchronised state is a workflow
+that completes one approval short.
+
+`workflow_steps_one_row_per_assignee` is also what stops a definition naming the same person twice
+in one step and letting them satisfy a two-of-three quorum alone.
+
+#### Four departures from `docs/15 §7`, all on `§12.3`'s test
+
+`migrations/0021` states the rule this section inherits: **storing a column the evaluator does not
+read is storing a promise.** Each departure is a tracker row, not a silence.
+
+| Absent | Why | Row |
+|---|---|---|
+| `workflow_definitions.trigger` | `docs/15 §5` gives five trigger kinds and none is evaluated. A tenant who wrote *"start Contract Review when a version lands in `contracts`"* would see it stored, see it listed, and watch nothing ever start. The idempotency `§5` actually asks for is `uq_workflow_instances_trigger`, which applies to the manual path too | `ENC-745` |
+| `workflow_instances.resource_type` | A polymorphic reference cannot carry a foreign key, which is `§3.3`'s whole subject. `resource_id` keys onto `files (tenant_id, id)` and **the key is the discriminator** — strictly stronger, because a `CHECK` naming one value would still accept an id naming no file | — |
+| `workflow_steps.assignee_type` | The same. `docs/15 §2` allows group, role and dynamic assignees; `assignee_id` keys onto `users`, so only a user can hold a step. Group assignment needs the transitive closure and a schema change together | `ENC-744` |
+| `AUTOMATION` and `CONDITION` in `step_type` | `docs/15 §3` defines both; neither has an evaluator. Such a step would instantiate `ASSIGNED`, have nobody able to decide it and nothing able to skip it — an instance stalled with no explanation. `§12.3`'s `ALLOW` case exactly. It errs the safe way: a definition naming one is refused when it is *written* | `ENC-745` |
+
+`SIGNATURE` **is** in the vocabulary even though `crates/workflows` cannot decide such a step: the
+ceremony of `docs/15 §6` decides it, `signature_requests.workflow_step_id` anchors on these rows,
+and a step type that cannot be stored is a workflow that cannot contain a signature at all.
+
+#### Four columns `docs/15 §7` does not have, each a security property
+
+**`allow_self_approval`, `delegation` and `on_new_version` on the instance** are pinned copies of
+the definition's policy. `§7` puts `allow_self_approval` on the definition only — which means one
+`UPDATE` on a template retroactively makes every in-flight approval under it self-approvable, with
+no row anywhere recording that the terms changed mid-flight. `docs/15 §2`'s second core property is
+determinism; a policy the template can move underneath a running instance breaks it. So the
+definition is a template and the instance carries what it was started under. The step rows carry
+their quorum in `config` for the same reason, and the evaluator never re-reads
+`workflow_definitions`.
+
+**`workflow_steps.decided_by`.** `§7` has `delegated_to` and `decision_at` and no column saying who
+actually decided — so an `APPROVED` step cannot distinguish *the assignee decided before
+delegating* from *the delegate decided*, which is precisely the fact `docs/15 §4`'s requirement
+that a delegation never be a silent substitution exists to preserve. It is that section's
+`acted_on_behalf_of`, stored where the decision is.
+
+#### `version_id` is `NOT NULL`, where `docs/15 §7` has it nullable
+
+`docs/15 §2.1` is the model's first core property: *bound to a version, not a file — an approval
+approves what was actually reviewed.* An instance with no version is the thing that property
+forbids, and a nullable column is an invitation to create one. It is also what makes
+`uq_workflow_instances_trigger` work: NULLs are distinct, so a nullable `version_id` would let one
+definition start on one file unboundedly often.
+
+#### `delegation` has two values and neither of them is a chain
+
+The privilege-escalation bound, expressed as a vocabulary rather than a check. Delegation transfers
+authority; an onward chain means the third holder's entitlement was never examined by whoever
+originally held the step. `FORBIDDEN` and `ONCE` are the whole vocabulary, so **no value a
+definition, a repair script or a `psql` session could store means "delegate onward"** — the same
+shape `§12.1` uses to keep `ALLOW` out of a conditional-access effect. The runtime half is
+`crates/workflows/src/repo.rs`'s `UPDATE … WHERE delegated_to IS NULL`, one statement, so a second
+delegation racing the first loses in the database rather than in a read-then-write. `ENC-740`.
+
+#### `scope_type`/`scope_id` are kept where `§12.3` dropped them, because these are read
+
+`dlp_rules` has no scope columns on the grounds that no rule type has a resource scope. These do:
+`crates/workflows` refuses a start whose file is outside the definition's scope, so a
+`LIBRARY`-scoped "Contract review" cannot be run against an HR file by anyone who knows its id.
+`scope_id` carries **no foreign key** — its referent depends on `scope_type`, so a single key would
+have to point at two tables — and the absence is recorded here rather than left to be discovered
+(`ENC-502`'s lesson). It fails closed: the scope is resolved by comparing against the target file's
+own `workspace_id`/`library_id`, so a `scope_id` naming a workspace that does not exist matches no
+file and starts nothing.
+
 ## 14. Audit
 
 ```sql
@@ -1899,6 +2127,7 @@ CREATE INDEX idx_jobs_ready ON jobs (state, run_after) WHERE state = 'QUEUED';
 | Version | Date | Change |
 |---|---|---|
 | 1.9 | 2026-08-27 | Added §15.1, sync as created — `sync_devices` and `sync_cursors` per §15, plus `sync_scope_sequences` and `sync_change_log`, which §15 did not model and without which `sync_cursors.cursor` counts nothing (`ENC-732`). The decision worth reading is that `seq` comes from a **transactional counter row** rather than a PostgreSQL `SEQUENCE` or a timestamp: the incrementing `UPDATE` holds a row lock to commit, so allocation order is commit order and the visible sequence is always a contiguous prefix — `nextval` neither locks nor rolls back, so two writers can take 5 and 6 and commit in the other order, after which a reader that saw 6 never sees 5. The cost, per-scope write serialisation, is why a scope is a library. The feed is appended by a **trigger on `files`** rather than by each writer, on the same completeness argument RLS makes about tenant predicates; the gap that leaves — an `acl_entries`-only revocation produces no entry — is `ENC-737` and is caught by `10-SYNC-AND-EDITING.md §5`'s re-evaluation at byte-fetch time. `sync_devices` is **not** `devices` (0001, Auth domain, written by nothing yet); reconciling them when device-bound tokens land is `ENC-736`. `enclave_app` holds `DELETE` on `sync_change_log` alone — deleting a counter row restarts a scope at 1 and every device holding a higher cursor stops receiving changes silently and permanently. `migrations/0023_sync_devices.sql` applies it. |
+| 1.9 | 2026-08-27 | Added §13.1, the three workflow tables as created — `workflow_definitions`, `workflow_instances`, `workflow_steps`, the schema behind `docs/05-API.md §16`'s eight endpoints (`ENC-739`). The reconciled form of `docs/15 §7`, under **Compliance** because an approval governs a document's lifecycle exactly as retention and a record declaration do, and because a top-level section would renumber `§§18`–`§20`, which three files cite by number. `§13.2` is reserved for the signing tables. **Four departures, all on §12.3's test** — storing a column the evaluator does not read is storing a promise: no `trigger` (five trigger kinds in `docs/15 §5`, none evaluated, so a stored trigger is a workflow that never starts — `ENC-745`); no `resource_type` or `assignee_type`, because a polymorphic reference cannot carry a foreign key and **the composite key is the discriminator**, which is strictly stronger than the `CHECK` would have been (`ENC-744`); and `step_type` without `AUTOMATION` or `CONDITION`, which is §12.3's `ALLOW` case exactly — a step with no evaluator instantiates `ASSIGNED` and stalls the instance with nobody able to decide it and nothing able to skip it. `SIGNATURE` **is** in the vocabulary, because `signature_requests.workflow_step_id` anchors on these rows. **Four columns `§7` does not have, each a security property.** The instance pins `allow_self_approval`, `delegation` and `on_new_version` from its definition, because otherwise one `UPDATE` on a template retroactively makes every in-flight approval under it self-approvable with nothing recording that the terms changed mid-flight — `docs/15 §2`'s determinism as a column, and the step rows freeze their quorum in `config` for the same reason, so the evaluator never re-reads the template. And `workflow_steps.decided_by`, without which an `APPROVED` step cannot distinguish *the assignee decided before delegating* from *the delegate decided* — which is the whole content of §4's requirement that a delegation never be a silent substitution. **`version_id` is `NOT NULL`** where §7 has it nullable: §2.1's first core property is that an approval approves what was actually reviewed, a nullable column is how an instance bound to nothing gets created, and NULLs being distinct would let `uq_workflow_instances_trigger` be evaded unboundedly. **`delegation` has two values and neither is a chain** — `FORBIDDEN` and `ONCE`, so an unbounded delegate chain is unstorable on every path including `psql`, which is §12.1's shape for keeping `ALLOW` out of an effect (`ENC-740`). One row per assignee per `(stage, position)`, so a quorum is a `count` rather than a running total a repaired row desynchronises. `enclave_app` holds no `DELETE`: an instance is the record of who was asked and what they said. `migrations/0024_workflows.sql` applies it. |
 | 1.8 | 2026-08-22 | Added §12.4, `classifications` as created — the table three separate consumers of a `ClassificationRank` had no way to be given one from (`ENC-574`, closing `ENC-614`). §12's shape with `tenant_id` leading, a `(tenant_id, id)` primary key, `deleted_at` withdrawal, partial live-uniqueness on both `key` and `rank`, and `CHECK (rank >= 0)` with no upper bound. The four `classification_id` columns §§7–8 have carried since 0004/0005 become **composite** foreign keys per §3.3; a single-column form would accept another tenant's label on this tenant's file, because RI checks run with row security not enforced. `enclave_app` holds no `DELETE` on grounds of its own: one statement declassifies in bulk, and the ranks already copied into `security_facts` and the vector collection are protected by no key. **A withdrawn label still resolves** — the resolver has no `deleted_at` filter, because a withdrawal that declassified would be that same `DELETE` through the door that is granted. Also records the **resolution rule**: effective rank is the *maximum* over the file, its ancestors, its library default and its workspace default; the walk is deliberately **not** `enclave_authorization`'s, because that one stops at `inherit_permissions = FALSE` and nothing materialises a label when that flag flips — honouring it would be `ENC-141`'s escalation one control over; and a truncated walk is an error rather than `Ok(None)`. An unlabelled resource has **no rank**: `Unlabelled` is `FAIL_CLOSED` or a tenant-named `Assume(rank)`, is not deserializable (D27), and `FAIL_CLOSED` is mandatory for external sharing regardless. `migrations/0022_classifications.sql` applies it. |
 | 1.7 | 2026-08-22 | Added §12.3, `dlp_rules` — the stored form of a DLP rule, and the table that makes `ENFORCE` able to refuse anything (`ENC-615`). A second table beside §12's `dlp_policies` on §12.1's boundary: five of that model's columns are not read by the evaluator that exists. The one worth reading is the **absent `mode`**: D28 requires `SIMULATION` to be indistinguishable from `ENFORCE` except in effect, and `crates/dlp` makes that structural by having `RuleSet::evaluate` take no mode argument — a per-rule mode would have to be carried on the rule type, which is exactly the field a divergence becomes writable through, so the mode stays in configuration and the cost (no per-tenant rollout pace) is recorded as `ENC-632`. Also: **no `ALLOW` action**, because `Verdict::blocking_code` scans past a `Nothing` demand to the next refusal, so an `ALLOW` above a `BLOCK` would be an exception that fires and changes nothing (`ENC-631`) — §12.1's absent effect, one stage over; no `enabled` (a second off-switch beside withdrawal), no `scope_type`/`scope_id` (no rule type has a resource scope); and `priority` kept, because it *is* read — it decides which reason code a refused caller sees when two refusing rules fire, ordered `priority, name` so the answer cannot depend on a query plan. `conditions` is Q16's boundary and it is held by strict, closed decoding rather than by the column: a stored condition naming `pattern` is refused by name and fails the whole set. `enclave_app` holds no `DELETE`: one statement stops a tenant's inspection refusing anything, and it would remove the rule §9's mandatory-simulation gate has to query the history of. `migrations/0021_dlp_rules.sql` applies it. |
 | 1.6 | 2026-08-22 | Added §12.2, `security_facts` as created — the table a DLP decision is actually taken from (`ENC-594`). §12's shape, with three deviations recorded rather than left to be discovered: **no `detector_results JSONB`**, because nothing reads a per-detector breakdown and an opaque results document is the first place a future scanner writes the string it matched — `CLAUDE.md` rule 10 is structural everywhere else in this path and a column that would hold anything is where it would be lost; `classification_rank INT` in place of `classification_id UUID`, because comparisons are against ranks and `classifications` is created by no migration, so an id would point at nothing; and `CHECK (… >= 0)` on the counts, which is what makes the `INT`-to-`u32` conversion total rather than turning a negative row into two billion card numbers. `detector_set_version` is compared for equality and never ordered (`ENC-581`). `enclave_app` holds no `DELETE`: a rescan replaces, and the cascade from `file_versions` is what removes facts about content that no longer exists. `migrations/0020_security_facts.sql` applies it. |
