@@ -89,8 +89,8 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 use chrono::{DateTime, Utc};
 use enclave_core::{
-    Action, Actor, Error, FileAction, FileId, Obligation, Obligations, RequestId, ResourceRef,
-    SessionId, TenantId, VersionId,
+    Action, Actor, Error, FileAction, FileId, Obligation, Obligations, RequestContext, RequestId,
+    ResourceRef, SessionId, TenantId, VersionId,
 };
 use enclave_preview::{Delivery, PreviewPipeline, ReadableVersion, RenditionProfile};
 use rand::rand_core::TryRng as _;
@@ -520,20 +520,10 @@ pub async fn print_token(
     };
 
     let obligations = decision.into_obligations();
-    let required = match satisfy_print(&obligations, request.justification.as_deref()) {
+    let required = match satisfy_print(&obligations, request.justification.as_deref(), &ctx) {
         Ok(required) => required,
         Err(refused) => return Err(state.audit.refuse(&ctx, PRINT, &resource, refused).await),
     };
-
-    // A mark exists to attribute a leak to a person, and a print carries it onto paper, where the
-    // only forensic trace is what was drawn. So a grant that would have to be marked is refused
-    // unless the principal is somebody the mark can name — refused, not stamped "system", which
-    // satisfies the obligation on paper and not in fact.
-    if required.watermark {
-        if let Err(refused) = stampable(&ctx) {
-            return Err(state.audit.refuse(&ctx, PRINT, &resource, refused).await);
-        }
-    }
 
     let mut tx = state
         .db
@@ -599,10 +589,12 @@ fn parse_print_token(body: &Bytes) -> Result<PrintTokenRequest, Envelope> {
 ///
 /// # Errors
 ///
-/// [`Refused`] when an obligation cannot be satisfied here — recorded before it reaches the caller.
+/// [`Refused`] when an obligation cannot be satisfied here — including a watermark required of a
+/// principal that is not a person. Recorded before it reaches the caller (`ENC-606`).
 fn satisfy_print(
     obligations: &Obligations,
     justification: Option<&str>,
+    ctx: &RequestContext,
 ) -> Result<crate::preview::Required, Refused> {
     let mut required = crate::preview::Required::default();
     for obligation in obligations {
@@ -620,7 +612,22 @@ fn satisfy_print(
             // Recorded onto the capability. Nothing is served here, so nothing can be served
             // unmarked; what must not happen is a grant that is redeemable without the mark, and
             // the flag on the stored capability is what stops it.
-            Obligation::Watermark => required.watermark = true,
+            //
+            // The principal is checked *here*, inside the function that decides the obligations,
+            // rather than at the call site the preview and export paths use — and that is the
+            // finding rather than a preference. With the check at the call site, deleting it
+            // entirely failed **nothing**: every caller in every HTTP test is a signed-in person,
+            // and no unit test can reach a line inside an `async fn` taking `State`, three
+            // extractors and a database.
+            //
+            // A mark exists to attribute a leak to a person, and a print carries it onto paper
+            // where the only forensic trace is what was drawn. So a grant that would have to be
+            // marked is refused unless the principal is somebody the mark can name — refused, not
+            // stamped "system", which satisfies the obligation on paper and not in fact.
+            Obligation::Watermark => {
+                let _actor = stampable(ctx)?;
+                required.watermark = true;
+            }
 
             Obligation::RequireJustification => {
                 let supplied = justification.is_some_and(|text| !text.trim().is_empty());
@@ -978,6 +985,13 @@ mod tests {
         list.into_iter().collect()
     }
 
+    /// A request from an ordinary signed-in person — the principal a watermark can name.
+    fn person() -> RequestContext {
+        let mut ctx = RequestContext::system(TenantId::new_v7());
+        ctx.actor = Actor::User(UserId::new_v7());
+        ctx
+    }
+
     /// The code a refusal carries, or `None` when the obligations were satisfiable.
     fn refused<T>(result: Result<T, Refused>) -> Option<ReasonCode> {
         result.err().map(Refused::code)
@@ -1133,7 +1147,7 @@ mod tests {
     fn no_download_refuses_an_export_and_does_not_refuse_a_print_grant() {
         let no_download = obligations([Obligation::NoDownload]);
         assert!(
-            satisfy_print(&no_download, None).is_ok(),
+            satisfy_print(&no_download, None, &person()).is_ok(),
             "a print grant carries no bytes and no URL, so a no-download obligation constrains \
              nothing about it; whether this caller may print is `file.print`, which the chain \
              answered on its own terms"
@@ -1147,35 +1161,87 @@ mod tests {
 
     #[test]
     fn a_print_grant_records_a_watermark_requirement_rather_than_dropping_it() {
-        let required = satisfy_print(&obligations([Obligation::Watermark]), None)
+        let required = satisfy_print(&obligations([Obligation::Watermark]), None, &person())
             .expect("a watermark is recorded on the grant, not refused at the mint");
         assert!(required.watermark);
 
-        let plain = satisfy_print(&obligations([Obligation::NoDownload]), None).expect("ordinary");
+        let plain = satisfy_print(&obligations([Obligation::NoDownload]), None, &person())
+            .expect("ordinary");
         assert!(!plain.watermark, "an ordinary print grant must not demand a mark");
     }
 
     #[test]
     fn blocking_obligations_refuse_a_print_grant() {
         assert_eq!(
-            refused(satisfy_print(&obligations([Obligation::RequireJustification]), None)),
+            refused(satisfy_print(
+                &obligations([Obligation::RequireJustification]),
+                None,
+                &person()
+            )),
             Some(ReasonCode::DlpJustificationRequired)
         );
         assert!(satisfy_print(
             &obligations([Obligation::RequireJustification]),
-            Some("Board pack, hard copy for the meeting")
+            Some("Board pack, hard copy for the meeting"),
+            &person()
         )
         .is_ok());
         assert_eq!(
-            refused(satisfy_print(&obligations([Obligation::RequireApproval]), Some("why"))),
+            refused(satisfy_print(
+                &obligations([Obligation::RequireApproval]),
+                Some("why"),
+                &person()
+            )),
             Some(ReasonCode::DlpApprovalRequired)
         );
         assert_eq!(
             refused(satisfy_print(
                 &obligations([Obligation::Reclassify { to: ClassificationRank::new(40) }]),
-                Some("why")
+                Some("why"),
+                &person()
             )),
             Some(ReasonCode::AccessDenied)
+        );
+    }
+
+    /// A print grant that would have to be marked names a person, or is refused.
+    ///
+    /// `ENC-720`'s own finding, and the reason the check moved into [`satisfy_print`]: while it sat
+    /// at the handler's call site, deleting it entirely failed **nothing** — the whole workspace
+    /// stayed green, because every caller in every HTTP test is a signed-in person.
+    ///
+    /// The last case is the control that keeps this from being "refuse every machine": a service
+    /// account with no watermark obligation may hold a print grant. The refusal is about an
+    /// obligation this principal cannot discharge, not about the principal.
+    #[test]
+    fn a_watermarked_print_grant_names_a_person_or_is_refused() {
+        let tenant = TenantId::new_v7();
+
+        let system = RequestContext::system(tenant);
+        assert_eq!(
+            refused(satisfy_print(&obligations([Obligation::Watermark]), None, &system)),
+            Some(ReasonCode::AccessDenied),
+            "the system actor has no name to stamp onto a printed page"
+        );
+
+        let mut machine = RequestContext::system(tenant);
+        machine.actor = Actor::ServiceAccount(enclave_core::ServiceAccountId::new_v7());
+        assert_eq!(
+            refused(satisfy_print(&obligations([Obligation::Watermark]), None, &machine)),
+            Some(ReasonCode::AccessDenied),
+            "a service account is not a person either"
+        );
+
+        // The controls. A real viewer is granted, or nothing prints at all...
+        assert!(
+            satisfy_print(&obligations([Obligation::Watermark]), None, &person()).is_ok(),
+            "a person must be able to hold a watermarked print grant"
+        );
+        // ...and the same machine is granted an *unmarked* print, so the refusal above is about an
+        // obligation this principal cannot discharge rather than about the principal.
+        assert!(
+            satisfy_print(&Obligations::none(), None, &machine).is_ok(),
+            "a service account was refused a print grant that required no mark"
         );
     }
 
