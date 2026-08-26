@@ -10,6 +10,42 @@ use anyhow::Context as _;
 use enclave_api::{metrics_listener, router, unconfigured_stages, ApiState, Delivery, Edge};
 use enclave_core::PolicyEngine;
 
+/// The object store this deployment's `storage.s3` names, or `None` when it names none.
+///
+/// Identical to `crates/worker`'s function of the same name and deliberately so: two binaries
+/// reading one configuration section through two code paths is how they come to disagree about what
+/// it means. `connect_and_verify` proves the bucket is reachable *now* — an unreachable bucket is a
+/// start-up failure rather than a download that fails for a user who cannot know why.
+async fn object_store(
+    config: &enclave_config::Config,
+    registry: &enclave_config::SecretRegistry,
+) -> anyhow::Result<Option<enclave_storage::S3BlobStore>> {
+    let Some(section) = config.storage.s3.as_ref() else { return Ok(None) };
+
+    let store = enclave_storage::S3BlobStore::connect_and_verify(
+        enclave_storage::S3Config::from_operator_config(section),
+        registry,
+    )
+    .await
+    .with_context(|| {
+        format!(
+            "connect to the object store named by `storage.s3` (bucket `{}`, region `{}`)",
+            section.bucket, section.region
+        )
+    })?;
+    Ok(Some(store))
+}
+
+/// The rendition pipeline, which this binary cannot yet build.
+///
+/// `UnconfiguredPipeline` is the only `PreviewPipeline` in the workspace, so preview, thumbnail and
+/// export refuse whatever `storage.s3` says. Named as a function rather than inlined so the day a
+/// real pipeline exists there is one place to change, and so the asymmetry is visible: a configured
+/// bucket now serves downloads and still refuses renditions.
+fn unconfigured_preview() -> Arc<dyn enclave_preview::PreviewPipeline> {
+    Arc::new(enclave_preview::UnconfiguredPipeline)
+}
+
 /// What a privileged administrative action demands, from `security.mfa`.
 ///
 /// # Why this refuses to start rather than warning
@@ -330,7 +366,21 @@ async fn main() -> anyhow::Result<()> {
     // while every integration test passed. It now takes them, so the gap would be a compile error —
     // and what a deployment without them gets is a documented refusal it was warned about, rather
     // than an error nobody can explain.
-    let delivery = Delivery::unconfigured();
+    // `ENC-770`: this was `Delivery::unconfigured()` unconditionally. The `storage:` section was
+    // never read, so a deployment that fully specified a bucket still got a store that refuses
+    // every byte, and `POST /uploads` answered `500` on correct configuration. That is `ENC-170`'s
+    // shape one layer up — the route takes its dependency, so the *gap* is a compile error, but the
+    // value passed was a constant instead of a build. A dependency that is always absent is not a
+    // dependency; it is a stub with a type signature.
+    //
+    // The store is built the same way `crates/worker` builds it, from the same section, so the two
+    // binaries cannot disagree about what `storage.s3` means. `connect_and_verify` refuses at
+    // start-up rather than at first use, because an unreachable bucket discovered on a user's
+    // download is a bucket nobody notices is unreachable.
+    let delivery = match object_store(config, &registry).await? {
+        Some(store) => Delivery { store: Arc::new(store), preview: unconfigured_preview() },
+        None => Delivery::unconfigured(),
+    };
     for capability in delivery.unconfigured_capabilities() {
         tracing::warn!(capability, "delivery capability is not configured");
     }
