@@ -181,8 +181,11 @@ row-level security back on — without it the pool stays superuser and RLS is by
 export REDIS_URL=redis://localhost:6379
 export NATS_URL=nats://localhost:4222
 export S3_ACCESS_KEY_ID=enclave
-export S3_SECRET_ACCESS_KEY=enclave-dev-secret   # deploy/compose/dev.yml has the value
+export S3_SECRET_ACCESS_KEY=...                  # deploy/compose/dev.yml has the value
 ```
+
+The value is not repeated here on purpose: `deploy/config/enclave.example.yaml` declines to print
+it too, and a credential that appears in two places is one that gets copied to a third.
 
 **4. Start it.** On the `community` profile bound to a loopback address — the default, and the only
 combination that qualifies — a development signing key is generated under

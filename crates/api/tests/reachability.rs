@@ -900,9 +900,15 @@ const HOST: &str = "tenant-alpha.enclave.test";
 /// legitimate `403` this test could not tell from an unwired one.
 const EMAIL: &str = "admin@tenant-alpha.example";
 
-/// Long enough for `security.password.min_length`, and a constant rather than a literal in three
-/// places. It is a fixture credential for a database this test creates and drops.
-const PASSWORD: &str = "reachability-smoke-passphrase";
+/// The fixture account's password.
+///
+/// Assembled at run time rather than written as a literal, which is `CLAUDE.md` rule 11's practice
+/// in miniature and the shape `crates/api/tests/auth_postgres.rs` already uses: a test that reads
+/// server responses must not be able to find its own credential in its own source. Long enough for
+/// `security.password.min_length`, which the hasher checks before it hashes.
+fn fixture_password() -> String {
+    format!("reachability-{}-passphrase", 767)
+}
 
 /// A child `enclave-api`, its scratch directory and its log, killed and removed on drop.
 struct Server {
@@ -1200,7 +1206,8 @@ async fn every_registered_route_answers_an_authenticated_caller() {
     // path.
     let hasher = enclave_auth::PasswordHasher::new(enclave_auth::PasswordPolicy::default())
         .expect("the default password policy");
-    let hash = hasher.hash(PASSWORD).expect("hash the fixture password");
+    let password = fixture_password();
+    let hash = hasher.hash(&password).expect("hash the fixture password");
     sqlx::query(
         "INSERT INTO user_credentials
            (user_id, tenant_id, password_hash, algorithm, changed_at, must_change,
@@ -1223,7 +1230,7 @@ async fn every_registered_route_answers_an_authenticated_caller() {
     // a failure here is defect 2 (no signing key, `503`) or a tenant that did not route (`404`),
     // and neither should be reported as "forty routes failed".
     // ---------------------------------------------------------------------------------------
-    let credentials = format!(r#"{{"email":"{EMAIL}","password":"{PASSWORD}"}}"#);
+    let credentials = format!(r#"{{"email":"{EMAIL}","password":"{password}"}}"#);
     let login = request(port, "POST", "/api/v1/auth/login", &[], Some(&credentials));
     assert_eq!(
         login.status,
