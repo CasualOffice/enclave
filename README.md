@@ -122,20 +122,124 @@ enclave/
 └── docs/               the specification pack
 ```
 
-## Getting started
+## Running the server
 
-Once implementation begins:
+Six things have to be true before `enclave-api` will serve a request, and none of them used to be
+written down — the first person to start it needed six attempts, and every fact they were missing
+existed only inside a source file. They are here in the order the process needs them.
 
 ```bash
 git clone https://github.com/CasualOffice/enclave.git && cd enclave
 
-# bring up PostgreSQL, Redis, NATS, MinIO, Milvus, ClamAV
-docker compose -f deploy/compose/dev.yml up -d
+# 1. Infrastructure. PostgreSQL is required; the rest are for the worker and the search stack.
+docker compose -f deploy/compose/dev.yml up -d --wait
+```
 
+**1. `enclave.yaml` is read from the working directory.** Not from a path in an environment
+variable, and not from a `--config` flag — `enclave-api` has neither. Copy the template into the
+directory you will run from:
+
+```bash
 cp deploy/config/enclave.example.yaml enclave.yaml
+```
+
+**2. Both database DSNs are required, and both must be `env://` references.** A password written
+into a YAML file is refused at start-up (`CLAUDE.md` rule 11), so `enclave.example.yaml` carries the
+`*_env` spellings and you export the values. `platform_url_env` is **commented out** in the
+template — uncomment it:
+
+```yaml
+database:
+  url_env: "DATABASE_URL"
+  platform_url_env: "DATABASE_PLATFORM_URL"
+  application_role: "enclave_app"
+```
+
+```bash
+export DATABASE_URL=postgres://enclave:enclave@localhost:5432/enclave
+export DATABASE_PLATFORM_URL="$DATABASE_URL"      # see below — not optional in practice
+```
+
+`database.platform_url` reads as optional and is not. Two things need it:
+
+- **`POST /api/v1/auth/login`.** Resolving a host to a tenant reads `tenants`, which carries no
+  `tenant_id` and therefore has no row-level-security policy — so `migrations/0002` grants
+  `enclave_app` nothing on it at all and gives `SELECT` to `enclave_platform`. With no platform DSN
+  every host resolves to nothing and **every login answers `404`**, which reads as a wrong URL.
+- **Migrations.** `enclave-api` applies them at start-up and takes the migration connection from
+  `migration_url`, falling back to `platform_url`. With neither, it refuses to start.
+
+In a real deployment these are two different roles with two different passwords. On the dev stack
+the roles have no passwords at all (`deploy/compose/init/01-roles.sql` deliberately creates none),
+so both point at the superuser DSN and `database.application_role: enclave_app` is what puts
+row-level security back on — without it the pool stays superuser and RLS is bypassed entirely.
+
+**3. Four more variables must resolve, even though `enclave-api` contacts none of them.** They are
+*referenced* by the configuration, and an unresolvable reference is a start-up failure:
+
+```bash
+export REDIS_URL=redis://localhost:6379
+export NATS_URL=nats://localhost:4222
+export S3_ACCESS_KEY_ID=enclave
+export S3_SECRET_ACCESS_KEY=enclave-dev-secret   # deploy/compose/dev.yml has the value
+```
+
+**4. Start it.** On the `community` profile bound to a loopback address — the default, and the only
+combination that qualifies — a development signing key is generated under
+`auth.signing_keys.directory` on first run. Any other profile, or any non-loopback bind, requires
+`auth.signing_keys.key_ref` and refuses to start without it.
+
+```bash
 cargo run -p enclave-api        # http://localhost:8080
+```
+
+Read the start-up banner rather than skipping it: it names every policy stage that is not enforcing,
+and warns when the auth surface or object storage is unconfigured. One caveat — the `enclave-api
+listening` line reports the address the process was *asked* for, so `server.port: 0` is logged as
+`127.0.0.1:0` and you have to find the real port elsewhere.
+
+**5. Seed a tenant and give an account a password.** `seed` writes users and nothing has ever
+written a credential, so every seeded account correctly answers `401` until this is done. The
+password is read from **stdin** — there is deliberately no flag, because a command line lands in
+shell history and in `ps` output:
+
+```bash
+cargo run -p enclave-cli -- seed
+printf '%s' "$NEW_PASSWORD" | cargo run -p enclave-cli -- \
+  set-password --tenant tenant-alpha --email owner@tenant-alpha.example
+```
+
+**6. Log in on a host that routes to the tenant.** The tenant comes from the routed authority and
+never from the request body (`CLAUDE.md` rule 3). A single-label host such as `localhost` routes no
+tenant — the first label is read as the tenant's slug and a bare host has none — so a login to
+`http://localhost:8080` answers `404` however correct the credentials are. Send the `Host` header
+the deployment would really be reached at:
+
+```bash
+curl -s http://127.0.0.1:8080/api/v1/auth/login \
+  -H 'Host: tenant-alpha.enclave.test' -H 'Content-Type: application/json' \
+  -d '{"email":"owner@tenant-alpha.example","password":"'"$NEW_PASSWORD"'"}'
+
+curl -s http://127.0.0.1:8080/api/v1/me \
+  -H 'Host: tenant-alpha.enclave.test' -H "Authorization: Bearer $ACCESS_TOKEN"
+```
+
+The web client is a separate process:
+
+```bash
 cd web && npm install && npm run dev
 ```
+
+### What a running server cannot do yet
+
+Checked on every commit by `crates/api/tests/reachability.rs`, which starts this binary, logs in and
+calls every registered route. Each of these is a tracker row rather than a surprise:
+
+| Endpoint | Answers | Why |
+|---|---|---|
+| `POST /uploads` | `500` | The binary composes no object store, whatever `storage:` says (`ENC-770`). The delivery routes cannot serve a byte for the same reason. |
+| `POST /sync/devices` | `403` | Enrolling a device asks a question no composed authorization service can answer (`ENC-736`). |
+| The five `/admin/**` mutations | `403` | They require multi-factor authentication within 15 minutes, and no factor can be verified in this build (`ENC-771`, `ENC-688`). |
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the full development workflow.
 
