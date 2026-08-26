@@ -648,9 +648,6 @@ jobs:
             exit 1
           fi
 
-  # Single required check for branch protection. Without it, adding a job means
-  # remembering to add it to the protected-branch list, and a forgotten job is a
-  # gate that quietly stops blocking anything.
   role-race:
     name: role-race — the destructive cluster-global test
     runs-on: ubuntu-latest
@@ -708,10 +705,101 @@ jobs:
           cargo test --locked -p enclave-testing --test role_race -- \
             --include-ignored --exact a_lost_role_creation_race_reports_what_to_do_about_it
 
+
+  reachability:
+    name: reachability — the binary answers every route it registers
+    runs-on: ubuntu-latest
+
+    # A job of its own rather than a step inside `test`, and the reason is what a red check says.
+    # `test` runs some two thousand assertions; when it goes red it says "something broke" and the
+    # reader goes looking. This one has exactly one thing to say — **the product cannot be used** —
+    # and it earns the right to say it under its own name: M0-M4 produced 130k lines of tested
+    # backend that nothing could reach, and the whole suite was green throughout. See
+    # `crates/api/tests/reachability.rs` and `plans/M5A-API-COMPLETION.md` step 2.
+    #
+    # PostgreSQL and nothing else. The test starts `enclave-api`, which contacts neither Redis nor
+    # NATS nor object storage — the environment variables it needs exist because the configuration
+    # *references* them, and the test supplies its own.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: enclave
+          POSTGRES_PASSWORD: enclave
+          POSTGRES_DB: enclave
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U enclave"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # The harness creates a throwaway database per test binary from this one, so it must point at
+      # a database whose role may CREATE DATABASE.
+      DATABASE_URL: postgres://enclave:enclave@localhost:5432/enclave
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the pinned toolchain
+        run: |
+          set -euo pipefail
+          channel=$(grep -E '^[[:space:]]*channel' rust-toolchain.toml | head -1 | sed -E 's/.*"(.*)".*/\1/')
+          rustup toolchain install "$channel" --profile minimal --no-self-update
+          rustup default "$channel"
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-reach-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-reach-${{ hashFiles('rust-toolchain.toml') }}-
+            ${{ runner.os }}-cargo-reach-
+
+      # The fetch, retried; the assertion below is not. See the long comment in
+      # the `test` job for why that distinction is the whole point.
+      - name: Fetch dependencies (retried — registry only)
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4; do
+            if cargo fetch --locked; then
+              echo "dependencies fetched on attempt ${attempt}"
+              exit 0
+            fi
+            if [ "$attempt" -lt 4 ]; then
+              delay=$((attempt * attempt * 5))
+              echo "crates.io fetch failed (attempt ${attempt}/4); retrying in ${delay}s"
+              sleep "$delay"
+            fi
+          done
+          echo "::error title=Dependency registry unavailable — NOT a reachability failure::cargo could not fetch from index.crates.io after 4 attempts over ~70s. The reachability test did not run: nothing was asserted and nothing failed. Check https://status.crates.io and re-run the job."
+          exit 1
+
+      # `--nocapture`, deliberately: the run prints every route and its status, and the quarantine
+      # list of endpoints that cannot currently be reached by anybody. Both belong in the log of
+      # every pull request rather than only in the message of a failure.
+      - name: Every registered route answers an authenticated caller
+        run: |
+          cargo test --locked -p enclave-api --test reachability -- \
+            --include-ignored --nocapture --test-threads=1
+
+  # Single required check for branch protection. Without it, adding a job means
+  # remembering to add it to the protected-branch list, and a forgotten job is a
+  # gate that quietly stops blocking anything. (It had drifted three jobs upwards
+  # and was sitting above `role-race`, describing the wrong thing.)
   ci-status:
     name: CI status
     if: always()
-    needs: [fmt, clippy, test, build, role-race]
+    needs: [fmt, clippy, test, build, role-race, reachability]
     runs-on: ubuntu-latest
     steps:
       - name: Fail unless every CI job succeeded
@@ -724,4 +812,4 @@ jobs:
             echo "::error title=CI failed::At least one CI job did not succeed — see the job list above."
             exit 1
           fi
-          echo "fmt, clippy, test and build all succeeded."
+          echo "fmt, clippy, test, build, role-race and reachability all succeeded."
