@@ -42,7 +42,7 @@ pub struct SelfServiceAuthorization;
 impl SelfServiceAuthorization {
     /// Whether this is a principal acting on its **own** user record, and in one of the two ways
     /// that are permitted.
-    fn is_permitted_self_action(
+    pub(crate) fn is_permitted_self_action(
         ctx: &RequestContext,
         action: Action,
         resource: &ResourceRef,
@@ -250,5 +250,71 @@ mod tests {
         assert_eq!(decisions.len(), 2);
         assert!(decisions[0].is_allowed(), "the caller's own record");
         assert!(!decisions[1].is_allowed(), "somebody else's");
+    }
+}
+
+/// Self-service first, then the inner service — `ENC-767`.
+///
+/// # Why a composition rather than a change to either service
+///
+/// [`SelfServiceAuthorization`] answers questions about a principal reading *itself*; it is the only
+/// thing that can, because a user is not in the file tree. [`PgAclAuthorization`] answers questions
+/// about content, and deliberately classifies a `User` resource as unsupported rather than guessing
+/// at a permission model nobody specified.
+///
+/// Both are terminal — each denies what it does not recognise — so wiring either one alone leaves
+/// half the product refused. With self-service alone every content route answers `403` for a caller
+/// whose token is perfectly valid; with ACL alone `GET /api/v1/me` does. The binary shipped the
+/// first of those, and it is worth naming what it looked like from outside: **authentication working
+/// and authorization unwired are indistinguishable to a client.** A good token, a correct password,
+/// a real session — and `403` on every request. That is not a subtle failure, but it is an invisible
+/// one, because every individual component was behaving exactly as written.
+///
+/// The order matters and is not arbitrary: self-service is asked first because its domain is
+/// *narrow and exact* — this principal, this action, itself — so a hit is unambiguous. Anything it
+/// does not claim is content, which is the inner service's to decide. Reversing the order would let
+/// an ACL miss on a `User` resource shadow the one service that can answer it.
+#[derive(Debug)]
+pub struct SelfServiceOr<I> {
+    inner: I,
+}
+
+impl<I> SelfServiceOr<I> {
+    /// Wraps `inner`, which decides everything self-service does not claim.
+    pub const fn new(inner: I) -> Self {
+        Self { inner }
+    }
+}
+
+#[async_trait]
+impl<I: AuthorizationService> AuthorizationService for SelfServiceOr<I> {
+    async fn authorize(
+        &self,
+        ctx: &RequestContext,
+        action: Action,
+        resource: &ResourceRef,
+    ) -> Result<StageDecision> {
+        if SelfServiceAuthorization::is_permitted_self_action(ctx, action, resource) {
+            return Ok(StageDecision::allow());
+        }
+        self.inner.authorize(ctx, action, resource).await
+    }
+
+    async fn authorize_many(
+        &self,
+        ctx: &RequestContext,
+        action: Action,
+        resources: &[ResourceRef],
+    ) -> Result<Vec<StageDecision>> {
+        // The batch goes to the inner service whole rather than element by element: the ACL resolver
+        // exists to answer many resources in one walk (`ENC-145` measured its cost as ~80% fixed), so
+        // splitting it would turn one query into N.
+        let mut decided = self.inner.authorize_many(ctx, action, resources).await?;
+        for (slot, resource) in decided.iter_mut().zip(resources) {
+            if SelfServiceAuthorization::is_permitted_self_action(ctx, action, resource) {
+                *slot = StageDecision::allow();
+            }
+        }
+        Ok(decided)
     }
 }

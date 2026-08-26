@@ -10,6 +10,32 @@ use anyhow::Context as _;
 use enclave_api::{metrics_listener, router, unconfigured_stages, ApiState, Delivery, Edge};
 use enclave_core::PolicyEngine;
 
+/// The `iss` this deployment mints and the `iss` it verifies — one value, one source.
+///
+/// # Why this is a function rather than two expressions
+///
+/// It was two. `auth_surface` derived the issuer from `auth.access_token.issuer`, falling back to
+/// `server.public_url`; `ApiState::new` was handed `auth.access_token.issuer` with **no fallback**.
+/// `docs/08` tells an operator to leave the issuer unset because it is taken from `public_url`, so
+/// on the documented configuration the minter stamped `http://…/` and the verifier expected `""`.
+///
+/// Every token this deployment issued was rejected by the deployment that issued it. Login returned
+/// `200` with a valid signature, and every authenticated request answered `403` — which reads as a
+/// permissions problem, so that is where anyone looks. The whole test suite passed throughout,
+/// because no test both minted and verified through the composition in this file.
+///
+/// `ENC-533` is the precedent: the collection's dense width and the model's agreed *by convention*
+/// across two crates until one function compared them. Same fix, same reason.
+fn access_token_issuer(config: &enclave_config::Config) -> String {
+    config
+        .auth
+        .access_token
+        .issuer
+        .clone()
+        .or_else(|| config.server.public_url.as_ref().map(ToString::to_string))
+        .unwrap_or_default()
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let loaded = enclave_config::ConfigLoader::new()
@@ -161,12 +187,21 @@ async fn main() -> anyhow::Result<()> {
     //
     // `AdminAuthorization` **wraps** it rather than replacing it: an `Action::Admin` is decided from
     // the caller's administrative grants and every other action is still the inner service's to
-    // answer, which is what keeps `GET /api/v1/me` working and leaves `ENC-126` a single line to
-    // change when ACL resolution is wired. Grants come from `users.is_admin` — the tenant's global
-    // administrator — and what that can and cannot yet express is in `crates/authorization/src/admin.rs`.
+    // answer. Grants come from `users.is_admin` — the tenant's global administrator — and what that
+    // can and cannot yet express is in `crates/authorization/src/admin.rs`.
+    //
+    // The inner service is `PgAclAuthorization` (`ENC-126`, the single line that comment promised).
+    // It resolves an entry against `acl_entries` with inheritance and deny-wins, which is what makes
+    // every content route answer with data rather than `403`. Until this line, the binary wired
+    // `SelfServiceAuthorization` — a principal could read *itself* and nothing else, so a valid token
+    // reached the chain, authenticated correctly, and was refused at authorization on every route but
+    // `/me`. Authentication working and authorization unwired look identical from the outside: a
+    // `403` on a request whose token was perfectly good.
     let authorization = enclave_authorization::AdminAuthorization::new(
         Arc::new(enclave_authorization::PgAdminRoles::new(db.clone())),
-        Arc::new(enclave_authorization::SelfServiceAuthorization),
+        Arc::new(enclave_authorization::SelfServiceOr::new(
+            enclave_authorization::PgAclAuthorization::new(db.clone()),
+        )),
     );
 
     let policy = PolicyEngine::new(
@@ -195,7 +230,7 @@ async fn main() -> anyhow::Result<()> {
     let mut state = ApiState::new(
         policy,
         db.clone(),
-        config.auth.access_token.issuer.as_deref().unwrap_or_default(),
+        &access_token_issuer(config),
         config.auth.access_token.audience.as_str(),
         keys,
     )
@@ -447,16 +482,7 @@ fn build_auth_surface(
 ) -> anyhow::Result<Option<enclave_api::routes::auth::AuthSurface>> {
     let Some(provider) = provider else { return Ok(None) };
 
-    let issuer = config
-        .auth
-        .access_token
-        .issuer
-        .clone()
-        // `AuthConfig::validate` refuses an empty issuer, and this is where that refusal becomes
-        // reachable: an issuer everyone leaves unset verifies fine against tokens minted by any
-        // other deployment that also left it unset.
-        .or_else(|| config.server.public_url.as_ref().map(ToString::to_string))
-        .unwrap_or_default();
+    let issuer = access_token_issuer(config);
 
     let refresh = &config.auth.refresh_token;
     let auth_config = enclave_auth::AuthConfig {
