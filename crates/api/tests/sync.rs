@@ -55,8 +55,8 @@ use enclave_core::{
 };
 use enclave_storage::{
     BlobStore, ByteRange, ByteStream, ObjectMeta, PublicAccessCheck, PublicAccessError,
-    PublicAccessReport, Result as StorageResult, StoreCapabilities, Support, UploadRequest,
-    UploadSession,
+    PublicAccessReport, Result as StorageResult, StorageError, StoreCapabilities, Support,
+    UploadRequest, UploadSession,
 };
 use enclave_testing::TestDb;
 use sqlx::PgConnection;
@@ -71,10 +71,15 @@ const AUDIENCE: &str = "enclave-api";
 // A store that must never be reached by a delta.
 // ---------------------------------------------------------------------------------------------
 
-/// A [`BlobStore`] that panics on anything a delta could conceivably do.
+/// A [`BlobStore`] that panics on anything that would hand over original bytes.
 ///
-/// A delta hands over metadata; it must not mint a URL or read a byte. Making that a panic rather
-/// than a counter is the strongest available statement: there is no assertion to forget.
+/// A delta hands over metadata; it must not mint a URL or read a byte, and making that a panic
+/// rather than a counter is the strongest available statement — there is no assertion to forget.
+///
+/// `create_upload` is the deliberate exception and returns an **error** instead. `POST /sync/reserve`
+/// is entitled to begin one, so a panic there would abort the test rather than let it observe what
+/// the endpoint decided; an error lets every refusal *above* the store be asserted on its own status
+/// while still guaranteeing that no reservation ever completes into real storage.
 #[derive(Debug)]
 struct ForbiddenStore;
 
@@ -88,7 +93,7 @@ impl PublicAccessCheck for ForbiddenStore {
 #[async_trait]
 impl BlobStore for ForbiddenStore {
     async fn create_upload(&self, _request: UploadRequest) -> StorageResult<UploadSession> {
-        panic!("a delta must never begin an upload")
+        Err(StorageError::Unsupported { capability: "create_upload" })
     }
     async fn complete_upload(&self, _session: &UploadSession) -> StorageResult<ObjectMeta> {
         panic!("a delta must never complete an upload")
@@ -396,6 +401,20 @@ async fn get_delta(router: &Router, token: &str, query: &str) -> Answer {
         .uri(format!("/api/v1/sync/delta?{query}"))
         .header("authorization", format!("Bearer {token}"))
         .body(Body::empty())
+        .expect("build request");
+    let response = router.clone().oneshot(request).await.expect("route");
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), 1 << 20).await.expect("body");
+    Answer { status, body: String::from_utf8_lossy(&bytes).into_owned() }
+}
+
+async fn post_reserve(router: &Router, token: &str, body: serde_json::Value) -> Answer {
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/v1/sync/reserve")
+        .header("authorization", format!("Bearer {token}"))
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
         .expect("build request");
     let response = router.clone().oneshot(request).await.expect("route");
     let status = response.status();
@@ -799,4 +818,240 @@ async fn a_cursor_the_feed_cannot_reach_is_gone() {
     // The positive control: a cursor the feed *can* reach is served.
     let ok = get_delta(&router, &token, &format!("scope={scope}&cursor=0")).await;
     assert_eq!(ok.status, StatusCode::OK, "{}", ok.body);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Reserve
+// ---------------------------------------------------------------------------------------------
+
+/// Rule 6 on the **write** side: `file.edit` does not carry `file.sync`.
+///
+/// The same caller may edit this file through the web client. What they may not do is push a change
+/// from a device, and `POST /sync/reserve` is where that is decided — before a single URL is issued,
+/// which is why the store beside it panics on every method.
+///
+/// The positive control is the second file: identical grants, no `DENY`, and the reservation gets
+/// past the policy chain to the version comparison (a `409`, because the fixture declares no base
+/// version while the file has one). Reaching a `409` is the proof that the `403` above came from
+/// the sync answer and not from a chain that refuses everybody.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL; CI runs it with --include-ignored"]
+async fn a_caller_who_may_edit_but_not_sync_cannot_reserve_an_upload() {
+    let db = TestDb::start().await.expect("a test database");
+    let mut conn = db.connect().await.expect("connect");
+    let tenant = Tenant::new();
+    tenant.insert(&mut conn, true).await;
+    let pool = db.pool_with_connections(2).await.expect("pool");
+
+    let refused = Doc::new();
+    let permitted = Doc::new();
+    let mut tx = pool.begin(tenant.id).await.expect("begin");
+    refused.insert(&mut tx, tenant, "AVAILABLE", "CLEAN").await;
+    permitted.insert(&mut tx, tenant, "AVAILABLE", "CLEAN").await;
+    tx.commit().await.expect("commit");
+
+    grant_library(&mut conn, tenant, tenant.user).await;
+    ace(
+        &mut conn,
+        tenant.id,
+        "LIBRARY",
+        tenant.library.as_uuid(),
+        tenant.user,
+        Action::File(FileAction::Edit),
+        "ALLOW",
+    )
+    .await;
+    // The single difference, again.
+    ace(
+        &mut conn,
+        tenant.id,
+        "FILE",
+        refused.file.as_uuid(),
+        tenant.user,
+        Action::File(FileAction::Sync),
+        "DENY",
+    )
+    .await;
+
+    let (router, key) = app(&db).await;
+    let token = token(&key, tenant.id, tenant.user);
+
+    let denied = post_reserve(
+        &router,
+        &token,
+        serde_json::json!({
+            "fileId": refused.file.to_string(),
+            "baseVersionId": refused.version.to_string(),
+            "sizeBytes": 1024,
+        }),
+    )
+    .await;
+    assert_eq!(
+        denied.status,
+        StatusCode::FORBIDDEN,
+        "a caller holding file.edit and not file.sync was allowed to reserve an upload from a \
+         device: {}",
+        denied.body
+    );
+
+    // The positive control: the same request against the file with the grant intact gets past the
+    // chain and is refused for a *protocol* reason instead.
+    let stale = post_reserve(
+        &router,
+        &token,
+        serde_json::json!({
+            "fileId": permitted.file.to_string(),
+            "sizeBytes": 1024,
+        }),
+    )
+    .await;
+    assert_eq!(
+        stale.status,
+        StatusCode::CONFLICT,
+        "the positive control did not reach the version comparison, so the 403 above proves \
+         nothing about the sync grant: {}",
+        stale.body
+    );
+}
+
+/// A stale `baseVersionId` is `409` and names the version the server holds (`docs/10 §6`).
+///
+/// Without `currentVersionId` in the payload the client has to make a second call to discover what
+/// it is conflicting with — a round trip on the one path already carrying a user's unsaved work.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL; CI runs it with --include-ignored"]
+async fn a_stale_base_version_conflicts_and_names_what_the_server_holds() {
+    let db = TestDb::start().await.expect("a test database");
+    let mut conn = db.connect().await.expect("connect");
+    let tenant = Tenant::new();
+    tenant.insert(&mut conn, true).await;
+    let pool = db.pool_with_connections(2).await.expect("pool");
+
+    let doc = Doc::new();
+    let mut tx = pool.begin(tenant.id).await.expect("begin");
+    doc.insert(&mut tx, tenant, "AVAILABLE", "CLEAN").await;
+    tx.commit().await.expect("commit");
+
+    grant_library(&mut conn, tenant, tenant.user).await;
+    ace(
+        &mut conn,
+        tenant.id,
+        "LIBRARY",
+        tenant.library.as_uuid(),
+        tenant.user,
+        Action::File(FileAction::Edit),
+        "ALLOW",
+    )
+    .await;
+
+    let (router, key) = app(&db).await;
+    let token = token(&key, tenant.id, tenant.user);
+
+    let conflict = post_reserve(
+        &router,
+        &token,
+        serde_json::json!({
+            "fileId": doc.file.to_string(),
+            "baseVersionId": VersionId::new_v7().to_string(),
+            "sizeBytes": 1024,
+        }),
+    )
+    .await;
+    assert_eq!(conflict.status, StatusCode::CONFLICT, "{}", conflict.body);
+    assert_eq!(conflict.json()["error"]["code"], "CONFLICT", "{}", conflict.body);
+    assert!(
+        conflict.body.contains(&doc.version.to_string()),
+        "the conflict did not name the version the server holds, so the client must make a second \
+         call to find out: {}",
+        conflict.body
+    );
+}
+
+/// A file under an editor lock is read-only to sync (`docs/10 §6`), and the holder is not named.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL; CI runs it with --include-ignored"]
+async fn a_locked_file_is_read_only_to_a_sync_client() {
+    let db = TestDb::start().await.expect("a test database");
+    let mut conn = db.connect().await.expect("connect");
+    let tenant = Tenant::new();
+    tenant.insert(&mut conn, true).await;
+    let pool = db.pool_with_connections(2).await.expect("pool");
+
+    let doc = Doc::new();
+    let mut tx = pool.begin(tenant.id).await.expect("begin");
+    doc.insert(&mut tx, tenant, "AVAILABLE", "CLEAN").await;
+    tx.commit().await.expect("commit");
+
+    grant_library(&mut conn, tenant, tenant.user).await;
+    ace(
+        &mut conn,
+        tenant.id,
+        "LIBRARY",
+        tenant.library.as_uuid(),
+        tenant.user,
+        Action::File(FileAction::Edit),
+        "ALLOW",
+    )
+    .await;
+
+    let holder = UserId::new_v7();
+    sqlx::query(
+        "INSERT INTO file_locks (tenant_id, file_id, kind, holder_id, acquired_at)
+         VALUES ($1, $2, 'EDITOR', $3, $4)",
+    )
+    .bind(tenant.id.as_uuid())
+    .bind(doc.file.as_uuid())
+    .bind(holder.as_uuid())
+    .bind(fixed_time())
+    .execute(&mut conn)
+    .await
+    .expect("take the lock");
+
+    let (router, key) = app(&db).await;
+    let token = token(&key, tenant.id, tenant.user);
+
+    let locked = post_reserve(
+        &router,
+        &token,
+        serde_json::json!({
+            "fileId": doc.file.to_string(),
+            "baseVersionId": doc.version.to_string(),
+            "sizeBytes": 1024,
+        }),
+    )
+    .await;
+    assert_eq!(locked.status, StatusCode::LOCKED, "{}", locked.body);
+    assert_eq!(locked.json()["error"]["code"], "EDITOR_LOCK", "{}", locked.body);
+    assert!(
+        !locked.body.contains(&holder.as_uuid().to_string()),
+        "the refusal named the lock holder, which is a directory fact about another user this \
+         endpoint took no decision about disclosing: {}",
+        locked.body
+    );
+
+    // The positive control: release the lock and the same request reaches the reservation, where
+    // the fixture's store refuses it — proving the 423 above was the lock and not the grants.
+    sqlx::query("DELETE FROM file_locks WHERE tenant_id = $1 AND file_id = $2")
+        .bind(tenant.id.as_uuid())
+        .bind(doc.file.as_uuid())
+        .execute(&mut conn)
+        .await
+        .expect("release the lock");
+
+    let unlocked = post_reserve(
+        &router,
+        &token,
+        serde_json::json!({
+            "fileId": doc.file.to_string(),
+            "baseVersionId": VersionId::new_v7().to_string(),
+            "sizeBytes": 1024,
+        }),
+    )
+    .await;
+    assert_eq!(
+        unlocked.status,
+        StatusCode::CONFLICT,
+        "releasing the lock did not change the answer, so the 423 was not about the lock: {}",
+        unlocked.body
+    );
 }
