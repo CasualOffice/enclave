@@ -1,12 +1,11 @@
-import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
-import { GroupedFileList } from '../features/libraries/list/grouped-file-list.tsx';
-import type { DensityName } from '../features/libraries/list/geometry.ts';
-import { buildLibrary } from '../fixtures/library.ts';
-import { useListViewStore } from '../features/libraries/list-view-store.ts';
+import { lazy, Suspense } from 'react';
 import { AccessLoader } from '../shared/ui/mark.tsx';
 import { IconSprite } from '../shared/ui/icon-sprite.tsx';
+import { FailureState } from '../shared/ui/surface-states.tsx';
+import { failureOf } from '../shared/api/failure.ts';
 import { Shell } from './shell.tsx';
 import { useRoute } from './routes.ts';
+import { useSession, ViewerProvider } from './session.tsx';
 
 /* The router's body, and the seam every screen plugs into.
  *
@@ -27,96 +26,7 @@ const SearchScreen = lazy(() => import('../features/search/search-screen.tsx'));
 const AskScreen = lazy(() => import('../features/ask/ask-screen.tsx'));
 const AdminScreen = lazy(() => import('../features/admin/admin-screen.tsx'));
 const SignInScreen = lazy(() => import('../features/auth/signin-screen.tsx'));
-
-type Surface = 'ready' | 'loading' | 'error' | 'empty' | 'filtered-empty';
-
-const SURFACES = new Set<Surface>(['ready', 'loading', 'error', 'empty', 'filtered-empty']);
-
-function readParams(search: string) {
-  const params = new URLSearchParams(search);
-  const rows = Number.parseInt(params.get('rows') ?? '', 10);
-  const surfaceParam = params.get('surface') ?? 'ready';
-  const surface: Surface = SURFACES.has(surfaceParam as Surface)
-    ? (surfaceParam as Surface)
-    : 'ready';
-  const density: DensityName = params.get('density') === 'compact' ? 'compact' : 'default';
-  const collapse = (params.get('collapse') ?? '').split(',').filter((id) => id.length > 0);
-  return {
-    rows: Number.isFinite(rows) && rows > 0 ? rows : 100_000,
-    surface,
-    density,
-    collapse,
-  };
-}
-
-/**
- * The library list.
- *
- * Still fed by a fixture, because there is no list endpoint to call yet. When
- * one lands it is fetched through TanStack Query and parsed with Zod at the
- * boundary (`docs/17 §3`) and this component keeps its shape — the list itself
- * takes rows and groups, and has never known where they came from.
- */
-function LibraryScreen() {
-  const route = useRoute();
-  const [params] = useState(() => readParams(window.location.search));
-  const collapsed = useListViewStore((state) => state.collapsed);
-  const selected = useListViewStore((state) => state.selected);
-  const toggleGroup = useListViewStore((state) => state.toggleGroup);
-  const toggleSelected = useListViewStore((state) => state.toggleSelected);
-
-  /* Generating the fixture is deliberately inside the measured window: a "first
-   * paint" number that starts after the data exists measures the easy half. */
-  const library = useMemo(
-    () => (params.surface === 'empty' ? { groups: [], rows: [] } : buildLibrary(params.rows)),
-    [params.rows, params.surface],
-  );
-
-  useEffect(() => {
-    for (const id of params.collapse) toggleGroup(id);
-  }, [params.collapse, toggleGroup]);
-
-  useEffect(() => {
-    /* Two frames: the first callback runs before the commit is painted, the
-     * second after it. This is the mark the benchmark reads for `docs/09 §2`'s
-     * first-paint budget. */
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        performance.mark('enclave:rows-painted');
-      });
-    });
-  }, []);
-
-  const status =
-    params.surface === 'loading' ? 'loading' : params.surface === 'error' ? 'error' : 'ready';
-  const filtered = params.surface === 'filtered-empty';
-
-  return (
-    <GroupedFileList
-      key={route.path}
-      groups={filtered ? [] : library.groups}
-      rows={filtered ? [] : library.rows}
-      collapsed={collapsed}
-      onToggleGroup={toggleGroup}
-      selected={selected}
-      onToggleSelect={toggleSelected}
-      density={params.density}
-      status={status}
-      error={
-        params.surface === 'error'
-          ? { retryable: true, requestId: '01K3Q7X0PMDR4W8B2ZC6E5A9TN' }
-          : undefined
-      }
-      filtersActive={filtered}
-      unfilteredCount={filtered ? params.rows : 0}
-      onRetry={() => window.location.reload()}
-      onClearFilters={() => {
-        window.location.search = '';
-      }}
-      onUpload={() => undefined}
-    />
-  );
-}
+const LibraryScreen = lazy(() => import('../features/libraries/library-screen.tsx'));
 
 function Screen() {
   const route = useRoute();
@@ -137,13 +47,52 @@ function Screen() {
   }
 }
 
+/**
+ * The application, gated on a real session.
+ *
+ * The gate is `GET /api/v1/me` and nothing else (`app/session.tsx`). Three of
+ * the four branches below exist because a reload legitimately starts with no
+ * access token — it is held in memory and never written to disk — so the
+ * refresh cookie has to be exchanged before anyone can be called anonymous.
+ * Rendering sign-in during that window would flash "you are logged out" at
+ * every signed-in user on every reload.
+ *
+ * Sign-in is not inside the shell: there is no workspace to navigate yet, and
+ * rendering a sidebar full of surfaces an unauthenticated visitor cannot reach
+ * is the "screen is a promise" failure this milestone is built around.
+ */
 export function App() {
   const route = useRoute();
+  const session = useSession();
 
-  /* Sign-in is not inside the shell: there is no workspace to navigate yet, and
-   * rendering a sidebar full of surfaces an unauthenticated visitor cannot
-   * reach is the "screen is a promise" failure this milestone is built around. */
-  if (route.name === 'signin') {
+  if (session.kind === 'restoring' || session.kind === 'loading') {
+    return (
+      <>
+        <IconSprite />
+        <AccessLoader />
+      </>
+    );
+  }
+
+  /* The API answered, and the answer was not about permission — it is down, or
+   * its response did not parse. Sending the user to type a password would be
+   * the wrong story: their credentials were never the problem. */
+  if (session.kind === 'failed') {
+    return (
+      <>
+        <IconSprite />
+        {/* Centred on the canvas rather than inside the shell: the shell's
+          * sidebar is a set of promises about surfaces we cannot currently
+          * reach, and drawing it around a failure invites clicks that will all
+          * fail the same way. */}
+        <div className="boot-failure">
+          <FailureState failure={failureOf(session.error)} />
+        </div>
+      </>
+    );
+  }
+
+  if (session.kind === 'anonymous') {
     return (
       <>
         <IconSprite />
@@ -154,14 +103,29 @@ export function App() {
     );
   }
 
+  /* Signed in. `/signin` is no longer a place to be, so asking for it lands on
+   * home rather than showing a form to someone who has already filled it in. */
+  if (route.name === 'signin') {
+    return (
+      <ViewerProvider viewer={session.viewer}>
+        <IconSprite />
+        <Shell>
+          <Suspense fallback={<AccessLoader />}>
+            <HomeScreen />
+          </Suspense>
+        </Shell>
+      </ViewerProvider>
+    );
+  }
+
   return (
-    <>
+    <ViewerProvider viewer={session.viewer}>
       <IconSprite />
       <Shell>
         <Suspense fallback={<AccessLoader />}>
           <Screen />
         </Suspense>
       </Shell>
-    </>
+    </ViewerProvider>
   );
 }

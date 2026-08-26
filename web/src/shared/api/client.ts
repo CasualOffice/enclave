@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { authorization, clearAccessToken, ensureFreshToken, refresh } from './session.ts';
 
 /* One API client. Every request goes through it (`docs/17 §9`).
  *
@@ -109,6 +110,40 @@ export interface RequestOptions {
   readonly method?: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE';
   readonly body?: unknown;
   readonly signal?: AbortSignal;
+  /**
+   * Skip the bearer token and the refresh-and-replay path.
+   *
+   * Exactly one caller wants this — `POST /auth/login`, which by definition has
+   * no session yet. Without it, a failed sign-in would answer `401`, trigger a
+   * refresh against a cookie that is not there, and report the outcome of the
+   * refresh rather than of the sign-in.
+   */
+  readonly anonymous?: boolean;
+}
+
+/**
+ * A session the server no longer honours.
+ *
+ * Distinct from `denied`: a denial is an answer about *what you may do*, and a
+ * `401` after a refresh has already failed is the absence of anyone to ask
+ * about. The shell listens for this and returns to sign-in; a feature never has
+ * to handle it, which is why it is a separate code rather than a `failed` with
+ * a status the caller has to interpret.
+ */
+export const SESSION_ENDED = 'session_ended';
+
+type SessionListener = () => void;
+const sessionListeners = new Set<SessionListener>();
+
+/** Notified when a request proved the session is over. */
+export function onSessionEnded(listener: SessionListener): () => void {
+  sessionListeners.add(listener);
+  return () => sessionListeners.delete(listener);
+}
+
+function endSession(): void {
+  clearAccessToken();
+  for (const listener of sessionListeners) listener();
 }
 
 /**
@@ -151,13 +186,21 @@ function classify(status: number, body: ApiErrorBody | null, requestId: string):
   };
 }
 
-export async function request<T>(
+/**
+ * Send once. No retry, no refresh — `request` below owns both.
+ *
+ * `idempotency-key` is generated here, which means a replayed request carries a
+ * *different* key from the attempt that 401'd. That is the correct direction:
+ * the first attempt was rejected before any handler ran, so there is no
+ * server-side effect for the key to deduplicate against, and reusing it would
+ * let a genuinely retried mutation be answered from a cache of the refusal.
+ */
+async function send(
   path: string,
-  schema: z.ZodType<T>,
-  options: RequestOptions = {},
-): Promise<T> {
-  const method = options.method ?? 'GET';
-  const headers: Record<string, string> = { accept: 'application/json' };
+  options: RequestOptions,
+  auth: Record<string, string>,
+): Promise<Response> {
+  const headers: Record<string, string> = { accept: 'application/json', ...auth };
 
   if (options.body !== undefined) {
     headers['content-type'] = 'application/json';
@@ -166,19 +209,70 @@ export async function request<T>(
     headers['idempotency-key'] = crypto.randomUUID();
   }
 
+  return fetch(`${BASE}${path}`, {
+    method: options.method ?? 'GET',
+    headers,
+    /* The refresh and CSRF cookies ride along on same-origin requests. The
+     * refresh cookie is `HttpOnly` and scoped to `/api/v1/auth`, so it is not
+     * even attached to the calls below — only `/auth/refresh` ever sees it.
+     * There is no tenant field here to forge: the tenant comes from the token,
+     * or from the host the gateway routed (`CLAUDE.md` rule 3). */
+    credentials: 'same-origin',
+    ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
+  });
+}
+
+export async function request<T>(
+  path: string,
+  schema: z.ZodType<T>,
+  options: RequestOptions = {},
+): Promise<T> {
+  const anonymous = options.anonymous === true;
+
+  /* Refresh *before* sending when the held token is at or past expiry, so the
+   * common expiry case costs one request rather than two. */
+  if (!anonymous) await ensureFreshToken();
+
   let response: Response;
   try {
-    response = await fetch(`${BASE}${path}`, {
-      method,
-      headers,
-      // The session cookie is HttpOnly and the client never reads it. There is
-      // no token in JavaScript to steal, and no tenant field to forge.
-      credentials: 'same-origin',
-      ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
-      ...(options.signal === undefined ? {} : { signal: options.signal }),
-    });
+    response = await send(path, options, anonymous ? {} : authorization());
   } catch {
     throw new ApiError({ kind: 'failed', code: 'network', retryable: true, requestId: '' });
+  }
+
+  /* The reactive half. A `401` here means the server rejected the token we
+   * believed was good — a rotated signing key, a revoked session, a bumped
+   * token epoch, or simply a reload that started with no token at all. One
+   * refresh, one replay, and then we believe it.
+   *
+   * A step-up challenge is explicitly *not* this: `403 STEP_UP_REQUIRED` and
+   * `401 MFA_REQUIRED` are prompts, not expiries (`docs/17 §7`), and refreshing
+   * against them would burn the refresh token and still not satisfy the
+   * challenge. They fall through to `classify` and reach the caller intact. */
+  if (response.status === 401 && !anonymous) {
+    const body = unwrapError(await response.clone().json().catch(() => null));
+    const code = body?.code ?? '';
+    if (!STEP_UP_CODES.test(code)) {
+      if (await refresh()) {
+        try {
+          response = await send(path, options, authorization());
+        } catch {
+          throw new ApiError({ kind: 'failed', code: 'network', retryable: true, requestId: '' });
+        }
+      }
+      /* Still rejected after a successful refresh, or the refresh itself
+       * failed: there is no session left to salvage. */
+      if (response.status === 401) {
+        endSession();
+        throw new ApiError({
+          kind: 'failed',
+          code: SESSION_ENDED,
+          retryable: false,
+          requestId: response.headers.get(REQUEST_ID_HEADER) ?? '',
+        });
+      }
+    }
   }
 
   const requestId = response.headers.get(REQUEST_ID_HEADER) ?? '';
@@ -186,6 +280,16 @@ export async function request<T>(
   if (!response.ok) {
     const body = unwrapError(await response.json().catch(() => null));
     throw new ApiError(classify(response.status, body, requestId));
+  }
+
+  /* `204 No Content` is a success with nothing to parse, and several mutations
+   * answer with it — approve, reject, delegate, logout, revoke. Handing an
+   * empty body to a schema would fail the parse and report a working mutation
+   * as a shape error. */
+  if (response.status === 204) {
+    const parsed = schema.safeParse(undefined);
+    if (parsed.success) return parsed.data;
+    throw new ApiError({ kind: 'failed', code: 'response_shape', retryable: false, requestId });
   }
 
   const payload: unknown = await response.json().catch(() => null);

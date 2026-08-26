@@ -109,9 +109,18 @@ const FileRowView = memo(function FileRowView({
         </bdi>
       </span>
       <span className="egl-meta" role="gridcell">
-        <span className="egl-avatar" data-tone={row.modifiedByTone} aria-hidden="true">
-          {row.modifiedByInitials}
-        </span>
+        {/* No avatar when the server sent no modifier.
+         *
+         * `GET /libraries/{id}/items` carries `modifiedAt` but not the name of
+         * whoever made the change, and a UUID's first two characters are not
+         * initials. An empty circle would read as a person with no name; two
+         * letters of an id would read as a person who does not exist. Drawing
+         * nothing is the only one of the three that is true. */}
+        {row.modifiedByInitials.length > 0 && (
+          <span className="egl-avatar" data-tone={row.modifiedByTone} aria-hidden="true">
+            {row.modifiedByInitials}
+          </span>
+        )}
         {/* Relative time from `Intl.RelativeTimeFormat`, with the absolute value
          * in the title. The reference hand-builds "2 h ago" and "Yesterday";
          * D35.6 records that as a defect, not a pattern. */}

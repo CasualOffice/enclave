@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { ApiError, request } from '../../shared/api/client.ts';
+import { setAccessToken } from '../../shared/api/session.ts';
 
 /* The one request this screen makes: `POST /api/v1/auth/login` (`docs/05 §3.1`).
  *
@@ -40,11 +41,26 @@ const LoginBody = z.object({
   }),
 });
 
-/** What the screen is allowed to know about a successful sign-in. No token. */
-export const Session = LoginBody.transform((body) => ({
-  sessionId: body.sessionId,
-  user: body.user,
-}));
+/**
+ * What the screen is allowed to know about a successful sign-in. No token.
+ *
+ * The transform is also where the token is *kept*, and that placement is the
+ * point. `crates/api/src/auth.rs` reads `Authorization: Bearer …` and nothing
+ * else, so a sign-in that only validated the token and dropped it left every
+ * subsequent request unauthenticated — which is precisely why every screen in
+ * this application was reading a fixture. It now hands the token to
+ * `shared/api/session`, which holds it in a module-private binding and exposes
+ * no reader (only a header builder).
+ *
+ * So the token is used and still never rendered: it goes from the parsed body
+ * straight into a closure the UI cannot reach, and `Session` — the only value
+ * that leaves this module — has no field for it. `CLAUDE.md` rule 10 is
+ * satisfied by the shape rather than by everyone remembering.
+ */
+export const Session = LoginBody.transform((body) => {
+  setAccessToken(body.accessToken, body.expiresIn);
+  return { sessionId: body.sessionId, user: body.user };
+});
 
 export type Session = z.infer<typeof Session>;
 
@@ -136,6 +152,11 @@ export async function signIn(credentials: Credentials, signal?: AbortSignal): Pr
   return request('/auth/login', Session, {
     method: 'POST',
     body: { email: credentials.email, password: credentials.password },
+    /* There is no session yet, so there is nothing to refresh and nothing to
+     * replay. Without this, a wrong password would answer `401`, the client
+     * would try to refresh against a cookie that does not exist, and the screen
+     * would report the refresh's outcome instead of the sign-in's. */
+    anonymous: true,
     ...(signal === undefined ? {} : { signal }),
   });
 }

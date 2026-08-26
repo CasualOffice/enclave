@@ -1,0 +1,91 @@
+/* The shared state panels.
+ *
+ * Geometry is the prototype's card: `padding-block: 20px`, `border-radius:
+ * var(--r-surf)` (10px) and `box-shadow: var(--hairline)` — the same box the
+ * attention cards and the recents container use, so a state panel sits in a
+ * section without changing that section's measure.
+ *
+ * Logical properties throughout. The prototype's markup writes `padding: 0 8px
+ * 0 7px` and `margin-left: auto`; the *values* are the reference and the
+ * property names are not (`docs/17 §8`), because `en-XB` mirrors direction in
+ * CI and a physical property fails it.
+ */
+
+.surface-state {
+  box-sizing: border-box;
+  padding-block: 20px;
+  padding-inline: 16px;
+  border-radius: var(--r-surf);
+  background: var(--sheet);
+  box-shadow: var(--hairline);
+  text-align: start;
+}
+
+.surface-state-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--fg);
+}
+
+/* The error tone colours **the title only**, and only ever with `--danger`.
+ * Never a `--c-*` token: those are the locked classification palette, and a
+ * failure that borrowed "Confidential" red would teach the one colour code in
+ * this product that must stay unambiguous. */
+.surface-state[data-tone='error'] .surface-state-title {
+  color: var(--danger);
+}
+
+/* Unbuilt is neutral and sunken, and shares no colour, no class and no border
+ * with the denial treatment (`docs/17 §6`, test F2). */
+.surface-state[data-tone='unbuilt'] {
+  background: var(--sunken);
+  box-shadow: none;
+}
+
+.surface-state[data-tone='unbuilt'] .surface-state-title,
+.surface-state[data-tone='unbuilt'] .surface-state-body {
+  color: var(--fg3);
+}
+
+.surface-state-body {
+  margin: 0;
+  margin-block-start: 4px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--fg3);
+  max-inline-size: 62ch;
+}
+
+.surface-state-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-block-start: 12px;
+}
+
+.surface-state-rid,
+.surface-state-code {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--fg4);
+}
+
+.surface-state-code {
+  margin-block-start: 10px;
+}
+
+.surface-state-rid code,
+.surface-state-code code {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--fg3);
+}
+
+.surface-state-rid-label {
+  color: var(--fg4);
+}

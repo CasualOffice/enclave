@@ -196,3 +196,21 @@
   color: var(--fg);
   box-shadow: var(--el1);
 }
+
+/* The boot failure, centred on the canvas.
+ *
+ * Not inside the shell: the sidebar is a set of promises about surfaces that
+ * cannot be reached while `/me` is failing, and drawing it around the failure
+ * invites clicks that will all fail the same way.
+ */
+.boot-failure {
+  display: grid;
+  place-items: center;
+  block-size: 100%;
+  padding: 24px;
+  background: var(--canvas);
+}
+
+.boot-failure > * {
+  max-inline-size: 460px;
+}

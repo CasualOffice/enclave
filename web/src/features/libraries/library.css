@@ -1,0 +1,398 @@
+/* The library screen's frame: location bar, view bar, body grid, peek panel.
+ *
+ * Every number here is the prototype's, read from
+ * `web/design-system/enclave-client-prototype.html` and the geometry extracted
+ * into `web/design-system/specs/library.md`. Every *property name* is logical,
+ * because the prototype's are not: it writes `margin-left:auto`,
+ * `padding:10px 14px 0 16px` and `box-shadow:-1px 0 0 var(--line)` throughout,
+ * and `en-XB` mirrors direction in CI. Copy the values, never the names
+ * (`docs/17 §8`).
+ *
+ * The rule this file exists to honour: **surfaces are separated by shadow, not
+ * by rule.** No `border` on any surface, no vertical divider between panes. A
+ * border would also eat a pixel from the peek panel's content box, which is why
+ * the prototype used an outside shadow and why the pseudo-element below
+ * reproduces it rather than reaching for `border-inline-start`.
+ */
+
+.library {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-block-size: 0;
+}
+
+/* ---------------------------------------------------------- the location bar */
+
+/* `min-block-size: 38px`, and the padding is the prototype's `10px 14px 0 16px`
+ * read as block-then-inline. */
+.library-location {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-block: 10px 0;
+  padding-inline: 16px 14px;
+  min-block-size: 38px;
+  color: var(--fg3);
+  font-size: 12.5px;
+  flex: none;
+}
+
+.library-crumbs {
+  display: flex;
+  align-items: center;
+  min-inline-size: 0;
+}
+
+.library-crumbs ol {
+  display: flex;
+  align-items: center;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  min-inline-size: 0;
+}
+
+.library-crumbs li {
+  display: flex;
+  align-items: center;
+  min-inline-size: 0;
+}
+
+/* The separator is generated, not a character in the markup — a `/` typed
+ * between two elements is content a screen reader announces and a translator
+ * cannot remove. */
+.library-crumbs li:not(:last-child)::after {
+  content: '/';
+  color: var(--fg4);
+  margin-inline: 2px;
+}
+
+.library-crumb {
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--fg3);
+  cursor: pointer;
+  padding: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.library-crumb:hover {
+  color: var(--fg);
+}
+
+.library-crumb[aria-current='page'] {
+  color: var(--fg);
+  font-weight: 500;
+  cursor: default;
+}
+
+.library-location-trailing {
+  margin-inline-start: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+
+/* 26 × 26, radius `--r-ctrl`, icon 14. The prototype's `width`/`height` become
+ * `inline-size`/`block-size`: the same rendered box, correct under any writing
+ * mode. */
+.library-iconbtn {
+  inline-size: 26px;
+  block-size: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--r-ctrl);
+  border: 0;
+  background: transparent;
+  color: var(--fg3);
+  cursor: pointer;
+  padding: 0;
+  flex: none;
+}
+
+.library-iconbtn:hover {
+  background: var(--hover);
+  color: var(--fg);
+}
+
+.library-iconbtn[aria-pressed='true'] {
+  background: var(--sunken);
+  color: var(--fg);
+}
+
+/* -------------------------------------------------------------- the view bar */
+
+/* 42px tall in the prototype: `padding-block: 8px` around a 26px control. */
+.library-viewbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-block: 8px;
+  padding-inline: 14px 12px;
+  min-block-size: 42px;
+  flex: none;
+}
+
+.library-views {
+  display: inline-flex;
+  gap: 2px;
+}
+
+.library-view {
+  padding-block: 4px;
+  padding-inline: 9px;
+  border-radius: 999px;
+  border: 0;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  color: var(--fg3);
+  cursor: pointer;
+}
+
+.library-view:hover,
+.library-view[aria-selected='true'] {
+  background: var(--sunken);
+  color: var(--fg);
+}
+
+.library-view-count {
+  font-size: 10.5px;
+  color: var(--fg4);
+  font-family: var(--mono);
+}
+
+.library-viewbar-trailing {
+  margin-inline-start: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* --------------------------------------------------------------- the body */
+
+/* The peek panel's width, and the three numbers that define it.
+ *
+ * `minmax(320px, var(--peek-w, 372px))`: 372 is the resting width the prototype
+ * draws, 320 the floor below which the facts column stops being readable, and
+ * 520 the ceiling enforced where the width is stored. The `minmax` is what lets
+ * the list keep `minmax(0, 1fr)` and shrink first — a fixed second column would
+ * push the list into a horizontal scroll on a narrow window instead. */
+.library-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  flex: 1;
+  min-block-size: 0;
+}
+
+.library-body[data-peek='open'] {
+  grid-template-columns: minmax(0, 1fr) minmax(320px, var(--peek-w, 372px));
+}
+
+.library-list {
+  display: flex;
+  flex-direction: column;
+  min-inline-size: 0;
+  min-block-size: 0;
+  overflow: hidden;
+}
+
+/* --------------------------------------------------------- the peek panel */
+
+.library-peek {
+  display: flex;
+  flex-direction: column;
+  min-inline-size: 0;
+  overflow: hidden;
+  background: var(--sheet);
+  position: relative;
+  animation: encPeek 0.18s ease-out both;
+}
+
+/* The panel's leading edge.
+ *
+ * The prototype draws `box-shadow: -1px 0 0 var(--line)` — a rule *outside* the
+ * box, costing the content nothing. `border-inline-start` would take a pixel
+ * out of the 372 and is also a border on a surface, which this design does not
+ * have. A 1px pseudo-element reproduces the original exactly and mirrors for
+ * free. */
+.library-peek::before {
+  content: '';
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 0;
+  inline-size: 1px;
+  background: var(--line);
+}
+
+@keyframes encPeek {
+  from {
+    opacity: 0;
+    /* `--icon-flip` is -1 under RTL, so the panel slides in from whichever edge
+     * it is actually on rather than always from physical right. */
+    transform: translateX(calc(14px * var(--icon-flip, 1)));
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.library-peek-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-block: 10px 0;
+  padding-inline: 16px 10px;
+  min-block-size: 38px;
+  flex: none;
+}
+
+.library-peek-head-actions {
+  margin-inline-start: auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.library-peek-title {
+  padding-block: 8px 0;
+  padding-inline: 16px;
+  flex: none;
+}
+
+.library-peek-title h3 {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.35;
+  font-weight: 500;
+  letter-spacing: -0.012em;
+  overflow-wrap: anywhere;
+}
+
+.library-peek-meta {
+  color: var(--fg3);
+  font-size: 12px;
+  margin-block-start: 2px;
+}
+
+.library-peek-chips {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding-block: 10px 0;
+  padding-inline: 16px;
+  flex: none;
+}
+
+.library-peek-body {
+  flex: 1;
+  min-block-size: 0;
+  overflow-y: auto;
+  padding-block: 12px 16px;
+  padding-inline: 16px;
+}
+
+/* The facts table. A definition list, because that is what it is — the
+ * prototype's two `<div>`s carry no relationship a screen reader can use. */
+.library-peek-facts {
+  margin: 0;
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  gap: 8px 12px;
+  font-size: 12px;
+}
+
+.library-peek-facts dt {
+  color: var(--fg4);
+}
+
+.library-peek-facts dd {
+  margin: 0;
+  color: var(--fg2);
+  overflow-wrap: anywhere;
+}
+
+/* The capability list: what this user may do with this file, as the server
+ * said. Never computed here. */
+.library-peek-caps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.library-peek-cap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  block-size: 22px;
+  padding-inline: 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  box-shadow: var(--hairline);
+  color: var(--fg2);
+  background: transparent;
+}
+
+/* Allowed and refused differ by more than colour: the marker glyph carries the
+ * same information, because colour is never the only carrier (`docs/09 §15`). */
+.library-peek-cap[data-allowed='false'] {
+  color: var(--fg4);
+  background: var(--sunken);
+  box-shadow: none;
+}
+
+.library-peek-cap-mark {
+  inline-size: 6px;
+  block-size: 6px;
+  border-radius: 50%;
+  background: var(--ok);
+  flex: none;
+}
+
+.library-peek-cap[data-allowed='false'] .library-peek-cap-mark {
+  background: var(--g300);
+}
+
+.library-peek-section {
+  margin-block-start: 18px;
+}
+
+.library-peek-section h4 {
+  margin: 0;
+  margin-block-end: 8px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--fg3);
+  letter-spacing: 0.06em;
+}
+
+.library-peek-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  padding: 24px;
+  color: var(--fg3);
+  font-size: 12.5px;
+  text-align: center;
+}
+
+/* The reduced-motion rule is global in `styles/base.css`; the panel keeps
+ * `fill: both` so nothing is left invisible when the animation is shortened. */
