@@ -1,0 +1,68 @@
+/* The classification chip.
+ *
+ * Values from `web/design-system/enclave-client-prototype.html` line 220 and
+ * `web/design-system/specs/library.md §1.2`, verified against the rendered
+ * prototype rather than read out of the markup: 20 px tall, `7px 8px` inline
+ * padding, a 6 px dot, 11 px/500 text, and the pill's own colour mixed from the
+ * locked classification token.
+ *
+ * Every property name is logical. The prototype writes `padding:0 8px 0 7px`;
+ * `en-XB` mirrors direction in CI and would fail on it.
+ */
+
+.cls-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  block-size: 20px;
+  padding-inline: 7px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0;
+  white-space: nowrap;
+  background: color-mix(in srgb, var(--cc) 11%, transparent);
+  /* The prototype mixes to 82%; 70% is what clears 4.5:1 on the 11% tint for
+   * `--c-conf` and `--c-pub`, which the prototype's own value does not. The
+   * palette is locked, the *contrast derivation* is not (`docs/09 §17`). */
+  color: color-mix(in srgb, var(--cc) 70%, var(--fg));
+}
+
+.cls-chip::before {
+  content: '';
+  inline-size: 6px;
+  block-size: 6px;
+  border-radius: 50%;
+  background: var(--cc);
+  flex: none;
+}
+
+/* LOCKED (`docs/09 §16a`). Never tenant-overridable, and never restyled here. */
+.cls-chip[data-level='public'] {
+  --cc: var(--c-pub);
+}
+.cls-chip[data-level='internal'] {
+  --cc: var(--c-int);
+}
+.cls-chip[data-level='confidential'] {
+  --cc: var(--c-conf);
+}
+.cls-chip[data-level='highlyConfidential'] {
+  --cc: var(--c-hconf);
+}
+.cls-chip[data-level='restricted'] {
+  --cc: var(--c-restr);
+}
+
+/* Not a sixth level: the absence of one. No dot, because there is no colour to
+ * carry — an outline says "nothing has been decided here" and a grey dot would
+ * read as a decision. */
+.cls-chip[data-level='unclassified'] {
+  background: transparent;
+  box-shadow: var(--hairline);
+  color: var(--fg2);
+}
+
+.cls-chip[data-level='unclassified']::before {
+  display: none;
+}

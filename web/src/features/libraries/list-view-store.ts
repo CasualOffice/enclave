@@ -19,13 +19,28 @@ export interface ListViewState {
   readonly collapsed: ReadonlySet<string>;
   readonly selected: ReadonlySet<string>;
   readonly density: DensityName;
+  /**
+   * The peek panel's width, clamped 320–520.
+   *
+   * Local by every test `docs/17 §4` applies: nothing fetches it, nothing
+   * invalidates it, and it is a property of this browser rather than of the
+   * folder — so it is emphatically *not* URL state, unlike which row is peeked.
+   * A width in the query string would travel with a shared link and impose one
+   * person's window on another's.
+   */
+  readonly peekWidth: number;
   toggleGroup: (id: string) => void;
   toggleSelected: (id: string) => void;
+  clearSelection: () => void;
   setDensity: (density: DensityName) => void;
+  setPeekWidth: (width: number) => void;
   reset: () => void;
 }
 
 const EMPTY: ReadonlySet<string> = new Set<string>();
+
+/** The prototype opens at 372 (`web/design-system/specs/library.md §4`). */
+const PEEK_WIDTH_DEFAULT = 372;
 
 /** A new Set every time, because the layout memo compares by identity. */
 function toggled(source: ReadonlySet<string>, id: string): ReadonlySet<string> {
@@ -38,8 +53,17 @@ export const useListViewStore = create<ListViewState>((set) => ({
   collapsed: EMPTY,
   selected: EMPTY,
   density: 'default',
+  peekWidth: PEEK_WIDTH_DEFAULT,
   toggleGroup: (id) => set((state) => ({ collapsed: toggled(state.collapsed, id) })),
   toggleSelected: (id) => set((state) => ({ selected: toggled(state.selected, id) })),
+  clearSelection: () => set({ selected: EMPTY }),
   setDensity: (density) => set({ density }),
-  reset: () => set({ collapsed: EMPTY, selected: EMPTY, density: 'default' }),
+  setPeekWidth: (peekWidth) => set({ peekWidth }),
+  reset: () =>
+    set({
+      collapsed: EMPTY,
+      selected: EMPTY,
+      density: 'default',
+      peekWidth: PEEK_WIDTH_DEFAULT,
+    }),
 }));

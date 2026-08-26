@@ -1,59 +1,27 @@
-import { Children, Fragment, type ReactNode } from 'react';
+import { Fragment, type ReactNode } from 'react';
 import { useIntl } from 'react-intl';
-import type { MessageKey } from '../../shared/i18n/catalog.ts';
 
-/* Two formatters this screen needs and `shared/i18n` does not have yet.
+/* The list joiner this screen needs.
  *
- * **Why they are here and not there.** `useT()` is typed to return a `string`,
- * deliberately — it has to serve `aria-label` and `title` as well as text, and a
- * component that reaches for two mechanisms reaches for a literal on the third
- * occasion. That is the right default. But the policy-as-a-sentence builder is
- * the one surface where the *interactive* parts sit inside the prose: "Detected
- * data includes any of [Payment card] or [Aadhaar]", where the bracketed parts
- * are controls. A string cannot carry a control.
+ * `useRichT` used to live here too, with a header saying it belonged in
+ * `shared/i18n` and that a second surface wanting it was the signal to move it
+ * (`docs/17 §2`). `ENC-757`'s filter-chip summary was that second surface, so it
+ * now lives in `shared/i18n/rich-text.tsx` and this file re-exports it for the
+ * callers already reaching here.
  *
- * The wrong answer is to cut the sentence into fragments and concatenate them
- * around the chips. `docs/14 §4` names that as a defect — `"Deleted " + n + "
- * files"` — and the reason bites hardest exactly here: word order moves. German
- * puts the verb last, Japanese puts the particle after the noun, and a builder
- * assembled left-to-right in English is untranslatable rather than merely ugly.
+ * `useListFormat` stays, because it is not general: it emits `.adm-lit` around
+ * the separators, which is this screen's styling, and a shared module that knows
+ * an admin class name is not shared.
  *
- * So: **one ICU message per sentence shape, with the controls passed as
- * placeholder values.** The translator moves `{categories}` to wherever their
- * language wants it and the chips follow. Nothing is concatenated.
- *
- * `useListFormat` is the same argument one level down. A list of chips still
+ * The argument for it is `useRichT`'s one level down. A list of chips still
  * needs "and" or "or" between its items, and hard-coding either — or hard-coding
  * a comma — is concatenation wearing a hat: `ja-JP` joins with `、`, `ar` with
  * `و`, and English disjunction has the serial comma that conjunction does not.
  * `Intl.ListFormat.formatToParts` returns the separators as data, so the
  * separators come from the locale and the elements come from us.
- *
- * Both belong in `shared/i18n` — a second surface wanting them is the signal
- * (`docs/17 §2`) — and are reported rather than moved, because `shared/` is not
- * this session's to change.
  */
 
-/**
- * A catalog message whose placeholders are React nodes.
- *
- * `Children.toArray` keys the parts: `formatMessage` returns a bare array when
- * any value is an element, and an unkeyed array is a console warning on every
- * render.
- */
-export function useRichT(): (key: MessageKey, values: Record<string, ReactNode>) => ReactNode {
-  const intl = useIntl();
-  return (key, values) => {
-    const parts = Children.toArray(intl.formatMessage({ id: key }, values) as ReactNode);
-    /* Keyed explicitly rather than left to `Children.toArray` alone. The array
-     * `formatMessage` hands back is not one React created from JSX, so React
-     * reconciles it as a dynamic list and asks for a key on every member —
-     * once per parent element, which is a warning on every clause of every
-     * band. The index is a safe key here: the parts of a formatted message are
-     * positional by construction and never reorder within one locale. */
-    return parts.map((part, index) => <Fragment key={index}>{part}</Fragment>);
-  };
-}
+export { useRichT } from '../../shared/i18n/rich-text.tsx';
 
 export type ListType = 'conjunction' | 'disjunction';
 

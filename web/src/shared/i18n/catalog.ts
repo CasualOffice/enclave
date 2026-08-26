@@ -1527,6 +1527,301 @@ export const catalog = {
     message: 'No gateway is answering, so these are sample policies rather than this tenant’s.',
     description: 'Sentence beside the review-fixture marker, saying why the data is not real.',
   },
+  /* ------------------------------------------------------------------------
+   * The library surface (`ENC-757`–`ENC-760`).
+   *
+   * Names of things — a folder, a vendor, a person, a facet's chosen values —
+   * are data and are not here. Everything a user reads that the *product* wrote
+   * is.
+   * ---------------------------------------------------------------------- */
+
+  'key.escape': {
+    message: 'Esc',
+    description:
+      'Key cap shown in the peek panel, beside “to close”. Translate to the label printed on that key locally — French keyboards read “Échap”.',
+  },
+  'key.s': {
+    message: 'S',
+    description:
+      'Shortcut cap on the selection bar’s Share action. A letter, but still translated: a layout may not have it in the same place and a locale may bind a different letter.',
+  },
+  'key.d': {
+    message: 'D',
+    description: 'Shortcut cap on the selection bar’s Download action. Same reasoning as key.s.',
+  },
+  'key.m': {
+    message: 'M',
+    description: 'Shortcut cap on the selection bar’s Move action. Same reasoning as key.s.',
+  },
+  'key.l': {
+    message: 'L',
+    description: 'Shortcut cap on the selection bar’s Label action. Same reasoning as key.s.',
+  },
+
+  'library.breadcrumb.label': {
+    message: 'Location',
+    description:
+      'Accessible name of the breadcrumb navigation in the library location bar. Names the landmark, not the folder — the folder is already announced by the current crumb.',
+  },
+  'library.presence.more': {
+    message: '+{count}',
+    description:
+      'Overflow marker after the presence avatars when more people are in the folder than the stack shows. "count" is how many are hidden.',
+  },
+  'library.action.share': {
+    message: 'Share',
+    description:
+      'Location-bar action that shares the current folder. Sharing a folder is a different permission from sharing a file and from sharing externally — never merge the labels.',
+  },
+  'library.action.toggleDetails': {
+    message: 'Toggle details panel',
+    description:
+      'Accessible name of the icon button that opens and closes the peek panel. It carries aria-pressed, so the label stays constant rather than flipping to “Close”.',
+  },
+  'library.action.folderMenu': {
+    message: 'Folder actions',
+    description: 'Accessible name of the location bar’s overflow menu button.',
+  },
+  'library.action.filter': {
+    message: 'Filter',
+    description: 'View-bar control that opens the filter popover.',
+  },
+  'library.action.display': {
+    message: 'Display',
+    description:
+      'View-bar control that opens the display popover — grouping, sort, density and visible columns.',
+  },
+  'library.action.upload': {
+    message: 'Upload',
+    description:
+      'View-bar control that adds files to this folder. Rendered from the folder’s upload capability; when that is false the control is shown in the denied treatment rather than hidden.',
+  },
+  'library.action.new': {
+    message: 'New',
+    description:
+      'Primary view-bar control that creates a folder, list or page. It sits beside the content it creates because there is no top bar (docs/09 §3).',
+  },
+  'library.views.label': {
+    message: 'Saved views',
+    description: 'Accessible name of the saved-view tab strip in the view bar.',
+  },
+  'library.view.all': {
+    message: 'All',
+    description:
+      'Saved view showing every item in the folder. A placeholder until GET /libraries/{id}/views sends its own labels — the views are data, not constants.',
+  },
+  'library.view.expiring': {
+    message: 'Expiring',
+    description:
+      'Saved view: agreements approaching their end date. Placeholder, as library.view.all.',
+  },
+  'library.view.needsApproval': {
+    message: 'Needs approval',
+    description:
+      'Saved view: items waiting on a decision from this user. Placeholder, as library.view.all.',
+  },
+  'library.view.restricted': {
+    message: 'Restricted',
+    description:
+      'Saved view: items labelled Restricted. Placeholder, as library.view.all. Distinct from classification.restricted, which names the label itself.',
+  },
+  'library.facet.type': {
+    message: 'Type',
+    description:
+      'Filter-chip key for the file-type facet. The chosen values beside it are the server’s rendering and are not translated here.',
+  },
+  'library.facet.modified': {
+    message: 'Modified',
+    description: 'Filter-chip key for the last-modified facet.',
+  },
+  'library.filters.remove': {
+    message: 'Remove {facet} filter',
+    description:
+      'Accessible name of the × on a filter chip. "facet" is the already-translated facet name.',
+  },
+  'library.viewSummary': {
+    message: 'Group by {groupBy} · Sort {sortBy}',
+    description:
+      'Summary after the filter chips. One message rather than concatenation, so a translator controls both the word order and the separator. Both placeholders arrive as emphasised nodes.',
+  },
+
+  'library.peek.label': {
+    message: 'Details',
+    description:
+      'Accessible name of the peek panel. It is an aside, not a dialog: it does not trap focus and the list behind it stays interactive.',
+  },
+  'library.peek.escHint': {
+    message: 'to close',
+    description:
+      'Follows the Esc key cap at the top of the peek panel. Kept separate from the cap so the cap is translated as a key label and this as prose.',
+  },
+  'library.peek.previous': {
+    message: 'Previous file',
+    description:
+      'Accessible name of the peek panel’s previous button. Moves the panel to the previous row in visible order without closing it.',
+  },
+  'library.peek.next': {
+    message: 'Next file',
+    description: 'Accessible name of the peek panel’s next button.',
+  },
+  'library.peek.openFull': {
+    message: 'Open full view',
+    description:
+      'Accessible name of the peek panel’s open-in-full button, which navigates to the file’s own route.',
+  },
+  'library.peek.close': {
+    message: 'Close details',
+    description: 'Accessible name of the peek panel’s close button.',
+  },
+  'library.peek.resize': {
+    message: 'Resize details panel',
+    description:
+      'Accessible name of the panel’s resize separator. Keyboard-operable: arrows move it, Home and End snap to the bounds.',
+  },
+  'library.peek.tabs': {
+    message: 'Details sections',
+    description: 'Accessible name of the peek panel’s tab strip.',
+  },
+  'library.peek.tab.preview': {
+    message: 'Preview',
+    description:
+      'Peek tab showing a policy-mediated preview. Preview is its own permission, distinct from download, print, export and sync.',
+  },
+  'library.peek.tab.details': {
+    message: 'Details',
+    description: 'Peek tab showing the file’s facts, including retention and DLP status.',
+  },
+  'library.peek.tab.access': {
+    message: 'Access',
+    description: 'Peek tab showing who can reach this file and how they came to have that access.',
+  },
+  'library.peek.tab.versions': {
+    message: 'Versions',
+    description: 'Peek tab listing the file’s immutable versions.',
+  },
+  'library.peek.tab.activity': {
+    message: 'Activity',
+    description:
+      'Peek tab for a user-facing activity feed. Rendered in the unbuilt treatment: audit_events is hash-chained and is deliberately not a feed, so this needs its own read model with its own policy filter.',
+  },
+  'library.peek.meta': {
+    message: '{version} · {size} · {owner} · {modified}',
+    description:
+      'The meta line under the peek title. One message with four named placeholders and the separator inside it, so a locale can reorder the whole line. Never assembled in code.',
+  },
+  'library.peek.openPreview': {
+    message: 'Open preview',
+    description:
+      'Button over the preview thumbnail. Opens the policy-mediated preview stream, never an object-storage URL.',
+  },
+  'library.peek.watermarkNotice': {
+    message: 'This preview is watermarked with your identity and the time you opened it.',
+    description:
+      'Notice beside a watermarked preview. States what the obligation does without naming the rule that imposed it. In the wired version the sentence is the server’s.',
+  },
+  'library.peek.askPlaceholder': {
+    message: 'Ask about this file',
+    description:
+      'Placeholder in the peek panel’s Ask composer. The composer renders unbuilt until Ask ships, so this is what the field will say rather than what it does now.',
+  },
+  'library.peek.askScope': {
+    message: 'This file',
+    description:
+      'Scope chip on the peek Ask composer: the question is answered from this file alone.',
+  },
+  'library.peek.askLater': {
+    message: 'Asking about a file arrives in a later release.',
+    description:
+      'Release note for the unbuilt Ask composer. Future tense and about the product, never about the user’s permissions — the denial treatment is the only one that speaks about those.',
+  },
+  'library.peek.fact.owner': {
+    message: 'Owner',
+    description: 'Peek facts row: who owns the file.',
+  },
+  'library.peek.fact.location': {
+    message: 'Location',
+    description: 'Peek facts row: the folder path the file sits in.',
+  },
+  'library.peek.fact.retention': {
+    message: 'Retention',
+    description:
+      'Peek facts row: how long the file must be kept. A row rather than a tab, per docs/09 §7.',
+  },
+  'library.peek.fact.indexed': {
+    message: 'Indexed',
+    description:
+      'Peek facts row: whether the file has been indexed for search. Never reported ready before antivirus completes.',
+  },
+
+  'library.selection.toolbar': {
+    message: 'Actions for the selected files',
+    description:
+      'Accessible name of the floating selection bar. It exists only while something is selected — there is no persistent command bar in this product.',
+  },
+  'library.selection.count': {
+    message: '{count, plural, one {# selected} other {# selected}}',
+    description:
+      'Count at the head of the selection bar. An ICU plural, because languages with three or more plural categories cannot be served by an English ternary.',
+  },
+  'library.selection.clear': {
+    message: 'Clear selection',
+    description: 'Accessible name of the selection bar’s dismiss button.',
+  },
+  'library.selection.share': {
+    message: 'Share',
+    description: 'Selection-bar action. Acts on every selected file.',
+  },
+  'library.selection.download': {
+    message: 'Download',
+    description:
+      'Selection-bar action. Download is its own permission and is never merged with preview, print, export or sync.',
+  },
+  'library.selection.move': {
+    message: 'Move',
+    description: 'Selection-bar action that moves every selected file to another folder.',
+  },
+  'library.selection.label': {
+    message: 'Label',
+    description: 'Selection-bar action that applies a classification label to the selection.',
+  },
+  'library.selection.retention': {
+    message: 'Retention',
+    description: 'Selection-bar action that sets how long the selected files must be kept.',
+  },
+
+  'files.row.menu': {
+    message: 'Actions for {name}',
+    description:
+      'Accessible name of a row’s overflow button. It names the file, because a grid full of buttons all called “Actions” is a grid a screen-reader user cannot navigate.',
+  },
+  'fileStatus.noDownload': {
+    message: 'No download',
+    description:
+      'Row status pill: this file may be previewed but not downloaded. Tone and code both come from the server row; the client never infers either from a permission.',
+  },
+  'fileStatus.approved': {
+    message: 'Approved',
+    description: 'Row status pill: the file has cleared its approval workflow.',
+  },
+  'fileStatus.checkedOut': {
+    message: 'Checked out',
+    description: 'Row status pill: someone holds an exclusive lock on the file.',
+  },
+  'fileStatus.retain7y': {
+    message: 'Retain 7 years',
+    description:
+      'Row status pill: a retention obligation applies. The duration is inside the message because the server sends the policy’s own label rather than a number to format.',
+  },
+  'fileStatus.legalHold': {
+    message: 'Legal hold',
+    description:
+      'Row status pill: the file is under legal hold and cannot be deleted or altered. Danger tone, because the consequence of ignoring it is legal rather than cosmetic.',
+  },
+  'fileStatus.watermarked': {
+    message: 'Watermarked',
+    description:
+      'Obligation pill in the peek panel: previews of this file carry a visible watermark identifying the viewer.',
+  },
 } as const satisfies Record<string, CatalogEntry>;
 
 export type MessageKey = keyof typeof catalog;

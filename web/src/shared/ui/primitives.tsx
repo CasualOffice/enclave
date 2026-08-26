@@ -182,10 +182,18 @@ export interface IconButtonProps
   readonly values?: Record<string, string | number>;
 }
 
-export function IconButton({ name, label, values, ...rest }: IconButtonProps) {
+export function IconButton({ name, label, values, className, ...rest }: IconButtonProps) {
   const t = useT();
   return (
-    <button {...rest} type="button" className="ui-iconbtn" aria-label={t(label, values)}>
+    <button
+      {...rest}
+      type="button"
+      /* Merged, not replaced. `className` was previously set after the spread and
+       * silently swallowed whatever a caller passed — which is how the peek
+       * panel's `previous` chevron ended up pointing the same way as `next`. */
+      className={className === undefined ? 'ui-iconbtn' : `ui-iconbtn ${className}`}
+      aria-label={t(label, values)}
+    >
       <Icon name={name} size={14} />
     </button>
   );
@@ -202,7 +210,10 @@ export function Pill({
   label: MessageKey;
   values?: Record<string, string | number>;
   tone?: PillTone;
-  icon?: IconName;
+  /* `| undefined` explicitly, because `exactOptionalPropertyTypes` is on: a
+   * caller spreading a server row whose `icon` is absent is passing `undefined`,
+   * not omitting the property, and those are different types here. */
+  icon?: IconName | undefined;
 }) {
   const t = useT();
   return (

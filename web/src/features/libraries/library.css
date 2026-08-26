@@ -1,0 +1,329 @@
+/* The library surface's chrome: location bar, view bar, filter chips, body grid.
+ *
+ * Every number is from `web/design-system/enclave-client-prototype.html` lines
+ * 218–246 and `web/design-system/specs/library.md §1–4`, checked against the
+ * prototype rendered in a browser at the same viewport as the app rather than
+ * read out of the markup — reading the markup is how the client came to diverge
+ * in the first place.
+ *
+ * Every property name is logical. The prototype is `margin-left:auto`,
+ * `padding:10px 14px 0 16px` and `text-align:right` throughout; `en-XB` mirrors
+ * direction in CI and fails the build on any of them. Copy its values, never its
+ * property names (`docs/17 §8`).
+ *
+ * **On the text ramp.** The prototype puts 12.5 px body text on `--fg3` and
+ * counts on `--fg4`. In the light theme those are 4.31:1 and 2.3:1 against the
+ * sheet, so neither may legally carry text (`ENC-700`, and the same call
+ * `grouped-list.css` already made). Text here is `--fg2`; `--fg3` is kept for
+ * icons and dots, which need 3:1 rather than 4.5:1. The hierarchy the reference
+ * is drawing survives — it is one step less faint than drawn.
+ */
+
+.lib {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-block-size: 0;
+}
+
+/* ------------------------------------------------------- location bar, 38 px */
+
+.lib-locationbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-block: 10px 0;
+  padding-inline: 16px 14px;
+  min-block-size: 38px;
+  color: var(--fg2);
+  font-size: 12.5px;
+}
+
+.lib-crumbs {
+  display: flex;
+  align-items: center;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  min-inline-size: 0;
+}
+
+.lib-crumbs li {
+  display: flex;
+  align-items: center;
+  white-space: nowrap;
+}
+
+/* The separator is a pseudo-element on every crumb but the last, so it is never
+ * a translatable string and never lands in the accessibility tree as content. */
+.lib-crumbs li:not(:last-child)::after {
+  content: '/';
+  color: var(--fg3);
+  margin-inline: 4px;
+}
+
+.lib-crumbs a {
+  color: inherit;
+  text-decoration: none;
+  border-radius: 4px;
+}
+
+.lib-crumbs a:hover {
+  color: var(--fg);
+}
+
+.lib-crumbs [aria-current='page'] {
+  color: var(--fg);
+  font-weight: 500;
+}
+
+.lib-crumb-chip {
+  margin-inline-start: 6px;
+  flex: none;
+}
+
+.lib-locationbar-end {
+  margin-inline-start: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+
+.lib-presence-more {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--fg2);
+  margin-inline-start: 2px;
+}
+
+/* A label-only button, 24 px. Not `.ui-btn`: that one carries a hairline and
+ * this one is flush with the bar until hovered. */
+.lib-textbtn {
+  display: inline-flex;
+  align-items: center;
+  block-size: 24px;
+  padding-inline: 8px;
+  border-radius: var(--r-ctrl);
+  border: 0;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  background: transparent;
+  color: var(--fg2);
+  white-space: nowrap;
+}
+
+.lib-textbtn:hover {
+  background: var(--hover);
+  color: var(--fg);
+}
+
+/* ----------------------------------------------------------- view bar, 42 px */
+
+.lib-viewbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-block: 8px;
+  padding-inline: 14px 12px;
+  min-block-size: 42px;
+}
+
+.lib-views {
+  display: inline-flex;
+  gap: 2px;
+  min-inline-size: 0;
+  overflow-x: auto;
+}
+
+.lib-view {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding-block: 4px;
+  padding-inline: 9px;
+  border-radius: 999px;
+  border: 0;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  background: transparent;
+  color: var(--fg2);
+  white-space: nowrap;
+}
+
+.lib-view:hover {
+  background: var(--sunken);
+  color: var(--fg);
+}
+
+.lib-view[aria-selected='true'] {
+  background: var(--sunken);
+  color: var(--fg);
+}
+
+.lib-view-count {
+  font-size: 10.5px;
+  font-family: var(--mono);
+  color: var(--fg2);
+}
+
+.lib-viewbar-end {
+  margin-inline-start: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+
+.lib-toolbtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  block-size: 26px;
+  padding-inline: 10px;
+  border-radius: var(--r-ctrl);
+  border: 0;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  background: transparent;
+  color: var(--fg2);
+  white-space: nowrap;
+}
+
+.lib-toolbtn:hover {
+  background: var(--hover);
+  color: var(--fg);
+}
+
+.lib-toolbtn svg {
+  color: var(--fg3);
+}
+
+/* `New` sits beside the content it creates rather than in a top bar, which is
+ * the whole of `ENC-676`'s shell correction. */
+.lib-newbtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  block-size: 24px;
+  padding-inline: 8px;
+  border-radius: var(--r-ctrl);
+  border: 0;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  background: var(--accent);
+  /* Not `#fff`: the three dark accents are light and white on #8B85FF is
+   * 3.04:1. `--on-accent` is the derived pair (`docs/09 §18`). */
+  color: var(--on-accent);
+  white-space: nowrap;
+}
+
+.lib-newbtn:hover {
+  filter: brightness(1.08);
+}
+
+/* -------------------------------------------------------------- filter chips */
+
+.lib-chiprow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-inline: 16px;
+  padding-block-end: 8px;
+  flex-wrap: wrap;
+}
+
+.lib-chip {
+  display: inline-flex;
+  align-items: center;
+  block-size: 24px;
+  border-radius: var(--r-ctrl);
+  box-shadow: var(--hairline);
+  font-size: 12px;
+  overflow: hidden;
+}
+
+.lib-chip-seg {
+  position: relative;
+  padding-inline: 7px;
+  line-height: 24px;
+}
+
+/* A pseudo-element, not `border-inline-end`. A border consumes layout width and
+ * would shift the chip's text by a pixel; the prototype's inset shadow drew
+ * inside the box and cost nothing (`specs/library.md`, technique fix #2). */
+.lib-chip-seg::after {
+  content: '';
+  position: absolute;
+  inset-block: 0;
+  inset-inline-end: 0;
+  inline-size: 1px;
+  background: var(--line);
+}
+
+.lib-chip-key {
+  color: var(--fg2);
+}
+
+.lib-chip-value {
+  color: var(--fg);
+  font-weight: 500;
+}
+
+.lib-chip-remove {
+  display: inline-flex;
+  align-items: center;
+  block-size: 24px;
+  padding-inline: 6px;
+  border: 0;
+  background: transparent;
+  color: var(--fg3);
+  cursor: pointer;
+}
+
+.lib-chip-remove:hover {
+  background: var(--hover);
+  color: var(--fg);
+}
+
+.lib-chip-summary {
+  font-size: 12px;
+  color: var(--fg2);
+  margin-inline-start: 4px;
+}
+
+.lib-chip-summary b {
+  color: var(--fg);
+  font-weight: 500;
+}
+
+/* ------------------------------------------------------------- the body grid */
+
+/* Closed: one column. Open: the list plus the peek panel, which is 372 px by
+ * default and resizable between 320 and 520 (`specs/library.md §4`). */
+.lib-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  flex: 1;
+  min-block-size: 0;
+}
+
+.lib-body[data-peek='open'] {
+  grid-template-columns: minmax(0, 1fr) minmax(320px, var(--peek-w, 372px));
+}
+
+/* Surfaces are separated by shadow, never by rule, and never by a vertical
+ * divider between panes — so the list column carries no border of its own. */
+.lib-list {
+  min-inline-size: 0;
+  display: flex;
+  flex-direction: column;
+}

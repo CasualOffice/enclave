@@ -249,9 +249,35 @@
   white-space: nowrap;
 }
 
+/* The peeked row. A quieter wash than `--selected`, because being *looked at*
+ * and being *acted on* are different things and the selection bar only acts on
+ * the second. */
+.egl-row[data-peeked='true'] {
+  background: var(--hover);
+}
+
 .egl-cell-select {
   display: flex;
   justify-content: center;
+}
+
+.egl-status {
+  display: flex;
+  align-items: center;
+}
+
+/* The per-row menu. Present but invisible until the row is hovered or something
+ * inside it takes focus — never `display:none`, which would take the only route
+ * to this menu away from a keyboard user. */
+.egl-cell-actions {
+  display: flex;
+  justify-content: center;
+  opacity: 0;
+}
+
+.egl-row:hover .egl-cell-actions,
+.egl-row:focus-within .egl-cell-actions {
+  opacity: 1;
 }
 
 .egl-name {
@@ -358,55 +384,12 @@
  * produces the *text* moves, 82% to 70%, which is the largest ratio that clears
  * 4.5:1 for all five levels in both themes. `tools/classification-contrast.mjs`
  * computes it and prints the table; re-run it if a token changes. */
-.egl-classification {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  block-size: 20px;
-  padding-inline: 7px 8px;
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0;
-  white-space: nowrap;
-  background: color-mix(in srgb, var(--cc) 11%, transparent);
-  color: color-mix(in srgb, var(--cc) 70%, var(--fg));
-}
-
-.egl-classification::before {
-  content: '';
-  inline-size: 6px;
-  block-size: 6px;
-  border-radius: 50%;
-  background: var(--cc);
-  flex: none;
-}
-
-.egl-classification[data-level='public'] {
-  --cc: var(--c-pub);
-}
-.egl-classification[data-level='internal'] {
-  --cc: var(--c-int);
-}
-.egl-classification[data-level='confidential'] {
-  --cc: var(--c-conf);
-}
-.egl-classification[data-level='highlyConfidential'] {
-  --cc: var(--c-hconf);
-}
-.egl-classification[data-level='restricted'] {
-  --cc: var(--c-restr);
-}
-
-.egl-classification[data-level='unclassified'] {
-  background: transparent;
-  box-shadow: var(--hairline);
-  color: var(--fg2);
-}
-
-.egl-classification[data-level='unclassified']::before {
-  display: none;
-}
+/* The classification chip moved to `entities/classification/chip.tsx`.
+ *
+ * It was one of three private copies of a LOCKED palette (`ENC-703`); the
+ * location bar and the peek panel would have made a fourth. `docs/09 §16a` can
+ * only hold if there is one place the colour is written.
+ */
 
 .egl-checkbox {
   inline-size: 14px;

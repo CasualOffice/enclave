@@ -1,0 +1,374 @@
+/* The peek panel.
+ *
+ * Geometry from `web/design-system/enclave-client-prototype.html` lines 286–339
+ * and `web/design-system/specs/library.md §4B`.
+ *
+ * The panel's leading edge is a 1 px pseudo-element, not `border-inline-start`.
+ * The prototype drew it with `box-shadow:-1px 0 0 var(--line)`, which paints
+ * outside the box and costs no layout; a border would eat a pixel from the
+ * 372 px content box and every measurement in the spec would be one out.
+ * That is also why it is not a `border`: surfaces in this product are separated
+ * by shadow, never by rule.
+ */
+
+.peek {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-inline-size: 0;
+  overflow: hidden;
+  background: var(--sheet);
+  animation: peek-in 0.18s ease-out both;
+}
+
+.peek::before {
+  content: '';
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 0;
+  inline-size: 1px;
+  background: var(--line);
+  z-index: 1;
+}
+
+/* The prototype slides in from physical right. Under RTL the panel is on the
+ * other side and would slide the wrong way, so the translate is driven by the
+ * direction variable rather than hardcoded. */
+:root {
+  --icon-flip: 1;
+  --chev-collapsed: -90deg;
+}
+
+:root:dir(rtl) {
+  --icon-flip: -1;
+  --chev-collapsed: 90deg;
+}
+
+@keyframes peek-in {
+  from {
+    opacity: 0;
+    transform: translateX(calc(14px * var(--icon-flip)));
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* A 5 px hit area on the leading edge. Keyboard-operable, because a
+ * pointer-only resize is a resize half the users cannot perform. */
+.peek-handle {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 0;
+  inline-size: 5px;
+  cursor: col-resize;
+  z-index: 2;
+  background: transparent;
+}
+
+.peek-handle:hover,
+.peek-handle:focus-visible {
+  background: var(--accent-ring);
+}
+
+/* ----------------------------------------------------------------- the head */
+
+.peek-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-block-start: 8px;
+  padding-inline: 12px 8px;
+  color: var(--fg2);
+}
+
+.peek-head-hint {
+  font-size: 11.5px;
+}
+
+.peek-head-end {
+  margin-inline-start: auto;
+  display: flex;
+}
+
+/* `previous` and `next` are the same chevron, rotated. The rotation is mirrored
+ * under RTL through the direction variable, so the arrow keeps meaning
+ * "backwards in reading order" rather than "leftwards". */
+.peek-prev svg {
+  transform: rotate(180deg);
+}
+
+.peek-title {
+  padding-inline: 16px;
+  padding-block-start: 8px;
+}
+
+.peek-title h3 {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.35;
+  font-weight: 500;
+  letter-spacing: -0.012em;
+}
+
+.peek-ext {
+  color: var(--fg2);
+  font-weight: 400;
+}
+
+.peek-meta {
+  color: var(--fg2);
+  font-size: 12px;
+  margin-block-start: 2px;
+}
+
+.peek-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding-block: 10px 8px;
+  padding-inline: 16px;
+}
+
+/* ----------------------------------------------------------------- the tabs */
+
+/* The block-end hairline is on the block axis, which is direction-neutral and
+ * therefore permitted as an inset shadow. */
+.peek-tabs {
+  display: inline-flex;
+  gap: 2px;
+  padding-inline: 12px;
+  padding-block-end: 6px;
+  box-shadow: inset 0 -1px 0 var(--line);
+  overflow-x: auto;
+}
+
+.peek-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--fg2);
+  padding-block: 4px;
+  padding-inline: 9px;
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.peek-tab:hover {
+  background: var(--hover);
+  color: var(--fg);
+}
+
+.peek-tab[aria-selected='true'] {
+  background: var(--sunken);
+  color: var(--fg);
+}
+
+/* Unbuilt, never denied: no danger tint, and the component removes it from the
+ * tab order. `ENC-673` asserts the two treatments share no class. */
+.peek-tab[aria-disabled='true'] {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.peek-tab[aria-disabled='true']:hover {
+  background: transparent;
+  color: var(--fg2);
+}
+
+/* ----------------------------------------------------------------- the body */
+
+.peek-body {
+  padding-block: 12px;
+  padding-inline: 16px;
+  overflow: auto;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.peek-preview {
+  flex: none;
+  block-size: 170px;
+  border-radius: var(--r-surf);
+  background: var(--sunken);
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.peek-page {
+  inline-size: 56%;
+  block-size: 82%;
+  background: var(--sheet);
+  box-shadow: var(--el2);
+  padding-block: 12px;
+  padding-inline: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  border-radius: 2px;
+}
+
+.peek-page i {
+  display: block;
+  block-size: 2px;
+  border-radius: 1px;
+  background: var(--g200);
+}
+
+.peek-page .peek-page-title {
+  block-size: 4px;
+  inline-size: 50%;
+  background: var(--g300);
+}
+
+.peek-page .peek-page-short {
+  inline-size: 70%;
+}
+
+.peek-page .peek-page-shorter {
+  inline-size: 40%;
+}
+
+/* The watermark. In the real preview its text is composed server side and
+ * carries identity, timestamp, label and hash; the client interpolates nothing
+ * into it (`docs/09 §9`), which is why there is no `content` here. */
+.peek-watermark {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: repeating-linear-gradient(
+    -22deg,
+    color-mix(in srgb, var(--c-restr) 12%, transparent) 0 1px,
+    transparent 1px 26px
+  );
+}
+
+.peek-openbtn {
+  position: absolute;
+  inset-inline-end: 8px;
+  inset-block-end: 8px;
+  display: inline-flex;
+  align-items: center;
+  block-size: 24px;
+  padding-inline: 8px;
+  border-radius: var(--r-ctrl);
+  border: 0;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  background: var(--sheet);
+  color: var(--fg);
+  box-shadow: var(--hairline);
+}
+
+.peek-openbtn:hover {
+  background: var(--sunken);
+}
+
+/* The policy notice. Body and remediation are the server's; never a retry, and
+ * never a sentence about which rule matched (`docs/06 §24`). */
+.peek-notice {
+  display: flex;
+  gap: 10px;
+  padding-block: 10px;
+  padding-inline: 12px;
+  border-radius: var(--r-ctrl);
+  font-size: 12.5px;
+  line-height: 1.45;
+  background: color-mix(in srgb, var(--warn) 9%, transparent);
+  color: var(--fg);
+}
+
+.peek-notice svg {
+  flex: none;
+  margin-block-start: 1px;
+  color: color-mix(in srgb, var(--warn) 70%, var(--fg));
+}
+
+/* DLP status and retention are rows here, not tabs (`docs/09 §7`). */
+.peek-facts {
+  margin: 0;
+  font-size: 12.5px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.peek-fact {
+  display: grid;
+  grid-template-columns: 100px 1fr;
+  gap: 10px;
+  align-items: center;
+}
+
+.peek-fact dt {
+  color: var(--fg2);
+}
+
+.peek-fact dd {
+  margin: 0;
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* -------------------------------------------------------- the Ask composer */
+
+.peek-ask {
+  margin-block-start: auto;
+  padding-block: 10px 12px;
+  padding-inline: 12px;
+  box-shadow: inset 0 1px 0 var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.peek-ask-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-radius: var(--r-surf);
+  box-shadow: var(--hairline);
+  padding-block: 8px 6px;
+  padding-inline: 10px 8px;
+  background: var(--sheet);
+  /* Unbuilt. Neutral, never a danger tint, and the whole card is inert rather
+   * than an input a user can type into and then discover does nothing. */
+  opacity: 0.5;
+}
+
+.peek-ask-placeholder {
+  font-size: 12.5px;
+  color: var(--fg2);
+}
+
+.peek-ask-foot {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.peek-ask-spacer {
+  flex: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .peek {
+    animation: none;
+  }
+}

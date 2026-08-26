@@ -1,0 +1,119 @@
+/* The floating selection bar.
+ *
+ * `el3` — the top of the elevation ladder, above the sheet (`el1`) and above
+ * popovers (`el2`) — and inverted against the sheet on its own five
+ * `--selbar-*` tokens, all of which flip in dark mode.
+ *
+ * Centred with `inset-inline:0; margin-inline:auto; inline-size:max-content`.
+ * The prototype's `left:50%` + `translateX(-50%)` is wrong twice under RTL —
+ * the inset measures from the opposite edge while the transform still pulls
+ * toward physical left — and it forces the entrance keyframes to carry the
+ * centring, so the animation and the layout fight. With margin-auto doing the
+ * work, `selbar-pop` animates opacity, offset and scale and nothing else.
+ */
+
+.selbar {
+  position: absolute;
+  inset-block-end: 22px;
+  inset-inline: 0;
+  margin-inline: auto;
+  inline-size: max-content;
+  max-inline-size: calc(100% - 24px);
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding-block: 6px;
+  padding-inline: 12px 6px;
+  background: var(--selbar-bg);
+  color: var(--selbar-fg);
+  border-radius: 12px;
+  box-shadow: var(--el3);
+  font-size: 12.5px;
+  /* 10 on the scale in `primitives.css`: above the sheet's own chrome, below
+   * popovers, dialogs and the palette. */
+  z-index: 10;
+  white-space: nowrap;
+  overflow-x: auto;
+  animation: selbar-pop 0.16s ease-out both;
+}
+
+@keyframes selbar-pop {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.selbar-count {
+  font-weight: 500;
+  margin-inline-end: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.selbar-divider {
+  inline-size: 1px;
+  block-size: 16px;
+  background: var(--selbar-i);
+  display: inline-block;
+}
+
+.selbar-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding-inline: 9px;
+  block-size: 26px;
+  border-radius: 7px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.selbar-action:hover {
+  background: var(--selbar-hov);
+}
+
+/* DENIED. Keeps its colour, stays focusable, and carries the `#block` glyph —
+ * it is never the unbuilt dim, and it never gets a client-authored sentence.
+ * `ENC-673` asserts the two share no class; `ENC-674` will supply the reason. */
+.selbar-action[data-state='denied'] {
+  cursor: not-allowed;
+}
+
+.selbar-action[data-state='denied']:hover {
+  background: transparent;
+}
+
+.selbar-kbd {
+  font-family: var(--mono);
+  font-size: 10px;
+  padding-block: 1px;
+  padding-inline: 4px;
+  border-radius: 4px;
+  background: var(--selbar-kbd);
+}
+
+.selbar-clear {
+  margin-inline-start: 4px;
+  opacity: 0.7;
+}
+
+.selbar-clear:hover {
+  opacity: 1;
+  background: var(--selbar-hov);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .selbar {
+    animation: none;
+  }
+}
