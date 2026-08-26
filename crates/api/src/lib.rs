@@ -17,6 +17,7 @@ pub mod metrics_listener;
 pub mod preview;
 pub mod refusal;
 pub mod state;
+pub mod workflows;
 
 use std::sync::Arc;
 
@@ -138,6 +139,25 @@ pub fn router(state: ApiState, delivery: Delivery) -> Router {
         // is D28's structural guarantee rather than an omission — see `admin/dlp.rs`.
         .route("/api/v1/admin/dlp/rules", get(admin::dlp::list_rules).post(admin::dlp::create_rule))
         .route("/api/v1/admin/dlp/rules/{id}", delete(admin::dlp::withdraw_rule))
+        // Workflows (docs/05-API.md §16, docs/15-WORKFLOWS-AND-SIGNING.md). `ENC-739`.
+        //
+        // `/tasks` is registered before `/instances/{id}` and `/steps/{id}` deliberately: axum
+        // matches literals ahead of captures, so the order is presentational, and reading down this
+        // block in the order `docs/05-API.md §16` lists them is what lets a reviewer check the
+        // router against the document.
+        //
+        // Every handler here reaches `PolicyEngine::enforce` — the ENC-110 lint proves it, and none
+        // of them is on its allowlist. What the lint cannot see, and `crates/api/src/workflows.rs`
+        // carries: `simulate` enforces the *same action on the same resource* as `start`, which is
+        // D28's requirement that a simulation not take a cheaper path than the thing it rehearses.
+        .route("/api/v1/workflows/tasks", get(workflows::tasks))
+        .route("/api/v1/files/{id}/workflows", post(workflows::start))
+        .route("/api/v1/workflows/definitions/{id}/simulate", post(workflows::simulate))
+        .route("/api/v1/workflows/instances/{id}", get(workflows::instance))
+        .route("/api/v1/workflows/instances/{id}/cancel", post(workflows::cancel))
+        .route("/api/v1/workflows/steps/{id}/approve", post(workflows::approve))
+        .route("/api/v1/workflows/steps/{id}/reject", post(workflows::reject))
+        .route("/api/v1/workflows/steps/{id}/delegate", post(workflows::delegate))
         // Operational probes. On the policy-routing allowlist: no tenant, no actor, no resource.
         .route("/health/live", get(health::live))
         .route("/health/ready", get(health::ready))

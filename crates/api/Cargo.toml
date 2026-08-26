@@ -25,6 +25,9 @@ enclave-files = { workspace = true }
 # The rendition pipeline, behind `PreviewPipeline`.
 enclave-preview = { workspace = true }
 enclave-versions = { workspace = true }
+# The workflow model, the evaluator and the repository (`ENC-739`). The evaluator takes no
+# connection, which is what stops `simulate` from diverging from a real start.
+enclave-workflows = { workspace = true }
 enclave-observability = { workspace = true, features = ["exposition"] }
 # The delivery paths: `download` mints a signed URL through `BlobStore`; `preview` deliberately
 # does not depend on it at the module level (crates/api/src/preview.rs).

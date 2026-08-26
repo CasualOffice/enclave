@@ -1353,6 +1353,7 @@ dependencies = [
  "enclave-storage",
  "enclave-testing",
  "enclave-versions",
+ "enclave-workflows",
  "image",
  "serde",
  "serde_json",
