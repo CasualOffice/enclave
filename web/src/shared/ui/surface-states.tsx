@@ -156,19 +156,23 @@ export function FailureState({
  * the filter chip they forgot about.
  */
 export function EmptyState({
-  title,
+  heading,
   body,
   action,
   onAction,
 }: {
-  title: MessageKey;
+  /* `heading` rather than `title`: the i18n gate reads a `title=` attribute as
+   * a user-facing string and would flag the catalog *key* passed to it as a
+   * literal. Renaming the prop keeps the gate honest instead of teaching
+   * anybody to add an exemption to it. */
+  heading: MessageKey;
   body: MessageKey;
   action?: MessageKey | undefined;
   onAction?: (() => void) | undefined;
 }) {
   const t = useT();
   return (
-    <Panel tone="neutral" title={t(title)}>
+    <Panel tone="neutral" title={t(heading)}>
       <p className="surface-state-body">{t(body)}</p>
       {action !== undefined && (
         <div className="surface-state-actions">
@@ -188,11 +192,11 @@ export function EmptyState({
  * yet"*, users learn that dimmed is background noise — and they learn it on
  * harmless surfaces, then carry the habit to the one that matters.
  */
-export function UnbuiltState({ title, note }: { title: MessageKey; note: MessageKey }) {
+export function UnbuiltState({ heading, note }: { heading: MessageKey; note: MessageKey }) {
   const t = useT();
   return (
     <div className="surface-state" data-tone="unbuilt" aria-disabled="true" tabIndex={-1}>
-      <p className="surface-state-title">{t(title)}</p>
+      <p className="surface-state-title">{t(heading)}</p>
       <p className="surface-state-body">{t(note)}</p>
       <span className="ui-later">{t('later.chip')}</span>
     </div>

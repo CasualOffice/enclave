@@ -206,13 +206,18 @@ function matchesFilters(result: SearchResult, filters: FilterState, now: number)
 
   if (filters.classification !== ANY) {
     const max = CEILING.indexOf(filters.classification);
+    /* An absent classification is an absence, not a level, so it never
+     * exceeds a ceiling — the same reading `unclassified` gets below. */
+    if (result.classification === undefined) return true;
     const level = CEILING.indexOf(result.classification);
     // `unclassified` is an absence, not a sixth level, so it never exceeds a ceiling.
     if (max >= 0 && level > max) return false;
   }
 
   const window = MODIFIED_WINDOW_MS[filters.modified];
-  if (window !== undefined && now - result.modifiedAt > window) return false;
+  if (window !== undefined && result.modifiedAt !== undefined && now - result.modifiedAt > window) {
+    return false;
+  }
 
   return true;
 }

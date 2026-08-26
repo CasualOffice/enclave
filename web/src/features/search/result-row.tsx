@@ -86,7 +86,9 @@ export const ResultRow = memo(function ResultRow({
 }: ResultRowProps) {
   const t = useT();
   const formatters = useFormatters();
-  const modified = new Date(result.modifiedAt);
+  /* Absent for a real API result: `Hit` carries no modified date. Rendering
+   * `new Date(undefined)` would print "Invalid Date" at the user. */
+  const modified = result.modifiedAt === undefined ? null : new Date(result.modifiedAt);
 
   /* The page/sheet/section location `docs/09 §10` requires on every result, as
    * one short string. ICU does the joining, so a locale that abbreviates "page"
@@ -134,9 +136,14 @@ export const ResultRow = memo(function ResultRow({
           <bdi className="esr-title" dir="auto">
             {result.title}
           </bdi>
-          <span className="esr-classification" data-level={result.classification}>
-            {t(CLASSIFICATION_KEY[result.classification])}
-          </span>
+          {/* No badge when the server sent no classification. An invented
+            * `Unclassified` on a document somebody labelled `RESTRICTED` in the
+            * database is the disclosure this badge exists to prevent. */}
+          {result.classification !== undefined && (
+            <span className="esr-classification" data-level={result.classification}>
+              {t(CLASSIFICATION_KEY[result.classification])}
+            </span>
+          )}
           {location.length > 0 && (
             <span className="esr-location">
               <bdi dir="auto">{location}</bdi>
@@ -152,24 +159,32 @@ export const ResultRow = memo(function ResultRow({
           <bdi className="esr-path" dir="auto">
             {result.path}
           </bdi>
-          <span className="esr-sep" aria-hidden="true" />
-          <span className="esr-owner" data-tone={result.ownerTone} aria-hidden="true">
-            {result.ownerInitials}
-          </span>
-          <bdi className="esr-ownername" dir="auto">
-            {result.ownerName}
-          </bdi>
-          <span className="esr-sep" aria-hidden="true" />
+          {/* The owner is not on the wire either. The separator goes with it:
+            * a dangling ' · ' reads as a value that failed to load. */}
+          {result.ownerName !== undefined && (
+            <>
+              <span className="esr-sep" aria-hidden="true" />
+              <span className="esr-owner" data-tone={result.ownerTone} aria-hidden="true">
+                {result.ownerInitials}
+              </span>
+              <bdi className="esr-ownername" dir="auto">
+                {result.ownerName}
+              </bdi>
+            </>
+          )}
+          {modified !== null && <span className="esr-sep" aria-hidden="true" />}
           {/* `Intl.RelativeTimeFormat` with the absolute value in the `title`.
            * The prototype hand-builds "2 h ago"; `docs/17 §8` records that as a
            * defect in the reference rather than a pattern to copy. */}
-          <time
-            className="esr-when"
-            dateTime={modified.toISOString()}
-            title={formatters.dateTime(modified)}
-          >
-            {formatters.relative(modified)}
-          </time>
+          {modified !== null && (
+            <time
+              className="esr-when"
+              dateTime={modified.toISOString()}
+              title={formatters.dateTime(modified)}
+            >
+              {formatters.relative(modified)}
+            </time>
+          )}
         </span>
 
         {result.excerpt === null ? (

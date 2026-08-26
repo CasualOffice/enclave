@@ -10,7 +10,7 @@ import {
 import { useT } from '../../shared/i18n/index.tsx';
 import { replaceParams, useRoute } from '../../app/routes.ts';
 import { Icon } from '../../shared/ui/icon-sprite.tsx';
-import { Kbd } from '../../shared/ui/primitives.tsx';
+import { Button, Kbd } from '../../shared/ui/primitives.tsx';
 import { useGroupedWindow } from '../libraries/list/use-grouped-window.ts';
 import type { Density, GroupSpec } from '../libraries/list/geometry.ts';
 import {
@@ -19,12 +19,13 @@ import {
   readFilters,
   toParams,
   NO_FILTERS,
-  type FilterId,
   type FilterOption,
   type FilterState,
 } from './filters.ts';
-import { FilterChips } from './filter-chips.tsx';
-import { CORPUS_WORKSPACES, runFixtureSearch, unfilteredCount } from './fixture.ts';
+import { CORPUS_WORKSPACES } from './fixture.ts';
+import { useSearch } from './api.ts';
+import { FailureState } from '../../shared/ui/surface-states.tsx';
+import { failureOf } from '../../shared/api/failure.ts';
 import { noticeFor, RetrievalNotice } from './retrieval-notice.tsx';
 import { ResultRow } from './result-row.tsx';
 import {
@@ -59,10 +60,20 @@ import './search.css';
  *
  * ── Where the data comes from ────────────────────────────────────────────────
  *
- * `POST /api/v1/search` is specified in `docs/05 §11` and is **not implemented**
- * — `crates/api/src/` carries no search route. So this reads `fixture.ts`,
- * parsed through the documented response schema, and says so rather than
- * inventing a path. The swap is one call.
+ * `POST /api/v1/search` is implemented (`crates/api/src/routes/search.rs`) and
+ * this screen calls it. `features/search/api.ts` owns the wire schema, which is
+ * *smaller* than `docs/05 §11` describes: no classification, no owner, no
+ * modified date. Those render as absences rather than as invented defaults —
+ * see `model.ts`.
+ *
+ * `diagnostics.degraded` comes from the server on every response and is `true`
+ * today, because the API process holds no vector index. The client renders that
+ * statement; it never decides its own degradation.
+ *
+ * The narrowing filters are refused by the route with a `400` naming the field,
+ * so the filter control renders unbuilt rather than sending a request that
+ * cannot succeed. Filtering client-side would be worse: it narrows what is shown
+ * without narrowing what was searched.
  */
 
 /* One fixed-height row, so the list can be windowed by arithmetic rather than by
@@ -146,20 +157,20 @@ export default function SearchScreen() {
     [surfaceParam, retrievalParam],
   );
 
-  const onFilterChange = useCallback(
-    (id: FilterId, value: string) => write(query, { ...filters, [id]: value }),
-    [write, query, filters],
-  );
-
   const clearFilters = useCallback(() => write(query, NO_FILTERS), [write, query]);
 
-  const response = useMemo(
-    () => runFixtureSearch(query, filters, retrieval.mode, retrieval.degraded),
-    [query, filters, retrieval],
-  );
+  /* `POST /api/v1/search`, for real (`features/search/api.ts`).
+   *
+   * The `?retrieval=` knob above still exists for review and for axe, but it no
+   * longer decides what the notice says: `diagnostics` comes from the server,
+   * which is the only thing that knows whether the vector store answered. A
+   * client that decided its own degradation would be reporting on itself. */
+  const searchQuery = useSearch(query);
+  const response = searchQuery.data;
 
-  const results = response.results;
-  const notice = noticeFor(response.diagnostics);
+  const results = response?.results ?? [];
+  const diagnostics = response?.diagnostics ?? retrieval;
+  const notice = noticeFor(diagnostics);
 
   /* ------------------------------------------------------------- windowing */
 
@@ -260,7 +271,14 @@ export default function SearchScreen() {
   let body: ReactNode;
   if (surface === 'error') {
     body = <ErrorState error={REVIEW_ERROR} onRetry={() => write(query, filters)} />;
-  } else if (surface === 'loading') {
+  } else if (searchQuery.isError) {
+    /* A real failure, rendered as the right one of the two. A `403` from the
+     * policy chain is a refusal with no retry; a `5xx` is a fault with one.
+     * `FailureState` owns that branch so this screen does not have to. */
+    body = (
+      <FailureState failure={failureOf(searchQuery.error)} onRetry={() => void searchQuery.refetch()} />
+    );
+  } else if (surface === 'loading' || (searched && searchQuery.isPending)) {
     body = <LoadingState />;
   } else if (!searched) {
     body = <NewSearchState />;
@@ -269,7 +287,10 @@ export default function SearchScreen() {
       <NoResultsState
         query={query}
         filters={summaries}
-        unfilteredCount={unfilteredCount(query)}
+        /* Zero, because the server sends no unfiltered total and the client has
+         * no honest way to compute one. The empty state reads as "nothing
+         * matched" rather than claiming a count it does not have. */
+        unfilteredCount={0}
         lexical={notice !== null}
         onClearFilters={clearFilters}
       />
@@ -346,7 +367,33 @@ export default function SearchScreen() {
       </div>
 
       <div className="esr-filters">
-        <FilterChips defs={defs} filters={filters} onChange={onFilterChange} />
+        {/* **The filters render unbuilt, not functional and not denied.**
+          *
+          * `POST /api/v1/search` declares `workspaceIds`, `libraryIds`, `types`,
+          * `classificationMax` and `modifiedAfter` and answers `400` naming the
+          * field for every one of them. That refusal is deliberate on the server
+          * and the client must not route around it: a narrowing filter that is
+          * accepted and then not applied returns **more** than the caller asked
+          * for, and a `classificationMax` of `INTERNAL` answered with
+          * `CONFIDENTIAL` hits is a disclosure produced by a control that
+          * appeared to work.
+          *
+          * Filtering client-side over one page of results would be the same lie
+          * in a different place — it would narrow what is shown without
+          * narrowing what was searched, so a document excluded by the chip and
+          * absent from the page reads identically to one that does not exist.
+          *
+          * Unbuilt rather than denied, because this is the product not having
+          * the feature yet — not the policy chain refusing this user
+          * (`docs/17 §6`). */}
+        <span className="esr-filters-unbuilt">
+          <Button
+            label="search.filters.label"
+            icon="filter"
+            size="sm"
+            state={{ kind: 'unbuilt', note: 'search.filters.unbuilt' }}
+          />
+        </span>
         {/* No count before anything has been searched. "No results" against an
          * empty field is a report on a search nobody ran, and it is the same
          * class of untruth as the notice below claiming a degraded result set
@@ -357,7 +404,7 @@ export default function SearchScreen() {
           <span className="esr-count">
             {surface === 'loading'
               ? t('search.results.counting')
-              : t('search.results.count', { count: response.total })}
+              : t('search.results.count', { count: results.length })}
           </span>
         )}
       </div>
@@ -369,7 +416,9 @@ export default function SearchScreen() {
        * searched at all, and a notice that is always there is a notice nobody
        * reads on the day it matters. */}
       {searched && surface === 'ready' && <AnswerSlot />}
-      {searched && surface === 'ready' && <RetrievalNotice diagnostics={response.diagnostics} />}
+      {searched && surface === 'ready' && response !== undefined && (
+        <RetrievalNotice diagnostics={response.diagnostics} />
+      )}
 
       {body}
 

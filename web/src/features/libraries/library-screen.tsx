@@ -107,7 +107,7 @@ export default function LibraryScreen() {
           </nav>
         </div>
         <div className="library-peek-body">
-          <UnbuiltState title="library.noPicker.title" note="library.noPicker.body" />
+          <UnbuiltState heading="library.noPicker.title" note="library.noPicker.body" />
         </div>
       </main>
     );

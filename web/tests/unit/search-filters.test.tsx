@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
-import { I18nProvider } from '../../src/shared/i18n/index.tsx';
+import { cleanup, fireEvent, screen } from '@testing-library/react';
 import SearchScreen from '../../src/features/search/search-screen.tsx';
+import { catalog } from '../../src/shared/i18n/catalog.ts';
+import { renderWithProviders } from '../render.tsx';
 import { activeFilters, readFilters, toParams, NO_FILTERS } from '../../src/features/search/filters.ts';
 
 /* `globals: false` in `vite.config.ts`, so Testing Library never registers its own
@@ -32,52 +33,74 @@ function currentParams(): URLSearchParams {
 }
 
 function renderScreen() {
-  return render(
-    <I18nProvider>
-      <SearchScreen />
-    </I18nProvider>,
-  );
+  return renderWithProviders(<SearchScreen />);
 }
 
-describe('filter chips and the URL', () => {
+/* The filter controls, and why these tests replaced four that used to click them.
+ *
+ * `POST /api/v1/search` declares `workspaceIds`, `libraryIds`, `types`,
+ * `classificationMax` and `modifiedAfter` and answers `400` naming the field for
+ * every one — `deny_unknown_fields`, deliberately. A narrowing filter that is
+ * accepted and then not applied returns MORE than the caller asked for, so the
+ * server is right to refuse and the client must not route around it.
+ *
+ * Filtering client-side over one page of results would be the same lie in a
+ * different place: it narrows what is shown without narrowing what was searched,
+ * so a document excluded by a chip and absent from the page reads exactly like a
+ * document that does not exist.
+ *
+ * So the chips are gone and one unbuilt control stands in their place. The tests
+ * below assert the treatment is the *unbuilt* one and not the denial one, which
+ * is `ENC-673`'s F2 and a security contract rather than styling: a user who
+ * learns that dimmed means "not written yet" carries the habit to the one screen
+ * where dimmed means "DLP refused this".
+ */
+describe('search filters are unbuilt, not denied', () => {
   beforeEach(() => goto('?q=agreement'));
 
-  it('writes a chosen filter into the URL, keeping the query', () => {
-    renderScreen();
+  it('shows the filter control under the unbuilt treatment', () => {
+    const { container } = renderScreen();
 
-    fireEvent.click(screen.getByRole('button', { name: /Change the Classification filter/ }));
-    fireEvent.click(screen.getByRole('menuitemradio', { name: 'Internal' }));
+    const control = screen.getByRole('button', {
+      name: catalog['search.filters.label'].message,
+    });
+    expect(control.getAttribute('data-state')).toBe('unbuilt');
+    expect(control.getAttribute('aria-disabled')).toBe('true');
 
-    expect(currentParams().get('classification')).toBe('internal');
-    expect(currentParams().get('q')).toBe('agreement');
+    // The neutral `Later` chip is the visible marker (D33).
+    expect(container.querySelector('.ui-later')).toBeTruthy();
   });
 
-  it('removes one chip from the URL without disturbing the others', () => {
-    goto('?q=agreement&classification=internal&type=pdf');
+  it('takes the filter control out of the tab order, because there is nothing to find out', () => {
     renderScreen();
 
-    /* The positive control for the removal: the chip has to be there, and
-     * removable by its own name, before its disappearance means anything. */
-    const remove = screen.getByRole('button', { name: 'Remove the Classification filter' });
-    expect(remove).toBeTruthy();
-    expect(currentParams().get('classification')).toBe('internal');
+    const control = screen.getByRole('button', {
+      name: catalog['search.filters.label'].message,
+    });
+    /* Unbuilt is the one treatment that leaves the tab order. A denied control
+     * stays focusable precisely so a keyboard user can reach it and read the
+     * reason; an unbuilt one has no reason to read. */
+    expect(control.tabIndex).toBe(-1);
+  });
 
-    fireEvent.click(remove);
+  it('never carries the denial treatment', () => {
+    const { container } = renderScreen();
 
+    const control = screen.getByRole('button', {
+      name: catalog['search.filters.label'].message,
+    });
+    // Positive control: the button rendered, so the absences below mean something.
+    expect(control).toBeTruthy();
+
+    expect(control.getAttribute('data-state')).not.toBe('denied');
+    expect(container.querySelector('.ui-denial')).toBeNull();
+  });
+
+  it('writes no filter into the URL, because no filter can be applied', () => {
+    renderScreen();
+
+    expect(screen.queryByRole('button', { name: /Change the Classification filter/ })).toBeNull();
     expect(currentParams().get('classification')).toBeNull();
-    // `replaceParams` replaces the whole query string, so this is the assertion
-    // that a chip clearing itself cannot silently drop its neighbours.
-    expect(currentParams().get('type')).toBe('pdf');
-    expect(currentParams().get('q')).toBe('agreement');
-  });
-
-  it('offers no remove control on a chip that is not narrowing anything', () => {
-    renderScreen();
-
-    // Positive control: the chip exists and can be opened…
-    expect(screen.getByRole('button', { name: /Change the Workspace filter/ })).toBeTruthy();
-    // …and only then is its lack of a ✕ meaningful.
-    expect(screen.queryByRole('button', { name: 'Remove the Workspace filter' })).toBeNull();
   });
 
   it('keeps the query in the URL as it is typed', () => {

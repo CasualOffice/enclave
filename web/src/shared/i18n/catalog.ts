@@ -141,6 +141,16 @@ export const catalog = {
   },
   'theme.light': { message: 'Light', description: 'Theme toggle: the light theme.' },
   'theme.dark': { message: 'Dark', description: 'Theme toggle: the dark theme.' },
+  'search.filters.label': {
+    message: 'Filters',
+    description:
+      'The search filter control. Renders under the unbuilt treatment: the search endpoint refuses every narrowing filter with a 400, and filtering client-side would narrow what is shown without narrowing what was searched.',
+  },
+  'search.filters.unbuilt': {
+    message: 'Narrowing a search arrives once the API accepts filters',
+    description:
+      'Release note for the unbuilt search filters, reached through aria-describedby. Future tense, about the product. Never a permission refusal.',
+  },
   'library.title': {
     message: 'Files',
     description:
@@ -344,7 +354,7 @@ export const catalog = {
   },
   'library.peek.obligation.watermark': {
     message: 'Watermarked',
-    description: 'Obligation: any rendered copy carries a visible watermark.',
+    description: 'Obligation: every rendered copy carries a visible watermark.',
   },
   'library.peek.obligation.justification': {
     message:
