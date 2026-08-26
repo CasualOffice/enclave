@@ -79,6 +79,12 @@ struct Harness {
     fixtures: Fixtures,
     db: TestDb,
     tokens: Arc<dyn TokenService>,
+    /// The store itself, for the one test whose property is the store's and not the service's.
+    ///
+    /// `k3_two_concurrent_rotations…` has to hold a barrier open *between* the lookup and the
+    /// write, and `TokenService::refresh` does both inside one call. Reaching for the store there
+    /// is not a shortcut around the service; it is the only place the window exists.
+    store: Arc<PgRefreshTokenStore>,
 }
 
 /// Builds the router with the PostgreSQL stores behind it.
@@ -144,8 +150,15 @@ async fn harness() -> Harness {
         Arc::new(enclave_audit::PgAuditSink::new(pool.clone(), enclave_audit::ChainMode::Enabled)),
     );
 
+    let store = Arc::new(PgRefreshTokenStore::new(pool.clone()));
     let state = ApiState::new(policy, pool, ISSUER, AUDIENCE, key_set).with_auth(surface);
-    Harness { app: router(state, enclave_api::Delivery::unconfigured()), fixtures, db, tokens }
+    Harness {
+        app: router(state, enclave_api::Delivery::unconfigured()),
+        fixtures,
+        db,
+        tokens,
+        store,
+    }
 }
 
 /// Gives every seeded user a password credential.
@@ -361,32 +374,37 @@ async fn k3_a_rotation_consumes_the_old_row_and_inserts_the_successor() {
     );
 }
 
-/// **K3's real content.** Two concurrent refreshes of one token: exactly one succeeds.
+/// **K3's real content.** Two rotations that both read the token before either writes.
 ///
 /// This is the property the in-memory store cannot say anything about, and the reason
 /// `InMemoryRefreshStore` documents itself as *"not a substitute for the PostgreSQL
 /// implementation: `rotate` here is atomic because a `Mutex` makes it so, which proves nothing
 /// about the transaction the real store must use."*
 ///
-/// Both callers pass `classify` — the row is unconsumed when each of them reads it — so nothing in
-/// Rust separates them. What does is the `consumed_at IS NULL` predicate inside the `UPDATE`: the
-/// second transaction blocks on the row lock, re-evaluates the predicate against the committed
-/// value, and matches zero rows. Delete that predicate and this test is the only thing in the
-/// workspace that notices; the sequential tests all still pass, because sequentially the
-/// classification has already refused.
+/// # Why the barrier is where it is
 ///
-/// A `Barrier` and not two `spawn`s in sequence, for `docs/12-TESTING.md §4.4` H3's reason: two
-/// tasks started one after another are a sequential test wearing `tokio::spawn`.
+/// The first version of this test raced two `TokenService::refresh` calls and **passed against a
+/// broken store** — because `refresh` looks the token up and then rotates it, so the loser's
+/// lookup saw `consumed_at` already set and `classify` refused it before `rotate` was ever
+/// reached. It was measuring the classification, which is pure Rust, and the sequential tests
+/// already cover that.
+///
+/// So both contenders look the row up *first*, meet at a barrier, and only then call `rotate`.
+/// That is `docs/12-TESTING.md §4.4` H3's arrangement — *the difference between a concurrency test
+/// and a sequential one wearing `tokio::spawn`* — and it puts the barrier in the one window where
+/// the store is the only thing deciding.
+///
+/// What decides is the `consumed_at IS NULL` predicate inside the `UPDATE`: the second transaction
+/// blocks on the row lock, re-evaluates the predicate against the committed value, and matches zero
+/// rows. Delete that predicate and both callers commit a successor.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires a live PostgreSQL; CI runs it with --include-ignored"]
 async fn k3_two_concurrent_rotations_of_one_token_produce_exactly_one_successor() {
-    use sqlx::Row as _;
+    use enclave_auth::RefreshTokenStore as _;
 
     let harness = harness().await;
     let alpha = &harness.fixtures.alpha;
 
-    // Driven through the service rather than the router, because what is being raced is the store
-    // and the router would serialise nothing useful for us.
     let pair = harness
         .tokens
         .issue_pair(&enclave_auth::AuthContext {
@@ -404,21 +422,39 @@ async fn k3_two_concurrent_rotations_of_one_token_produce_exactly_one_successor(
         .await
         .expect("issue");
     let presented = pair.refresh_token.expect("a web session gets a refresh token");
+    let digest = presented.digest().to_hex();
     let family = pair.session_id;
 
     let barrier = Arc::new(tokio::sync::Barrier::new(2));
     let mut handles = Vec::new();
     for _ in 0_u8..2 {
-        let tokens = Arc::clone(&harness.tokens);
-        // Two independent `RefreshToken`s holding the same secret: the type is not `Clone`, on
-        // purpose, so the value is rebuilt from its digest source rather than copied around.
-        let secret = presented.expose().to_owned();
+        let store = Arc::clone(&harness.store);
+        let digest = digest.clone();
         let barrier = Arc::clone(&barrier);
         handles.push(tokio::spawn(async move {
-            let token = enclave_auth::RefreshToken::parse(&secret).expect("a token this process minted parses");
-            // Neither task may start before both are ready to.
+            // Both contenders read the row while it is still unconsumed. Nothing in Rust separates
+            // them from here on.
+            let record = store
+                .find_by_hash(&digest)
+                .await
+                .expect("the lookup must succeed")
+                .expect("the row this test just wrote");
+            assert!(record.consumed_at.is_none(), "both contenders must read a live row");
+
+            let successor = enclave_auth::RefreshRecord {
+                id: Uuid::new_v4(),
+                token_hash: enclave_auth::RefreshToken::generate()
+                    .expect("entropy")
+                    .digest()
+                    .to_hex(),
+                parent_id: Some(record.id),
+                issued_at: Utc::now(),
+                expires_at: Utc::now() + Duration::days(14),
+                ..record.clone()
+            };
+
             barrier.wait().await;
-            tokens.refresh(&token, &enclave_core::NetworkContext::unknown()).await.is_ok()
+            store.rotate(record.id, successor, Utc::now()).await.is_ok()
         }));
     }
 
@@ -443,27 +479,27 @@ async fn k3_two_concurrent_rotations_of_one_token_produce_exactly_one_successor(
     .fetch_one(&mut conn)
     .await
     .expect("query");
-    // Either one successor (the winner rotated and the loser was rejected) or none (the loser was
-    // classified as a replay and destroyed the family). Both are correct; two is not.
-    assert!(live <= 1, "{live} tokens are live in one family after a concurrent rotation");
+    assert_eq!(live, 1, "{live} tokens are live in one family after a concurrent rotation");
 
     let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM refresh_tokens WHERE session_id = $1")
         .bind(family.as_uuid())
         .fetch_one(&mut conn)
         .await
         .expect("query");
-    assert_eq!(rows, 2, "one loser must have inserted nothing: the original and one successor");
+    assert_eq!(
+        rows, 2,
+        "the loser must have inserted nothing: the original and exactly one successor"
+    );
 
-    // The positive control for both counts: the family exists at all, so this is not passing
-    // against a race that failed to write anything.
-    let consumed: i64 = sqlx::query(
-        "SELECT count(*) AS n FROM refresh_tokens WHERE session_id = $1 AND consumed_at IS NOT NULL",
+    // The positive control for both counts: the presented row *was* consumed, so this is not
+    // passing against a race in which neither contender did anything.
+    let consumed: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM refresh_tokens WHERE session_id = $1 AND consumed_at IS NOT NULL",
     )
     .bind(family.as_uuid())
     .fetch_one(&mut conn)
     .await
-    .expect("query")
-    .get("n");
+    .expect("query");
     assert_eq!(consumed, 1, "the presented token was consumed exactly once");
 }
 
@@ -578,34 +614,93 @@ async fn the_token_epoch_is_re_read_at_rotation_rather_than_copied_forward() {
 /// `absolute_expires_at - absolute_ttl`, and this is the assertion that the two agree about the
 /// lifetime. A provider configured with a different `absolute_ttl` than the issuer would report an
 /// authentication time that never happened, and nothing else would notice.
+///
+/// # It takes an aged family *and* two rotations, and both are the point
+///
+/// This test was written twice before it held anything, and both failures are worth recording
+/// because they are the same mistake in two disguises.
+///
+/// 1. A sign-in followed immediately by one rotation cannot distinguish `auth_time` from anything:
+///    the authentication, the row's `issued_at` and the current instant are all the same second. It
+///    passed against a provider returning `record.issued_at`.
+/// 2. Ageing the family fixes the *instant* but not the *row*: on a **first** rotation the
+///    presented row is the original one, whose `issued_at` genuinely is the authentication. Ageing
+///    moves both together, so `record.issued_at` was still the right answer by accident.
+///
+/// The difference only exists from the second rotation onwards, where the presented row is a
+/// successor issued long after the login. So: age the family by an hour, rotate once — producing a
+/// successor stamped *now* — and rotate again. Now `record.issued_at` is an hour away from the
+/// authentication and only one of the two candidate values is correct.
 #[tokio::test]
 #[ignore = "requires a live PostgreSQL; CI runs it with --include-ignored"]
 async fn auth_time_is_unchanged_by_a_rotation() {
     let harness = harness().await;
     let alpha = &harness.fixtures.alpha;
     let session = sign_in(&harness, &alpha.slug, &format!("owner@{}.example", alpha.slug)).await;
-    let before = claim_i64(&session.access_token, "auth_time");
+    let at_login = claim_i64(&session.access_token, "auth_time");
 
-    let response =
+    // Age the whole family by an hour, consistently: `absolute_expires_at` is anchored to the
+    // authentication, so a fixture that moved one and not the other would be asserting against a
+    // row the issuer could not have written.
+    let mut conn = harness.db.connect().await.expect("connect");
+    sqlx::query(
+        "UPDATE refresh_tokens
+            SET issued_at = issued_at - interval '1 hour',
+                absolute_expires_at = absolute_expires_at - interval '1 hour'
+          WHERE session_id = $1",
+    )
+    .bind(Uuid::parse_str(&session.session_id).expect("a uuid"))
+    .execute(&mut conn)
+    .await
+    .expect("age the family");
+
+    // First rotation: the presented row is the original, whose `issued_at` *is* the authentication.
+    // Its successor is stamped now, an hour later.
+    let first =
         harness.app.clone().oneshot(refresh_request(&alpha.slug, &session)).await.expect("response");
+    assert_eq!(first.status(), StatusCode::OK, "positive control: the aged family still refreshes");
+    let cookies = set_cookies(&first);
+    let second_session = Session {
+        access_token: String::new(),
+        refresh: cookie_value(cookie_named(&cookies, "enclave_rt").expect("a refresh cookie"))
+            .to_owned(),
+        csrf: cookie_value(cookie_named(&cookies, "enclave_csrf").expect("a CSRF cookie"))
+            .to_owned(),
+        session_id: session.session_id.clone(),
+    };
+
+    // Second rotation: the presented row is that successor, and the two candidate values are now
+    // an hour apart.
+    let response = harness
+        .app
+        .clone()
+        .oneshot(refresh_request(&alpha.slug, &second_session))
+        .await
+        .expect("response");
     assert_eq!(response.status(), StatusCode::OK);
     let body = json_body(response).await;
     let rotated = body["accessToken"].as_str().expect("an access token");
-
     let after = claim_i64(rotated, "auth_time");
-    // A second of tolerance: the two are derived from a timestamp PostgreSQL rounded to
-    // microseconds, so exact equality would be asserting the driver's precision rather than the
-    // property.
+
+    // An hour before the sign-in claim, because that is where the fixture put the authentication.
+    // One second of tolerance: both values are derived from timestamps PostgreSQL rounded to
+    // microseconds, so exact equality would be asserting the driver's precision.
+    let expected = at_login - 3_600;
+    let issued = claim_i64(rotated, "iat");
     assert!(
-        (after - before).abs() <= 1,
-        "auth_time moved from {before} to {after}: a rotation must not restart the clock a \
-         max-age policy measures from"
+        (after - expected).abs() <= 1,
+        "auth_time is {after}, expected {expected}: a rotation must report the authentication and \
+         not the rotation. A provider returning the presented row's issued_at would report a value \
+         near iat, which is {issued}"
     );
-    // The positive control: `iat` *did* move, so the assertion above is not passing against two
-    // identical tokens.
+
+    // The positive control, so the assertion above is not passing against a token with no claims:
+    // `iat` is *now* and therefore about an hour later than `auth_time`, which is the whole
+    // distinction being drawn.
     assert!(
-        claim_i64(rotated, "iat") >= claim_i64(&session.access_token, "iat"),
-        "the rotated token is a new token"
+        issued - after >= 3_500,
+        "iat {issued} and auth_time {after} must be an hour apart, or the fixture did not age \
+         anything and this test proves nothing"
     );
 }
 
