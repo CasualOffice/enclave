@@ -665,7 +665,9 @@ pub async fn cancel(
         Err(error) => return refuse(&state, &ctx, GOVERN_ACTION, &resource, error).await,
     };
 
-    apply(&state, &ctx, &plan, request_id).await?;
+    if let Err(error) = apply(&state, &ctx, &plan).await {
+        return refuse(&state, &ctx, GOVERN_ACTION, &resource, error).await;
+    }
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -772,7 +774,9 @@ pub async fn delegate(
         Err(error) => return refuse(&state, &ctx, DECIDE_ACTION, &resource, error).await,
     };
 
-    apply(&state, &ctx, &plan, request_id).await?;
+    if let Err(error) = apply(&state, &ctx, &plan).await {
+        return refuse(&state, &ctx, DECIDE_ACTION, &resource, error).await;
+    }
     delegated(&ctx, step, actor, to);
     Ok(StatusCode::NO_CONTENT.into_response())
 }
@@ -869,14 +873,18 @@ async fn decide(
             // request that was refused, so the row and the answer agree. See
             // `enclave_workflows::WorkflowError::Superseded`.
             Err(WorkflowError::Superseded(expiry)) => {
-                apply(&state, &ctx, &expiry, request_id).await?;
+                if let Err(error) = apply(&state, &ctx, &expiry).await {
+                    return refuse(&state, &ctx, DECIDE_ACTION, &resource, error).await;
+                }
                 superseded(&ctx, facts.id);
                 return Ok(refusal_envelope(Refusal::VersionSuperseded).into_response(request_id));
             }
             Err(error) => return refuse(&state, &ctx, DECIDE_ACTION, &resource, error).await,
         };
 
-    apply(&state, &ctx, &plan, request_id).await?;
+    if let Err(error) = apply(&state, &ctx, &plan).await {
+        return refuse(&state, &ctx, DECIDE_ACTION, &resource, error).await;
+    }
     decided(&ctx, step, actor, decision);
     Ok(StatusCode::NO_CONTENT.into_response())
 }
@@ -928,20 +936,31 @@ async fn load_step_instance(
 }
 
 /// Applies a plan in its own transaction.
-async fn apply(
-    state: &ApiState,
-    ctx: &RequestContext,
-    plan: &Plan,
-    request_id: RequestId,
-) -> Result<(), ApiError> {
+///
+/// # A refusal raised by a *statement* is still a refusal
+///
+/// `enclave_workflows::repo::apply` can refuse: its delegation statement carries
+/// `WHERE delegated_to IS NULL`, so the loser of two concurrent transfers changes no rows and gets
+/// [`Refusal::AlreadyDelegated`] — the same answer the snapshot check in
+/// `enclave_workflows::authority` gives, from the layer that survives concurrency.
+///
+/// `ENC-739` shipped this returning [`WorkflowError`] and rendering **everything** it could not
+/// recognise as a `500`, which turned that refusal into an internal error. Found by deliberately
+/// removing the snapshot check and watching the integration test fail with `500` where it expected
+/// `403` — the bound held, and the caller was told the server was broken. So the error travels back
+/// out and every caller routes it through [`refuse`], which is the module's single conversion and
+/// already knows the difference between a denial, a conflict and a fault.
+///
+/// # Errors
+///
+/// [`WorkflowError`], for the caller to hand to [`refuse`].
+async fn apply(state: &ApiState, ctx: &RequestContext, plan: &Plan) -> Result<(), WorkflowError> {
     if plan.is_empty() {
         return Ok(());
     }
-    let mut tx = state.db.begin(ctx.tenant_id).await.map_err(|e| api(e.into(), request_id))?;
-    if let Err(error) = enclave_workflows::repo::apply(&mut tx, plan).await {
-        return workflow_write(error, request_id).map(|_| ());
-    }
-    tx.commit().await.map_err(|e| api(e.into(), request_id))?;
+    let mut tx = state.db.begin(ctx.tenant_id).await?;
+    enclave_workflows::repo::apply(&mut tx, plan).await?;
+    tx.commit().await?;
     Ok(())
 }
 
