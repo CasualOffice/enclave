@@ -1,6 +1,6 @@
 # 12 — Testing & Quality Gates
 
-> **Status:** Draft · **Version:** 1.15 · **Owner:** Engineering · **Last updated:** 2026-08-22
+> **Status:** Draft · **Version:** 1.16 · **Owner:** Engineering · **Last updated:** 2026-08-27
 > **Authoritative for:** test strategy, the security leakage matrix, CI gates, release criteria.
 
 ## 1. Philosophy
@@ -235,20 +235,37 @@ the suite.
 
 ### 4.9 Workflows and signing
 
-Full rows in `15-WORKFLOWS-AND-SIGNING.md §12`; they run in this suite.
+Full rows in `15-WORKFLOWS-AND-SIGNING.md §12`; they run in this suite. `W1`–`W4` and `W6`–`W12`
+are implemented by `ENC-739` in `crates/api/tests/workflows.rs` and `crates/workflows`'s own unit
+tests; the named test is given so a reader can find the assertion rather than trust the row.
 
-| # | Assertion |
-|---|---|
-| W1 | A workflow cannot grant an actor access they do not independently hold |
-| W2 | Self-approval is rejected unless explicitly enabled |
-| W3 | A new version invalidates in-flight approvals by default |
-| W5 | `AUTOMATION` steps cannot invoke anything outside the allowlist |
-| N1 | The bytes presented to the signer hash to `sealed_sha256`; a mismatch aborts |
-| N2 | A signing token is single-use, single-document and expires |
-| N4 | Post-signature modification makes verification report `DOCUMENT_MODIFIED` |
-| N5 | A private key is never transmitted to the server in `DIGITAL_SIGNER_CERT` mode |
-| N6 | A `RESTRICTED` document is not sent to a non-permitted external provider |
-| N7 | Verification succeeds offline from embedded LTV material |
+**Which layer each cross-tenant row proves.** `W6` and the `beta_*` tests generally prove
+row-level security and the composite keys, and they prove **nothing** about authorization: deleting
+a `tenant_id` predicate from `enclave_workflows::repo` leaves them green, because RLS holds that
+property alone. This has now been found in seven separate crates. The authorization rows are `W1`,
+`W7` and `W10`, and every one of them uses a **same-tenant** caller who holds every ACL grant the
+endpoint asks the chain about — so RLS is satisfied and cannot mask the result.
+
+| # | Assertion | Where |
+|---|---|---|
+| W1 | A workflow cannot grant an actor access they do not independently hold | `a_step_cannot_be_delegated_to_somebody_who_cannot_read_the_file` |
+| W2 | Self-approval is rejected unless explicitly enabled | `self_approval_is_refused_by_default_and_permitted_only_when_the_definition_says_so` |
+| W3 | A new version invalidates in-flight approvals by default | `a_superseded_version_expires_the_workflow_unless_the_definition_pinned_continue` |
+| W4 | Duplicate trigger events create exactly one instance | `starting_the_same_workflow_twice_on_one_version_creates_exactly_one_instance` |
+| W5 | `AUTOMATION` steps cannot invoke anything outside the allowlist | Vacuous by construction and recorded as such: `workflow_steps.step_type` has no `AUTOMATION` value, so no such step can be stored, let alone run (`migrations/0024`, `ENC-745`). `the_step_type_vocabulary_round_trips_through_the_stored_spelling` asserts the absence |
+| W6 | Another tenant can neither read an instance nor act on any of its steps, and gets `404` rather than `403` | `beta_cannot_see_or_act_on_alphas_workflow` — **RLS layer** |
+| W7 | Holding the file confers no right to decide a step about it: a colleague with every ACL grant is refused a step that is not theirs | `a_colleague_who_can_read_the_file_still_cannot_approve_somebody_elses_step` |
+| W8 | A step is delegated at most once; the delegate cannot pass it on, and the original assignee cannot reclaim it by delegating again | `a_step_is_delegated_once_and_the_delegate_cannot_pass_it_on`, plus `a_step_may_be_delegated_once_and_never_onward` and `the_delegation_statement_is_conditional_on_there_being_no_delegate_yet` for the two layers a behavioural test cannot separate |
+| W9 | The task inbox never renders a file the caller may not read; the step is absent, not refused | `the_task_inbox_shows_only_the_holders_own_steps_and_drops_files_they_cannot_see` |
+| W10 | Cancelling requires the initiator or an owner *and* a reason, and it does not rewrite decisions already made | `cancelling_needs_a_reason_and_an_owner_and_keeps_the_approvals_already_made` |
+| W11 | `simulate` mutates nothing, and the identical input really executed does — the absence is paired with its control | `simulate_writes_nothing_and_a_real_start_writes_everything` |
+| W12 | `simulate` and a real start answer one caller identically: a rehearsal cannot succeed where the run would fail (`plans/M4-GOVERNANCE.md` D28) | `a_colleague_who_cannot_start_a_workflow_cannot_simulate_one_either`, plus `simulate_and_start_are_authorized_identically` for the shape a behavioural test cannot see |
+| N1 | The bytes presented to the signer hash to `sealed_sha256`; a mismatch aborts |  |
+| N2 | A signing token is single-use, single-document and expires |  |
+| N4 | Post-signature modification makes verification report `DOCUMENT_MODIFIED` |  |
+| N5 | A private key is never transmitted to the server in `DIGITAL_SIGNER_CERT` mode |  |
+| N6 | A `RESTRICTED` document is not sent to a non-permitted external provider |  |
+| N7 | Verification succeeds offline from embedded LTV material |  |
 
 ### 4.10 Audit
 

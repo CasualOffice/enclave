@@ -1,6 +1,6 @@
 -- 0024 — workflows: definitions, instances and steps.
 --   docs/15-WORKFLOWS-AND-SIGNING.md §2 (the model), §3 (step types), §4 (lifecycle) and §7 (the
---   data model) are authoritative for what a workflow *is*. docs/04-DATA-MODEL.md §17 carries the
+--   data model) are authoritative for what a workflow *is*. docs/04-DATA-MODEL.md §13.1 carries the
 --   reconciled shape. `ENC-739`.
 --
 -- `crates/workflows/src/lib.rs` was five lines and `docs/05-API.md §16` documented eight endpoints
@@ -193,7 +193,7 @@ CREATE INDEX IF NOT EXISTS idx_workflow_definitions_scope
     WHERE enabled;
 
 COMMENT ON TABLE workflow_definitions IS
-    'Workflow templates (docs/04 §17.1, docs/15 §2 and §7, ENC-739). There is deliberately no trigger column: docs/15 §5 has five trigger kinds and none is evaluated, so a stored trigger document would be a promise the engine does not keep (ENC-745, migrations/0021''s argument).';
+    'Workflow templates (docs/04 §13.1, docs/15 §2 and §7, ENC-739). There is deliberately no trigger column: docs/15 §5 has five trigger kinds and none is evaluated, so a stored trigger document would be a promise the engine does not keep (ENC-745, migrations/0021''s argument).';
 
 COMMENT ON COLUMN workflow_definitions.scope_id IS
     'The workspace or library the scope names, NULL exactly for TENANT scope. Deliberately carries no foreign key: the referent depends on scope_type, and crates/workflows resolves it by comparing against the target file''s own workspace_id/library_id, which fails closed when the scope names nothing.';
@@ -307,7 +307,7 @@ CREATE INDEX IF NOT EXISTS idx_workflow_instances_resource
     ON workflow_instances (tenant_id, resource_id, started_at DESC);
 
 COMMENT ON TABLE workflow_instances IS
-    'One running workflow, bound to one immutable version (docs/04 §17.2, docs/15 §2 and §7, ENC-739). version_id is NOT NULL where docs/15 §7 has it nullable: §2.1''s first core property is that an approval approves what was actually reviewed, and a nullable column is how an instance bound to no version gets created.';
+    'One running workflow, bound to one immutable version (docs/04 §13.1, docs/15 §2 and §7, ENC-739). version_id is NOT NULL where docs/15 §7 has it nullable: §2.1''s first core property is that an approval approves what was actually reviewed, and a nullable column is how an instance bound to no version gets created.';
 
 COMMENT ON COLUMN workflow_instances.allow_self_approval IS
     'Pinned from the definition at start, with delegation and on_new_version. A definition is a template, not a live authority: without the pin, one UPDATE on a template would make every in-flight approval under it self-approvable, with nothing recording that the terms changed mid-flight (docs/15 §2, determinism).';
@@ -434,7 +434,7 @@ CREATE INDEX IF NOT EXISTS idx_workflow_steps_instance
     ON workflow_steps (tenant_id, instance_id, stage, position);
 
 COMMENT ON TABLE workflow_steps IS
-    'One row per assignee per step position (docs/04 §17.3, docs/15 §2, §3 and §7, ENC-739). A quorum is therefore a count over (instance_id, stage, position) rather than a field somebody keeps in step with reality. step_type omits AUTOMATION and CONDITION: docs/15 §3 defines both, neither has an evaluator, and such a step would instantiate ASSIGNED and stall the instance with nobody able to decide it (ENC-745).';
+    'One row per assignee per step position (docs/04 §13.1, docs/15 §2, §3 and §7, ENC-739). A quorum is therefore a count over (instance_id, stage, position) rather than a field somebody keeps in step with reality. step_type omits AUTOMATION and CONDITION: docs/15 §3 defines both, neither has an evaluator, and such a step would instantiate ASSIGNED and stall the instance with nobody able to decide it (ENC-745).';
 
 COMMENT ON COLUMN workflow_steps.decided_by IS
     'Who actually decided — docs/15 §4''s acted_on_behalf_of, stored where the decision is. Not in docs/15 §7, and required by it: with only delegated_to, an APPROVED step cannot distinguish the assignee deciding before delegating from the delegate deciding.';
