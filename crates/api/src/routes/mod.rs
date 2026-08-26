@@ -1,9 +1,9 @@
-//! Route modules that own more than one endpoint.
+//! Route modules.
 //!
-//! The older handlers each have a module at the crate root, one per endpoint family. This
-//! directory exists because `ENC-719`–`ENC-721` land three endpoints that share one set of
-//! invariants — they are the three delivery verbs of `CLAUDE.md` rule 6 that had no HTTP surface —
-//! and splitting them across three root modules would put the reasoning about *why they must stay
-//! distinct* in whichever of the three a reader happened to open first.
+//! The oldest handlers each have a module at the crate root, one per endpoint family; newer ones
+//! live here. [`delivery`] holds all three of `ENC-719`–`ENC-721` together rather than one module
+//! per route, because what they share is the reasoning about why they must stay *apart* — three
+//! separate modules would leave `CLAUDE.md` rule 6's argument in whichever of them a reader
+//! happened to open first.
 
 pub mod delivery;
