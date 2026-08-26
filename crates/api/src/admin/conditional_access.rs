@@ -72,8 +72,8 @@ use enclave_conditional_access::{
     TenantConditionalAccess,
 };
 use enclave_core::{
-    Action, Actor, AdminAction, AuthStrength, Error, RequestContext, RequestId, ResourceRef,
-    TenantId, UserId, ValidationCode,
+    Action, Actor, AdminAction, Error, RequestContext, RequestId, ResourceRef, TenantId, UserId,
+    ValidationCode,
 };
 use enclave_db::{DbError, RuleId, RuleRow};
 use serde::{Deserialize, Serialize};
@@ -83,18 +83,6 @@ use crate::error::{ApiError, Envelope, NO_STORE};
 use crate::refusal::{none_dischargeable, Refused};
 use crate::state::ApiState;
 use crate::state::StepUpPolicy;
-
-/// How recently a privileged mutation's caller must have authenticated.
-///
-/// `docs/05-API.md §14`: an access token whose `acr` is `mfa` and whose `auth_time` is within the
-/// configured step-up window, default fifteen minutes, for the privileged mutations
-/// `docs/06 §22` lists — and *changing conditional access* is on that list.
-///
-/// A constant rather than a configuration key because `enclave_config` carries no step-up section
-/// and adding one touches a file this change does not own (`ENC-621`). Fifteen minutes is the
-/// documented default, so the constant is the documented behaviour rather than a guess. In seconds,
-/// because `chrono::TimeDelta`'s constructors are not `const`.
-const STEP_UP_MAX_AGE_SECS: i64 = 15 * 60;
 
 /// The action every write on this surface is authorized as.
 ///
@@ -927,7 +915,9 @@ mod tests {
     #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
     use enclave_conditional_access::{Effect, HumanCondition, MachineCondition};
-    use enclave_core::{ActorKind, ClientType, DevicePosture, ServiceAccountId, TenantId, UserId};
+    use enclave_core::{
+        ActorKind, AuthStrength, ClientType, DevicePosture, ServiceAccountId, TenantId, UserId,
+    };
 
     use super::*;
 
@@ -1146,13 +1136,14 @@ mod tests {
 
         let mut single = admin(tenant);
         single.auth_strength = AuthStrength::SingleFactor;
-        let refusal = require_step_up(&single).expect_err("one factor is not recent MFA");
+        let refusal = require_step_up(&single, StepUpPolicy::Required { max_age_secs: 900 })
+            .expect_err("one factor is not recent MFA");
         assert_eq!(refusal.status(), StatusCode::FORBIDDEN);
         assert_eq!(refusal.code(), "STEP_UP_REQUIRED");
 
         let mut stale = admin(tenant);
         stale.auth_time = chrono::Utc::now() - chrono::TimeDelta::minutes(16);
-        assert!(require_step_up(&stale).is_err());
+        assert!(require_step_up(&stale, StepUpPolicy::Required { max_age_secs: 900 }).is_err());
     }
 
     /// A rule is attributed to a person, because the column is `NOT NULL` and a service account has

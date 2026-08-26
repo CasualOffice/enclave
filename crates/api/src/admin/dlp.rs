@@ -75,8 +75,8 @@ use axum::response::{IntoResponse as _, Response};
 use axum::Json;
 use enclave_core::Exposure;
 use enclave_core::{
-    Action, Actor, AdminAction, AuthStrength, Error, RequestContext, RequestId, ResourceRef,
-    TenantId, UserId, ValidationCode,
+    Action, Actor, AdminAction, Error, RequestContext, RequestId, ResourceRef, TenantId, UserId,
+    ValidationCode,
 };
 use enclave_db::{DbError, DlpRuleId, DlpRuleRow};
 use enclave_dlp::{decode_rule, encode_rule, DlpRule, DlpRuleError, TenantDlp};
@@ -87,18 +87,6 @@ use crate::error::{ApiError, Envelope, NO_STORE};
 use crate::refusal::{none_dischargeable, Refused};
 use crate::state::ApiState;
 use crate::state::StepUpPolicy;
-
-/// How recently a privileged mutation's caller must have authenticated.
-///
-/// `docs/06 §22` lists *disabling or weakening DLP* among the operations needing recent MFA plus
-/// audit, and writing a rule is the same surface: the rule that is not written is the refusal that
-/// does not happen. Fifteen minutes is `docs/05-API.md §14`'s documented default.
-///
-/// A second constant rather than one shared with [`super::conditional_access`], deliberately kept
-/// where a reader of either module meets it: the value is the same and the *reason* is per-surface,
-/// and `ENC-620` moves both into the conditional-access stage where they can be audited as the
-/// denials they are.
-const STEP_UP_MAX_AGE_SECS: i64 = 15 * 60;
 
 /// The action every write on this surface is authorized as.
 ///
@@ -823,7 +811,7 @@ mod tests {
     // Assertions are the point of a test; the workspace warns on these in non-test code.
     #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
-    use enclave_core::{ClientType, FileAction, ServiceAccountId, TenantId, UserId};
+    use enclave_core::{AuthStrength, ClientType, FileAction, ServiceAccountId, TenantId, UserId};
     use enclave_dlp::{ActionScope, Condition, DlpAction};
 
     use super::*;
@@ -1126,13 +1114,14 @@ mod tests {
 
         let mut single = admin(tenant);
         single.auth_strength = AuthStrength::SingleFactor;
-        let refusal = require_step_up(&single).expect_err("one factor is not recent MFA");
+        let refusal = require_step_up(&single, StepUpPolicy::Required { max_age_secs: 900 })
+            .expect_err("one factor is not recent MFA");
         assert_eq!(refusal.status(), StatusCode::FORBIDDEN);
         assert_eq!(refusal.code(), "STEP_UP_REQUIRED");
 
         let mut stale = admin(tenant);
         stale.auth_time = chrono::Utc::now() - chrono::TimeDelta::minutes(16);
-        assert!(require_step_up(&stale).is_err());
+        assert!(require_step_up(&stale, StepUpPolicy::Required { max_age_secs: 900 }).is_err());
     }
 
     /// A rule is attributed to a person, because the column is `NOT NULL` onto `users`.
