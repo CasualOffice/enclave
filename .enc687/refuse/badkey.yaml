@@ -1,0 +1,22 @@
+# Scratch configuration for the ENC-687 end-to-end proof. Not committed.
+# Every credential here is a reference, never a value (CLAUDE.md rule 11).
+profile: community
+
+server:
+  bind: "127.0.0.1"
+  port: 8096
+
+database:
+  url_env: "DATABASE_URL"
+  platform_url_env: "DATABASE_PLATFORM_URL"
+  application_role: "enclave"
+
+auth:
+  access_token:
+    issuer: "https://enclave.test"
+    audience: "enclave-api"
+  signing_keys:
+    key_ref: "env://ENC687_BAD_KEY"
+    directory: ".enc687/dev-keys"
+
+metrics: {}

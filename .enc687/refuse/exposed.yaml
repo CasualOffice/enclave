@@ -1,0 +1,23 @@
+# Scratch configuration for the ENC-687 end-to-end proof. Not committed.
+# Every credential here is a reference, never a value (CLAUDE.md rule 11).
+profile: community
+
+server:
+  bind: "0.0.0.0"
+  port: 8097
+
+database:
+  url_env: "DATABASE_URL"
+  platform_url_env: "DATABASE_PLATFORM_URL"
+  application_role: "enclave"
+
+auth:
+  access_token:
+    issuer: "https://enclave.test"
+    audience: "enclave-api"
+  signing_keys:
+    # No key_ref: community profile on a loopback bind, so the development provider
+    # generates one under this directory.
+    directory: ".enc687/dev-keys"
+
+metrics: {}

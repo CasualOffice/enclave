@@ -45,6 +45,33 @@ pub(crate) enum Command {
 
     /// Check the database the way someone does when the stack "doesn't work". Read-only.
     Doctor,
+
+    /// Set an account's password, reading it from standard input.
+    ///
+    /// The command a deployment needs to get its first sign-in: `seed` writes users and nothing has
+    /// ever written a `user_credentials` row, so every seeded account correctly answers `401`
+    /// (`ENC-687`).
+    SetPassword(SetPasswordArgs),
+}
+
+/// Arguments for `set-password`.
+///
+/// **There is deliberately no `--password` flag.** This binary already refuses `--database-url`
+/// because a command line lands in shell history and in `ps` output for every user on the machine,
+/// and a password is a stronger case for the same rule, not a weaker one. The value comes from
+/// stdin and there is nothing here to reach for instead.
+#[derive(Debug, Args)]
+pub(crate) struct SetPasswordArgs {
+    /// The tenant's slug, as `seed` writes it and as the routing host uses it.
+    ///
+    /// A slug and not a UUID: the operator has the hostname in front of them, and a UUID typed from
+    /// a different terminal is how a password gets set on the wrong tenant's account.
+    #[arg(long, value_name = "SLUG")]
+    pub(crate) tenant: String,
+
+    /// The account's email address. Normalised the way the login path normalises it.
+    #[arg(long, value_name = "EMAIL")]
+    pub(crate) email: String,
 }
 
 /// Arguments for `seed`.
@@ -159,6 +186,58 @@ mod tests {
             "{:?}",
             err.kind()
         );
+    }
+
+    /// The whole point of the command's shape: there is no way to put a password on the command
+    /// line, so nobody can.
+    ///
+    /// A doc comment saying "pipe it in" is advice. This is the mechanism, and it is asserted
+    /// against the three spellings somebody would actually try.
+    #[test]
+    fn a_password_cannot_be_passed_as_an_argument() {
+        for flag in ["--password", "--pass", "-p"] {
+            let err = parse(&[
+                "enclave-cli",
+                "set-password",
+                "--tenant",
+                "tenant-alpha",
+                "--email",
+                "owner@tenant-alpha.example",
+                flag,
+                "whatever-was-typed",
+            ])
+            .expect_err("a password on the command line is visible in `ps` to every local user");
+            assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument, "{flag}");
+        }
+
+        // The positive control: without that flag the same command parses, so the four refusals
+        // above are about the flag and not about the command being unreachable.
+        let cli = parse(&[
+            "enclave-cli",
+            "set-password",
+            "--tenant",
+            "tenant-alpha",
+            "--email",
+            "owner@tenant-alpha.example",
+        ])
+        .expect("the command itself parses");
+        let Command::SetPassword(args) = cli.command else { panic!("expected set-password") };
+        assert_eq!(args.tenant, "tenant-alpha");
+        assert_eq!(args.email, "owner@tenant-alpha.example");
+    }
+
+    /// Both arguments are required, because a default for either is a password set on an account
+    /// nobody named.
+    #[test]
+    fn set_password_names_its_account_explicitly_or_refuses() {
+        for args in [
+            vec!["enclave-cli", "set-password"],
+            vec!["enclave-cli", "set-password", "--tenant", "tenant-alpha"],
+            vec!["enclave-cli", "set-password", "--email", "owner@tenant-alpha.example"],
+        ] {
+            let err = parse(&args).expect_err("both the tenant and the account must be named");
+            assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument, "{args:?}");
+        }
     }
 
     #[test]

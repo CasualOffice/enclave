@@ -50,3 +50,19 @@ sbom.json
 .DS_Store
 Thumbs.db
 .claude/worktrees/
+
+# Generated Ed25519 signing key material, wherever it is written.
+#
+# The extension rule and not only the directory rule below, because `auth.signing_keys.directory` is
+# configuration (`ENC-687`) — a contributor may legitimately point the development provider at a
+# path inside a checkout, and a path-based rule cannot be complete once the path is a setting. This
+# is what the `*.pem` / `*.key` rules above are for the formats they cover.
+*.pkcs8.der
+
+# Development JWT signing keys, generated on first run by `LocalFileKeyProvider`.
+#
+# `deploy/README.md` and `deploy/config/enclave.example.yaml` have both said this directory was
+# git-ignored since M0, and it was not: the provider writes `<kid>.pkcs8.der` and `index.json`, and
+# the rules above match `*.pem` and `*.key`. Found wiring the key provider into the binary
+# (`ENC-687`), where the directory first acquired a caller.
+/deploy/config/dev-keys/

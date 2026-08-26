@@ -12,6 +12,13 @@ authors.workspace      = true
 enclave-core = { workspace = true }
 enclave-config = { workspace = true }
 enclave-db   = { workspace = true }
+# `set-password` hashes with the same `PasswordHasher` the login path verifies with (`ENC-687`).
+# A second hasher here would be a second place the Argon2 parameters are chosen, and the failure
+# mode of that divergence is an account that cannot sign in with the password it was just given.
+enclave-auth = { workspace = true }
+# And normalises the address with the same function the login path looks it up by. A credential
+# written under a differently-normalised key is a credential no login can find.
+enclave-identity = { workspace = true }
 # The fixtures are defined once, in the test harness, and reused here. A second
 # definition of "a seeded tenant" would drift from the one every test asserts
 # against, and the drift would show up as tests that pass while the stack a

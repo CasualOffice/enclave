@@ -9,17 +9,24 @@
 //! * `doctor` — the read-only command someone runs when the stack "doesn't work", which checks the
 //!   things that are wrong nine times out of ten, including the two security properties that fail
 //!   silently: forced row-level security and an append-only audit log.
+//! * `set-password` — the moment after the first two: a seeded deployment has a directory full of
+//!   accounts and no credentials, so every one of them correctly answers `401`. This is how the
+//!   first sign-in becomes possible (`ENC-687`).
 //!
 //! # What this binary will not do
 //!
 //! Take a database URL on the command line. It would end up in shell history and in `ps` output,
 //! and it carries a password (`CLAUDE.md` rule 11). The connection comes from `DATABASE_URL` or
 //! from a configuration file whose DSN is a secret reference.
+//!
+//! Nor take a *password* on the command line, for the same reason applied to the stronger case.
+//! `set-password` reads from stdin and has no flag that could carry one.
 
 mod cli;
 mod connect;
 mod doctor;
 mod migrate;
+mod password;
 mod schema;
 mod seed;
 
@@ -57,5 +64,6 @@ async fn dispatch(cli: Cli) -> anyhow::Result<()> {
         Command::Seed(args) => seed::run(&target, args).await,
         Command::Migrate => migrate::run(&target).await,
         Command::Doctor => doctor::run(&target).await,
+        Command::SetPassword(args) => password::run(&target, args).await,
     }
 }

@@ -987,9 +987,30 @@ pub enum SameSite {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SigningKeysConfig {
-    /// Reference to the key material. `None` means the development file provider generates a key
-    /// on first run; no key is ever committed, even a throwaway one.
+    /// Reference to the key material — `vault://…`, `env://…`, `file://…`. **Never a literal**
+    /// (`CLAUDE.md` rule 11), which is why the type is a [`SecretRef`] and not a `String`: there is
+    /// no field here that *can* hold a key.
+    ///
+    /// The resolved value is standard base64 of an Ed25519 PKCS#8 DER document, which is the one
+    /// encoding `enclave_auth::ConfiguredKeyProvider` accepts. That type argues why it is one
+    /// encoding and not two.
+    ///
+    /// `None` is a **development** posture and only a development one. `crates/api/src/main.rs`
+    /// builds `LocalFileKeyProvider` over [`Self::directory`] in that case, and it can only do so
+    /// for a `community` profile bound to a loopback address — see `SigningKeys::choose` there for
+    /// the mechanism and for exactly what it does and does not close off. Every other deployment
+    /// with nothing here refuses to start.
     pub key_ref: Option<SecretRef>,
+    /// Where the **development** key provider keeps the key it generates on first run.
+    ///
+    /// Read only when [`Self::key_ref`] is absent, and only by the branch that is reachable in a
+    /// `community` profile. It is a path and not a secret reference because it names a directory
+    /// rather than a value; the directory must be outside the repository or git-ignored, and
+    /// `deploy/config/dev-keys/` — the default — is the latter.
+    ///
+    /// Nothing is read from the repository, because nothing is committed to it: the provider
+    /// generates its first key on demand and writes it `0600`.
+    pub directory: PathBuf,
     /// How often a new signing key is introduced.
     pub rotation_interval: HumanDuration,
     /// How long the retired key stays in the JWKS so tokens signed just before rotation still
@@ -1001,6 +1022,7 @@ impl Default for SigningKeysConfig {
     fn default() -> Self {
         Self {
             key_ref: None,
+            directory: PathBuf::from("deploy/config/dev-keys"),
             rotation_interval: HumanDuration::from_secs(90 * 86_400),
             overlap: HumanDuration::from_secs(86_400),
         }

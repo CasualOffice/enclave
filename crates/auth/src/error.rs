@@ -175,6 +175,25 @@ pub enum AuthError {
     #[error("revocation state is unknown and the token holds privileged scopes")]
     RevocationUnavailable(#[source] StoreUnavailable),
 
+    /// A store this crate reads through could not answer, so nothing was decided.
+    ///
+    /// Distinct from [`AuthError::RevocationUnavailable`], and the distinction is the whole reason
+    /// the variant exists. That one is a *decision*: the revocation state is unknown, the token is
+    /// privileged, and K9 says refuse. This one is the absence of a decision — the refresh row was
+    /// never read, the rotation never committed — and it must never render as a credential
+    /// rejection. [`AuthError::is_authentication_failure`] answers `false` and
+    /// [`AuthError::reason_code`] answers `None`, so a database outage during a login cannot reach
+    /// a caller as "your password is wrong".
+    ///
+    /// The in-memory stores this crate exports cannot produce it, which is exactly why it was
+    /// missing until a PostgreSQL-backed [`crate::RefreshTokenStore`] existed (`ENC-687`).
+    #[error("an authentication store could not be reached")]
+    StorageUnavailable(
+        /// Which dependency did not answer.
+        #[source]
+        StoreUnavailable,
+    ),
+
     /// Signing key material could not be obtained, so no token could be issued.
     #[error("signing key material is unavailable")]
     KeyUnavailable(
@@ -249,6 +268,7 @@ impl AuthError {
             Self::PasswordPolicy { .. }
             | Self::PasswordHashing(_)
             | Self::KeyUnavailable(_)
+            | Self::StorageUnavailable(_)
             | Self::EntropyUnavailable
             | Self::Encoding(_)
             | Self::Configuration(_) => None,
@@ -288,6 +308,13 @@ impl From<AuthError> for Error {
                     // an identical request would only amplify the outage.
                     retryable: false,
                 },
+                // The opposite judgement, and for the opposite reason: a store that did not answer
+                // is the case where retrying is the correct client behaviour. It also names the
+                // dependency the adapter reported rather than a fixed one, because the same
+                // variant carries a Redis denylist failure as well as a PostgreSQL one.
+                AuthError::StorageUnavailable(unavailable) => {
+                    Self::Upstream { dependency: unavailable.dependency, retryable: true }
+                }
                 other => Self::Internal(anyhow::Error::new(other)),
             },
         }
