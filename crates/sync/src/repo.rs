@@ -56,6 +56,16 @@ macro_rules! device_columns {
 /// The join is `LEFT` so that a file whose version is *not* readable still produces a row. That is
 /// deliberate: an omitted row is a file that silently vanishes from a device, and the whole point
 /// of `docs/10 §4` is that it becomes a `QUARANTINED` tombstone instead.
+///
+/// # Why the readable versions are a subquery rather than a join condition
+///
+/// [`enclave_versions::READABLE_PREDICATE`] is written **unqualified** — its own documentation says
+/// so: *"the column names are unqualified; every statement in this crate reads `file_versions`
+/// unaliased"*. Spliced directly into this join it is ambiguous, because `files` has a `status`
+/// column too and PostgreSQL refuses the statement (`42702`). Qualifying the copy would mean
+/// retyping the predicate, which is precisely what exporting it exists to stop. So the predicate is
+/// applied inside a subquery over `file_versions` alone, where it means what it says and the text
+/// is byte-identical to the export.
 const FEED_WINDOW_SQL: &str = concat!(
     "
 SELECT cl.seq,
@@ -74,12 +84,13 @@ SELECT cl.seq,
   FROM sync_change_log cl
   JOIN files     f ON f.tenant_id = cl.tenant_id AND f.id = cl.file_id
   JOIN libraries l ON l.tenant_id = cl.tenant_id AND l.id = f.library_id
-  LEFT JOIN file_versions v
+  LEFT JOIN (SELECT id, tenant_id, size_bytes, checksum_sha256
+               FROM file_versions
+              WHERE ",
+    "status = 'AVAILABLE' AND av_status = 'CLEAN'",
+    ") v
          ON v.tenant_id = f.tenant_id
         AND v.id        = f.current_version_id
-        AND ",
-    "status = 'AVAILABLE' AND av_status = 'CLEAN'",
-    "
  WHERE cl.tenant_id  = $1
    AND cl.scope_type = $2
    AND cl.scope_id   = $3
