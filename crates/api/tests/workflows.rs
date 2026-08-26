@@ -801,6 +801,22 @@ async fn a_step_is_delegated_once_and_the_delegate_cannot_pass_it_on() {
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 
+    // A delegation transfers the *work* as well as the obligation: the step leaves the assignee's
+    // inbox and appears in the delegate's, flagged. An inbox keyed on `assignee_id` alone would
+    // leave it in the wrong one — the delegate would be accountable for a step they cannot find.
+    let (status, body) = client.get(TASKS, &viewer).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["items"].as_array().expect("items").len(), 1, "the delegate's inbox is empty");
+    assert_eq!(body["items"][0]["stepId"], serde_json::json!(step));
+    assert_eq!(body["items"][0]["delegated"], serde_json::json!(true));
+
+    let (status, body) = client.get(TASKS, &member).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body["items"].as_array().expect("items").is_empty(),
+        "a step the assignee gave away is still in their inbox: {body}"
+    );
+
     // The delegate is the one who can decide it, and the assignee is not.
     let approve = format!("/api/v1/workflows/steps/{step}/approve");
     let (status, _) = client.post(&approve, &member, serde_json::json!({})).await;
