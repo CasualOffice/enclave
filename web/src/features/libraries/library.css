@@ -15,6 +15,21 @@
  * reproduces it rather than reaching for `border-inline-start`.
  */
 
+/* Text tones in the light theme, and why so few of them.
+ *
+ * `--fg3` is `#7A7A74` on `--sheet`, which computes to **4.31:1** — under AA's
+ * 4.5 for text below 18.66px, and everything here is 11–13px. `--fg4` is 2.3:1
+ * and is worse. The prototype uses both for text throughout; that is `ENC-700`,
+ * a known defect in the reference rather than a pattern to copy, and
+ * `grouped-list.css` already made the same call for the same reason.
+ *
+ * So text carries `--fg2` (6.83:1) or `--fg`, and `--fg3`/`--fg4` are left for
+ * *graphical* objects — icons and rules — which need 3:1 under WCAG 1.4.11 and
+ * clear it comfortably. In the dark theme `--fg3` is 5.2:1 and would be legal;
+ * one rule for both themes is simpler than a tone that is correct in one.
+ */
+
+
 .library {
   display: flex;
   flex-direction: column;
@@ -33,7 +48,7 @@
   padding-block: 10px 0;
   padding-inline: 16px 14px;
   min-block-size: 38px;
-  color: var(--fg3);
+  color: var(--fg2);
   font-size: 12.5px;
   flex: none;
 }
@@ -64,7 +79,7 @@
  * cannot remove. */
 .library-crumbs li:not(:last-child)::after {
   content: '/';
-  color: var(--fg4);
+  color: var(--fg2);
   margin-inline: 2px;
 }
 
@@ -73,7 +88,7 @@
   background: transparent;
   font: inherit;
   font-size: 12.5px;
-  color: var(--fg3);
+  color: var(--fg2);
   cursor: pointer;
   padding: 0;
   white-space: nowrap;
@@ -111,6 +126,8 @@
   border-radius: var(--r-ctrl);
   border: 0;
   background: transparent;
+  /* An icon is a graphical object: WCAG 1.4.11 asks 3:1, which `--fg3` clears
+   * at 4.31:1. It is text that needs 4.5, and this button has none. */
   color: var(--fg3);
   cursor: pointer;
   padding: 0;
@@ -157,7 +174,7 @@
   align-items: center;
   gap: 6px;
   background: transparent;
-  color: var(--fg3);
+  color: var(--fg2);
   cursor: pointer;
 }
 
@@ -169,7 +186,7 @@
 
 .library-view-count {
   font-size: 10.5px;
-  color: var(--fg4);
+  color: var(--fg2);
   font-family: var(--mono);
 }
 
@@ -265,7 +282,7 @@
   align-items: center;
   gap: 6px;
   font-size: 11.5px;
-  color: var(--fg3);
+  color: var(--fg2);
 }
 
 .library-peek-head-actions {
@@ -291,7 +308,7 @@
 }
 
 .library-peek-meta {
-  color: var(--fg3);
+  color: var(--fg2);
   font-size: 12px;
   margin-block-start: 2px;
 }
@@ -325,7 +342,7 @@
 }
 
 .library-peek-facts dt {
-  color: var(--fg4);
+  color: var(--fg2);
 }
 
 .library-peek-facts dd {
@@ -362,7 +379,7 @@
 /* Allowed and refused differ by more than colour: the marker glyph carries the
  * same information, because colour is never the only carrier (`docs/09 §15`). */
 .library-peek-cap[data-allowed='false'] {
-  color: var(--fg4);
+  color: var(--fg2);
   background: var(--sunken);
   box-shadow: none;
 }
@@ -388,7 +405,7 @@
   margin-block-end: 8px;
   font-size: 11px;
   font-weight: 500;
-  color: var(--fg3);
+  color: var(--fg2);
   letter-spacing: 0.06em;
 }
 
@@ -398,7 +415,7 @@
   justify-content: center;
   flex: 1;
   padding: 24px;
-  color: var(--fg3);
+  color: var(--fg2);
   font-size: 12.5px;
   text-align: center;
 }
@@ -457,7 +474,7 @@
   font: inherit;
   font-size: 12.5px;
   font-weight: 500;
-  color: var(--fg3);
+  color: var(--fg2);
   cursor: pointer;
 }
 
@@ -470,19 +487,19 @@
 /* An unbuilt tab is neutral and not a pointer target. It shares no colour and
  * no class with a denial (`docs/17 §6`, `ENC-673`). */
 .library-peek-tab[aria-disabled='true'] {
-  color: var(--fg4);
+  color: var(--fg2);
   cursor: default;
 }
 
 .library-peek-tab[aria-disabled='true']:hover {
   background: transparent;
-  color: var(--fg4);
+  color: var(--fg2);
 }
 
 .library-peek-note {
   margin: 0;
   font-size: 12.5px;
-  color: var(--fg3);
+  color: var(--fg2);
 }
 
 .library-peek-versions {
@@ -509,12 +526,12 @@
 }
 
 .library-peek-version-meta {
-  color: var(--fg3);
+  color: var(--fg2);
 }
 
 .library-peek-version-when {
   margin-inline-start: auto;
-  color: var(--fg4);
+  color: var(--fg2);
   font-family: var(--mono);
   font-size: 11.5px;
   flex: none;
@@ -523,7 +540,7 @@
 /* Not the denial treatment: a version antivirus has not cleared is a *product
  * state* about the file, not a refusal aimed at this user. */
 .library-peek-version-unreadable {
-  color: var(--fg4);
+  color: var(--fg2);
   font-size: 11px;
   background: var(--sunken);
   border-radius: 999px;

@@ -484,6 +484,7 @@ tenant-scoped query → audit row — is demonstrated by `crates/api/tests/me.rs
 | ENC-780 | `/me` carries no `timeZone`, no locale and no workspace, which the greeting and subtitle need | P2 | TODO | `specs/home.md` picks the greeting bucket from `me.timeZone`; with none on the wire the browser's zone is used, which is right for everyone who is not travelling and quietly wrong for everyone who is. The subtitle names the account address because there is no workspace name to name. Recorded rather than guessed at |
 | ENC-781 | The accessibility gate could not reach a single surface once the screens fetched | P0 | DONE | Would have gone green while checking the sign-in page fifty times — the `ENC-677` failure shape, one layer along. `npm run preview` has no API, so every route rendered sign-in. `tests/a11y/api-stub.ts` answers at the browser's network layer in the **real wire shapes**, and the stub refuses download, print, export and share-external on every third row so the *refused* treatment is on screen to be measured rather than only the permitted one. Six surfaces added, including the peek panel and three policy-denial states that had no coverage at all |
 | ENC-782 | Object storage is unreachable in this build, so nothing can be uploaded, previewed or downloaded | P1 | TODO | `crates/api/src/main.rs` binds `Delivery::unconfigured()` **unconditionally** — not from configuration, so a complete and correct `storage:` block in `enclave.yaml` changes nothing and `POST /api/v1/uploads` answers `503` in every build. Upload therefore renders unbuilt rather than denied, and the peek panel has no preview tab. It is also why `enclave-cli seed` cannot produce content and `web/tools/dev-content.sql` exists |
+| ENC-783 | `ENC-700` is not a reference defect the client can inherit — it is 64 real contrast failures | P1 | DONE | The `--fg3`/`--fg4` problem, met head-on rather than read about. Every new surface built here initially used them for text because the prototype does, and axe found **64 violations, all `color-contrast`**, across the peek panel, the state panels and the view bar. `--fg3` is `#7A7A74` on `--sheet` = **4.31:1**, under AA's 4.5 for text below 18.66px, and everything on these surfaces is 11–13px; `--fg4` is 2.3:1. So in the light theme there are exactly two legal text tones, `--fg` and `--fg2` (6.83:1), and `--fg3`/`--fg4` are left to *graphical* objects, which need 3:1 under WCAG 1.4.11 and clear it. `grouped-list.css` had already made this call for the same reason; it is now made in the same words in `library.css` and `surface-states.css`, so the next surface does not rediscover it. The visual consequence is real and worth stating: the tonal hierarchy the prototype draws with four greys cannot be reproduced in the light theme with two, and that is a constraint on the design rather than a bug in the implementation |
 
 ## 4. Phase trackers
 
@@ -629,10 +630,10 @@ for work that does not exist is not.
 |---|---|---|---|---|---|---|
 | D — Specification | 2 | 17 | 4 | 0 | 20 | 3 |
 | 0 — Foundations | 2 | 13 | 4 | 0 | 19 | 0 |
-| 1 — MVP | 15 | 130 | 105 | 27 | 170 | 107 |
+| 1 — MVP | 15 | 131 | 105 | 27 | 171 | 107 |
 | 2 — Enterprise V1 | 1 | 17 | 2 | 0 | 0 | 20 |
 | 3 — Beyond V1 | 0 | 0 | 1 | 5 | 0 | 6 |
-| **Total** | **20** | **177** | **116** | **32** | **209** | **136** |
+| **Total** | **20** | **178** | **116** | **32** | **210** | **136** |
 
 Counts include completed items in their priority column. Update this table whenever a row's status or
 priority changes; a stale rollup is worse than none — this one read "Phase 1: 0 done" while

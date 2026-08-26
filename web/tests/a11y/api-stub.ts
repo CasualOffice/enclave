@@ -171,6 +171,30 @@ const FAULT = {
 /** Install the stub. Call once per page, before the first navigation. */
 export async function stubApi(page: Page, plan: ApiPlan = {}): Promise<void> {
   const signedIn = plan.signedIn !== false;
+
+  /* The CSRF cookie, which a signed-in browser always has.
+   *
+   * `shared/api/session.ts` short-circuits the refresh when it is absent —
+   * correctly, because no cookie means no session to refresh and calling anyway
+   * would answer 401 and read identically to a rejected session. But it means a
+   * page with no cookies boots straight to `anonymous`, and the first version of
+   * this stub sent every route to the sign-in screen for exactly that reason:
+   * `/me` was answered perfectly and never asked.
+   *
+   * It is not `HttpOnly` in production either — the SPA has to read it to build
+   * the `x-csrf-token` header for the double-submit check — so seeding it here
+   * reproduces the real browser state rather than working around it.
+   */
+  if (signedIn) {
+    await page.context().addCookies([
+      {
+        name: 'enclave_csrf',
+        value: 'a11y-stub-csrf-token',
+        domain: '127.0.0.1',
+        path: '/',
+      },
+    ]);
+  }
   const items = plan.items ?? 400;
   const results = plan.results ?? 40;
   const tasks = plan.tasks ?? 3;

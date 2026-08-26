@@ -6,79 +6,137 @@
 
 # Test info
 
-- Name: a11y/routes.spec.ts >> axe: library list, empty (dark)
+- Name: a11y/routes.spec.ts >> axe: search, fetch error (dark)
 - Location: tests/a11y/routes.spec.ts:197:5
 
 # Error details
 
 ```
-Test timeout of 30000ms exceeded.
-```
+Error: [
+  {
+    "id": "color-contrast",
+    "impact": "serious",
+    "help": "Elements must meet minimum color contrast ratio thresholds",
+    "nodes": [
+      {
+        "target": ".surface-state-title",
+        "summary": "Fix any of the following: Element has insufficient color contrast of 3.32 (foreground color: #c0392b, background color: #161615, font size: 9.8pt (13px), font weight: normal). Expected contrast ratio of 4.5:1"
+      }
+    ]
+  }
+]
 
-```
-Error: page.waitForSelector: Test timeout of 30000ms exceeded.
-Call log:
-  - waiting for locator('[data-state="empty"]') to be visible
+expect(received).toEqual(expected) // deep equality
 
+- Expected  -  1
++ Received  + 13
+
+- Array []
++ Array [
++   Object {
++     "help": "Elements must meet minimum color contrast ratio thresholds",
++     "id": "color-contrast",
++     "impact": "serious",
++     "nodes": Array [
++       Object {
++         "summary": "Fix any of the following: Element has insufficient color contrast of 3.32 (foreground color: #c0392b, background color: #161615, font size: 9.8pt (13px), font weight: normal). Expected contrast ratio of 4.5:1",
++         "target": ".surface-state-title",
++       },
++     ],
++   },
++ ]
 ```
 
 # Page snapshot
 
 ```yaml
-- main [ref=e3]:
-  - generic [ref=e4]:
-    - heading "Sign in to Enclave" [level=1] [ref=e9]
-    - paragraph [ref=e10]: Use your work email address and password.
-    - generic [ref=e11]:
-      - generic [ref=e12]:
-        - generic [ref=e13]: Email address
-        - textbox "Email address" [ref=e14]:
-          - /placeholder: name@example.com
-      - generic [ref=e15]:
-        - generic [ref=e16]: Password
-        - textbox "Password" [ref=e17]
-      - button "Sign in" [ref=e19] [cursor=pointer]
-    - generic [ref=e20]: or
-    - generic [ref=e21]:
-      - button "Continue with Company SSO" [ref=e22] [cursor=pointer]
-      - generic [ref=e23]:
-        - button "Continue with a passkey" [disabled] [ref=e24]
-        - generic [ref=e27]: Later
-        - generic [ref=e28]: Later
-      - paragraph [ref=e29]: Passkeys arrive in a later release.
-    - generic [ref=e30]:
-      - link "Support" [ref=e31] [cursor=pointer]:
-        - /url: https://support.example.com
-      - link "Privacy" [ref=e32] [cursor=pointer]:
-        - /url: https://www.example.com/privacy
-      - link "Terms" [ref=e33] [cursor=pointer]:
-        - /url: https://www.example.com/terms
+- generic [ref=e3]:
+  - navigation "Enclave" [ref=e4]:
+    - button "Switch workspace" [ref=e5] [cursor=pointer]:
+      - generic [ref=e10]: Enclave
+    - link "Search ⌘K" [ref=e14] [cursor=pointer]:
+      - /url: /search
+      - text: Search
+      - generic [ref=e17]: ⌘K
+    - generic [ref=e18]:
+      - text: Inbox
+      - generic [ref=e21]: Later
+    - link "Home" [ref=e23] [cursor=pointer]:
+      - /url: /
+    - link "Ask ⌘J" [ref=e26] [cursor=pointer]:
+      - /url: /ask
+      - text: Ask
+      - generic [ref=e29]: ⌘J
+    - generic [ref=e30]: Files
+    - link "Files" [ref=e33] [cursor=pointer]:
+      - /url: /library
+    - generic [ref=e36]:
+      - text: Lists
+      - generic [ref=e39]: Later
+    - generic [ref=e41]:
+      - text: Pages
+      - generic [ref=e44]: Later
+    - generic [ref=e46]:
+      - text: Activity
+      - generic [ref=e49]: Later
+    - generic [ref=e51]: Personal
+    - generic [ref=e54]:
+      - text: Favorites
+      - generic [ref=e57]: Later
+    - generic [ref=e59]:
+      - text: Shared with me
+      - generic [ref=e62]: Later
+    - generic [ref=e64]:
+      - text: Trash
+      - generic [ref=e67]: Later
+    - generic [ref=e69]: Administration
+    - link "Admin" [ref=e72] [cursor=pointer]:
+      - /url: /admin
+    - generic [ref=e75]:
+      - button "Sign out" [ref=e76] [cursor=pointer]:
+        - generic [ref=e77]: AU
+        - generic [ref=e78]: Admin User
+      - group "Light" [ref=e80]:
+        - button "Light" [ref=e81] [cursor=pointer]
+        - button "Dark" [pressed] [ref=e82] [cursor=pointer]
+  - main [ref=e83]:
+    - generic [ref=e84]:
+      - heading "Search" [level=1] [ref=e85]
+      - generic [ref=e86]:
+        - searchbox "Search" [ref=e89]: agreement
+        - generic [ref=e90]: Esc
+      - generic [ref=e91]:
+        - generic [ref=e92]:
+          - button "Filters" [disabled] [ref=e93]
+          - generic [ref=e96]: Later
+          - generic [ref=e97]: Narrowing a search arrives once the API accepts filters
+        - generic [ref=e98]: No results
+      - generic [ref=e99]:
+        - generic [ref=e103]: Answers drawn from these documents, with their sources
+        - generic [ref=e104]: Later
+        - generic [ref=e105]: Arrives in a later release
+      - generic [ref=e106]:
+        - paragraph [ref=e107]: This didn’t load
+        - paragraph [ref=e108]: Something went wrong on our side. Trying again may work.
+        - generic [ref=e109]:
+          - button "Try again" [ref=e110] [cursor=pointer]
+          - generic [ref=e111]:
+            - generic [ref=e112]: Request ID
+            - code [ref=e113]: 01a0402d-cb72-76e2-8f0e-ee21277e71e0
+            - button "Copy" [ref=e114] [cursor=pointer]
+      - generic [ref=e115]:
+        - generic [ref=e116]:
+          - generic [ref=e117]: ↑↓
+          - text: move between results
+        - generic [ref=e118]:
+          - generic [ref=e119]: ⏎
+          - text: open
+        - generic [ref=e120]: Results respect your access
 ```
 
 # Test source
 
 ```ts
-  118 |   { name: 'home, loading', url: '/?home=loading', ready: '[role="status"]' },
-  119 |   { name: 'home, empty', url: '/?home=empty', ready: '[data-state="empty"]' },
-  120 |   { name: 'home, scoped empty', url: '/?home=scoped-empty', ready: '[data-state="scoped-empty"]' },
-  121 |   { name: 'home, fetch error', url: '/?home=error', ready: '[data-state="error"]' },
-  122 |   {
-  123 |     name: 'home, tasks refused',
-  124 |     url: '/',
-  125 |     ready: '.surface-state[data-tone="neutral"]',
-  126 |     api: { status: 403 },
-  127 |   },
-  128 | 
-  129 |   /* Search. Both retrieval notices are listed: the *lexical* one is a product
-  130 |    * state (this deployment has no dense retrieval) and the *degraded* one is an
-  131 |    * incident. They say different things and only one carries a `Later` chip, so
-  132 |    * both need a run. `degraded` now comes from the server's own diagnostics
-  133 |    * rather than from a URL knob, so the stub sets it. */
-  134 |   { name: 'search, results (lexical)', url: '/search?q=agreement', ready: '.esr-hit' },
-  135 |   {
-  136 |     name: 'search, degraded fallback',
-  137 |     url: '/search?q=agreement',
-  138 |     ready: '[data-notice="degraded"]',
   139 |     api: { degraded: true },
   140 |   },
   141 |   { name: 'search, empty (new)', url: '/search', ready: '[data-state="empty"]' },
@@ -158,8 +216,7 @@ Call log:
   215 |        * in. */
   216 |       await stubApi(page, surface.api);
   217 |       await page.goto(surface.url);
-> 218 |       await page.waitForSelector(surface.ready, { timeout: 30_000 });
-      |                  ^ Error: page.waitForSelector: Test timeout of 30000ms exceeded.
+  218 |       await page.waitForSelector(surface.ready, { timeout: 30_000 });
   219 | 
   220 |       const results = await new AxeBuilder({ page })
   221 |         // WCAG 2.2 AA is the stated target (`docs/09 §15`), so the tag set is
@@ -180,7 +237,8 @@ Call log:
   236 |         })),
   237 |       }));
   238 | 
-  239 |       expect(violations, JSON.stringify(violations, null, 2)).toEqual([]);
+> 239 |       expect(violations, JSON.stringify(violations, null, 2)).toEqual([]);
+      |                                                               ^ Error: [
   240 |     });
   241 |   }
   242 | }

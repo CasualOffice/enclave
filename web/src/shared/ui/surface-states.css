@@ -11,6 +11,21 @@
  * CI and a physical property fails it.
  */
 
+/* Text tones in the light theme, and why so few of them.
+ *
+ * `--fg3` is `#7A7A74` on `--sheet`, which computes to **4.31:1** — under AA's
+ * 4.5 for text below 18.66px, and everything here is 11–13px. `--fg4` is 2.3:1
+ * and is worse. The prototype uses both for text throughout; that is `ENC-700`,
+ * a known defect in the reference rather than a pattern to copy, and
+ * `grouped-list.css` already made the same call for the same reason.
+ *
+ * So text carries `--fg2` (6.83:1) or `--fg`, and `--fg3`/`--fg4` are left for
+ * *graphical* objects — icons and rules — which need 3:1 under WCAG 1.4.11 and
+ * clear it comfortably. In the dark theme `--fg3` is 5.2:1 and would be legal;
+ * one rule for both themes is simpler than a tone that is correct in one.
+ */
+
+
 .surface-state {
   box-sizing: border-box;
   padding-block: 20px;
@@ -28,12 +43,24 @@
   color: var(--fg);
 }
 
-/* The error tone colours **the title only**, and only ever with `--danger`.
- * Never a `--c-*` token: those are the locked classification palette, and a
- * failure that borrowed "Confidential" red would teach the one colour code in
- * this product that must stay unambiguous. */
-.surface-state[data-tone='error'] .surface-state-title {
-  color: var(--danger);
+/* The error tone is a **ring**, not tinted text.
+ *
+ * `--danger` (#C0392B) is 3.40:1 on the dark sheet, so a title painted with it
+ * fails AA in the dark theme — measured, not guessed. Every other surface in
+ * this tree already marks an error with `inset 0 0 0 1px color-mix(in srgb,
+ * var(--danger) 34%, transparent)` and leaves the text alone, for exactly this
+ * reason; this now does the same.
+ *
+ * Nothing is lost semantically. Colour is never the only carrier
+ * (`docs/09 §15`): the title says what happened, and the ring reinforces it.
+ *
+ * Never a `--c-*` token here either: those are the locked classification
+ * palette, and a failure that borrowed "Confidential" red would erode the one
+ * colour code in this product that has to stay unambiguous. */
+.surface-state[data-tone='error'] {
+  box-shadow:
+    var(--hairline),
+    inset 0 0 0 1px color-mix(in srgb, var(--danger) 34%, transparent);
 }
 
 /* Unbuilt is neutral and sunken, and shares no colour, no class and no border
@@ -45,7 +72,7 @@
 
 .surface-state[data-tone='unbuilt'] .surface-state-title,
 .surface-state[data-tone='unbuilt'] .surface-state-body {
-  color: var(--fg3);
+  color: var(--fg2);
 }
 
 .surface-state-body {
@@ -53,7 +80,7 @@
   margin-block-start: 4px;
   font-size: 12.5px;
   line-height: 1.45;
-  color: var(--fg3);
+  color: var(--fg2);
   max-inline-size: 62ch;
 }
 
@@ -72,7 +99,7 @@
   gap: 6px;
   margin: 0;
   font-size: 11.5px;
-  color: var(--fg4);
+  color: var(--fg2);
 }
 
 .surface-state-code {
@@ -83,9 +110,9 @@
 .surface-state-code code {
   font-family: var(--mono);
   font-size: 11.5px;
-  color: var(--fg3);
+  color: var(--fg2);
 }
 
 .surface-state-rid-label {
-  color: var(--fg4);
+  color: var(--fg2);
 }
