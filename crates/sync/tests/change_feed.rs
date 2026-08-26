@@ -319,6 +319,15 @@ async fn replaying_from_an_old_cursor_converges_without_duplicates() {
 
 /// Several changes to one file inside one window collapse to the newest, and the cursor still
 /// advances past all of them.
+///
+/// # Why the changes are interleaved
+///
+/// The feed is `X, Y, X` rather than `X, X, X`, and that is the whole test. Collapsing keeps each
+/// file at the position of its *first* appearance, so after the collapse the last **emitted** entry
+/// is `Y` at sequence 2 while the last **scanned** row was `X` at sequence 3. A cursor taken from
+/// the emitted rows would therefore be 2, and the next call would re-deliver sequence 3 for ever.
+/// With three changes to one file the two numbers coincide and the bug is invisible — which is how
+/// the first version of this test passed against an implementation that had it.
 #[tokio::test]
 #[ignore = "requires a live PostgreSQL; CI runs it with --include-ignored"]
 async fn repeated_changes_to_one_file_collapse_but_do_not_shorten_the_cursor() {
@@ -328,21 +337,24 @@ async fn repeated_changes_to_one_file_collapse_but_do_not_shorten_the_cursor() {
     fixture.insert(&mut admin).await;
     let pool = db.pool_with_connections(2).await.expect("pool");
 
-    let file = FileId::new_v7();
-    let mut tx = pool.begin(fixture.tenant).await.expect("begin");
-    insert_file(&mut tx, fixture, file).await;
-    tx.commit().await.expect("commit");
-
-    for _ in 0..3 {
+    let first = FileId::new_v7();
+    let second = FileId::new_v7();
+    for file in [first, second] {
         let mut tx = pool.begin(fixture.tenant).await.expect("begin");
-        sqlx::query("UPDATE files SET modified_at = now() WHERE tenant_id = $1 AND id = $2")
-            .bind(fixture.tenant.as_uuid())
-            .bind(file.as_uuid())
-            .execute(&mut *tx)
-            .await
-            .expect("touch the file");
+        insert_file(&mut tx, fixture, file).await;
         tx.commit().await.expect("commit");
     }
+
+    // A third change, to the *first* file — so the newest row in the window belongs to the entry
+    // that sits first after the collapse.
+    let mut tx = pool.begin(fixture.tenant).await.expect("begin");
+    sqlx::query("UPDATE files SET modified_at = now() WHERE tenant_id = $1 AND id = $2")
+        .bind(fixture.tenant.as_uuid())
+        .bind(first.as_uuid())
+        .execute(&mut *tx)
+        .await
+        .expect("touch the file");
+    tx.commit().await.expect("commit");
 
     let mut tx = pool.begin(fixture.tenant).await.expect("begin");
     let page =
@@ -351,13 +363,27 @@ async fn repeated_changes_to_one_file_collapse_but_do_not_shorten_the_cursor() {
             .expect("read");
     tx.commit().await.expect("commit");
 
-    assert_eq!(page.entries.len(), 1, "four changes to one file produced four entries");
+    assert_eq!(page.entries.len(), 2, "three changes to two files produced three entries");
+    assert_eq!(
+        page.entries.last().map(|entry| entry.seq),
+        Some(2),
+        "the collapse did not keep each file at its first position"
+    );
     assert_eq!(
         page.next_cursor.get(),
-        4,
-        "the cursor tracked the emitted row rather than the scanned one; the next call would \
-         re-deliver every change the collapse dropped"
+        3,
+        "the cursor tracked the last *emitted* row rather than the last *scanned* one, so the next \
+         call would re-deliver sequence 3 — for ever, on every poll"
     );
+
+    // And the resumption is empty, which is the property the number is for.
+    let mut tx = pool.begin(fixture.tenant).await.expect("begin");
+    let next =
+        SyncRepository::feed(&mut tx, fixture.tenant, fixture.scope(), page.next_cursor, 100)
+            .await
+            .expect("read");
+    tx.commit().await.expect("commit");
+    assert!(next.entries.is_empty(), "resuming from the cursor re-delivered a change");
 }
 
 /// A cursor the feed no longer reaches is `CURSOR_TOO_OLD`, not an empty page.
