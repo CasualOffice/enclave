@@ -1,6 +1,6 @@
 import { useQuery, type UseQueryResult } from '@tanstack/react-query';
 import { request } from '../../shared/api/client.ts';
-import { FileDetail, ItemPage } from '../../entities/file/api-model.ts';
+import { FileDetail, ItemPage, VersionPage } from '../../entities/file/api-model.ts';
 
 /* The library feature's two reads.
  *
@@ -65,6 +65,32 @@ export function useFileDetail(fileId: string | undefined): UseQueryResult<FileDe
     queryKey: ['file', fileId],
     queryFn: ({ signal }) => fileDetail(fileId ?? '', signal),
     enabled: fileId !== undefined && fileId.length > 0,
+    staleTime: 0,
+    retry: false,
+  });
+}
+
+/**
+ * `GET /api/v1/files/{id}/versions` — the peek panel's Versions tab.
+ *
+ * Each entry carries `isReadable`, which the server computes from
+ * `status = 'AVAILABLE' AND av_status = 'CLEAN'` (`CLAUDE.md` rule 9: nothing is
+ * `AVAILABLE` before antivirus completes). The client **shows** that answer and
+ * never recomputes it from the two fields beside it — the same rule as
+ * `capabilities`, and the same reason: two authorities drift.
+ *
+ * Enabled only when the tab is open. A peek that fetched every tab's data on
+ * open would issue four requests to render one.
+ */
+export function useFileVersions(
+  fileId: string | undefined,
+  enabled: boolean,
+): UseQueryResult<VersionPage> {
+  return useQuery({
+    queryKey: ['file', fileId, 'versions'],
+    queryFn: ({ signal }) =>
+      request(`/files/${encodeURIComponent(fileId ?? '')}/versions`, VersionPage, { signal }),
+    enabled: enabled && fileId !== undefined && fileId.length > 0,
     staleTime: 0,
     retry: false,
   });

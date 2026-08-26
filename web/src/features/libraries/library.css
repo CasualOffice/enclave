@@ -259,6 +259,15 @@
   flex: none;
 }
 
+/* The Esc hint, leading the header strip. */
+.library-peek-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--fg3);
+}
+
 .library-peek-head-actions {
   margin-inline-start: auto;
   display: flex;
@@ -396,3 +405,129 @@
 
 /* The reduced-motion rule is global in `styles/base.css`; the panel keeps
  * `fill: both` so nothing is left invisible when the animation is shortened. */
+
+
+/* Previous points up, next points down — the prototype's own `^` / `v`.
+ *
+ * A **block-axis** rotation, which is direction-neutral: "the row above" is the
+ * row above in every writing direction, so this must not be mirrored under RTL.
+ * The first version used `scaleX`, which is the fix for *horizontal* chevrons
+ * and does nothing visible to a vertical one — both buttons pointed down.
+ */
+.library-peek-chev-prev {
+  transform: rotate(180deg);
+}
+
+/* The tab strip. The block-end hairline is an inset shadow on the block axis,
+ * which is direction-neutral and therefore permitted. */
+/* One line, always.
+ *
+ * Wrapping put two tabs on a second row inside a 372 px panel and pushed the
+ * content down by a line — the strip has five tabs and three of them carry a
+ * `Later` chip, so it is wider than the panel and will stay that way until the
+ * three have endpoints. Scrolling the strip keeps the panel's geometry fixed;
+ * the container scrolls, never the page body.
+ */
+.library-peek-tabs {
+  display: flex;
+  gap: 2px;
+  padding-inline: 12px;
+  padding-block-end: 6px;
+  box-shadow: inset 0 -1px 0 var(--line);
+  flex: none;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.library-peek-tab {
+  flex: none;
+  white-space: nowrap;
+}
+
+.library-peek-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding-block: 4px;
+  padding-inline: 9px;
+  border-radius: 999px;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--fg3);
+  cursor: pointer;
+}
+
+.library-peek-tab:hover,
+.library-peek-tab[aria-selected='true'] {
+  background: var(--sunken);
+  color: var(--fg);
+}
+
+/* An unbuilt tab is neutral and not a pointer target. It shares no colour and
+ * no class with a denial (`docs/17 §6`, `ENC-673`). */
+.library-peek-tab[aria-disabled='true'] {
+  color: var(--fg4);
+  cursor: default;
+}
+
+.library-peek-tab[aria-disabled='true']:hover {
+  background: transparent;
+  color: var(--fg4);
+}
+
+.library-peek-note {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--fg3);
+}
+
+.library-peek-versions {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.library-peek-version {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-block-size: 28px;
+  font-size: 12px;
+}
+
+.library-peek-version-no {
+  font-weight: 500;
+  color: var(--fg);
+  flex: none;
+}
+
+.library-peek-version-meta {
+  color: var(--fg3);
+}
+
+.library-peek-version-when {
+  margin-inline-start: auto;
+  color: var(--fg4);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  flex: none;
+}
+
+/* Not the denial treatment: a version antivirus has not cleared is a *product
+ * state* about the file, not a refusal aimed at this user. */
+.library-peek-version-unreadable {
+  color: var(--fg4);
+  font-size: 11px;
+  background: var(--sunken);
+  border-radius: 999px;
+  padding-block: 1px;
+  padding-inline: 7px;
+  flex: none;
+}

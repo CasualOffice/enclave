@@ -180,6 +180,36 @@ export const catalog = {
     description:
       'The only saved view that exists: every item in the current library or folder, unfiltered.',
   },
+  'library.filter': {
+    message: 'Filter',
+    description:
+      'View-bar control for narrowing a listing. Unbuilt: no endpoint filters a listing, and filtering client-side would narrow what is shown without narrowing what was fetched.',
+  },
+  'library.filter.unbuilt': {
+    message: 'Narrowing a listing arrives once the API accepts filters',
+    description:
+      'Release note for the unbuilt Filter control, reached through aria-describedby. Future tense, about the product. Never a permission refusal.',
+  },
+  'library.display': {
+    message: 'Display',
+    description:
+      'View-bar control for grouping, sorting and column choices. Unbuilt: nothing stores a display preference and the listing payload supports one grouping.',
+  },
+  'library.display.unbuilt': {
+    message: 'Grouping and sorting options arrive with saved views',
+    description:
+      'Release note for the unbuilt Display control. Future tense, about the product. Never a permission refusal.',
+  },
+  'library.new': {
+    message: 'New',
+    description:
+      'View-bar primary action for creating a folder or document. Unbuilt: no endpoint creates a folder.',
+  },
+  'library.new.unbuilt': {
+    message: 'Creating folders arrives with the content write API',
+    description:
+      'Release note for the unbuilt New control. Future tense, about the product. Never a permission refusal — nobody has been denied anything.',
+  },
   'library.upload': {
     message: 'Upload',
     description:
@@ -292,6 +322,76 @@ export const catalog = {
     message: 'No restrictions',
     description:
       'Governance value: neither a legal hold nor a records declaration applies to this file.',
+  },
+  'library.peek.tabs': {
+    message: 'File details',
+    description: 'Accessible name of the peek panel’s tab strip.',
+  },
+  'library.peek.tab.preview': {
+    message: 'Preview',
+    description:
+      'Peek panel tab showing a rendered copy of the document. Unbuilt: the API binds an unconfigured delivery pipeline, so no rendition can exist.',
+  },
+  'library.peek.tab.preview.unbuilt': {
+    message: 'Previews arrive once object storage is wired into the API',
+    description:
+      'Release note behind the unbuilt Preview tab. Names the actual blocker rather than shrugging. Future tense, about the product — never a permission refusal.',
+  },
+  'library.peek.tab.details': {
+    message: 'Details',
+    description: 'Peek panel tab showing the file’s facts and what this user may do with it.',
+  },
+  'library.peek.tab.access': {
+    message: 'Access',
+    description:
+      'Peek panel tab showing who can reach this file. Unbuilt: no endpoint returns an access list.',
+  },
+  'library.peek.tab.access.unbuilt': {
+    message: 'Seeing who has access arrives with the permissions API',
+    description:
+      'Release note behind the unbuilt Access tab. Future tense, about the product. Not a refusal — the user is not being denied a view that exists.',
+  },
+  'library.peek.tab.versions': {
+    message: 'Versions',
+    description: 'Peek panel tab listing the file’s version history.',
+  },
+  'library.peek.tab.activity': {
+    message: 'Activity',
+    description:
+      'Peek panel tab showing what has happened to this file. Unbuilt: the audit trail is hash-chained evidence and deliberately not a user-facing feed, so this needs a purpose-built read model.',
+  },
+  'library.peek.tab.activity.unbuilt': {
+    message: 'A file’s history needs a read model the audit trail deliberately isn’t',
+    description:
+      'Release note behind the unbuilt Activity tab. States why it cannot simply be built on the audit log. Future tense, about the product.',
+  },
+  'library.peek.escHint': {
+    message: 'to close',
+    description:
+      'Caption after the Esc key cap in the peek panel header. Reads as "Esc to close"; the key cap is a separate element so it can be styled and so the glyph can differ per platform.',
+  },
+  'library.peek.previous': {
+    message: 'Previous file',
+    description:
+      'Icon button that moves the peek panel to the row above. Disabled at the top of the list — a neutral end-of-list state, never the denial treatment.',
+  },
+  'library.peek.next': {
+    message: 'Next file',
+    description: 'Icon button that moves the peek panel to the row below.',
+  },
+  'library.peek.versions.number': {
+    message: 'Version {major}.{minor}',
+    description:
+      'A version’s number in the history list. major and minor are integers from the server.',
+  },
+  'library.peek.versions.none': {
+    message: 'This file has no version history yet.',
+    description: 'Empty state of the peek panel’s Versions tab.',
+  },
+  'library.peek.versions.unreadable': {
+    message: 'Not yet readable',
+    description:
+      'Marks a version the server will not serve as bytes, because antivirus has not cleared it. The server computes this and sends it; the client never recomputes it from the status fields beside it.',
   },
   'library.peek.capabilities': {
     message: 'What you can do',
@@ -903,6 +1003,11 @@ export const catalog = {
     message: 'Search files, people and metadata',
     description:
       'Placeholder in the query field. The design reference adds “— or ask a question…”; that is deliberately absent, because asking a question is M7 and the field must not promise it.',
+  },
+  'key.escape': {
+    message: 'Esc',
+    description:
+      'Key cap for the Escape key, shown in the peek panel header. In the catalog rather than as a literal because the abbreviation differs by locale and by keyboard layout.',
   },
   'key.commandK': {
     message: '⌘K',

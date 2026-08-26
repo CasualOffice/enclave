@@ -180,3 +180,5 @@ export const VersionPage = z.object({
   items: z.array(VersionEntry),
   page: PageInfo,
 });
+
+export type VersionPage = z.infer<typeof VersionPage>;

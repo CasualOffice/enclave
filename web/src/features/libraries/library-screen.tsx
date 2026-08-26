@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { useT } from '../../shared/i18n/index.tsx';
 import { Icon } from '../../shared/ui/icon-sprite.tsx';
 import { Button } from '../../shared/ui/primitives.tsx';
@@ -10,7 +10,7 @@ import { useSearchParam, useWriteSearchParams } from '../../shared/url-state.ts'
 import { GroupedFileList } from './list/grouped-file-list.tsx';
 import type { DensityName, GroupSpec } from './list/geometry.ts';
 import { useListViewStore } from './list-view-store.ts';
-import { useFileDetail, useLibraryItems } from './api.ts';
+import { useFileDetail, useFileVersions, useLibraryItems } from './api.ts';
 import { PeekPanel } from './peek/peek-panel.tsx';
 import './library.css';
 
@@ -75,6 +75,10 @@ export default function LibraryScreen() {
 
   const items = useLibraryItems(libraryId, folderId);
   const peek = useFileDetail(peekId);
+  /* The Versions tab fetches only once it is opened. A panel that loaded every
+   * tab's data on open would issue four requests to render one. */
+  const [peekTab, setPeekTab] = useState<string>('details');
+  const versions = useFileVersions(peekId, peekTab === 'versions');
 
   const { groups, ordered } = useMemo(
     () => groupItems(items.data?.items ?? []),
@@ -95,6 +99,29 @@ export default function LibraryScreen() {
   );
 
   const closePeek = useCallback(() => setPeekId(undefined), [setPeekId]);
+
+  /* Walking the peek across the loaded rows.
+   *
+   * Pure list navigation over rows the server already returned and already
+   * filtered — no capability is consulted, because none is involved. Reaching
+   * the end of the list is a neutral disabled state and must never borrow the
+   * denial treatment (`docs/17 §6`). */
+  const peekIndex = peekId === undefined ? -1 : ordered.findIndex((row) => row.id === peekId);
+  const navigation =
+    peekIndex < 0
+      ? undefined
+      : {
+          hasPrevious: peekIndex > 0,
+          hasNext: peekIndex < ordered.length - 1,
+          onPrevious: () => {
+            const target = ordered[peekIndex - 1];
+            if (target !== undefined) setPeekId(target.id);
+          },
+          onNext: () => {
+            const target = ordered[peekIndex + 1];
+            if (target !== undefined) setPeekId(target.id);
+          },
+        };
 
   if (libraryId.length === 0) {
     return (
@@ -177,6 +204,27 @@ export default function LibraryScreen() {
         </div>
 
         <span className="library-viewbar-trailing">
+          {/* The prototype draws Filter, Display, Upload and + New here, and all
+           * four are drawn here too — under the unbuilt treatment rather than
+           * omitted. A control that vanishes tells a user the product does not
+           * have the idea; a control marked `Later` tells them it does not have
+           * it *yet*, which is the true statement (D33).
+           *
+           * None of them is *denied*: the policy chain has refused nobody. There
+           * is no endpoint that filters a listing, none that stores a display
+           * preference, and none that creates a folder. */}
+          <Button
+            label="library.filter"
+            icon="filter"
+            size="sm"
+            state={{ kind: 'unbuilt', note: 'library.filter.unbuilt' }}
+          />
+          <Button
+            label="library.display"
+            icon="sliders"
+            size="sm"
+            state={{ kind: 'unbuilt', note: 'library.display.unbuilt' }}
+          />
           {/* Upload is not hidden and not denied — it is **unbuilt**, and the
            * distinction is the point (`docs/17 §6`). `POST /api/v1/uploads`
            * exists but `crates/api/src/main.rs` binds `Delivery::unconfigured()`
@@ -188,6 +236,13 @@ export default function LibraryScreen() {
             icon="up"
             size="sm"
             state={{ kind: 'unbuilt', note: 'library.upload.unbuilt' }}
+          />
+          <Button
+            label="library.new"
+            icon="plus"
+            size="sm"
+            variant="primary"
+            state={{ kind: 'unbuilt', note: 'library.new.unbuilt' }}
           />
         </span>
       </div>
@@ -219,10 +274,13 @@ export default function LibraryScreen() {
           <PeekPanel
             fileId={peekId}
             detail={peek.data}
+            versions={versions.data}
             isLoading={peek.isPending}
             error={peek.error}
             onClose={closePeek}
             onRetry={() => void peek.refetch()}
+            onTabChange={setPeekTab}
+            navigation={navigation}
           />
         )}
       </div>
