@@ -38,6 +38,17 @@
 //!   granted resource can, which is why the fixture spine below is built and granted before the
 //!   server starts.
 //!
+//! # Seven routes cannot meet that bar today, and are quarantined rather than excused
+//!
+//! The first green run of this test was not green. Three defects it found are somebody else's rows
+//! — `ENC-770`, `ENC-771` and `ENC-736` — and none of them is fixable from a test file. Each is an
+//! [`Expect::Unreachable`] entry naming the status it answers, the row that carries the fix and the
+//! reason the composed binary cannot serve it, and the entry **asserts that exact status**. So the
+//! list cannot grow silently (a new route joins it only by an edit that has to state a reason) and
+//! cannot rot (the day the wiring is fixed, the assertion fails and the entry must go). It is
+//! printed on every run for `xtask/src/policy_routing.rs`'s reason: an exemption nobody meets is an
+//! exemption nobody revisits.
+//!
 //! # The route list is derived, never written down
 //!
 //! `ENC-543`'s failure mode is a hand-maintained list that silently stops covering new work, so the
