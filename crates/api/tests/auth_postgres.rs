@@ -361,6 +361,112 @@ async fn k3_a_rotation_consumes_the_old_row_and_inserts_the_successor() {
     );
 }
 
+/// **K3's real content.** Two concurrent refreshes of one token: exactly one succeeds.
+///
+/// This is the property the in-memory store cannot say anything about, and the reason
+/// `InMemoryRefreshStore` documents itself as *"not a substitute for the PostgreSQL
+/// implementation: `rotate` here is atomic because a `Mutex` makes it so, which proves nothing
+/// about the transaction the real store must use."*
+///
+/// Both callers pass `classify` — the row is unconsumed when each of them reads it — so nothing in
+/// Rust separates them. What does is the `consumed_at IS NULL` predicate inside the `UPDATE`: the
+/// second transaction blocks on the row lock, re-evaluates the predicate against the committed
+/// value, and matches zero rows. Delete that predicate and this test is the only thing in the
+/// workspace that notices; the sequential tests all still pass, because sequentially the
+/// classification has already refused.
+///
+/// A `Barrier` and not two `spawn`s in sequence, for `docs/12-TESTING.md §4.4` H3's reason: two
+/// tasks started one after another are a sequential test wearing `tokio::spawn`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires a live PostgreSQL; CI runs it with --include-ignored"]
+async fn k3_two_concurrent_rotations_of_one_token_produce_exactly_one_successor() {
+    use sqlx::Row as _;
+
+    let harness = harness().await;
+    let alpha = &harness.fixtures.alpha;
+
+    // Driven through the service rather than the router, because what is being raced is the store
+    // and the router would serialise nothing useful for us.
+    let pair = harness
+        .tokens
+        .issue_pair(&enclave_auth::AuthContext {
+            tenant_id: alpha.id,
+            actor: enclave_core::Actor::User(alpha.owner),
+            session_id: None,
+            client: enclave_core::ClientType::Web,
+            device_id: None,
+            scopes: enclave_core::ScopeSet::empty(),
+            methods: vec![enclave_auth::AuthMethod::Pwd],
+            auth_time: Utc::now(),
+            epoch: 1,
+            max_classification: None,
+        })
+        .await
+        .expect("issue");
+    let presented = pair.refresh_token.expect("a web session gets a refresh token");
+    let family = pair.session_id;
+
+    let barrier = Arc::new(tokio::sync::Barrier::new(2));
+    let mut handles = Vec::new();
+    for _ in 0_u8..2 {
+        let tokens = Arc::clone(&harness.tokens);
+        // Two independent `RefreshToken`s holding the same secret: the type is not `Clone`, on
+        // purpose, so the value is rebuilt from its digest source rather than copied around.
+        let secret = presented.expose().to_owned();
+        let barrier = Arc::clone(&barrier);
+        handles.push(tokio::spawn(async move {
+            let token = enclave_auth::RefreshToken::parse(&secret).expect("a token this process minted parses");
+            // Neither task may start before both are ready to.
+            barrier.wait().await;
+            tokens.refresh(&token, &enclave_core::NetworkContext::unknown()).await.is_ok()
+        }));
+    }
+
+    let mut succeeded = 0_u8;
+    for handle in handles {
+        if handle.await.expect("the task must not panic") {
+            succeeded += 1;
+        }
+    }
+    assert_eq!(
+        succeeded, 1,
+        "exactly one of two concurrent rotations may succeed: two would leave two live tokens in \
+         one family, which is the state reuse detection exists to be able to rule out"
+    );
+
+    let mut conn = harness.db.connect().await.expect("connect");
+    let live: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM refresh_tokens
+         WHERE session_id = $1 AND consumed_at IS NULL AND revoked_at IS NULL",
+    )
+    .bind(family.as_uuid())
+    .fetch_one(&mut conn)
+    .await
+    .expect("query");
+    // Either one successor (the winner rotated and the loser was rejected) or none (the loser was
+    // classified as a replay and destroyed the family). Both are correct; two is not.
+    assert!(live <= 1, "{live} tokens are live in one family after a concurrent rotation");
+
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM refresh_tokens WHERE session_id = $1")
+        .bind(family.as_uuid())
+        .fetch_one(&mut conn)
+        .await
+        .expect("query");
+    assert_eq!(rows, 2, "one loser must have inserted nothing: the original and one successor");
+
+    // The positive control for both counts: the family exists at all, so this is not passing
+    // against a race that failed to write anything.
+    let consumed: i64 = sqlx::query(
+        "SELECT count(*) AS n FROM refresh_tokens WHERE session_id = $1 AND consumed_at IS NOT NULL",
+    )
+    .bind(family.as_uuid())
+    .fetch_one(&mut conn)
+    .await
+    .expect("query")
+    .get("n");
+    assert_eq!(consumed, 1, "the presented token was consumed exactly once");
+}
+
 /// K4 — presenting a consumed token destroys the family, and does so in the database.
 ///
 /// The response half of this is `crates/api/tests/auth.rs`'s. What is new here is the *state*: the
