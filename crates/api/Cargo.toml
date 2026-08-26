@@ -41,8 +41,6 @@ enclave-versions = { workspace = true }
 # — docs/10 §2's "it gets no privileged endpoint", held by using the same service every other
 # uploader will.
 enclave-sync = { workspace = true }
-enclave-libraries = { workspace = true }
-enclave-uploads = { workspace = true }
 # The workflow model, the evaluator and the repository (`ENC-739`). The evaluator takes no
 # connection, which is what stops `simulate` from diverging from a real start.
 enclave-workflows = { workspace = true }
@@ -76,7 +74,6 @@ uuid         = { workspace = true }
 # `crates/api/tests/auth_postgres.rs` reads the claims out of a token it was just handed, to assert
 # what was *minted*. Decoding a compact JWS payload is base64url and nothing else; the signature is
 # verified by the routes the same tests then call.
-base64 = { workspace = true }
 # Decoding the stub rendition and the marked response in the delivery tests.
 image = { workspace = true }
 enclave-testing = { workspace = true }
