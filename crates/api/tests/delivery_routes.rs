@@ -1163,9 +1163,29 @@ async fn a_watermark_obligation_is_discharged_in_the_bytes_or_refuses_the_delive
 #[ignore = "requires a live PostgreSQL with the content and audit migrations; CI runs it with --include-ignored"]
 async fn t1_a_file_in_another_tenant_is_reported_as_absent_on_all_three_routes() {
     // `docs/12-TESTING.md §4.1` T1. The token is genuine and alpha's; the file id is beta's. The
-    // resource reference is built from the *token's* tenant (`CLAUDE.md` rule 3), so what refuses
-    // is the ACL resolver finding no chain, and what turns that into a `404` is the second question
-    // the handler asks: may this caller read the file's metadata? It may not, so it learns nothing.
+    // resource reference is built from the *token's* tenant (`CLAUDE.md` rule 3), so the chain's
+    // tenant assertion never fires — what refuses is the ACL resolver finding no chain, and what
+    // turns that into a `404` is the second question the handler asks: may this caller read the
+    // file's metadata? It may not, so it learns nothing.
+    //
+    // # Which mechanism this test proves, which it does not, and how that was found
+    //
+    // `docs/12-TESTING.md §1.2` rule 2: when a deliberate violation does *not* fail a test, record
+    // which control actually holds the property. Deleting `PolicyEngine::enforce` from the export
+    // handler outright — reachable, deciding nothing — leaves **this test green**. Two independent
+    // layers answer a cross-tenant id, and only the second one is load-bearing here:
+    //
+    // 1. the chain, whose `AccessDenied` [`conceal_if_not_visible`] turns into `NotFound`; and
+    // 2. **row-level security**, which is what actually catches it — `TenantScoped` has set
+    //    `app.tenant_id`, so beta's row is not filtered out of `readable_version`'s query, it is
+    //    invisible to the transaction, and the handler reports absence because it found none.
+    //
+    // That is the design (PR #22's lesson, and `crates/api/src/download.rs` says so at the query),
+    // but it means this test cannot tell a working chain from a missing one. The test that can is
+    // `a_caller_in_the_same_tenant_who_may_not_see_the_file_is_told_it_does_not_exist`, immediately
+    // below, where RLS has nothing to say because the row is the caller's own tenant's. Neither
+    // test is redundant: this one proves rule 7's answer is `404` across a tenant boundary, and
+    // that one proves the chain is what produces it.
     let db = TestDb::start().await.expect("start");
     let fixtures = db.seed().await.expect("seed");
     let (app, key, store) = app(&db, disabled_dlp()).await;
@@ -1197,6 +1217,70 @@ async fn t1_a_file_in_another_tenant_is_reported_as_absent_on_all_three_routes()
         assert_eq!(answer.json()["error"]["code"], "NOT_FOUND");
         answer.carries_no_original(&beta);
     }
+
+    assert!(store.touched().is_empty(), "saw {:?}", store.touched());
+}
+
+/// The same-tenant half of rule 7, and the leg that proves the chain rather than RLS.
+///
+/// One alpha file, one alpha caller, and **no grant of any kind**. Row-level security admits the
+/// row — it is this tenant's — so the only thing that can refuse is the policy chain, and the only
+/// thing that can turn its `ACCESS_DENIED` into a `404` is [`conceal_if_not_visible`]. Deleting
+/// `enforce` from a handler fails *this* test, which is exactly what the cross-tenant one above
+/// cannot do.
+///
+/// It is also the distinction rule 7 rests on. Two callers, one file, two different truths: a
+/// caller who may read the file's metadata and see it in a listing gets the actionable `403` that
+/// `a2_export_is_deniable_independently_of_download` asserts, and a caller with nothing at all
+/// learns the file does not exist. Neither is a leak, and a surface that answered `403` to both
+/// would be an existence oracle for anyone who could guess an id.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL with the content and audit migrations; CI runs it with --include-ignored"]
+async fn a_caller_in_the_same_tenant_who_may_not_see_the_file_is_told_it_does_not_exist() {
+    let db = TestDb::start().await.expect("start");
+    let fixtures = db.seed().await.expect("seed");
+    let (app, key, store) = app(&db, disabled_dlp()).await;
+
+    let content = Content::new(fixtures.alpha.id, fixtures.alpha.owner);
+    let mut admin = db.connect().await.expect("admin connection");
+    content.insert(&mut admin, "AVAILABLE", "CLEAN").await;
+    // The owner may do everything with it, so the file is genuinely reachable — the `404`s below
+    // are about this caller and not about a fixture that never worked.
+    for action in
+        [FileAction::MetadataRead, FileAction::Preview, FileAction::Export, FileAction::Print]
+    {
+        grant(&mut admin, &content, fixtures.alpha.owner, action, "ALLOW").await;
+    }
+
+    let stranger = token(&key, fixtures.alpha.id, fixtures.alpha.viewer);
+
+    for (name, answer) in [
+        ("export", post_export(&app, &stranger, content.file, "png").await),
+        ("print-token", post_print_token(&app, &stranger, content.file).await),
+        ("thumbnail", get_thumbnail(&app, &stranger, content.file).await),
+    ] {
+        assert_eq!(
+            answer.status,
+            StatusCode::NOT_FOUND,
+            "{name} confirmed to a caller with no grant that this file exists — row-level \
+             security cannot refuse a row in the caller's own tenant, so the chain is the only \
+             thing that could have: {}",
+            answer.snippet()
+        );
+        assert_eq!(answer.json()["error"]["code"], "NOT_FOUND");
+        answer.carries_no_original(&content);
+    }
+
+    // The control: the owner is served, so the three `404`s above are a decision rather than a
+    // handler that refuses everybody or a fixture nobody can read.
+    let owner = token(&key, fixtures.alpha.id, fixtures.alpha.owner);
+    let served = post_export(&app, &owner, content.file, "png").await;
+    assert_eq!(
+        served.status,
+        StatusCode::OK,
+        "the owner cannot export their own file, so the refusals above prove nothing: {}",
+        served.snippet()
+    );
 
     assert!(store.touched().is_empty(), "saw {:?}", store.touched());
 }
