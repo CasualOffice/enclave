@@ -1,6 +1,6 @@
 # 04 — Data Model
 
-> **Status:** Draft · **Version:** 1.8 · **Owner:** Platform Engineering · **Last updated:** 2026-08-22
+> **Status:** Draft · **Version:** 1.9 · **Owner:** Platform Engineering · **Last updated:** 2026-08-27
 > **Authoritative for:** all PostgreSQL DDL, tenant isolation, quotas. No other document defines schema.
 
 ## 1. Conventions
@@ -1637,6 +1637,85 @@ CREATE TABLE notifications (
 CREATE INDEX idx_notifications_unread ON notifications (tenant_id, user_id, created_at DESC) WHERE read_at IS NULL;
 ```
 
+### 15.1 Sync, as created — the change feed a cursor counts (`ENC-732`)
+
+`migrations/0023_sync_devices.sql` applies §15's `sync_devices` and `sync_cursors`, and adds two
+tables §15 did not model. This section records what it did and, more usefully, the three places the
+created schema differs from the model above and why.
+
+**`sync_cursors.cursor` needed a feed to be a position in.** §15 documents the column as *"a
+monotonic change sequence"* and nothing in the schema produced one. `sync_change_log` is that feed —
+one append-only row per change to a file, keyed `(tenant_id, scope_type, scope_id, seq)` — and
+`sync_scope_sequences` is what hands out `seq`.
+
+```sql
+CREATE TABLE sync_scope_sequences (
+    tenant_id  UUID NOT NULL,
+    scope_type TEXT NOT NULL CHECK (scope_type IN ('LIBRARY')),
+    scope_id   UUID NOT NULL,
+    next_seq   BIGINT NOT NULL DEFAULT 0 CHECK (next_seq >= 0),
+    updated_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (tenant_id, scope_type, scope_id)
+);
+
+CREATE TABLE sync_change_log (
+    tenant_id  UUID NOT NULL,
+    scope_type TEXT NOT NULL CHECK (scope_type IN ('LIBRARY')),
+    scope_id   UUID NOT NULL,
+    seq        BIGINT NOT NULL CHECK (seq > 0),
+    file_id    UUID NOT NULL,
+    op         TEXT NOT NULL CHECK (op IN ('UPSERT','DELETE')),
+    version_id UUID,
+    occurred_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (tenant_id, scope_type, scope_id, seq),
+    FOREIGN KEY (tenant_id, file_id) REFERENCES files (tenant_id, id) ON DELETE CASCADE
+);
+```
+
+**`seq` is a counter row, not a `SEQUENCE`, and that is a correctness decision rather than a style
+one.** The append is `INSERT … ON CONFLICT DO UPDATE SET next_seq = next_seq + 1 RETURNING`, which
+takes a row lock held to commit — so a second writer in the same scope blocks until the first
+commits or aborts, allocation order equals *commit* order, and the counter rolls back with its
+transaction so there are no holes. `nextval` gives none of that: it does not lock, does not roll
+back, and returns before its caller commits, so two writers can take 5 and 6 and commit in the other
+order — after which a reader that saw 6 stores 6 and never sees 5. A `modified_at` cursor fails the
+same way one layer up. The cost is that appends to one scope serialise, which is why the scope is a
+library rather than a tenant. The full argument, and the failure each alternative produces, is the
+header of `migrations/0023_sync_devices.sql`; `crates/sync/tests/change_feed.rs` demonstrates it
+against a live database.
+
+**The feed is written by a trigger on `files`, not by the application.** Every crate that can change
+a file would otherwise have to remember to append, and one that forgot would produce a device
+quietly missing a file rather than an error. The trigger fires on `INSERT OR UPDATE`, so a
+permission break that bumps `files.acl_revision` produces an entry and therefore a tombstone. An ACL
+change that touches only `acl_entries` does not, and the client learns at materialisation time
+instead (`10-SYNC-AND-EDITING.md §5`) — `ENC-737`.
+
+**`sync_devices` gains six columns §15 does not list**, each of which something reads: `name`,
+`platform` and `client_version` are `10-SYNC-AND-EDITING.md §3`'s registration and the
+minimum-version refusal of `§10`; `posture` mirrors `devices.posture`'s vocabulary and feeds
+conditional access; `wipe_requested_at` and `wiped_at` are `§3.1`'s cooperative wipe, kept as two
+columns because *requested* and *completed* are different facts and a schema that could not tell
+them apart would let an administrator believe a laptop had been cleaned. `CHECK (wiped_at IS NULL OR
+wipe_requested_at IS NOT NULL)` is what stops the second being stamped without the first. The key is
+composite into `users (tenant_id, id)` per `§3.3`.
+
+**`sync_devices` is not `devices`.** `migrations/0001` creates `devices` in the Auth domain — the
+table the `dev` claim of `03-LLD.md §5.2` binds a token to — and nothing writes it. `sync_devices`
+is the Delivery-domain sync registry `§15` lists, and the two are separate rows about the same
+machine until device-bound tokens exist. Reconciling them is `ENC-736`; until then a sync token is an
+ordinary access token and `crates/api/src/sync.rs` takes the device from a parameter it checks
+belongs to the caller.
+
+**`enclave_app` holds `DELETE` on `sync_change_log` and on none of the other three**, and the four
+answers differ for four reasons. Deleting a `sync_scope_sequences` row restarts a scope at 1, after
+which every device holding a higher cursor receives nothing for ever — silently, because its cursor
+is not *too old*, it is too new. Deleting a `sync_devices` row is a wipe that never happened and an
+offboarding nobody can evidence; revocation is an `UPDATE` of `state`. Deleting a `sync_cursors` row
+silently re-enumerates a whole selection. `sync_change_log` is the exception because it is a
+retention-bounded derived feed whose 30-day window has a *specified* consequence —
+`410 CURSOR_TOO_OLD` and a scoped re-enumeration — rather than a silent loss.
+
 ## 16. Quotas and usage
 
 ```sql
@@ -1819,6 +1898,7 @@ CREATE INDEX idx_jobs_ready ON jobs (state, run_after) WHERE state = 'QUEUED';
 
 | Version | Date | Change |
 |---|---|---|
+| 1.9 | 2026-08-27 | Added §15.1, sync as created — `sync_devices` and `sync_cursors` per §15, plus `sync_scope_sequences` and `sync_change_log`, which §15 did not model and without which `sync_cursors.cursor` counts nothing (`ENC-732`). The decision worth reading is that `seq` comes from a **transactional counter row** rather than a PostgreSQL `SEQUENCE` or a timestamp: the incrementing `UPDATE` holds a row lock to commit, so allocation order is commit order and the visible sequence is always a contiguous prefix — `nextval` neither locks nor rolls back, so two writers can take 5 and 6 and commit in the other order, after which a reader that saw 6 never sees 5. The cost, per-scope write serialisation, is why a scope is a library. The feed is appended by a **trigger on `files`** rather than by each writer, on the same completeness argument RLS makes about tenant predicates; the gap that leaves — an `acl_entries`-only revocation produces no entry — is `ENC-737` and is caught by `10-SYNC-AND-EDITING.md §5`'s re-evaluation at byte-fetch time. `sync_devices` is **not** `devices` (0001, Auth domain, written by nothing yet); reconciling them when device-bound tokens land is `ENC-736`. `enclave_app` holds `DELETE` on `sync_change_log` alone — deleting a counter row restarts a scope at 1 and every device holding a higher cursor stops receiving changes silently and permanently. `migrations/0023_sync_devices.sql` applies it. |
 | 1.8 | 2026-08-22 | Added §12.4, `classifications` as created — the table three separate consumers of a `ClassificationRank` had no way to be given one from (`ENC-574`, closing `ENC-614`). §12's shape with `tenant_id` leading, a `(tenant_id, id)` primary key, `deleted_at` withdrawal, partial live-uniqueness on both `key` and `rank`, and `CHECK (rank >= 0)` with no upper bound. The four `classification_id` columns §§7–8 have carried since 0004/0005 become **composite** foreign keys per §3.3; a single-column form would accept another tenant's label on this tenant's file, because RI checks run with row security not enforced. `enclave_app` holds no `DELETE` on grounds of its own: one statement declassifies in bulk, and the ranks already copied into `security_facts` and the vector collection are protected by no key. **A withdrawn label still resolves** — the resolver has no `deleted_at` filter, because a withdrawal that declassified would be that same `DELETE` through the door that is granted. Also records the **resolution rule**: effective rank is the *maximum* over the file, its ancestors, its library default and its workspace default; the walk is deliberately **not** `enclave_authorization`'s, because that one stops at `inherit_permissions = FALSE` and nothing materialises a label when that flag flips — honouring it would be `ENC-141`'s escalation one control over; and a truncated walk is an error rather than `Ok(None)`. An unlabelled resource has **no rank**: `Unlabelled` is `FAIL_CLOSED` or a tenant-named `Assume(rank)`, is not deserializable (D27), and `FAIL_CLOSED` is mandatory for external sharing regardless. `migrations/0022_classifications.sql` applies it. |
 | 1.7 | 2026-08-22 | Added §12.3, `dlp_rules` — the stored form of a DLP rule, and the table that makes `ENFORCE` able to refuse anything (`ENC-615`). A second table beside §12's `dlp_policies` on §12.1's boundary: five of that model's columns are not read by the evaluator that exists. The one worth reading is the **absent `mode`**: D28 requires `SIMULATION` to be indistinguishable from `ENFORCE` except in effect, and `crates/dlp` makes that structural by having `RuleSet::evaluate` take no mode argument — a per-rule mode would have to be carried on the rule type, which is exactly the field a divergence becomes writable through, so the mode stays in configuration and the cost (no per-tenant rollout pace) is recorded as `ENC-632`. Also: **no `ALLOW` action**, because `Verdict::blocking_code` scans past a `Nothing` demand to the next refusal, so an `ALLOW` above a `BLOCK` would be an exception that fires and changes nothing (`ENC-631`) — §12.1's absent effect, one stage over; no `enabled` (a second off-switch beside withdrawal), no `scope_type`/`scope_id` (no rule type has a resource scope); and `priority` kept, because it *is* read — it decides which reason code a refused caller sees when two refusing rules fire, ordered `priority, name` so the answer cannot depend on a query plan. `conditions` is Q16's boundary and it is held by strict, closed decoding rather than by the column: a stored condition naming `pattern` is refused by name and fails the whole set. `enclave_app` holds no `DELETE`: one statement stops a tenant's inspection refusing anything, and it would remove the rule §9's mandatory-simulation gate has to query the history of. `migrations/0021_dlp_rules.sql` applies it. |
 | 1.6 | 2026-08-22 | Added §12.2, `security_facts` as created — the table a DLP decision is actually taken from (`ENC-594`). §12's shape, with three deviations recorded rather than left to be discovered: **no `detector_results JSONB`**, because nothing reads a per-detector breakdown and an opaque results document is the first place a future scanner writes the string it matched — `CLAUDE.md` rule 10 is structural everywhere else in this path and a column that would hold anything is where it would be lost; `classification_rank INT` in place of `classification_id UUID`, because comparisons are against ranks and `classifications` is created by no migration, so an id would point at nothing; and `CHECK (… >= 0)` on the counts, which is what makes the `INT`-to-`u32` conversion total rather than turning a negative row into two billion card numbers. `detector_set_version` is compared for equality and never ordered (`ENC-581`). `enclave_app` holds no `DELETE`: a rescan replaces, and the cascade from `file_versions` is what removes facts about content that no longer exists. `migrations/0020_security_facts.sql` applies it. |

@@ -1356,6 +1356,7 @@ dependencies = [
  "enclave-search",
  "enclave-sharing",
  "enclave-storage",
+ "enclave-sync",
  "enclave-testing",
  "enclave-uploads",
  "enclave-versions",
@@ -1884,7 +1885,19 @@ dependencies = [
 name = "enclave-sync"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "chrono",
  "enclave-core",
+ "enclave-db",
+ "enclave-testing",
+ "enclave-versions",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
