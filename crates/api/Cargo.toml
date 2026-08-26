@@ -25,6 +25,13 @@ enclave-files = { workspace = true }
 # The rendition pipeline, behind `PreviewPipeline`.
 enclave-preview = { workspace = true }
 enclave-versions = { workspace = true }
+# The four sync endpoints of docs/05-API.md §13 (ENC-733). `libraries` and `uploads` are reached
+# only by `POST /sync/reserve`, which claims an ordinary upload session rather than a sync-only one
+# — docs/10 §2's "it gets no privileged endpoint", held by using the same service every other
+# uploader will.
+enclave-sync = { workspace = true }
+enclave-libraries = { workspace = true }
+enclave-uploads = { workspace = true }
 enclave-observability = { workspace = true, features = ["exposition"] }
 # The delivery paths: `download` mints a signed URL through `BlobStore`; `preview` deliberately
 # does not depend on it at the module level (crates/api/src/preview.rs).

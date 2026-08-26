@@ -17,6 +17,7 @@ pub mod metrics_listener;
 pub mod preview;
 pub mod refusal;
 pub mod state;
+pub mod sync;
 
 use std::sync::Arc;
 
@@ -118,6 +119,13 @@ pub fn router(state: ApiState, delivery: Delivery) -> Router {
         // split exists to prevent (docs/01-PRD.md §18).
         .route("/api/v1/files/{id}/download", post(download::download))
         .route("/api/v1/files/{id}/preview", get(preview::preview))
+        // Sync (docs/05-API.md §13). `reserve` extracts the `BlobStore` extension attached below —
+        // it claims an ordinary upload session rather than a sync-only one, which is docs/10 §2's
+        // "the sync client gets no privileged endpoint" held structurally rather than promised.
+        .route("/api/v1/sync/devices", get(sync::list_devices).post(sync::register_device))
+        .route("/api/v1/sync/devices/{id}/wipe", post(sync::wipe_device))
+        .route("/api/v1/sync/delta", get(sync::delta))
+        .route("/api/v1/sync/reserve", post(sync::reserve))
         // Administration (docs/05-API.md §14). Registered here rather than in a router of its own
         // so that `main.rs` needs no second line to serve it: the routes need nothing the rest of
         // the surface does not already have, and the one thing they *can* use — the rule cache —
