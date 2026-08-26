@@ -57,6 +57,10 @@ tracing      = { workspace = true }
 uuid         = { workspace = true }
 
 [dev-dependencies]
+# `crates/api/tests/auth_postgres.rs` reads the claims out of a token it was just handed, to assert
+# what was *minted*. Decoding a compact JWS payload is base64url and nothing else; the signature is
+# verified by the routes the same tests then call.
+base64 = { workspace = true }
 # Decoding the stub rendition and the marked response in the delivery tests.
 image = { workspace = true }
 enclave-testing = { workspace = true }
