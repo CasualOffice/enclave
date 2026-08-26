@@ -1979,7 +1979,14 @@ dependencies = [
 name = "enclave-workflows"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "enclave-core",
+ "enclave-db",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "thiserror 2.0.20",
+ "uuid",
 ]
 
 [[package]]
