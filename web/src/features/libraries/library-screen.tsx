@@ -8,7 +8,7 @@ import { rowFromItem } from '../../entities/file/present.ts';
 import type { Item } from '../../entities/file/api-model.ts';
 import { useSearchParam, useWriteSearchParams } from '../../shared/url-state.ts';
 import { GroupedFileList } from './list/grouped-file-list.tsx';
-import type { GroupSpec } from './list/geometry.ts';
+import type { DensityName, GroupSpec } from './list/geometry.ts';
 import { useListViewStore } from './list-view-store.ts';
 import { useFileDetail, useLibraryItems } from './api.ts';
 import { PeekPanel } from './peek/peek-panel.tsx';
@@ -56,6 +56,10 @@ export default function LibraryScreen() {
   const folderIdRaw = useSearchParam('folder');
   const peekIdRaw = useSearchParam('peek');
   const folderId = folderIdRaw.length > 0 ? folderIdRaw : undefined;
+  /* Density is a display preference and belongs in the URL rather than in a
+   * store, for the same reason the filters do: a colleague opening the link
+   * should see the view that was described to them (`docs/17 §4`). */
+  const density: DensityName = useSearchParam('density') === 'compact' ? 'compact' : 'default';
   const peekId = peekIdRaw.length > 0 ? peekIdRaw : undefined;
 
   const setFolderId = useCallback(
@@ -203,6 +207,7 @@ export default function LibraryScreen() {
               onToggleGroup={toggleGroup}
               selected={selected}
               onToggleSelect={toggleSelected}
+              density={density}
               status={items.isPending ? 'loading' : 'ready'}
               filtersActive={false}
               onUpload={undefined}
