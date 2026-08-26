@@ -1,6 +1,6 @@
 # 12 — Testing & Quality Gates
 
-> **Status:** Draft · **Version:** 1.15 · **Owner:** Engineering · **Last updated:** 2026-08-22
+> **Status:** Draft · **Version:** 1.16 · **Owner:** Engineering · **Last updated:** 2026-08-27
 > **Authoritative for:** test strategy, the security leakage matrix, CI gates, release criteria.
 
 ## 1. Philosophy
@@ -214,6 +214,13 @@ the suite.
 | Y5 | An editor session token grants access to exactly one file version and nothing else |
 | Y6 | A client-side editor is refused for no-download content |
 | Y7 | A revoked device's tokens stop working immediately |
+| Y8 | A caller holding `file.download` and **not** `file.sync` is refused the delta's content: the entry is a `TOMBSTONE` with `ACCESS_REVOKED` and carries no `versionId`, no `checksumSha256` and no `sizeBytes` (`CLAUDE.md` rule 6, `10-SYNC-AND-EDITING.md §1`). Asserted with the positive control beside it — the same caller, the same request, a second file with the grant intact, eligible and carrying all three |
+| Y9 | A file the caller may not `file.metadata_read` is **omitted** from the delta rather than tombstoned. A tombstone carries a path, so one per file would make the delta a contents listing of a library the caller may not browse. Y3 is about the file that *disappeared from a device*; this is its boundary |
+| Y10 | A version antivirus has not cleared is never offered to a device: the entry is a `QUARANTINED` tombstone with no checksum (`CLAUDE.md` rule 9). The delta's version join splices `enclave_versions::READABLE_PREDICATE` rather than retyping it, and a structural test asserts the splice |
+| Y11 | A delta cursor is complete and duplicate-free under **concurrent commits**: a second writer in one scope cannot take a sequence number while the first is in flight, so no reader can store a position above a change that has not landed. A timestamp cursor and a PostgreSQL `SEQUENCE` both fail this |
+| Y12 | A cursor the feed can no longer reach — pruned, or above the scope's high-water mark — is `410 CURSOR_TOO_OLD`, never an empty page. An empty page is the dangerous answer: the client concludes it is up to date and stops |
+| Y13 | A device told to wipe is refused every subsequent delta and reservation from the moment the request commits, without waiting for the client to acknowledge. `wiped_at` is stamped only by the device's own acknowledgement — the server never records a wipe it cannot know happened |
+| Y14 | A sync scope in another tenant is `404`, and so is one in the **same** tenant the caller holds no grant on. The second is the one that proves the authorization stage; row-level security has nothing to say about it |
 
 ### 4.8 Ingestion safety
 

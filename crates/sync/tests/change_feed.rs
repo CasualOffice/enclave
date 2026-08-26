@@ -193,7 +193,7 @@ async fn allocation_order_is_commit_order_not_clock_order() {
         // Poll rather than await the handle directly, so the handle survives for the join below.
         loop {
             if handle.is_finished() {
-                return ();
+                return;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }

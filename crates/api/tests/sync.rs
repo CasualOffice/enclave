@@ -75,7 +75,7 @@ const AUDIENCE: &str = "enclave-api";
 ///
 /// A delta hands over metadata; it must not mint a URL or read a byte. Making that a panic rather
 /// than a counter is the strongest available statement: there is no assertion to forget.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct ForbiddenStore;
 
 #[async_trait]
@@ -325,7 +325,7 @@ async fn app(db: &TestDb) -> (Router, PrivateSigningKey) {
         Arc::new(PgAclAuthorization::new(pool.clone())),
         Arc::new(enclave_information_barriers::UnconfiguredBarriers),
         Arc::new(enclave_classification::UnconfiguredClassification),
-        Arc::new(enclave_dlp::DisabledDlp::default()),
+        Arc::new(enclave_dlp::DisabledDlp),
         Arc::new(enclave_retention::UnconfiguredRetention),
         Arc::new(enclave_audit::PgAuditSink::new(pool.clone(), enclave_audit::ChainMode::Enabled)),
     );
