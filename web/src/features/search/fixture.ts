@@ -6,7 +6,7 @@ import { ANY, MODIFIED_WINDOW_MS, type FilterState } from './filters.ts';
  * The endpoint is specified (`docs/05-API.md §11`) and **not implemented**:
  * `crates/api/src/` has `health` and `metrics_listener` and no search route. So
  * this screen reads a fixture, exactly as the library list still reads
- * `fixtures/library.ts`, and says so rather than inventing a path.
+ * the API, and says so rather than inventing a path.
  *
  * Two properties are load-bearing rather than decorative:
  *
@@ -26,7 +26,7 @@ import { ANY, MODIFIED_WINDOW_MS, type FilterState } from './filters.ts';
  * which is why the results list is virtualized rather than mapped.
  */
 
-/** A 32-bit LCG. Same one `fixtures/library.ts` uses, for the same reason. */
+/** A 32-bit LCG, so the corpus is the same on every run. */
 function lcg(seed: number): () => number {
   let state = seed >>> 0;
   return () => {

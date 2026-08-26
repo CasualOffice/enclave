@@ -2,15 +2,18 @@ import { z } from 'zod';
 import type { ClassificationLevel } from '../../entities/classification/model.ts';
 import type { FileKind } from '../../entities/file/model.ts';
 
-/* The search contract, as `docs/05-API.md §11` writes it.
+/* The search view model, and the contract `docs/05-API.md §11` describes.
  *
- * `POST /api/v1/search` is specified there and **is not implemented** — there is
- * no search route in `crates/api/src/`, only `health` and `metrics_listener`. So
- * this screen reads `fixture.ts` rather than the network, exactly as the library
- * list still reads `fixtures/library.ts`. The schema below is nonetheless the
- * documented response shape and the fixture is parsed *through* it at module
- * load, so the fixture cannot drift from the contract and the swap to
- * `request('/search', SearchResponse, { method: 'POST', body })` is one line.
+ * `POST /api/v1/search` **is** implemented now
+ * (`crates/api/src/routes/search.rs`) and the screen calls it. `api.ts` owns the
+ * *wire* schema; this file owns what the screen renders, and the two are
+ * deliberately different shapes — the implemented `Hit` is smaller than the
+ * document describes, and widening the wire schema until the view model fitted
+ * would turn a genuinely missing field into an `undefined` nobody notices.
+ *
+ * `SearchResponse` below is still the documented envelope. It is what
+ * `fixture.ts` is parsed through, which keeps the review corpus honest against
+ * the specification even though the network no longer produces that shape.
  *
  * Two things the schema says that are worth reading twice:
  *
