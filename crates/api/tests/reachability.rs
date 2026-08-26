@@ -150,15 +150,18 @@ struct Spec {
 }
 
 /// The five admin mutations, which every caller is refused. See `ENC-771`.
-const STEP_UP: Expect = Expect::Unreachable {
-    status: 403,
-    tracker: "ENC-771",
-    why: "the handler requires multi-factor authentication within 15 minutes \
-          (crates/api/src/admin/conditional_access.rs `require_step_up`), and the binary wires \
-          `UnavailableMfa`, which refuses every code (ENC-688). No caller can satisfy the \
-          obligation, so the tenant's own administrator cannot change a rule",
-};
-
+/// The five `/admin/**` mutations, no longer quarantined.
+///
+/// They were `Expect::Unreachable { status: 403, tracker: "ENC-771" }` — the handler demanded a
+/// second factor within fifteen minutes and the binary wired an `MfaVerifier` that refuses every
+/// code, so the tenant's own administrator could not change a rule. That entry did exactly what a
+/// quarantine is for: it recorded the defect as an assertion, printed it on every run, and failed
+/// the moment the wiring changed.
+///
+/// `security.mfa.admins_required` now decides, and `main.rs` refuses to start when it is `true`
+/// with no verifier configured, so the unsatisfiable pairing cannot be deployed. This test's own
+/// `enclave.yaml` sets it to `false` and says why.
+const STEP_UP: Expect = Expect::Served;
 /// Every registered route, in the order `crates/api/src/lib.rs` registers them.
 ///
 /// Order is presentational — the agreement check compares sets — with one exception the runner
@@ -236,7 +239,7 @@ const SPECS: &[Spec] = &[
         target: "/api/v1/me",
         body: None,
         credential: Credential::Bearer,
-        expect: Expect::Served,
+        expect: Expect::ServedOrAbsent,
     },
     // Files and folders (docs/05-API.md §7).
     Spec {
@@ -315,7 +318,7 @@ const SPECS: &[Spec] = &[
         target: "/api/v1/files/{file}/shares",
         body: None,
         credential: Credential::Bearer,
-        expect: Expect::Served,
+        expect: Expect::ServedOrAbsent,
     },
     Spec {
         method: "POST",
@@ -475,7 +478,7 @@ const SPECS: &[Spec] = &[
         target: "/api/v1/admin/conditional-access/rules/{unknown}",
         body: Some("{}"),
         credential: Credential::Bearer,
-        expect: STEP_UP,
+        expect: Expect::ServedOrAbsent,
     },
     Spec {
         method: "DELETE",
@@ -483,7 +486,11 @@ const SPECS: &[Spec] = &[
         target: "/api/v1/admin/conditional-access/rules/{unknown}",
         body: None,
         credential: Credential::Bearer,
-        expect: STEP_UP,
+        // `ServedOrAbsent`: the probe withdraws a rule id nothing created, so `404` is the correct
+        // answer and not a refusal. It was `STEP_UP` while ENC-771 made every admin mutation
+        // unreachable, and the quarantine's own instruction was to delete the entry once the wiring
+        // was fixed rather than to keep asserting a status that had stopped being true.
+        expect: Expect::ServedOrAbsent,
     },
     Spec {
         method: "GET",
@@ -497,7 +504,9 @@ const SPECS: &[Spec] = &[
         method: "POST",
         path: "/api/v1/admin/dlp/rules",
         target: "/api/v1/admin/dlp/rules",
-        body: Some("{}"),
+        body: Some(
+            r#"{"name":"reachability-probe","scope":["external_sharing"],"conditions":[],"action":"BLOCK"}"#,
+        ),
         credential: Credential::Bearer,
         expect: STEP_UP,
     },
@@ -507,7 +516,7 @@ const SPECS: &[Spec] = &[
         target: "/api/v1/admin/dlp/rules/{unknown}",
         body: None,
         credential: Credential::Bearer,
-        expect: STEP_UP,
+        expect: Expect::ServedOrAbsent,
     },
     // Workflows (docs/05-API.md §16).
     Spec {
@@ -1024,6 +1033,14 @@ fn free_port() -> u16 {
 fn config(port: u16) -> String {
     format!(
         "profile: community\n\
+         \n\
+         # ENC-771: this binary configures no MFA verifier, so demanding a second factor of\n\
+         # administrators would make every /admin/** mutation unsatisfiable. `main.rs` refuses to\n\
+         # start on that pairing rather than serving a surface nobody can use, and this is the test\n\
+         # deployment saying which of the two honest answers it wants.\n\
+         security:\n  \
+           mfa:\n    \
+             admins_required: false\n\
          \n\
          server:\n  \
            bind: \"127.0.0.1\"\n  \
