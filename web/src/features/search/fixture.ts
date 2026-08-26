@@ -6,7 +6,7 @@ import { ANY, MODIFIED_WINDOW_MS, type FilterState } from './filters.ts';
  * The endpoint is specified (`docs/05-API.md §11`) and **not implemented**:
  * `crates/api/src/` has `health` and `metrics_listener` and no search route. So
  * this screen reads a fixture, exactly as the library list still reads
- * `fixtures/library.ts`, and says so rather than inventing a path.
+ * the API, and says so rather than inventing a path.
  *
  * Two properties are load-bearing rather than decorative:
  *
@@ -26,7 +26,7 @@ import { ANY, MODIFIED_WINDOW_MS, type FilterState } from './filters.ts';
  * which is why the results list is virtualized rather than mapped.
  */
 
-/** A 32-bit LCG. Same one `fixtures/library.ts` uses, for the same reason. */
+/** A 32-bit LCG, so the corpus is the same on every run. */
 function lcg(seed: number): () => number {
   let state = seed >>> 0;
   return () => {
@@ -206,13 +206,18 @@ function matchesFilters(result: SearchResult, filters: FilterState, now: number)
 
   if (filters.classification !== ANY) {
     const max = CEILING.indexOf(filters.classification);
+    /* An absent classification is an absence, not a level, so it never
+     * exceeds a ceiling — the same reading `unclassified` gets below. */
+    if (result.classification === undefined) return true;
     const level = CEILING.indexOf(result.classification);
     // `unclassified` is an absence, not a sixth level, so it never exceeds a ceiling.
     if (max >= 0 && level > max) return false;
   }
 
   const window = MODIFIED_WINDOW_MS[filters.modified];
-  if (window !== undefined && now - result.modifiedAt > window) return false;
+  if (window !== undefined && result.modifiedAt !== undefined && now - result.modifiedAt > window) {
+    return false;
+  }
 
   return true;
 }

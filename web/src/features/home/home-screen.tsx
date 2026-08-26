@@ -11,7 +11,10 @@ import {
   ScreenReaderOnly,
   type ControlState,
 } from '../../shared/ui/primitives.tsx';
-import { buildHome } from './fixture.ts';
+import { attentionFromTask, useTasks } from './api.ts';
+import { useViewer } from '../../app/session.tsx';
+import { FailureState } from '../../shared/ui/surface-states.tsx';
+import { failureOf } from '../../shared/api/failure.ts';
 import type { AttentionKind, HomeData, HomeError } from './model.ts';
 import { EmptyState, ErrorState, LoadingState, ScopedEmptyState } from './states.tsx';
 import './home.css';
@@ -321,10 +324,18 @@ const FIXTURE_ERROR: HomeError = { retryable: true, requestId: '01K3Q7X0PMDR4W8B
 /**
  * Home, as the router mounts it.
  *
- * Fed by a local fixture because there is no Home endpoint (`fixture.ts`).
- * When one lands it is fetched through TanStack Query and parsed with Zod at
- * the boundary (`docs/17 §3`); `HomeView` takes data and a clock and has never
- * known where either came from, so nothing above this line changes.
+ * **The attention section is real**: `GET /api/v1/workflows/tasks`, through
+ * `api.ts`. The other two sections have no endpoint and are rendered empty —
+ * `GET /api/v1/me/recent` does not exist and must not be improvised out of
+ * `audit_events` (hash-chained, deliberately not a feed: `CLAUDE.md` rule 10),
+ * and Recent asks is M7.
+ *
+ * The greeting's name and workspace come from `/me`, which carries a
+ * `displayName` and — deliberately noted rather than worked around — **no
+ * workspace name and no time zone**. `specs/home.md` wants the greeting bucket
+ * chosen from `me.timeZone`; with none on the wire the browser's own zone is
+ * used, which is right for everyone who is not travelling and wrong quietly for
+ * everyone who is. Recorded, not guessed at.
  */
 export default function Screen() {
   const [forced] = useState(() => readSurface(window.location.search));
@@ -332,6 +343,8 @@ export default function Screen() {
    * timestamps on the same screen disagree about what "now" is. */
   const [now] = useState(() => new Date());
   const [retried, setRetried] = useState(false);
+  const viewer = useViewer();
+  const tasks = useTasks();
 
   if (forced === 'loading') return <LoadingState />;
 
@@ -339,7 +352,33 @@ export default function Screen() {
     return <ErrorState error={FIXTURE_ERROR} onRetry={() => setRetried(true)} />;
   }
 
-  const data = buildHome(now);
+  /* A denial is not a failure and gets no retry; a fault gets one and a request
+   * ID (`docs/17 §7`). `FailureState` owns that branch. */
+  if (tasks.isError) {
+    return (
+      <div className="home">
+        <div className="home-page">
+          <FailureState failure={failureOf(tasks.error)} onRetry={() => void tasks.refetch()} />
+        </div>
+      </div>
+    );
+  }
+
+  if (tasks.isPending) return <LoadingState />;
+
+  const data: HomeData = {
+    /* The display name as given. Never split on whitespace to find a "first"
+     * name — name order is not universal (`docs/14 §6`). */
+    givenName: viewer.displayName,
+    /* Not on the wire. `/me` carries no workspace, and there is no endpoint
+     * that enumerates them, so the subtitle names the tenant's own address
+     * rather than inventing a workspace called something. */
+    workspaceName: viewer.email,
+    attention: tasks.data.items.map(attentionFromTask),
+    recent: [],
+    asks: [],
+    hiddenByScope: 0,
+  };
 
   if (forced === 'empty') {
     return <HomeView data={{ ...data, attention: [], recent: [], asks: [] }} now={now} />;

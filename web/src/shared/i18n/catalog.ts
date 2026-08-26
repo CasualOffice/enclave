@@ -126,6 +126,11 @@ export const catalog = {
     message: 'Personal',
     description: 'Sidebar section heading above the current user’s own surfaces.',
   },
+  'nav.section.admin': {
+    message: 'Administration',
+    description:
+      'Sidebar section heading above administrative surfaces. Shown only to accounts whose /me response says isAdmin — as navigation, not as enforcement: every admin route still runs the policy chain and refuses on its own authority.',
+  },
   'nav.workspaceSwitcher': {
     message: 'Switch workspace',
     description: 'Accessible name of the brand button at the top of the sidebar, which opens the workspace switcher.',
@@ -136,6 +141,392 @@ export const catalog = {
   },
   'theme.light': { message: 'Light', description: 'Theme toggle: the light theme.' },
   'theme.dark': { message: 'Dark', description: 'Theme toggle: the dark theme.' },
+  'search.filters.label': {
+    message: 'Filters',
+    description:
+      'The search filter control. Renders under the unbuilt treatment: the search endpoint refuses every narrowing filter with a 400, and filtering client-side would narrow what is shown without narrowing what was searched.',
+  },
+  'search.filters.unbuilt': {
+    message: 'Narrowing a search arrives once the API accepts filters',
+    description:
+      'Release note for the unbuilt search filters, reached through aria-describedby. Future tense, about the product. Never a permission refusal.',
+  },
+  'library.title': {
+    message: 'Files',
+    description:
+      'The library breadcrumb’s root crumb. The library’s own name is not on the wire — GET /libraries/{id}/items returns items and a page, never the container’s metadata — so this generic label stands in rather than an id dressed up as a title.',
+  },
+  'library.folder': {
+    message: 'Folder',
+    description:
+      'Breadcrumb crumb for the folder currently open. Generic for the same reason as library.title: the listing payload does not name the folder.',
+  },
+  'library.breadcrumb': {
+    message: 'Location',
+    description: 'Accessible name of the breadcrumb navigation landmark in the location bar.',
+  },
+  'library.toggleDetails': {
+    message: 'Toggle details',
+    description:
+      'Icon button in the location bar that opens or closes the peek panel. aria-pressed reflects whether the panel is open.',
+  },
+  'library.views': {
+    message: 'Saved views',
+    description:
+      'Accessible name of the saved-view tab strip in the view bar. Only one view is shown today because no endpoint serves saved views.',
+  },
+  'library.view.all': {
+    message: 'All',
+    description:
+      'The only saved view that exists: every item in the current library or folder, unfiltered.',
+  },
+  'library.filter': {
+    message: 'Filter',
+    description:
+      'View-bar control for narrowing a listing. Unbuilt: no endpoint filters a listing, and filtering client-side would narrow what is shown without narrowing what was fetched.',
+  },
+  'library.filter.unbuilt': {
+    message: 'Narrowing a listing arrives once the API accepts filters',
+    description:
+      'Release note for the unbuilt Filter control, reached through aria-describedby. Future tense, about the product. Never a permission refusal.',
+  },
+  'library.display': {
+    message: 'Display',
+    description:
+      'View-bar control for grouping, sorting and column choices. Unbuilt: nothing stores a display preference and the listing payload supports one grouping.',
+  },
+  'library.display.unbuilt': {
+    message: 'Grouping and sorting options arrive with saved views',
+    description:
+      'Release note for the unbuilt Display control. Future tense, about the product. Never a permission refusal.',
+  },
+  'library.new': {
+    message: 'New',
+    description:
+      'View-bar primary action for creating a folder or document. Unbuilt: no endpoint creates a folder.',
+  },
+  'library.new.unbuilt': {
+    message: 'Creating folders arrives with the content write API',
+    description:
+      'Release note for the unbuilt New control. Future tense, about the product. Never a permission refusal — nobody has been denied anything.',
+  },
+  'library.upload': {
+    message: 'Upload',
+    description:
+      'View-bar button for adding files. Renders under the unbuilt treatment because the API binds an unconfigured delivery pipeline and the upload route answers 503 in every build.',
+  },
+  'library.upload.unbuilt': {
+    message: 'Uploading arrives once object storage is wired into the API',
+    description:
+      'Release note for the unbuilt Upload button, reached through aria-describedby. Future tense, about the product. This is NOT a permission refusal and must never read as one.',
+  },
+  'library.group.folders': {
+    message: 'Folders',
+    description: 'Group header above the folders in a library listing.',
+  },
+  'library.group.files': {
+    message: 'Files',
+    description: 'Group header above the files in a library listing.',
+  },
+  'library.noPicker.title': {
+    message: 'No library chosen',
+    description:
+      'Shown when the URL carries no library id. Title of the unbuilt state, not an empty state and not a refusal.',
+  },
+  'library.noPicker.body': {
+    message:
+      'Choosing a library needs a list of them, and the API has no endpoint that returns one yet. Open a library by its address to browse it in the meantime.',
+    description:
+      'Explains that the library picker is missing because GET /api/v1/libraries is not registered. States the product gap in future tense and never implies the user lacks permission.',
+  },
+  'library.status.AVAILABLE': {
+    message: 'Available',
+    description: 'File lifecycle status: the file is ready to read.',
+  },
+  'library.status.PROCESSING': {
+    message: 'Processing',
+    description:
+      'File lifecycle status: the file is being prepared and is not yet readable. Not an error.',
+  },
+  'library.status.QUARANTINED': {
+    message: 'Quarantined',
+    description:
+      'File lifecycle status: antivirus flagged this file and no read path will serve it.',
+  },
+  'library.status.FAILED': {
+    message: 'Failed',
+    description: 'File lifecycle status: processing did not complete.',
+  },
+  'library.peek.label': {
+    message: 'Details',
+    description:
+      'Accessible name of the peek panel, which is an aside rather than a dialog: it does not trap focus and the list behind it stays interactive.',
+  },
+  'library.peek.close': {
+    message: 'Close details',
+    description: 'Icon button that closes the peek panel and returns focus to the row that opened it.',
+  },
+  'library.peek.none': {
+    message: 'Select a file to see its details',
+    description:
+      'Shown in the peek panel when it is pinned open with no file selected. Keeps the panel’s width so the list does not reflow when a row is picked.',
+  },
+  'library.peek.unavailable': {
+    message: 'Details unavailable',
+    description: 'Title of the peek panel when the request for a file’s details did not succeed.',
+  },
+  'library.peek.meta': {
+    message: 'Version {version} · {size} · {modified}',
+    description:
+      'The one-line summary under a file’s name in the peek panel. A single message rather than four fragments joined in JavaScript, so a translator controls both the order and the separator.',
+  },
+  'library.peek.noVersion': {
+    message: 'none',
+    description:
+      'Substituted for the version number when a file has no current version. Lowercase because it appears mid-sentence inside library.peek.meta.',
+  },
+  'library.peek.fact.status': {
+    message: 'Status',
+    description: 'Peek panel fact label: the file’s lifecycle status.',
+  },
+  'library.peek.fact.type': {
+    message: 'Type',
+    description: 'Peek panel fact label: the media type the server determined.',
+  },
+  'library.peek.fact.size': {
+    message: 'Size',
+    description: 'Peek panel fact label: the file size, formatted with Intl.NumberFormat.',
+  },
+  'library.peek.fact.modified': {
+    message: 'Modified',
+    description: 'Peek panel fact label: when the file last changed.',
+  },
+  'library.peek.fact.created': {
+    message: 'Created',
+    description: 'Peek panel fact label: when the file was first added.',
+  },
+  'library.peek.fact.governance': {
+    message: 'Governance',
+    description:
+      'Peek panel fact label: whether the file is under legal hold or declared a record, both of which restrict deletion.',
+  },
+  'library.peek.governance.hold': {
+    message: 'On legal hold',
+    description: 'Governance value: the file is preserved for litigation and cannot be deleted.',
+  },
+  'library.peek.governance.record': {
+    message: 'Declared a record',
+    description: 'Governance value: the file is immutable under a records policy.',
+  },
+  'library.peek.governance.none': {
+    message: 'No restrictions',
+    description:
+      'Governance value: neither a legal hold nor a records declaration applies to this file.',
+  },
+  'library.peek.tabs': {
+    message: 'File details',
+    description: 'Accessible name of the peek panel’s tab strip.',
+  },
+  'library.peek.tab.preview': {
+    message: 'Preview',
+    description:
+      'Peek panel tab showing a rendered copy of the document. Unbuilt: the API binds an unconfigured delivery pipeline, so no rendition can exist.',
+  },
+  'library.peek.tab.preview.unbuilt': {
+    message: 'Previews arrive once object storage is wired into the API',
+    description:
+      'Release note behind the unbuilt Preview tab. Names the actual blocker rather than shrugging. Future tense, about the product — never a permission refusal.',
+  },
+  'library.peek.tab.details': {
+    message: 'Details',
+    description: 'Peek panel tab showing the file’s facts and what this user may do with it.',
+  },
+  'library.peek.tab.access': {
+    message: 'Access',
+    description:
+      'Peek panel tab showing who can reach this file. Unbuilt: no endpoint returns an access list.',
+  },
+  'library.peek.tab.access.unbuilt': {
+    message: 'Seeing who has access arrives with the permissions API',
+    description:
+      'Release note behind the unbuilt Access tab. Future tense, about the product. Not a refusal — the user is not being denied a view that exists.',
+  },
+  'library.peek.tab.versions': {
+    message: 'Versions',
+    description: 'Peek panel tab listing the file’s version history.',
+  },
+  'library.peek.tab.activity': {
+    message: 'Activity',
+    description:
+      'Peek panel tab showing what has happened to this file. Unbuilt: the audit trail is hash-chained evidence and deliberately not a user-facing feed, so this needs a purpose-built read model.',
+  },
+  'library.peek.tab.activity.unbuilt': {
+    message: 'A file’s history needs a read model the audit trail deliberately isn’t',
+    description:
+      'Release note behind the unbuilt Activity tab. States why it cannot simply be built on the audit log. Future tense, about the product.',
+  },
+  'library.peek.escHint': {
+    message: 'to close',
+    description:
+      'Caption after the Esc key cap in the peek panel header. Reads as "Esc to close"; the key cap is a separate element so it can be styled and so the glyph can differ per platform.',
+  },
+  'library.peek.previous': {
+    message: 'Previous file',
+    description:
+      'Icon button that moves the peek panel to the row above. Disabled at the top of the list — a neutral end-of-list state, never the denial treatment.',
+  },
+  'library.peek.next': {
+    message: 'Next file',
+    description: 'Icon button that moves the peek panel to the row below.',
+  },
+  'library.peek.versions.number': {
+    message: 'Version {major}.{minor}',
+    description:
+      'A version’s number in the history list. major and minor are integers from the server.',
+  },
+  'library.peek.versions.none': {
+    message: 'This file has no version history yet.',
+    description: 'Empty state of the peek panel’s Versions tab.',
+  },
+  'library.peek.versions.unreadable': {
+    message: 'Not yet readable',
+    description:
+      'Marks a version the server will not serve as bytes, because antivirus has not cleared it. The server computes this and sends it; the client never recomputes it from the status fields beside it.',
+  },
+  'library.peek.capabilities': {
+    message: 'What you can do',
+    description:
+      'Heading above the list of actions the server said this user may take on this file. Second person, because a capability is a fact about this user at this moment, not a property of the file.',
+  },
+  'library.peek.cap.allowed': {
+    message: 'allowed',
+    description:
+      'Screen-reader-only word marking a capability as permitted, so the state is carried by text and not by colour alone.',
+  },
+  'library.peek.cap.refused': {
+    message: 'not allowed',
+    description:
+      'Screen-reader-only word marking a capability as refused. No reason accompanies it: the capability object carries bare booleans today, and a client-invented explanation is forbidden.',
+  },
+  'library.peek.cap.preview': {
+    message: 'Preview',
+    description:
+      'Capability name: view a rendered copy in the browser. Distinct from download — never collapse the two.',
+  },
+  'library.peek.cap.download': {
+    message: 'Download',
+    description: 'Capability name: obtain the original bytes.',
+  },
+  'library.peek.cap.print': {
+    message: 'Print',
+    description: 'Capability name: send to a printer. A separate permission from download.',
+  },
+  'library.peek.cap.export': {
+    message: 'Export',
+    description: 'Capability name: convert to another format and take it away.',
+  },
+  'library.peek.cap.edit': {
+    message: 'Edit',
+    description: 'Capability name: change the file’s contents.',
+  },
+  'library.peek.cap.share': {
+    message: 'Share',
+    description: 'Capability name: grant access to someone inside the organisation.',
+  },
+  'library.peek.cap.shareExternal': {
+    message: 'Share externally',
+    description:
+      'Capability name: grant access to someone outside the organisation. Deliberately separate from Share.',
+  },
+  'library.peek.cap.delete': {
+    message: 'Delete',
+    description: 'Capability name: remove the file.',
+  },
+  'library.peek.cap.sync': {
+    message: 'Sync',
+    description:
+      'Capability name: keep a copy on a registered device. A separate permission from download.',
+  },
+  'library.peek.obligations': {
+    message: 'Conditions',
+    description:
+      'Heading above the obligations attached to an allowed action — things that must also happen, such as a watermark or a written justification.',
+  },
+  'library.peek.obligation.watermark': {
+    message: 'Watermarked',
+    description: 'Obligation: every rendered copy carries a visible watermark.',
+  },
+  'library.peek.obligation.justification': {
+    message:
+      '{count, plural, one {# action needs a justification} other {# actions need a justification}}',
+    description:
+      'Obligation: the named actions require the user to type a reason before they proceed. count is how many actions carry the requirement.',
+  },
+  'library.peek.obligation.approval': {
+    message:
+      '{count, plural, one {# action needs approval} other {# actions need approval}}',
+    description:
+      'Obligation: the named actions require someone else to approve them first. count is how many actions carry the requirement.',
+  },
+  'surface.error.title': {
+    message: 'This didn’t load',
+    description:
+      'Title of the failure panel shown when a request did not complete — a server fault, a network drop, or a response that did not parse. Never shown for a permission refusal, which has its own panel.',
+  },
+  'surface.error.body': {
+    message: 'Something went wrong on our side. Trying again may work.',
+    description:
+      'Body of the failure panel when the failure is retryable (5xx, network, timeout). Paired with a Retry button.',
+  },
+  'surface.error.bodyFinal': {
+    message: 'Something went wrong and trying again won’t help. Quote the request ID below if you report this.',
+    description:
+      'Body of the failure panel when retrying cannot succeed (a 4xx, or a response that did not match the expected shape). No Retry button is shown, so the text must not promise one.',
+  },
+  'surface.error.retry': {
+    message: 'Try again',
+    description:
+      'Button that re-issues only the failed request. Shown ONLY on retryable failures, and never on a permission refusal.',
+  },
+  'surface.error.requestId': {
+    message: 'Request ID',
+    description:
+      'Label before the correlation ID a user quotes when reporting a failure. Followed by the ID in a monospace font.',
+  },
+  'surface.error.copy': {
+    message: 'Copy',
+    description: 'Button that copies the request ID to the clipboard.',
+  },
+  'surface.error.copied': {
+    message: 'Copied',
+    description:
+      'Replaces the Copy button’s label once the request ID has been copied. Past tense, confirming what just happened.',
+  },
+  'surface.denied.title': {
+    message: 'You don’t have access to this',
+    description:
+      'Title of the refusal panel: the server answered and the answer was no. Present tense, about this user. This panel never offers a retry, because retrying a policy decision cannot change it.',
+  },
+  'surface.denied.noReason': {
+    message: 'The server refused this request but gave no reason to show.',
+    description:
+      'Fallback body when a 403 arrives with an empty message. The client may never invent an explanation or name the rule that matched, so this states the absence rather than filling it.',
+  },
+  'surface.denied.codeLabel': {
+    message: 'Code',
+    description:
+      'Label before the stable refusal code (for example ACCESS_DENIED). Shown so a user can quote it when asking for access.',
+  },
+  'surface.stepUp.title': {
+    message: 'Additional verification needed',
+    description:
+      'Title shown when the server asks for a stronger authentication factor before allowing an action. Neither a refusal nor a fault — a challenge to answer.',
+  },
+  'surface.stepUp.body': {
+    message: 'This action needs you to confirm your identity again. Signing in with your second factor isn’t available in this release.',
+    description:
+      'Body of the step-up panel. States both what the server asked for and that the client cannot yet answer it, rather than leaving the user at a dead end with no explanation.',
+  },
   'later.chip': {
     message: 'Later',
     description:
@@ -612,6 +1003,11 @@ export const catalog = {
     message: 'Search files, people and metadata',
     description:
       'Placeholder in the query field. The design reference adds “— or ask a question…”; that is deliberately absent, because asking a question is M7 and the field must not promise it.',
+  },
+  'key.escape': {
+    message: 'Esc',
+    description:
+      'Key cap for the Escape key, shown in the peek panel header. In the catalog rather than as a literal because the abbreviation differs by locale and by keyboard layout.',
   },
   'key.commandK': {
     message: '⌘K',

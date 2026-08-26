@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { stubApi } from '../a11y/api-stub.ts';
 
 /* The measurement behind `plans/M5-MVP-GA.md` D38.
  *
@@ -55,7 +56,8 @@ test.afterAll(() => {
 });
 
 test(`first paint: ${ROWS} rows, grouped`, async ({ page }) => {
-  await page.goto(`/library?rows=${ROWS}`);
+  await stubApi(page, { items: ROWS });
+  await page.goto('/library?library=lib-1');
   await page.waitForSelector('.egl-row');
 
   const measurement = await page.evaluate(() => {
@@ -97,7 +99,8 @@ test(`first paint: ${ROWS} rows, grouped`, async ({ page }) => {
 });
 
 test(`scroll: ${ROWS} rows, grouped, sustained`, async ({ page }) => {
-  await page.goto(`/library?rows=${ROWS}`);
+  await stubApi(page, { items: ROWS });
+  await page.goto('/library?library=lib-1');
   await page.waitForSelector('.egl-row');
 
   const stats: FrameStats = await page.evaluate(
@@ -200,7 +203,8 @@ test(`collapse: the group the viewport is inside, ${ROWS} rows`, async ({ page }
    * scroll position. The genuine above-the-viewport case is arithmetic and is
    * pinned exactly in tests/unit/geometry.test.ts; what a browser adds here is
    * the timing and the end-to-end sanity. */
-  await page.goto(`/library?rows=${ROWS}`);
+  await stubApi(page, { items: ROWS });
+  await page.goto('/library?library=lib-1');
   await page.waitForSelector('.egl-row');
 
   const measurement = await page.evaluate(async () => {
@@ -266,7 +270,8 @@ test(`collapse: a group below the viewport does not move it, ${ROWS} rows`, asyn
    * implementation that recomputed scrollTop from a row index, or that let the
    * browser clamp against the new content height, fails this while passing
    * every timing assertion above it. */
-  await page.goto(`/library?rows=${ROWS}`);
+  await stubApi(page, { items: ROWS });
+  await page.goto('/library?library=lib-1');
   await page.waitForSelector('.egl-row');
 
   const measurement = await page.evaluate(async () => {

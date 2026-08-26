@@ -2,15 +2,18 @@ import { z } from 'zod';
 import type { ClassificationLevel } from '../../entities/classification/model.ts';
 import type { FileKind } from '../../entities/file/model.ts';
 
-/* The search contract, as `docs/05-API.md §11` writes it.
+/* The search view model, and the contract `docs/05-API.md §11` describes.
  *
- * `POST /api/v1/search` is specified there and **is not implemented** — there is
- * no search route in `crates/api/src/`, only `health` and `metrics_listener`. So
- * this screen reads `fixture.ts` rather than the network, exactly as the library
- * list still reads `fixtures/library.ts`. The schema below is nonetheless the
- * documented response shape and the fixture is parsed *through* it at module
- * load, so the fixture cannot drift from the contract and the swap to
- * `request('/search', SearchResponse, { method: 'POST', body })` is one line.
+ * `POST /api/v1/search` **is** implemented now
+ * (`crates/api/src/routes/search.rs`) and the screen calls it. `api.ts` owns the
+ * *wire* schema; this file owns what the screen renders, and the two are
+ * deliberately different shapes — the implemented `Hit` is smaller than the
+ * document describes, and widening the wire schema until the view model fitted
+ * would turn a genuinely missing field into an `undefined` nobody notices.
+ *
+ * `SearchResponse` below is still the documented envelope. It is what
+ * `fixture.ts` is parsed through, which keeps the review corpus honest against
+ * the specification even though the network no longer produces that shape.
  *
  * Two things the schema says that are worth reading twice:
  *
@@ -53,25 +56,50 @@ export const SearchLocation = z.object({
 
 export type SearchLocation = z.infer<typeof SearchLocation>;
 
+/**
+ * One result, as this screen renders it.
+ *
+ * **Six fields are optional, and each one is a gap in the server rather than a
+ * looseness here.** `POST /api/v1/search` is now implemented
+ * (`crates/api/src/routes/search.rs`) and its `Hit` carries `fileId`,
+ * `versionId?`, `title`, `path`, `workspace`, `mimeType`, `score`, `excerpt` and
+ * a two-field `capabilities`. It carries no classification, no owner and no
+ * modified date — `docs/09 §10` asks for the last two on every result and
+ * `docs/05 §11`'s example response never had them either.
+ *
+ * They are optional rather than defaulted because a default would be a lie with
+ * a confident face: an invented `UNCLASSIFIED` badge on a document somebody
+ * labelled `RESTRICTED` in the database is exactly the disclosure the badge
+ * exists to prevent. Absent, the row draws nothing there.
+ */
 export const SearchResult = z.object({
   fileId: z.string(),
-  versionId: z.string(),
+  /** Absent while a file has no version a read path would serve. */
+  versionId: z.string().optional(),
   title: z.string(),
   /** Human-readable ancestry, already joined by the API. */
   path: z.string(),
   workspace: z.string(),
   mimeType: z.string(),
-  classification: ApiClassification,
+  /** Not on the wire. See the note above — never defaulted. */
+  classification: ApiClassification.optional(),
   score: z.number(),
   /* `docs/09 §10` requires every result to show its owner and modified date.
-   * `docs/05 §11`'s example response carries neither — reported rather than
-   * quietly invented, and modelled here as the shape this screen needs. */
-  ownerName: z.string(),
-  ownerInitials: z.string(),
-  ownerTone: z.enum(['a', 'b', 'c', 'd']),
+   * The implemented route carries neither — reported rather than quietly
+   * invented. */
+  ownerName: z.string().optional(),
+  ownerInitials: z.string().optional(),
+  ownerTone: z.enum(['a', 'b', 'c', 'd']).optional(),
   /** Epoch milliseconds. Formatted through `Intl` at render, never stored formatted. */
-  modifiedAt: z.number(),
-  /** Bounded at 240 characters plus elision marks, `<em>`-marked on the lexical path only. */
+  modifiedAt: z.number().optional(),
+  /**
+   * The quotation, with `<em>` around matched terms.
+   *
+   * `null` means *there was none* and *you may not read the content* at once,
+   * deliberately indistinguishable (`docs/07 §6.2`). The client must not try to
+   * tell them apart or explain the difference — that indistinguishability is
+   * the control.
+   */
   excerpt: z.string().nullable(),
   location: SearchLocation.optional(),
   capabilities: z.object({ preview: z.boolean(), download: z.boolean() }),

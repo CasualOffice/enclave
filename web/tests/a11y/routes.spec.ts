@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
+import { stubApi, type ApiPlan } from './api-stub.ts';
 
 /* `docs/09 §15` and `docs/12 §5`: axe passes on every primary route.
  *
@@ -14,32 +15,76 @@ interface Surface {
   readonly url: string;
   /** What must be on screen before axe looks, so a skeleton is never mistaken for the route. */
   readonly ready: string;
+  /**
+   * What the stubbed API answers for this surface.
+   *
+   * Every screen reads the real API now and `npm run preview` has no API behind
+   * it, so without a stub every route would render the sign-in screen and this
+   * gate would check one page fifty times while reporting fifty passes — the
+   * `ENC-677` failure shape, which is why the emptiness assertion below exists.
+   * `api-stub.ts` explains why stubbing here is not the fixture problem this
+   * milestone was fixing.
+   */
+  readonly api?: ApiPlan;
 }
 
 const SURFACES: readonly Surface[] = [
+  /* The library list. `?library=` carries the id because there is no
+   * `GET /api/v1/libraries` to enumerate them — the picker is unbuilt, and its
+   * unbuilt state is a surface in its own right below. */
   {
-    name: 'library list, grouped, 5k rows',
-    url: '/library?rows=5000',
-    ready: '[role="treegrid"] [role="row"][aria-level], [role="treegrid"] .egl-row',
+    name: 'library list, grouped, 400 rows',
+    url: '/library?library=lib-1',
+    ready: '[role="treegrid"] .egl-row',
   },
   {
     name: 'library list, compact density',
-    url: '/library?rows=2000&density=compact',
+    url: '/library?library=lib-1&density=compact',
     ready: '.egl-row',
   },
+  /* The peek panel: 372px, its own four states, and the surface where the
+   * capability contract is actually rendered. The stub refuses download, print,
+   * export and share-external on every third row, so the *refused* treatment is
+   * on screen for axe to measure rather than only the permitted one. */
   {
-    name: 'library list, a group collapsed',
-    url: '/library?rows=2000&collapse=g0',
-    ready: '.egl-group[aria-expanded="false"]',
+    name: 'library list, peek open',
+    url: '/library?library=lib-1&peek=file-3',
+    ready: '.library-peek-caps',
   },
-  { name: 'library list, loading', url: '/library?surface=loading', ready: '[role="status"]' },
-  { name: 'library list, empty', url: '/library?surface=empty', ready: '[data-state="empty"]' },
   {
-    name: 'library list, filtered empty',
-    url: '/library?surface=filtered-empty&rows=4213',
-    ready: '[data-state="filtered-empty"]',
+    name: 'library list, loading',
+    url: '/library?library=lib-1',
+    ready: '[role="status"]',
+    api: { hang: true },
   },
-  { name: 'library list, fetch error', url: '/library?surface=error', ready: '[data-state="error"]' },
+  {
+    name: 'library list, empty',
+    url: '/library?library=lib-1',
+    ready: '[data-state="empty"]',
+    api: { items: 0 },
+  },
+  {
+    name: 'library list, fetch error',
+    url: '/library?library=lib-1',
+    ready: '.surface-state[data-tone="error"]',
+    api: { status: 500 },
+  },
+  /* The denial treatment, which shares no class with the error state above
+   * (`docs/17 §10` F2/F3) and carries no retry. Both are listed so the contrast
+   * of each is measured, not just whichever one a run happened to reach. */
+  {
+    name: 'library list, policy denial',
+    url: '/library?library=lib-1',
+    ready: '.surface-state[data-tone="neutral"]',
+    api: { status: 403 },
+  },
+  /* The library picker, which cannot exist until an endpoint enumerates
+   * libraries. Unbuilt, and never the denial treatment. */
+  {
+    name: 'library, no picker (unbuilt)',
+    url: '/library',
+    ready: '.surface-state[data-tone="unbuilt"]',
+  },
 
   /* Ask, all four of its states. It is the D33 surface — every control on it is
    * *unbuilt* rather than denied — so it is also where the unbuilt treatment is
@@ -61,11 +106,11 @@ const SURFACES: readonly Surface[] = [
    * renders outside the shell. Its refused state is listed separately from its
    * failed state on purpose: they are different things and `docs/09 §11` only
    * gives the second one a retry. */
-  { name: 'sign in, resting form', url: '/signin', ready: '[data-signin-state="idle"]' },
-  { name: 'sign in, loading', url: '/signin?state=loading', ready: '[data-signin-state="submitting"]' },
-  { name: 'sign in, refused', url: '/signin?state=refused', ready: '[data-signin-state="refused"]' },
-  { name: 'sign in, fetch error', url: '/signin?state=failed', ready: '[data-signin-state="failed"]' },
-  { name: 'sign in, success', url: '/signin?state=success', ready: '[data-signin-state="success"]' },
+  { name: 'sign in, resting form', url: '/signin', ready: '[data-signin-state="idle"]', api: { signedIn: false } },
+  { name: 'sign in, loading', url: '/signin?state=loading', ready: '[data-signin-state="submitting"]', api: { signedIn: false } },
+  { name: 'sign in, refused', url: '/signin?state=refused', ready: '[data-signin-state="refused"]', api: { signedIn: false } },
+  { name: 'sign in, fetch error', url: '/signin?state=failed', ready: '[data-signin-state="failed"]', api: { signedIn: false } },
+  { name: 'sign in, success', url: '/signin?state=success', ready: '[data-signin-state="success"]', api: { signedIn: false } },
 
   /* Home. Its state parameter is `home=` rather than `surface=` because the
    * library screen already answers `surface=` on the same query string. */
@@ -74,33 +119,49 @@ const SURFACES: readonly Surface[] = [
   { name: 'home, empty', url: '/?home=empty', ready: '[data-state="empty"]' },
   { name: 'home, scoped empty', url: '/?home=scoped-empty', ready: '[data-state="scoped-empty"]' },
   { name: 'home, fetch error', url: '/?home=error', ready: '[data-state="error"]' },
+  {
+    name: 'home, tasks refused',
+    url: '/',
+    ready: '.surface-state[data-tone="neutral"]',
+    api: { status: 403 },
+  },
 
   /* Search. Both retrieval notices are listed: the *lexical* one is a product
-   * state (this deployment has no dense retrieval — `ENC-661`, D37) and the
-   * *degraded* one is an incident. They say different things and only one of
-   * them carries a `Later` chip, so both need a run. */
-  { name: 'search, results (lexical, the M5 default)', url: '/search?q=agreement', ready: '.esr-hit' },
-  {
-    name: 'search, results (hybrid, no notice)',
-    url: '/search?q=agreement&retrieval=hybrid',
-    ready: '.esr-hit',
-  },
+   * state (this deployment has no dense retrieval) and the *degraded* one is an
+   * incident. They say different things and only one carries a `Later` chip, so
+   * both need a run. `degraded` now comes from the server's own diagnostics
+   * rather than from a URL knob, so the stub sets it. */
+  { name: 'search, results (lexical)', url: '/search?q=agreement', ready: '.esr-hit' },
   {
     name: 'search, degraded fallback',
-    url: '/search?q=agreement&retrieval=degraded',
+    url: '/search?q=agreement',
     ready: '[data-notice="degraded"]',
+    api: { degraded: true },
   },
   { name: 'search, empty (new)', url: '/search', ready: '[data-state="empty"]' },
   {
-    name: 'search, empty (filtered)',
-    url: '/search?q=agreement&type=xls&workspace=Legal&modified=7d',
+    name: 'search, no results',
+    url: '/search?q=agreement',
     ready: '[data-state="filtered-empty"]',
+    api: { results: 0 },
   },
-  { name: 'search, loading', url: '/search?q=agreement&surface=loading', ready: '.esr-loading' },
+  {
+    name: 'search, loading',
+    url: '/search?q=agreement',
+    ready: '.esr-loading',
+    api: { hang: true },
+  },
   {
     name: 'search, fetch error',
-    url: '/search?q=agreement&surface=error',
-    ready: '[data-state="error"]',
+    url: '/search?q=agreement',
+    ready: '.surface-state[data-tone="error"]',
+    api: { status: 500 },
+  },
+  {
+    name: 'search, policy denial',
+    url: '/search?q=agreement',
+    ready: '.surface-state[data-tone="neutral"]',
+    api: { status: 403 },
   },
 
   /* Admin — DLP policy. It carries a *fifth* state the other screens do not:
@@ -148,6 +209,11 @@ for (const surface of SURFACES) {
        * contrast is only acceptable once an animation finishes is a screen that
        * fails for a user who has turned animation off. */
       await page.emulateMedia({ colorScheme: theme, reducedMotion: 'reduce' });
+      /* Before the first navigation, so the app's own boot requests — the
+       * refresh exchange and `/me` — are answered too. Installed after
+       * navigation, the shell would already have concluded nobody is signed
+       * in. */
+      await stubApi(page, surface.api);
       await page.goto(surface.url);
       await page.waitForSelector(surface.ready, { timeout: 30_000 });
 

@@ -1,5 +1,8 @@
 import type { ReactNode } from 'react';
-import { useT } from '../shared/i18n/index.tsx';
+import { useLocale, useT } from '../shared/i18n/index.tsx';
+import { initialsOf, toneOf } from '../entities/user/model.ts';
+import { signOut } from '../features/auth/sign-out.ts';
+import { useViewer } from './session.tsx';
 import { Icon, type IconName } from '../shared/ui/icon-sprite.tsx';
 import { Mark } from '../shared/ui/mark.tsx';
 import { Avatar, Kbd } from '../shared/ui/primitives.tsx';
@@ -41,15 +44,15 @@ interface NavItem {
   readonly dot?: string;
 }
 
-/**
- * The signed-in user, until `GET /api/v1/me` is wired.
+/* The signed-in user now comes from `GET /api/v1/me` through `useViewer()`.
  *
- * A fixture rather than a literal in the markup: `initials` is carried, never
- * derived by splitting the name on whitespace, because name order is not
- * universal (`docs/14 §6`) and "Nair Priya" would produce "NP" from one culture
- * and "PN" from another for the same person.
+ * The fixture that used to sit here read `Priya Nair`, and it was the last
+ * thing in the shell that was not a fact. Initials are derived with
+ * `Intl.Segmenter` in `entities/user/model.ts` rather than by splitting on
+ * whitespace, because name order is not universal (`docs/14 §6`): splitting
+ * yields "NP" for one culture and "PN" for another for the same person, and it
+ * produces nonsense for scripts that do not use spaces at all.
  */
-const VIEWER = { name: 'Priya Nair', initials: 'PN', tone: 'a' } as const;
 
 const PRIMARY: readonly NavItem[] = [
   { label: 'nav.search', icon: 's', route: 'search', shortcut: 'key.commandK' },
@@ -128,8 +131,11 @@ function NavLink({ item }: { item: NavItem }) {
 
 export function Shell({ children }: { children: ReactNode }) {
   const t = useT();
+  const viewer = useViewer();
+  const locale = useLocale();
   const theme = useThemeStore((state) => state.theme);
   const setTheme = useThemeStore((state) => state.setTheme);
+  const initials = initialsOf(viewer.displayName, locale);
 
   return (
     <div className="shell">
@@ -162,15 +168,41 @@ export function Shell({ children }: { children: ReactNode }) {
           <NavLink key={item.label} item={item} />
         ))}
 
+        {/* Administration, shown to administrators.
+         *
+         * **This is navigation, not authorization.** `docs/17 §1`: the server
+         * decides. Every admin route runs the policy chain and answers `403` or
+         * `STEP_UP_REQUIRED` on its own authority, so hiding the entry from a
+         * non-admin is a courtesy — it keeps a door out of sight that would not
+         * open — and showing it to one would not be a vulnerability. The
+         * distinction matters because the moment this reads as *enforcement*,
+         * someone will be tempted to drop the server-side check it duplicates. */}
+        {viewer.isAdmin && (
+          <>
+            <div className="shell-navgroup">
+              <Icon name="chev" size={10} />
+              {t('nav.section.admin')}
+            </div>
+            <NavLink item={{ label: 'nav.admin', icon: 'shield', route: 'admin' }} />
+          </>
+        )}
+
         <div className="shell-nav-foot">
-          <a className="shell-navlink" href="#" aria-label={t('nav.signOut')}>
-            <Avatar initials={VIEWER.initials} tone={VIEWER.tone} />
+          <button
+            type="button"
+            className="shell-navlink"
+            aria-label={t('nav.signOut')}
+            onClick={() => {
+              void signOut();
+            }}
+          >
+            <Avatar initials={initials} tone={toneOf(viewer.id)} />
             {/* A person's name is data, not a message. `docs/14 §6`: display the
              * full name as provided, never assume given-name-first ordering and
              * never split on whitespace — which also means it never goes in the
              * catalog, because there is nothing to translate. */}
-            <bdi dir="auto">{VIEWER.name}</bdi>
-          </a>
+            <bdi dir="auto">{viewer.displayName}</bdi>
+          </button>
           <div className="shell-prefs">
             <span className="shell-seg" role="group" aria-label={t('theme.light')}>
               <button

@@ -49,3 +49,16 @@ export function useT(): (key: MessageKey, values?: MessageValues) => string {
   const intl = useIntl();
   return (key, values) => intl.formatMessage({ id: key }, values);
 }
+
+/**
+ * The negotiated locale.
+ *
+ * Exposed because `Intl.Segmenter` and friends need it and are not part of
+ * `react-intl`'s formatter surface — grapheme segmentation for initials, for
+ * instance, is locale-sensitive and there is no `intl.formatGraphemes`. Taking
+ * it from the provider rather than from `navigator.language` keeps one answer
+ * to "what locale is this?" instead of two that drift.
+ */
+export function useLocale(): string {
+  return useIntl().locale;
+}

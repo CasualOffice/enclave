@@ -29,8 +29,10 @@ enclave.yaml
 
 # Build and test artifacts
 /coverage/
-/playwright-report/
-/test-results/
+# Playwright's output. Unanchored, because the suite runs from `web/` and the
+# root-anchored form let `web/test-results/` into a commit.
+playwright-report/
+test-results/
 *.profraw
 sbom.json
 
