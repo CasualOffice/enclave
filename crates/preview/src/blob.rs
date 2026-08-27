@@ -185,13 +185,16 @@ mod tests {
     async fn an_object_larger_than_the_input_budget_is_never_held_in_memory() {
         let body = vec![7_u8; 4_096];
 
-        let refused = source(body.clone(), 1_024).read("tenant/x/y").await;
-        let error = refused.expect_err("4 KiB was read under a 1 KiB budget");
-        assert!(
-            matches!(error, PreviewError::Source(_)),
-            "an oversized object is an object-storage answer, not a verdict about the document: \
-             {error:?}"
-        );
+        // Matched rather than `expect_err`, which would print four thousand decimal bytes above
+        // the sentence that matters. Watched to fail with `max_bytes` set to `usize::MAX`.
+        match source(body.clone(), 1_024).read("tenant/x/y").await {
+            Err(PreviewError::Source(_)) => {}
+            Err(other) => panic!(
+                "an oversized object is an object-storage answer, not a verdict about the \
+                 document: {other:?}"
+            ),
+            Ok(read) => panic!("{} bytes were read under a 1 KiB budget", read.len()),
+        }
 
         let read = source(body.clone(), 4_096).read("tenant/x/y").await.expect("within the budget");
         assert_eq!(read, body, "the reader must return the object it was asked for, whole");

@@ -228,10 +228,14 @@ async fn an_image_version_is_delivered_as_a_rendition_of_itself() {
         };
 
         assert_eq!(media_type, "image/png", "`{profile}`");
-        assert_ne!(
-            bytes, LANDSCAPE_PNG,
-            "`{profile}` delivered the source unchanged — the rendition path became a download \
-             path, which is the collapse CLAUDE.md rule 6 forbids"
+        // `assert!` rather than `assert_ne!`: the values here are two images, and the failure
+        // message of the comparison macro is nine kilobytes of decimal bytes with the sentence that
+        // matters above it. Watched to fail — see the module header — and made readable afterwards.
+        assert!(
+            bytes != LANDSCAPE_PNG,
+            "`{profile}` delivered the source unchanged ({} bytes) — the rendition path became a \
+             download path, which is the collapse CLAUDE.md rule 6 forbids",
+            bytes.len()
         );
         let (width, _height) = ihdr(&bytes);
         assert_eq!(width, expected_width, "`{profile}` was served at the wrong geometry");

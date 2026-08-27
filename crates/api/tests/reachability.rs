@@ -347,8 +347,14 @@ const SPECS: &[Spec] = &[
     // Delivery (docs/05-API.md §9). All five name a real file the caller may download, print and
     // export — and answer `404`, because the fixture file has no committed version and therefore no
     // bytes. That is the correct answer, and it is also the *ceiling* of what this test can say
-    // about these five: with `ENC-770` open the binary holds no `BlobStore` and no rendition
-    // pipeline, so a file that did have content would answer `500` here rather than serving one.
+    // about these five: the spine seeds rows, not content, so nothing here distinguishes "the
+    // pipeline refused" from "there was nothing to render".
+    //
+    // What that ceiling no longer hides is the wiring. `ENC-770` gave this deployment a real
+    // `BlobStore` and `ENC-798` gave it a real rendition pipeline, so a file that *did* have bytes
+    // would now be served rather than answered `500`. Proving that needs an upload the probe cannot
+    // perform — it would have to PUT to a pre-signed URL and then wait for an antivirus pass — so it
+    // is proved in `crates/preview/tests/pipeline.rs` against the same composition instead.
     Spec {
         method: "POST",
         path: "/api/v1/files/{id}/download",
