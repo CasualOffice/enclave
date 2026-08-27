@@ -608,3 +608,45 @@
     transition: none;
   }
 }
+
+/* ---------------------------------------------------------------- uploads */
+
+/* Files arriving into this container. A list rather than grid rows — see
+ * `UploadQueue` for why — sharing the row's exact grid template so the columns
+ * line up with the grid beneath it and nothing appears to jog.
+ */
+/* Its own band, not an orphaned row.
+ *
+ * It sits above the column headers — it is a sibling of the grid, not a row in
+ * it — and without a treatment of its own it read as a row that had lost its
+ * header. A sunken background and a closing hairline make it a distinct region,
+ * which is what it is.
+ */
+.egl-uploads {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  flex: none;
+  background: var(--sunken);
+  border-block-end: 1px solid var(--line);
+}
+
+/* The prototype dims the uploading row to `.5`. Applied to the *contents*
+ * rather than the row, so the stepper keeps full contrast — it is the one thing
+ * on the row the user is actually reading, and fading it to half would put the
+ * current phase below the 4.5:1 text-contrast floor (`docs/09 §15`).
+ */
+.egl-row-upload > .egl-name,
+.egl-row-upload > .egl-meta {
+  opacity: 0.5;
+}
+
+.egl-row-upload {
+  cursor: default;
+}
+
+/* No hover affordance: there is nothing to click. A row that lights up under
+ * the pointer promises an interaction it does not have. */
+.egl-row-upload:hover {
+  background: transparent;
+}

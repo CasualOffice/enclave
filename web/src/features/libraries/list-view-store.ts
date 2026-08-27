@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { DensityName } from './list/geometry.ts';
+import type { DensityName } from '../../shared/list/geometry.ts';
 
 /* Zustand, for exactly the thing `CLAUDE.md` reserves it for: genuinely local
  * UI state.

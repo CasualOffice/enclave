@@ -78,12 +78,48 @@ const SURFACES: readonly Surface[] = [
     ready: '.surface-state[data-tone="neutral"]',
     api: { status: 403 },
   },
-  /* The library picker, which cannot exist until an endpoint enumerates
-   * libraries. Unbuilt, and never the denial treatment. */
+  /* The library picker. It **exists now** — `PR #71` added `GET /workspaces`
+   * and `GET /workspaces/{id}/libraries`, so the unbuilt surface that used to
+   * be listed here has been withdrawn along with its treatment. All four of its
+   * states are listed, because none of them is drawn in the prototype and the
+   * ones nobody looks at are the ones that rot. */
+  { name: 'library picker, populated', url: '/library', ready: '.lib-picker-lib' },
+  { name: 'library picker, loading', url: '/library', ready: '[role="status"]', api: { hang: true } },
   {
-    name: 'library, no picker (unbuilt)',
+    name: 'library picker, no workspaces',
     url: '/library',
-    ready: '.surface-state[data-tone="unbuilt"]',
+    ready: '.lib-picker[data-state="empty"]',
+    api: { workspaces: 0 },
+  },
+  {
+    name: 'library picker, fetch error',
+    url: '/library',
+    ready: '.surface-state[data-tone="error"]',
+    api: { status: 500 },
+  },
+  {
+    name: 'library picker, policy denial',
+    url: '/library',
+    ready: '.surface-state[data-tone="neutral"]',
+    api: { status: 403 },
+  },
+
+  /* The peek panel's Preview tab, in the two states that must never look alike:
+   * bytes that render, and a version the product refuses to serve. The second
+   * is `CLAUDE.md` rule 9 on screen — `AVAILABLE` but `SKIPPED`, so
+   * `isReadable` is false and the delivery route answers 404. It is neither a
+   * denial nor a failure, and axe checks that its neutral treatment carries
+   * enough contrast to be read rather than skimmed past. */
+  {
+    name: 'library peek, preview renders bytes',
+    url: '/library?library=lib-1&peek=file-3&tab=preview',
+    ready: '.peek-preview[data-state="ready"]',
+  },
+  {
+    name: 'library peek, preview not readable (rule 9)',
+    url: '/library?library=lib-1&peek=file-3&tab=preview',
+    ready: '.peek-preview[data-state="not-ready"]',
+    api: { readable: false },
   },
 
   /* Ask, all four of its states. It is the D33 surface — every control on it is

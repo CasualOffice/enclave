@@ -213,6 +213,65 @@ const PHYSICAL_CSS = [
   /\btextAlign\s*:\s*['"`](left|right)['"`]/,
 ];
 
+/* ------------------------------------------------- the layer boundary rule */
+
+/** The layers of `docs/17 §2`, outermost first. A module may import strictly below its own. */
+const LAYERS = ['app', 'features', 'entities', 'shared'];
+
+/** Which layer a `web/src/...` path belongs to, and which feature if any. */
+function locate(relPath) {
+  const match = /^src\/([^/]+)\/(?:([^/]+)\/)?/.exec(relPath);
+  if (match === null) return undefined;
+  const rank = LAYERS.indexOf(match[1]);
+  if (rank === -1) return undefined;
+  return { layer: match[1], rank, feature: match[1] === 'features' ? match[2] : undefined };
+}
+
+/** Resolve a relative import against the importing file, to a `src/...` path. */
+function resolveImport(fromRel, spec) {
+  if (!spec.startsWith('.')) return undefined;
+  const parts = fromRel.split('/').slice(0, -1);
+  for (const segment of spec.split('/')) {
+    if (segment === '.' || segment === '') continue;
+    if (segment === '..') parts.pop();
+    else parts.push(segment);
+  }
+  return parts.join('/');
+}
+
+/**
+ * The reason an import is refused, or `undefined` when it is fine.
+ *
+ * Two rules, and the second is the one that bites: a feature importing a
+ * sibling feature couples two things that are meant to evolve separately, and
+ * the remedy is always to move the shared piece down rather than to allow the
+ * edge.
+ */
+function boundaryViolation(fromRel, spec) {
+  const target = resolveImport(fromRel, spec);
+  if (target === undefined) return undefined;
+
+  const from = locate(fromRel);
+  const to = locate(target);
+  if (from === undefined || to === undefined) return undefined;
+
+  if (to.rank < from.rank) {
+    return `\`${from.layer}/\` may not import from \`${to.layer}/\` — imports go downward only (docs/17 §2)`;
+  }
+
+  if (
+    from.layer === 'features' &&
+    to.layer === 'features' &&
+    from.feature !== undefined &&
+    to.feature !== undefined &&
+    from.feature !== to.feature
+  ) {
+    return `feature \`${from.feature}\` may not import feature \`${to.feature}\` — move the shared piece down to \`entities/\` or \`shared/\` (docs/17 §2)`;
+  }
+
+  return undefined;
+}
+
 const referencedKeys = new Set();
 
 for (const file of files) {
@@ -255,6 +314,33 @@ for (const file of files) {
 
     if (/:\s*any\b|<any>|as any\b/.test(line)) {
       report(rel, number, 'ts/no-any', 'explicit `any` (CLAUDE.md, TypeScript conventions)');
+    }
+
+    /* The layer boundary of `docs/17 §2`.
+     *
+     * A module may import from a layer below it and never from one above or
+     * beside it:
+     *
+     *     app/  ->  features/  ->  entities/  ->  shared/
+     *
+     * and **a feature never imports another feature**. `docs/17 §2` says this is
+     * "enforced by an ESLint boundary rule, not by convention — the rule is the
+     * gate, and `ENC-543` is why a rule nobody enforces is worse than no rule."
+     * There is no ESLint in this tree and there was no rule either, so the
+     * sentence described an enforcement that did not exist. It does now.
+     *
+     * It has already earned its place: the upload queue began in
+     * `features/upload/` and was read by `features/libraries/`, which is
+     * precisely the import this refuses. The fix `docs/17 §2` prescribes —
+     * move the shared thing down — put it in `entities/upload/`, where both
+     * features reach it legally.
+     */
+    const importPath = /^\s*(?:import|export)\b[^'"]*from\s+['"]([^'"]+)['"]/.exec(line);
+    if (importPath !== null) {
+      const violation = boundaryViolation(rel, importPath[1]);
+      if (violation !== undefined) {
+        report(rel, number, 'arch/layer-boundary', violation);
+      }
     }
 
     if (LITERAL_EXEMPT.has(rel)) return;

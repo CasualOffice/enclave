@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery, useQueryClient, type UseQueryResult } from '@tanstack/react-query';
 import { Viewer } from '../entities/user/model.ts';
 import { onSessionEnded, request, SESSION_ENDED } from '../shared/api/client.ts';
@@ -21,21 +21,13 @@ import { hasAccessToken, refresh } from '../shared/api/session.ts';
  * with their session still perfectly valid.
  */
 
-const ViewerContext = createContext<Viewer | null>(null);
-
-/**
- * The signed-in user, inside the authenticated tree.
+/* The viewer context moved to `entities/user/viewer.tsx`.
  *
- * Throws outside it rather than returning `null`, because every caller is
- * rendered by `SessionGate` below and a `null` here would mean the gate is
- * broken — which is worth a loud failure at the boundary rather than an
- * optional chain in forty components.
- */
-export function useViewer(): Viewer {
-  const viewer = useContext(ViewerContext);
-  if (viewer === null) throw new Error('useViewer outside an authenticated tree');
-  return viewer;
-}
+ * `features/home` read `useViewer` from here, and `docs/17 §2` forbids a
+ * feature importing `app/`. *Who is signed in* is a property of the user
+ * entity; *how the application finds out* is the orchestration below, and only
+ * the second half is app-level. Re-exported so `app/` keeps one import site. */
+export { useViewer, ViewerProvider } from '../entities/user/viewer.tsx';
 
 /** `GET /api/v1/me`, parsed at the boundary and nowhere else (`docs/17 §3`). */
 export function fetchViewer(signal?: AbortSignal): Promise<Viewer> {
@@ -123,6 +115,3 @@ export function useSession(): SessionState {
   return { kind: 'loading' };
 }
 
-export function ViewerProvider({ viewer, children }: { viewer: Viewer; children: ReactNode }) {
-  return <ViewerContext.Provider value={viewer}>{children}</ViewerContext.Provider>;
-}

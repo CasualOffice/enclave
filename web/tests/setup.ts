@@ -22,3 +22,29 @@ import { cleanup } from '@testing-library/react';
 afterEach(() => {
   cleanup();
 });
+
+/* `Blob.arrayBuffer()`, which jsdom does not implement.
+ *
+ * It has been in the File API standard since 2019 and every browser has it;
+ * jsdom's `Blob` simply predates it. The upload digest reads a file through it,
+ * so without this the digest tests fail on the environment rather than on the
+ * code — and the tempting "fix" is to rewrite `digest.ts` around `FileReader`,
+ * which would make the shipped code worse to satisfy a test harness.
+ *
+ * Polyfilled through `FileReader`, which jsdom *does* implement, so the bytes
+ * still travel jsdom's own Blob machinery and a bug in the chunked read would
+ * still be caught.
+ *
+ * The real path is exercised for real in `tests/a11y`, which runs in Chromium
+ * where none of this applies.
+ */
+if (typeof Blob !== 'undefined' && typeof Blob.prototype.arrayBuffer !== 'function') {
+  Blob.prototype.arrayBuffer = function arrayBuffer(this: Blob): Promise<ArrayBuffer> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as ArrayBuffer);
+      reader.onerror = () => reject(reader.error);
+      reader.readAsArrayBuffer(this);
+    });
+  };
+}

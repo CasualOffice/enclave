@@ -119,6 +119,15 @@ export interface RequestOptions {
    * refresh rather than of the sign-in.
    */
   readonly anonymous?: boolean;
+  /**
+   * Override the `Accept` header.
+   *
+   * Exactly one class of caller needs this: the delivery routes, which answer
+   * image bytes rather than JSON. Asking for `application/json` from
+   * `/files/{id}/preview` is asking the server for a representation it does not
+   * have, and the honest request says what it will accept.
+   */
+  readonly accept?: string;
 }
 
 /**
@@ -200,7 +209,10 @@ async function send(
   options: RequestOptions,
   auth: Record<string, string>,
 ): Promise<Response> {
-  const headers: Record<string, string> = { accept: 'application/json', ...auth };
+  const headers: Record<string, string> = {
+    accept: options.accept ?? 'application/json',
+    ...auth,
+  };
 
   if (options.body !== undefined) {
     headers['content-type'] = 'application/json';
@@ -223,11 +235,17 @@ async function send(
   });
 }
 
-export async function request<T>(
-  path: string,
-  schema: z.ZodType<T>,
-  options: RequestOptions = {},
-): Promise<T> {
+/**
+ * Send, and deal with the session — everything up to reading a body.
+ *
+ * Factored out of `request` so that `requestBlob` gets the *same* proactive
+ * refresh, the same refresh-and-replay on `401`, and the same step-up
+ * passthrough. A second transport that reimplemented any of those would be a
+ * second place for the session rules to be subtly wrong, and the delivery
+ * routes are exactly where a silently-expired token would look like a missing
+ * file.
+ */
+async function exchange(path: string, options: RequestOptions): Promise<Response> {
   const anonymous = options.anonymous === true;
 
   /* Refresh *before* sending when the held token is at or past expiry, so the
@@ -275,6 +293,15 @@ export async function request<T>(
     }
   }
 
+  return response;
+}
+
+export async function request<T>(
+  path: string,
+  schema: z.ZodType<T>,
+  options: RequestOptions = {},
+): Promise<T> {
+  const response = await exchange(path, options);
   const requestId = response.headers.get(REQUEST_ID_HEADER) ?? '';
 
   if (!response.ok) {
@@ -308,4 +335,46 @@ export async function request<T>(
   }
 
   return parsed.data;
+}
+
+/**
+ * A response whose body is bytes, not JSON.
+ *
+ * The delivery routes — `GET /files/{id}/preview` and `/thumbnail` — answer an
+ * image, and they need the bearer token, which is why they cannot simply be an
+ * `<img src>`: the token lives in memory and is never a cookie or a query
+ * parameter, so the only way to authenticate a byte read is to fetch it and
+ * hand the result to an object URL.
+ *
+ * Errors are classified through exactly the same `classify` as `request`, so a
+ * `403` from these routes is a **denial** carrying the server's reason and a
+ * `503` is a retryable **failure** — the distinction `docs/17 §7` requires,
+ * arriving here for free rather than being re-derived per caller.
+ *
+ * Verified against the running binary, which answers all four:
+ *
+ *   * `200 image/png` — an `AVAILABLE` / `CLEAN` PNG;
+ *   * `404` — a version that exists but may not be served (`SKIPPED` or
+ *     `QUARANTINED`). That is `CLAUDE.md` rule 9 working, and it is **not** a
+ *     missing file;
+ *   * `503 DEPENDENCY_UNAVAILABLE` — a media type this deployment has no
+ *     renderer for; renditions cover `image/png`, `image/jpeg` and `image/webp`
+ *     and nothing else;
+ *   * `403 ACCESS_DENIED` — the policy chain refusing this user.
+ */
+export async function requestBlob(path: string, options: RequestOptions = {}): Promise<Blob> {
+  const response = await exchange(path, { accept: 'image/*', ...options });
+  const requestId = response.headers.get(REQUEST_ID_HEADER) ?? '';
+
+  if (!response.ok) {
+    /* The error body is still JSON even when the success body is not, so the
+     * reason and the remediation survive. A `404` carries no useful sentence
+     * and is deliberately not dressed up as one — only the caller knows whether
+     * the file is absent or merely not yet servable, and telling that story is
+     * its job (`features/libraries/peek/preview-tab.tsx`). */
+    const body = unwrapError(await response.json().catch(() => null));
+    throw new ApiError(classify(response.status, body, requestId));
+  }
+
+  return response.blob();
 }

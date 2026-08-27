@@ -2,7 +2,8 @@ import type { ReactNode } from 'react';
 import { useLocale, useT } from '../shared/i18n/index.tsx';
 import { initialsOf, toneOf } from '../entities/user/model.ts';
 import { signOut } from '../features/auth/sign-out.ts';
-import { useViewer } from './session.tsx';
+import { UploadTray } from '../features/upload/upload-tray.tsx';
+import { useViewer } from '../entities/user/viewer.tsx';
 import { Icon, type IconName } from '../shared/ui/icon-sprite.tsx';
 import { Mark } from '../shared/ui/mark.tsx';
 import { Avatar, Kbd } from '../shared/ui/primitives.tsx';
@@ -224,7 +225,16 @@ export function Shell({ children }: { children: ReactNode }) {
         </div>
       </nav>
 
-      <main className="shell-sheet">{children}</main>
+      <main className="shell-sheet">
+        {children}
+        {/* The tray lives in the shell, not in the library screen.
+         *
+         * `docs/09 §8`: uploads keep running across navigation. A tray rendered
+         * by the screen that started it would vanish the moment the user opened
+         * Search, and the transfer would continue with nothing on screen saying
+         * so. It renders nothing when the queue is empty. */}
+        <UploadTray />
+      </main>
     </div>
   );
 }

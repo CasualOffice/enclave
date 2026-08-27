@@ -53,14 +53,31 @@ function subscribe(listener: () => void): () => void {
   return () => listeners.delete(listener);
 }
 
-/** The current query string, re-rendering the caller when it changes. */
-export function useSearchParams(): URLSearchParams {
-  const search = useSyncExternalStore(
+/**
+ * The raw query string, which is **stable between changes**.
+ *
+ * `useSearchParams` below has to allocate a fresh `URLSearchParams` on every
+ * render — the object is mutable, so handing out a shared one would let any
+ * caller corrupt every other's view. That makes it a poor `useMemo`
+ * dependency: a screen that writes `useMemo(() => readFilters(params),
+ * [params])` gets a new dependency every render and its memo never hits, which
+ * is a performance bug that is completely invisible because the values are
+ * always correct.
+ *
+ * The search *string* has no such problem. A screen with derived state should
+ * depend on this and build the params inside the memo.
+ */
+export function useSearchString(): string {
+  return useSyncExternalStore(
     subscribe,
     () => snapshot,
     () => '',
   );
-  return new URLSearchParams(search);
+}
+
+/** The current query string, re-rendering the caller when it changes. */
+export function useSearchParams(): URLSearchParams {
+  return new URLSearchParams(useSearchString());
 }
 
 /** One parameter, with a default. */

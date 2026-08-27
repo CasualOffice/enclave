@@ -12,7 +12,7 @@ import {
   type ControlState,
 } from '../../shared/ui/primitives.tsx';
 import { attentionFromTask, useTasks } from './api.ts';
-import { useViewer } from '../../app/session.tsx';
+import { useViewer } from '../../entities/user/viewer.tsx';
 import { FailureState } from '../../shared/ui/surface-states.tsx';
 import { failureOf } from '../../shared/api/failure.ts';
 import type { AttentionKind, HomeData, HomeError } from './model.ts';

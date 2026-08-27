@@ -1,0 +1,87 @@
+/* The three-dot progress indicator.
+ *
+ * Values from `enclave-client-prototype.html` line 265 — 11 px text, 6 px dots,
+ * 4 px gap inside a step and 6 px between steps, the current step at weight 500
+ * with a 3 px `--accent-soft` ring. Logical properties throughout: `en-XB`
+ * mirrors direction in CI and a physical `left` fails the gate.
+ */
+
+/* Quiet text is `--fg2`, never `--fg3` or `--fg4` (`ENC-680`).
+ *
+ * Measured by axe in real Chromium: in the light theme `--fg4` is 3.47:1 and
+ * `--fg3` is 4.23:1 on the sunken surface — both short of the 4.5:1 that
+ * `docs/09 §15` requires for text. `grouped-list.css` already records this and
+ * uses `--fg2` throughout for the same reason. Until the token scale is fixed,
+ * every quiet text colour in this file is `--fg2`.
+ */
+
+.upl-steps {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--fg2);
+  min-inline-size: 0;
+  white-space: nowrap;
+}
+
+.upl-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.upl-step-dot {
+  inline-size: 6px;
+  block-size: 6px;
+  border-radius: 50%;
+  flex: none;
+}
+
+/* Completed: the success colour, and the label recedes to secondary. */
+.upl-step[data-step='done'] {
+  color: var(--fg2);
+}
+.upl-step[data-step='done'] .upl-step-dot {
+  background: var(--ok);
+}
+
+/* Current: full-strength text, weight 500, and the accent ring. */
+.upl-step[data-step='current'] {
+  color: var(--fg);
+  font-weight: 500;
+}
+.upl-step[data-step='current'] .upl-step-dot {
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* Not reached.
+ *
+ * The reference greys the label as well as the dot; the label stays `--fg2`
+ * here because 11 px text at `--fg4` measures 3.47:1 (`ENC-680`). The step's
+ * state is still carried without colour — the dot differs, the current step is
+ * weight 500, and the row's live region announces the real phase name — so
+ * nothing is conveyed by colour alone (`docs/09 §15`). */
+.upl-step[data-step='todo'] {
+  color: var(--fg2);
+}
+.upl-step[data-step='todo'] .upl-step-dot {
+  background: var(--g300);
+}
+
+/* A row that stopped badly keeps the dots it earned but stops implying motion:
+ * the current dot loses its ring, because nothing is in flight. */
+.upl-steps[data-phase='failed'] .upl-step[data-step='current'] .upl-step-dot,
+.upl-steps[data-phase='quarantined'] .upl-step[data-step='current'] .upl-step-dot {
+  background: var(--danger);
+  box-shadow: none;
+}
+
+/* Refused and aborted are neutral, never the danger colour: a policy denial is
+ * not a fault (`docs/17 §7`), and a cancellation is the user's own doing. */
+.upl-steps[data-phase='refused'] .upl-step[data-step='current'] .upl-step-dot,
+.upl-steps[data-phase='aborted'] .upl-step[data-step='current'] .upl-step-dot {
+  background: var(--g300);
+  box-shadow: none;
+}

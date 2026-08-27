@@ -1923,6 +1923,198 @@ export const catalog = {
     message: 'No gateway is answering, so these are sample policies rather than this tenant’s.',
     description: 'Sentence beside the review-fixture marker, saying why the data is not real.',
   },
+
+  /* ------------------------------------------------------------- the picker */
+
+  'library.picker.title': {
+    message: 'Choose a library',
+    description:
+      'Heading over the workspace/library chooser shown when no library is open. Neutral instruction, not a question.',
+  },
+  'library.picker.noLibraries': {
+    message: 'No libraries in this workspace.',
+    description:
+      'Shown under a workspace whose library listing came back empty. A statement of fact, not an error and not a refusal.',
+  },
+  'library.picker.external': {
+    message: 'External sharing',
+    description:
+      'Tag on a library whose settings permit sharing outside the tenant. A property of the container, not a warning.',
+  },
+  'library.picker.empty.title': {
+    message: 'No workspaces yet',
+    description:
+      'Empty (new) state of the library picker: the viewer belongs to no workspace. Not an error — the request succeeded and the answer was none.',
+  },
+  'library.picker.empty.body': {
+    message: 'Workspaces hold the libraries your team files work in. An administrator can add you to one.',
+    description:
+      'Body of the picker’s empty state: says what the surface is for and who can change the situation.',
+  },
+
+  /* ------------------------------------------------------------- the upload */
+
+  'library.upload.denied': {
+    message: 'You cannot add files to this library.',
+    description:
+      'Reason shown on the disabled Upload control when the server’s library capabilities report create=false. Deliberately says only what the capability said — `capabilities` carries no per-action reason yet (ENC-674) and inventing one would be the client re-deriving a policy decision.',
+  },
+  'upload.dropHere': {
+    message: 'Drop files to upload',
+    description: 'Overlay shown over the file list while files are dragged over it.',
+  },
+  'upload.queue.label': {
+    message: 'Files being uploaded',
+    description:
+      'Accessible name of the list of in-flight uploads shown above the file grid.',
+  },
+  'upload.tray.label': {
+    message: 'Uploads',
+    description: 'Accessible name of the floating upload tray.',
+  },
+  'upload.tray.active': {
+    message:
+      '{active, plural, one {# file uploading} other {# files uploading}} of {total, plural, one {# file} other {# files}}',
+    description:
+      'Aggregate progress in the upload tray header. A count rather than a percentage: summing per-file fractions implies a total that a growing queue does not have.',
+  },
+  'upload.tray.done': {
+    message: '{total, plural, one {# upload} other {# uploads}}',
+    description: 'Upload tray header once nothing is still in flight.',
+  },
+  'upload.tray.hide': {
+    message: 'Hide uploads',
+    description: 'Accessible name of the button that collapses the upload tray.',
+  },
+  'upload.clearDone': {
+    message: 'Clear finished',
+    description: 'Removes settled rows from the upload tray. Does not delete any file.',
+  },
+  'upload.cancel': {
+    message: 'Cancel',
+    description: 'Stops an upload that is still running and releases its staged bytes.',
+  },
+  'upload.retry': {
+    message: 'Try again',
+    description:
+      'Retries a failed transfer. Shown only for a failure — never for a policy refusal, which retrying cannot change (docs/17 §7).',
+  },
+  'upload.dismiss': {
+    message: 'Dismiss',
+    description: 'Removes one settled row from the upload tray.',
+  },
+
+  'upload.step.up': {
+    message: 'Up',
+    description:
+      'First of the three progress dots drawn on an uploading row, abbreviating “Uploading”. The full phase name is what a screen reader is given.',
+  },
+  'upload.step.scan': {
+    message: 'Scan',
+    description: 'Second progress dot: the file is being scanned and processed.',
+  },
+  'upload.step.index': {
+    message: 'Index',
+    description: 'Third progress dot: the file is being indexed for search.',
+  },
+
+  'upload.phase.queued': {
+    message: 'Queued',
+    description: 'Upload phase: waiting to start.',
+  },
+  'upload.phase.hashing': {
+    message: 'Checking',
+    description:
+      'Upload phase: the client is reading the file and computing its SHA-256 before anything is sent. Its own phase because a large file spends real time here and a row that looked stalled would be untrue.',
+  },
+  'upload.phase.uploading': {
+    message: 'Uploading',
+    description: 'Upload phase: bytes are being sent to object storage.',
+  },
+  'upload.phase.scanning': {
+    message: 'Scanning',
+    description:
+      'Upload phase: the bytes are stored and antivirus has not cleared them. Nothing is readable in this phase (CLAUDE.md rule 9).',
+  },
+  'upload.phase.processing': {
+    message: 'Processing',
+    description: 'Upload phase: renditions and text extraction are running.',
+  },
+  'upload.phase.indexing': {
+    message: 'Indexing',
+    description: 'Upload phase: the content is being added to the search index.',
+  },
+  'upload.phase.ready': {
+    message: 'Ready',
+    description:
+      'Upload phase: the server reports the version readable. Reached only when isReadable is true — never inferred from status alone.',
+  },
+  'upload.phase.quarantined': {
+    message: 'Quarantined',
+    description:
+      'Upload phase: the scanner refused the content, or refused to admit it unscanned. Terminal, and a statement about the file rather than about the user.',
+  },
+  'upload.phase.failed': {
+    message: 'Failed',
+    description: 'Upload phase: the transfer or one of its calls did not complete.',
+  },
+  'upload.phase.aborted': {
+    message: 'Cancelled',
+    description: 'Upload phase: the user stopped it. Neutral — not an error.',
+  },
+  'upload.phase.refused': {
+    message: 'Not permitted',
+    description:
+      'Upload phase: the policy chain refused the upload. Neutral, never the failure treatment, and carries no retry (docs/17 §7).',
+  },
+
+  'upload.note.unscanned': {
+    message: 'Published, but no scanner inspected it — it cannot be opened yet.',
+    description:
+      'Shown on a version whose status is AVAILABLE but whose av_status is SKIPPED. AVAILABLE means published, not scanned, and SKIPPED is not CLEAN — so the file is deliberately not served (CLAUDE.md rule 9).',
+  },
+  'upload.note.scanError': {
+    message: 'The scanner could not read this file, so it cannot be opened.',
+    description: 'Shown on a version whose av_status is ERROR.',
+  },
+  'upload.note.awaitingScan': {
+    message: 'Waiting for a scan before it can be opened.',
+    description: 'Shown on a published version that is not yet readable for any other reason.',
+  },
+
+  /* -------------------------------------------------------- the preview tab */
+
+  'library.peek.preview.denied': {
+    message: 'You do not have permission to preview this file.',
+    description:
+      'Shown on the Preview tab when the server’s capabilities report preview=false. Says only that; `capabilities` carries no reason yet (ENC-674) and the client must not invent one.',
+  },
+  'library.peek.preview.noVersion': {
+    message: 'This file has no version to preview.',
+    description: 'Shown when the versions listing came back empty.',
+  },
+  'library.peek.preview.unscanned': {
+    message: 'No scanner has inspected this file, so its contents are not served.',
+    description:
+      'Preview tab, version published but av_status SKIPPED. The honest sentence for the 404 the delivery route answers — not “not found”, because the file plainly exists.',
+  },
+  'library.peek.preview.quarantined': {
+    message: 'This file was quarantined, so its contents are not served.',
+    description: 'Preview tab, version QUARANTINED.',
+  },
+  'library.peek.preview.scanning': {
+    message: 'This file is still being scanned.',
+    description: 'Preview tab, version PENDING or SCANNING.',
+  },
+  'library.peek.preview.noRenderer': {
+    message: 'No preview for this file type yet',
+    description:
+      'Preview tab heading when the file is readable but this deployment renders only PNG, JPEG and WebP. Unbuilt, not denied and not failed: nobody was refused and nothing broke.',
+  },
+  'library.peek.preview.noRenderer.note': {
+    message: 'This deployment renders images only. Other formats need the document renderer.',
+    description: 'Release note behind the unbuilt Preview state, naming the actual blocker.',
+  },
 } as const satisfies Record<string, CatalogEntry>;
 
 export type MessageKey = keyof typeof catalog;

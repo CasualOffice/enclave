@@ -2,10 +2,11 @@ import { memo, useCallback } from 'react';
 import { useT } from '../../../shared/i18n/index.tsx';
 import { useFormatters } from '../../../shared/i18n/format.ts';
 import { ChevronIcon, FileIcon } from '../../../shared/ui/icons.tsx';
-import { DENSITY, type DensityName, type GroupLayout, type GroupSpec } from './geometry.ts';
-import { useGroupedWindow } from './use-grouped-window.ts';
+import { DENSITY, type DensityName, type GroupLayout, type GroupSpec } from '../../../shared/list/geometry.ts';
+import { useGroupedWindow } from '../../../shared/list/use-grouped-window.ts';
 import { CLASSIFICATION_KEY } from '../../../entities/classification/model.ts';
 import type { FileRow } from '../../../entities/file/model.ts';
+import { PhaseSteps, type UploadRow } from '../../../entities/upload/index.ts';
 import {
   EmptyState,
   ErrorState,
@@ -34,6 +35,22 @@ export interface GroupedFileListProps {
   readonly onRetry?: (() => void) | undefined;
   readonly onClearFilters?: (() => void) | undefined;
   readonly onUpload?: (() => void) | undefined;
+  /**
+   * Uploads in flight into *this* container, drawn as rows.
+   *
+   * The prototype draws an uploading file as a row in the list with a three-dot
+   * stepper in the status column and the rest of the row dimmed
+   * (`enclave-client-prototype.html` line 263). That is kept.
+   *
+   * They are **not** part of the virtualized window: a queue is a handful of
+   * rows, they change every frame while transferring, and threading mutable
+   * rows through an index-based layout would invalidate the window on every
+   * progress tick. They render in their own rowgroup above the groups instead.
+   * The prototype appends rather than prepends; the top is chosen so a
+   * transfer stays visible in a library with ten thousand rows, which is the
+   * point of showing it at all.
+   */
+  readonly uploads?: readonly UploadRow[];
 }
 
 const GroupHeaderRow = memo(function GroupHeaderRow({
@@ -129,18 +146,94 @@ const FileRowView = memo(function FileRowView({
         </time>
       </span>
       <span role="gridcell">
-        <span className="egl-classification" data-level={row.classification}>
-          {t(CLASSIFICATION_KEY[row.classification])}
-        </span>
+        {/* Classification is a label on *content*. A folder has none, and
+         * "Unclassified" on one would say nobody had labelled it rather than
+         * that the idea does not apply — the same class of invented fact as a
+         * guessed capability. */}
+        {!row.isFolder && (
+          <span className="egl-classification" data-level={row.classification}>
+            {t(CLASSIFICATION_KEY[row.classification])}
+          </span>
+        )}
       </span>
       {/* Effect pills (retention, no-download) land with `ENC-674`'s
        * capabilities-with-reasons. Empty and present, so the column exists. */}
       <span role="gridcell" />
       <span className="egl-meta egl-meta-size" role="gridcell">
-        {formatters.bytes(row.sizeBytes)}
+        {/* The server sends `sizeBytes: 0` for every folder, and rendering it
+         * produced "0 byte" — a measurement, and a false one. A folder's size
+         * is not zero; it is not a quantity the listing carries. */}
+        {row.isFolder ? '' : formatters.bytes(row.sizeBytes)}
       </span>
       <span role="gridcell" />
     </div>
+  );
+});
+
+/**
+ * A file being uploaded, as a row.
+ *
+ * The prototype dims it to `.5`, gives it no checkbox affordance, no
+ * classification and no row menu, and puts the stepper in the status column.
+ * All four are kept, and each is honest rather than cosmetic:
+ *
+ * - **No selection.** There is nothing to act on: the file has no id in this
+ *   library until `complete` answers, so every selection action would refer to
+ *   a row the server has never heard of.
+ * - **No classification.** Classification is a server decision about content
+ *   that has not been scanned yet. Drawing `Unclassified` would be a claim; an
+ *   empty cell is the absence of one.
+ * - **No size formatting difference.** The size is known locally and is real.
+ *
+ * `aria-disabled` rather than removal from the tree: a screen-reader user
+ * should hear that the file is arriving, which is the whole point of the live
+ * region inside `PhaseSteps`.
+ */
+const UploadQueue = memo(function UploadQueue({ uploads }: { uploads: readonly UploadRow[] }) {
+  const t = useT();
+  const formatters = useFormatters();
+
+  if (uploads.length === 0) return null;
+
+  return (
+    /* A **list, not grid rows.**
+     *
+     * The prototype draws these as rows in the file list, and visually they
+     * still are — the same seven-column template, the same 36 px height. What
+     * they are not is rows of *this grid*: a `treegrid` with `aria-rowcount`
+     * requires every row to carry a unique `aria-rowindex`, and the windowed
+     * rows already own that index space starting at 2. Splicing a mutable
+     * queue into it would either collide or force the layout engine to
+     * recompute every index on every progress tick.
+     *
+     * A queue of files arriving is honestly a list, so it is one. A screen
+     * reader announces "list, 2 items" above the grid rather than mislabelling
+     * transient work as library content.
+     */
+    <ul className="egl-uploads" aria-label={t('upload.queue.label')}>
+      {uploads.map((row) => (
+        <li key={row.id} className="egl-row egl-row-upload">
+          <span className="egl-cell-select" />
+          <span className="egl-name">
+            <FileIcon className="egl-name-icon" kind="other" />
+            <bdi className="egl-name-text" dir="auto">
+              {row.name}
+            </bdi>
+          </span>
+          <span className="egl-meta" />
+          {/* No classification: it is a server decision about content nothing
+           * has scanned yet, and `Unclassified` would be a claim rather than
+           * the absence of one. */}
+          <span />
+          {/* The status column, which is where the prototype puts the stepper. */}
+          <span>
+            <PhaseSteps phase={row.phase} />
+          </span>
+          <span className="egl-meta egl-meta-size">{formatters.bytes(row.sizeBytes)}</span>
+          <span />
+        </li>
+      ))}
+    </ul>
   );
 });
 
@@ -187,6 +280,7 @@ function ColumnChrome() {
 }
 
 const NO_SELECTION: ReadonlySet<string> = new Set<string>();
+const NO_UPLOADS: readonly UploadRow[] = [];
 
 /**
  * A grouped, collapsible, virtualized file list.
@@ -212,6 +306,7 @@ export function GroupedFileList({
   onRetry,
   onClearFilters,
   onUpload,
+  uploads = NO_UPLOADS,
 }: GroupedFileListProps) {
   const t = useT();
   const metrics = DENSITY[density];
@@ -260,7 +355,13 @@ export function GroupedFileList({
     );
   }
 
-  if (layout.totalRowCount === 0) {
+  /* Empty — but only when nothing is arriving.
+   *
+   * The first upload into a new library would otherwise render "this library is
+   * empty, upload something" *over the file the user is uploading*, which is
+   * both wrong and the most likely moment for anyone to see this state. An
+   * upload in flight means the surface is not empty. */
+  if (layout.totalRowCount === 0 && uploads.length === 0) {
     return (
       <div className="egl" style={styleVars}>
         <ColumnChrome />
@@ -275,6 +376,7 @@ export function GroupedFileList({
 
   return (
     <div className="egl" style={styleVars}>
+      <UploadQueue uploads={uploads} />
       <div
         className="egl-scroller"
         ref={scrollerRef}

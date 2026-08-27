@@ -5,7 +5,8 @@ import { FailureState } from '../shared/ui/surface-states.tsx';
 import { failureOf } from '../shared/api/failure.ts';
 import { Shell } from './shell.tsx';
 import { useRoute } from './routes.ts';
-import { useSession, ViewerProvider } from './session.tsx';
+import { useSession } from './session.tsx';
+import { ViewerProvider } from '../entities/user/viewer.tsx';
 
 /* The router's body, and the seam every screen plugs into.
  *
