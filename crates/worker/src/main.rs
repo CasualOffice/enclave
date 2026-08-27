@@ -296,13 +296,31 @@ async fn content_passes(
             signatures = info.signature_version.as_deref().unwrap_or("unknown"),
             "antivirus is enabled; uploads become readable once this engine clears them"
         ),
+        // The message says what *this* deployment will do, not what the default does. It printed a
+        // hard-coded "BLOCK" until `antivirus.unsupported_policy` existed, which was true then and
+        // would now be a start-up line contradicting the configuration it is describing.
+        Ok(info)
+            if config.antivirus.unsupported_policy
+                == enclave_config::UnsupportedPolicy::AllowWithFlag =>
+        {
+            tracing::warn!(
+                engine = %info.engine,
+                unsupported_policy = "ALLOW_WITH_FLAG",
+                "the configured antivirus provider does NOT inspect content, and \
+                 `antivirus.unsupported_policy` admits it anyway. Uploads become readable marked \
+                 SKIPPED — never CLEAN — and CONFIDENTIAL and above are still refused on rank. Every \
+                 version admitted this way is re-offered the moment a scanning engine answers, so \
+                 configuring one later repairs the corpus rather than leaving it unscanned."
+            );
+        }
         Ok(info) => tracing::error!(
             engine = %info.engine,
             unsupported_policy = "BLOCK",
             "the configured antivirus provider does NOT inspect content. Every version will be \
              recorded SKIPPED and QUARANTINED under the BLOCK policy, so nothing uploaded to this \
-             deployment will be readable. Configure `antivirus.provider: clamav`; the versions \
-             skipped in the meantime are re-offered automatically once a scanning engine answers."
+             deployment will be readable. Configure `antivirus.provider: clamav`, or set \
+             `antivirus.unsupported_policy: ALLOW_WITH_FLAG` to admit unscanned content; the \
+             versions skipped in the meantime are re-offered automatically once an engine answers."
         ),
         Err(error) => tracing::warn!(
             %error,

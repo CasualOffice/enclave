@@ -1285,6 +1285,14 @@ pub struct AntivirusConfig {
     /// `SCANNING`, which is the only state consistent with "nothing is `AVAILABLE` before antivirus
     /// completes" (CLAUDE.md rule 9).
     pub unavailable_policy: UnavailablePolicy,
+    /// What to do with content no engine inspected — `BLOCK` or `ALLOW_WITH_FLAG`.
+    ///
+    /// `ALLOW_WITH_FLAG` is what makes a deployment with `provider: none` usable. It does **not**
+    /// reach `CONFIDENTIAL` and above: `ScanPolicy::blocks_unsupported` refuses those on rank
+    /// regardless of this key, so the setting buys availability for ordinary content and changes
+    /// nothing for the content that matters most.
+    #[serde(default)]
+    pub unsupported_policy: UnsupportedPolicy,
 }
 
 impl Default for AntivirusConfig {
@@ -1297,6 +1305,7 @@ impl Default for AntivirusConfig {
             archive_depth: 5,
             timeout: HumanDuration::from_secs(120),
             unavailable_policy: UnavailablePolicy::Hold,
+            unsupported_policy: UnsupportedPolicy::Block,
         }
     }
 }
@@ -1324,6 +1333,33 @@ pub enum AntivirusProvider {
     /// Explicitly disabled. Spelled out rather than expressed as `enabled: false` so that turning
     /// scanning off is a visible, greppable choice in the configuration diff.
     None,
+}
+
+/// What to do with content no scanner inspected.
+///
+/// `docs/06-SECURITY-DLP-ACCESS.md §6.2`, and the one setting that decides whether a deployment
+/// running `antivirus.provider: none` can serve anything at all.
+///
+/// This key did not exist until now, and its absence was deliberate: `ScanPolicy::from_config`
+/// pinned `BLOCK` on the argument that a control expressed as a configuration default is a control
+/// somebody turns off — the shape `ENC-157` removed from `preview.watermark_cache`. The counter-
+/// argument, which the repo owner made and which decides it, is that a developer on a machine with
+/// no scanner available is not choosing to weaken a control; they are choosing to run the product
+/// at all, and a setting they cannot express is one they route around by other means.
+///
+/// So the key exists in every profile. What stands between it and a silent production bypass is not
+/// its absence but its noise: `crates/worker` already logs at **error** level that *"nothing
+/// uploaded to this deployment will be readable"* when no engine scans, `AVAILABLE` still requires
+/// `av_status = 'CLEAN'`, and a version admitted this way is recorded `SKIPPED` — re-offered
+/// automatically the moment a scanning engine answers, rather than left to be rediscovered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum UnsupportedPolicy {
+    /// Refuse it. The default, and what `CONFIDENTIAL` and above always get regardless.
+    #[default]
+    Block,
+    /// Publish it, marked unscanned, so a later signature update revisits it.
+    AllowWithFlag,
 }
 
 /// What to do when the scanner is unavailable.
