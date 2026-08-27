@@ -744,23 +744,6 @@ jobs:
           --health-timeout 5s
           --health-retries 10
 
-      minio:
-        image: bitnami/minio:latest
-        env:
-          MINIO_ROOT_USER: enclave
-          MINIO_ROOT_PASSWORD: enclave-dev-secret
-          # The bucket `storage.s3.bucket` names. Created by the image at start-up, because
-          # `connect_and_verify` refuses a bucket that does not exist and would take the whole job
-          # down with an error about credentials rather than about a missing bucket.
-          MINIO_DEFAULT_BUCKETS: enclave-content
-        ports:
-          - 9000:9000
-        options: >-
-          --health-cmd "curl -sf http://localhost:9000/minio/health/live"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 20
-
     env:
       # The harness creates a throwaway database per test binary from this one, so it must point at
       # a database whose role may CREATE DATABASE.
@@ -818,6 +801,36 @@ jobs:
       # `--nocapture`, deliberately: the run prints every route and its status, and the quarantine
       # list of endpoints that cannot currently be reached by anybody. Both belong in the log of
       # every pull request rather than only in the message of a failure.
+      - name: Start MinIO
+        # A step, not a service container — MinIO's entrypoint needs `server /data` and a service
+        # container cannot specify a command. The `test` job already learned this; I added a
+        # `bitnami/minio` service here instead and CI failed on "Initialize containers" twice
+        # before I read the comment fifty lines up that says exactly why it cannot work.
+        #
+        # The bucket has to exist before `enclave-api` starts: `connect_and_verify` refuses a
+        # missing bucket, and the job would fail with an error about credentials rather than about
+        # the bucket.
+        run: |
+          set -euo pipefail
+          docker run -d --name enclave-minio-reach \
+            -e MINIO_ROOT_USER=enclave \
+            -e MINIO_ROOT_PASSWORD=enclave-dev-secret \
+            -p 9000:9000 \
+            quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z server /data
+          for _ in $(seq 1 60); do
+            if curl -sf http://localhost:9000/minio/health/live >/dev/null; then
+              docker run --rm --network host \
+                -e MC_HOST_local=http://enclave:enclave-dev-secret@localhost:9000 \
+                quay.io/minio/mc:RELEASE.2025-04-16T18-13-26Z \
+                mb --ignore-existing local/enclave-content
+              echo "MinIO is ready and the bucket exists"; exit 0
+            fi
+            sleep 2
+          done
+          echo "::error title=MinIO did not become ready::the reachability test cannot start the binary"
+          docker logs enclave-minio-reach | tail -40
+          exit 1
+
       - name: Every registered route answers an authenticated caller
         run: |
           cargo test --locked -p enclave-api --test reachability -- \
