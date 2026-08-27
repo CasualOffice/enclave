@@ -1,7 +1,6 @@
 # 05 — API Surface
 
-> **Status:** Draft · **Version:** 1.5 · **Owner:** Platform Engineering · **Last updated:** 2026-08-28
-> **Status:** Draft · **Version:** 1.6 · **Owner:** Platform Engineering · **Last updated:** 2026-08-28
+> **Status:** Draft · **Version:** 1.7 · **Owner:** Platform Engineering · **Last updated:** 2026-08-28
 > **Authoritative for:** REST contracts, error model, pagination, idempotency, versioning, rate limits.
 
 ## 1. Principles
@@ -386,6 +385,106 @@ DELETE /api/v1/uploads/{id}                  → abort and release staged bytes
 - The response after `complete` is `202` with `state: "SCANNING"`. Clients poll or subscribe; a file
   is not presented as ready before antivirus and required processing finish.
 
+`POST /uploads`:
+
+```json
+{
+  "libraryId": "01937fa0-…",
+  "parentId": null,
+  "fileId": null,
+  "name": "Quarterly Plan.pdf",
+  "sizeBytes": 4823119,
+  "mimeType": "application/pdf",
+  "sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+}
+```
+
+`201 Created`
+
+```json
+{
+  "uploadId": "01a04573-…",
+  "method": "SINGLE",
+  "uploadUrl": "https://s3…/tenant/…/versions/…?X-Amz-Signature=…",
+  "requiredHeaders": {
+    "content-type": "application/pdf",
+    "x-amz-checksum-sha256": "n4bQgYhMfWWaL+qgxVrQFaO/TxsrC4Is0V1sFbDwCgg="
+  },
+  "urlsExpireAt": "2026-08-27T23:04:59Z",
+  "expiresAt": "2026-08-28T22:59:59Z"
+}
+```
+
+### 8.1 `sha256` is required, and `requiredHeaders` is not advisory
+
+`sha256` is a **required** lowercase-hex SHA-256 of the whole object, and it is the field the
+integrity of a version rests on. It is not stored on the session and it is not merely repeated back
+at `complete`: the API signs it into the pre-signed `PUT` as `x-amz-checksum-sha256`, which makes
+the object store compute the digest of the body it receives and refuse the request if the two
+disagree. A client that declares one digest and sends different bytes gets a failed `PUT`, and
+`complete` never sees an object at all.
+
+`requiredHeaders` carries every header that `PUT` **must** send, with the exact value that was
+signed. It is not a suggestion:
+
+- a `PUT` that **omits** one fails the provider's signature check (`403 SignatureDoesNotMatch`),
+  because the header names appear in `X-Amz-SignedHeaders`;
+- a `PUT` that sends a **different value** fails the same way;
+- a `PUT` that sends the right `x-amz-checksum-sha256` over the **wrong bytes** is refused by the
+  provider on the digest (`400 BadDigest`), and nothing is stored.
+
+Send them verbatim, and send nothing this object does not name. `content-type` in particular has
+always been signed and was documented nowhere, which cost the first client written against this API
+two attempts to diagnose (`ENC-821`).
+
+The absence of a checksum is now the *only* thing a completion cannot recover from, and it is
+therefore refused up front rather than discovered afterwards:
+
+| Condition | Answer |
+|---|---|
+| `sha256` **absent** | `400 VALIDATION_FAILED`, `details[].field: "body"` — the whole body failed to decode, as it does for any missing required field on this endpoint (`ENC-830`) |
+| `sha256` present but not 64 lowercase hex characters | `400 VALIDATION_FAILED`, `details[].field: "sha256"`, `code: "INVALID_FORMAT"` |
+| `sizeBytes` above what this deployment's object store can have the provider verify | `403 QUOTA_EXCEEDED` |
+
+The last is a real limit today and not a hypothetical. On an S3-compatible backend an upload above
+the multipart threshold is sent as a multipart upload, for which S3 and MinIO compute a *composite*
+checksum — a checksum of the part checksums — and not the whole-object SHA-256 a version records.
+Rather than issue such a session and record a digest nothing verified, `POST /uploads` refuses it.
+`ENC-829` is the row for restoring large uploads under a scheme the provider can confirm.
+
+The refusal is `MAX_FILE_BYTES` internally and carries the limit, but the envelope
+(`§5`) renders no `quota` and no `limit` field for any `QUOTA_EXCEEDED`, so a client cannot today
+show the number it was refused against. That is a gap in the error rendering rather than in this
+endpoint — it affects the library ceiling and the tenant storage quota identically — and is
+`ENC-831`.
+
+### 8.2 What `complete` refuses
+
+```json
+{ "sizeBytes": 4823119, "sha256": "9f86d081…", "parts": [] }
+```
+
+`202 Accepted` → `{ "uploadId": …, "fileId": …, "versionId": …, "state": "SCANNING" }`
+
+Every refusal below is **persisted**: the session is written `FAILED` and retrying the same
+completion cannot succeed. A new `POST /uploads` is the remedy.
+
+| Condition | Answer |
+|---|---|
+| `sizeBytes` differs from the size declared at `POST /uploads` | `400 VALIDATION_FAILED`, `field: "sizeBytes"` |
+| `sizeBytes` differs from what the object store holds | `400 VALIDATION_FAILED`, `field: "sizeBytes"` |
+| `sha256` is not 64 lowercase hex characters | `400 VALIDATION_FAILED`, `field: "sha256"`, `code: "INVALID_FORMAT"` |
+| `sha256` differs from the digest the object store computed | `400 VALIDATION_FAILED`, `field: "sha256"` |
+| the object store computed **no** digest | `503 UPSTREAM_UNAVAILABLE` |
+
+The last row is a statement about the deployment's object store, not about the client's request,
+which is why it is not a `400` naming `sha256`. A digest nobody verified is not recorded: a version's
+`checksumSha256` is immutable once written and is read later as evidence that the stored bytes are
+the bytes that were sent, so a value the store could not confirm is refused rather than persisted
+(`ENC-820`). It should be unreachable on a backend that honoured the signed checksum header; a
+BYO S3-compatible store that accepts the header and does not report the digest on `HeadObject` is
+what it catches.
+
 ## 9. Preview, download, export
 
 ```text
@@ -519,6 +618,11 @@ POST /api/v1/sync/reserve                    claim an upload slot for a changed 
 Delta entries carry `syncEligible`; ineligible files appear as tombstones with a reason so the client
 can show "available on the web only" rather than silently omitting them. Full semantics:
 `10-SYNC-AND-EDITING.md §4`.
+
+`POST /sync/reserve` opens an upload session and therefore takes `§8.1`'s contract unchanged:
+`checksumSha256` is **required**, lowercase hex, and is what the object store is made to verify the
+body against. It was optional, which gave the sync push path `ENC-820` in the same shape as
+`POST /uploads`.
 
 ## 14. Administration
 
