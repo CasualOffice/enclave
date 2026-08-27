@@ -14,22 +14,37 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use enclave_core::{TenantId, VersionId};
 use enclave_db::TenantScoped;
 use enclave_preview::repo;
 use enclave_preview::{
-    GeneratorVersion, PreviewOutcome, Refusal, RenderBudget, RenderOutcome, RenderRequest,
-    RenderedArtifact, Renderer, RenditionProfile, RenditionService, Result, SourceReader,
+    GeneratorVersion, Kept, PreviewOutcome, Refusal, RenderBudget, RenderOutcome, RenderRequest,
+    RenderedArtifact, Renderer, RenditionObject, RenditionProfile, RenditionService, RenditionSink,
+    Result, SourceReader,
 };
 use enclave_testing::content::Spine;
 use enclave_testing::{Fixtures, TestDb};
 use sqlx::PgConnection;
 use uuid::Uuid;
 
-/// A renderer that always succeeds, so the test is about the cache rather than about rendering.
-struct Always(GeneratorVersion);
+/// A renderer that always succeeds and counts its attempts.
+///
+/// The count is what makes a cache test about the cache: "the second call returned the same key" is
+/// also true of an implementation that re-rendered and wrote the same key again, which is exactly
+/// the bug a cache is meant not to have.
+struct Always(GeneratorVersion, Arc<AtomicUsize>);
+
+impl Always {
+    fn new(generator: &'static str) -> Self {
+        Self(GeneratorVersion::new(generator), Arc::new(AtomicUsize::new(0)))
+    }
+}
 
 #[async_trait]
 impl Renderer for Always {
@@ -42,6 +57,7 @@ impl Renderer for Always {
     }
 
     async fn render(&self, _request: RenderRequest) -> Result<RenderOutcome> {
+        let _previous = self.1.fetch_add(1, Ordering::Relaxed);
         Ok(RenderOutcome::Rendered(RenderedArtifact {
             bytes: vec![0x89, b'P', b'N', b'G'],
             media_type: "image/png".to_owned(),
@@ -57,6 +73,40 @@ struct Bytes;
 impl SourceReader for Bytes {
     async fn read(&self, _object_key: &str) -> Result<Vec<u8>> {
         Ok(vec![b'%', b'P', b'D', b'F'])
+    }
+}
+
+/// A sink that keeps what it is given, so the cache has something behind its rows.
+///
+/// The deployment's own sink keeps nothing (`ENC-802`), which would make every one of these tests
+/// pass for the wrong reason — a cache that never records is a cache that never serves a stale
+/// artefact, never strands a generation, and never has to be invalidated. What is under test here
+/// is the behaviour of a pipeline that *can* keep one.
+#[derive(Debug, Default, Clone)]
+struct Keeps(Arc<Mutex<HashMap<String, Vec<u8>>>>);
+
+impl Keeps {
+    fn written(&self) -> Vec<String> {
+        let mut keys: Vec<String> =
+            self.0.lock().expect("the sink's map").keys().cloned().collect();
+        keys.sort();
+        keys
+    }
+}
+
+#[async_trait]
+impl RenditionSink for Keeps {
+    async fn keep(&self, object: &RenditionObject, bytes: &[u8]) -> Result<Kept> {
+        let _previous = self
+            .0
+            .lock()
+            .expect("the sink's map")
+            .insert(object.as_str().to_owned(), bytes.to_vec());
+        Ok(Kept::Stored)
+    }
+
+    async fn load(&self, object: &RenditionObject) -> Result<Option<Vec<u8>>> {
+        Ok(self.0.lock().expect("the sink's map").get(object.as_str()).cloned())
     }
 }
 
@@ -115,8 +165,16 @@ fn next_minor() -> i32 {
     MINOR.fetch_add(1, Ordering::Relaxed)
 }
 
-fn service(generator: &'static str) -> RenditionService<Always, Bytes> {
-    RenditionService::new(Always(GeneratorVersion::new(generator)), Bytes, RenderBudget::DEFAULT)
+/// A pipeline, plus handles on the two things a cache test has to be able to count: what the sink
+/// was asked to keep, and how many times the renderer ran.
+fn service(
+    generator: &'static str,
+) -> (RenditionService<Always, Bytes, Keeps>, Keeps, Arc<AtomicUsize>) {
+    let renderer = Always::new(generator);
+    let renders = Arc::clone(&renderer.1);
+    let sink = Keeps::default();
+    let service = RenditionService::new(renderer, Bytes, sink.clone(), RenderBudget::DEFAULT);
+    (service, sink, renders)
 }
 
 /// The cache does what a cache does — and the second request does not re-render.
@@ -137,18 +195,27 @@ async fn a_miss_generates_and_a_hit_serves_what_the_miss_wrote() {
         .expect("query")
         .expect("an AVAILABLE, CLEAN version is readable");
 
-    let service = service("preview/1.0");
+    let (service, sink, renders) = service("preview/1.0");
     let first = service
         .base_rendition(&mut tx, alpha, &readable, RenditionProfile::Thumb, now)
         .await
         .expect("generate");
     let PreviewOutcome::Available(generated) = first else { panic!("the miss did not render") };
+    let generated = generated.cached.expect("a sink that keeps must produce a row");
 
     let second = service
         .base_rendition(&mut tx, alpha, &readable, RenditionProfile::Thumb, now)
         .await
         .expect("serve from cache");
-    let PreviewOutcome::Available(cached) = second else { panic!("the hit did not serve") };
+    let PreviewOutcome::Available(hit) = second else { panic!("the hit did not serve") };
+    let cached = hit.cached.expect("the hit came from a row");
+
+    // The load-bearing count. Without it, "the second call returned the same key" would also hold
+    // against a pipeline that re-rendered every time and wrote the same key again — which is a
+    // cache that costs a render and provides nothing.
+    assert_eq!(renders.load(Ordering::Relaxed), 1, "the cache hit re-rendered");
+    assert_eq!(sink.written(), vec![generated.object_key.clone()], "one artefact, written once");
+    assert_eq!(hit.bytes, vec![0x89, b'P', b'N', b'G'], "the hit served the artefact's bytes");
 
     assert_eq!(cached.object_key, generated.object_key);
     assert_eq!(cached.generator_version, "preview/1.0");
@@ -185,6 +252,7 @@ async fn a_row_from_another_generator_is_a_miss() {
         repo::readable_version(&mut tx, alpha, version).await.expect("query").expect("readable");
 
     service("preview/1.0")
+        .0
         .base_rendition(&mut tx, alpha, &readable, RenditionProfile::Thumb, now)
         .await
         .expect("generate under 1.0");
@@ -211,6 +279,7 @@ async fn a_row_from_another_generator_is_a_miss() {
     // And generating under 1.1 replaces rather than accumulates: the primary key does not carry
     // the generator, so there is exactly one row per (version, profile).
     service("preview/1.1")
+        .0
         .base_rendition(&mut tx, alpha, &readable, RenditionProfile::Thumb, now)
         .await
         .expect("generate under 1.1");
@@ -327,8 +396,9 @@ async fn an_oversized_version_is_refused_without_a_storage_read() {
 
     // The row says 4 KiB; the budget allows 1 KiB.
     let service = RenditionService::new(
-        Always(GeneratorVersion::new("preview/1.0")),
+        Always::new("preview/1.0"),
         NeverRead,
+        Keeps::default(),
         RenderBudget { max_input_bytes: 1024, ..RenderBudget::DEFAULT },
     );
 

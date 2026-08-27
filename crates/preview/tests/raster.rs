@@ -361,11 +361,11 @@ async fn a_format_this_build_does_not_decode_is_refused_as_unsupported() {
 
 #[tokio::test]
 async fn a_profile_this_renderer_does_not_serve_is_refused_without_a_parse() {
-    for profile in [
-        RenditionProfile::PagePng2x,
-        RenditionProfile::PdfSanitized,
-        RenditionProfile::HtmlSanitized,
-    ] {
+    // The document profiles, which need D17's out-of-process worker. `PagePng2x` left this list
+    // with `ENC-800` — see `a_high_density_page_is_served_at_the_source_s_own_resolution` for what
+    // it does instead, which is the control that keeps this assertion from being about a renderer
+    // that refuses everything.
+    for profile in [RenditionProfile::PdfSanitized, RenditionProfile::HtmlSanitized] {
         assert!(!RasterRenderer.supports(profile), "`{profile}` was claimed");
         assert_eq!(
             render(profile, "image/png", LANDSCAPE_PNG).await.refusal(),
@@ -373,6 +373,26 @@ async fn a_profile_this_renderer_does_not_serve_is_refused_without_a_parse() {
             "`{profile}` reached a decoder"
         );
     }
+}
+
+/// `ENC-800`: the 2x profile renders, and renders the source's own pixels rather than more of them.
+///
+/// The reversal it records is only safe because of the second assertion. If 2x ever enlarged, the
+/// `ENC-146a` objection this test's existence overrules — double the bytes for interpolation —
+/// would be correct again.
+#[tokio::test]
+async fn a_high_density_page_is_served_at_the_source_s_own_resolution() {
+    // 2000×1200, which is inside the 3200 px box: served at its own size, not stretched up to it.
+    let two_x = rendered(render(RenditionProfile::PagePng2x, "image/png", LANDSCAPE_PNG).await);
+    let (width, height, _depth, _colour) = ihdr(&two_x.bytes);
+    assert_eq!((width, height), (2_000, 1_200));
+    assert_eq!(two_x.media_type, "image/png");
+
+    // And the nominal profile of the same source *is* bounded, so the assertion above is about the
+    // 2x box being larger rather than about `fit_within` never doing anything.
+    let one_x = rendered(render(RenditionProfile::PagePng1x, "image/png", LANDSCAPE_PNG).await);
+    let (width, height, _depth, _colour) = ihdr(&one_x.bytes);
+    assert_eq!((width, height), (1_600, 960));
 }
 
 // ---------------------------------------------------------------------------------------------

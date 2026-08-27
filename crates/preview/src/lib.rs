@@ -34,24 +34,34 @@
 //!
 //! # What renders today
 //!
-//! [`RasterRenderer`] — PNG, JPEG and WebP sources, producing the `thumb` and `page-png-1x`
-//! profiles. It runs in process on a blocking thread rather than in D17's sandboxed worker, which
-//! is why its scope stops where it does: a decoder that inspects a header before allocating can be
-//! bounded from here, and a document parser cannot. See [`raster`].
+//! [`RasterRenderer`] — PNG, JPEG and WebP sources, producing the `thumb`, `page-png-1x` and
+//! `page-png-2x` profiles. It runs in process on a blocking thread rather than in D17's sandboxed
+//! worker, which is why its scope stops where it does: a decoder that inspects a header before
+//! allocating can be bounded from here, and a document parser cannot. See [`raster`].
+//!
+//! # The composition a deployment runs (`ENC-798`)
+//!
+//! ```text
+//! RenditionService<RasterRenderer, BlobSource, NoRenditionSink>
+//!                  └ bounded ────┘ └ read ───┘ └ write ───────┘
+//! ```
+//!
+//! [`BlobSource`] is the only holder of a `BlobStore` on the delivery path, and it has one method
+//! that reads one key it was handed. [`NoRenditionSink`] keeps nothing, so every request renders —
+//! see its documentation for why that is what `enclave_storage`'s seven-member trait can honestly
+//! support, and `ENC-802` for the verb that would change it.
 //!
 //! # What is deliberately not here yet
 //!
 //! **No document formats.** PDF and OOXML need the out-of-process worker of
 //! `plans/M2-ACCESS-DELIVERY.md` D17, with the process limits that make a memory bound real, so
-//! `pdf-sanitized`, `html-sanitized` and `page-png-2x` are still answered by [`NoRenderer`]. That is
-//! the deny-by-default shape `crates/core`'s policy stages use: a deployment with no worker for a
-//! format refuses that preview rather than falling through to something that serves originals.
-//!
-//! **No API surface** (`ENC-148`). `crates/api/src/preview.rs` still returns `501`, and it should
-//! keep doing so until it is wired to this pipeline — the shortcut of streaming originals in the
-//! meantime would collapse `preview` and `download` into one permission on exactly the path where
-//! the collapse is least visible.
+//! `pdf-sanitized` and `html-sanitized` are still answered by [`NoRenderer`]. That is the
+//! deny-by-default shape `crates/core`'s policy stages use: a deployment with no worker for a
+//! format refuses that preview rather than falling through to something that serves originals. A
+//! `.pdf` asked for as a thumbnail is refused for the same reason one layer down — the sniffer's
+//! allowlist has three entries and none of them is a document.
 
+pub mod blob;
 pub mod budget;
 pub mod composite;
 pub mod error;
@@ -62,14 +72,16 @@ pub mod repo;
 pub mod service;
 pub mod watermark;
 
+pub use blob::BlobSource;
 pub use budget::{Refusal, RenderBudget};
 pub use composite::{composite as composite_watermark, CompositeRefusal};
 pub use error::{PreviewError, Result};
-pub use model::{GeneratorVersion, Rendition, RenditionKey, RenditionProfile};
+pub use model::{GeneratorVersion, Rendition, RenditionKey, RenditionObject, RenditionProfile};
 pub use raster::RasterRenderer;
 pub use render::{Bounded, NoRenderer, RenderOutcome, RenderRequest, RenderedArtifact, Renderer};
 pub use repo::ReadableVersion;
 pub use service::{
-    Delivery, PreviewOutcome, PreviewPipeline, RenditionService, SourceReader, UnconfiguredPipeline,
+    BaseRendition, Delivery, Kept, NoRenditionSink, PreviewOutcome, PreviewPipeline,
+    RenditionService, RenditionSink, SourceReader, UnconfiguredPipeline,
 };
 pub use watermark::{compose, escape_text, WatermarkFacts, WatermarkStyle, Watermarked};
