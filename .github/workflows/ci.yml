@@ -668,6 +668,23 @@ jobs:
           --health-timeout 5s
           --health-retries 10
 
+      minio:
+        image: bitnami/minio:latest
+        env:
+          MINIO_ROOT_USER: enclave
+          MINIO_ROOT_PASSWORD: enclave-dev-secret
+          # The bucket `storage.s3.bucket` names. Created by the image at start-up, because
+          # `connect_and_verify` refuses a bucket that does not exist and would take the whole job
+          # down with an error about credentials rather than about a missing bucket.
+          MINIO_DEFAULT_BUCKETS: enclave-content
+        ports:
+          - 9000:9000
+        options: >-
+          --health-cmd "curl -sf http://localhost:9000/minio/health/live"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
     env:
       DATABASE_URL: postgres://enclave:enclave@localhost:5432/enclave
 
@@ -717,9 +734,18 @@ jobs:
     # backend that nothing could reach, and the whole suite was green throughout. See
     # `crates/api/tests/reachability.rs` and `plans/M5A-API-COMPLETION.md` step 2.
     #
-    # PostgreSQL and nothing else. The test starts `enclave-api`, which contacts neither Redis nor
-    # NATS nor object storage — the environment variables it needs exist because the configuration
-    # *references* them, and the test supplies its own.
+    # PostgreSQL **and object storage**. The comment here used to say "PostgreSQL and nothing else …
+    # contacts neither Redis nor NATS nor object storage", which was true when it was written and
+    # stopped being true when `ENC-770` made `main.rs` compose the real store: the binary now runs
+    # `connect_and_verify` against `storage.s3` at start-up and exits if the bucket is unreachable.
+    #
+    # So this job began failing before a single route was probed — the child process was dead, and
+    # the failure read as "every route is unreachable" rather than as "the server did not boot".
+    # That is the shape this whole job exists to catch, arriving in the job itself: a comment
+    # describing what the binary *used* to need, and nobody re-reading it when the binary changed.
+    #
+    # Redis and NATS still are not contacted; their variables exist only because the configuration
+    # references them.
     services:
       postgres:
         image: postgres:16
@@ -739,6 +765,11 @@ jobs:
       # The harness creates a throwaway database per test binary from this one, so it must point at
       # a database whose role may CREATE DATABASE.
       DATABASE_URL: postgres://enclave:enclave@localhost:5432/enclave
+      # `reachability.rs` passes these through to the child with `inherited(…)` rather than writing
+      # them into the generated `enclave.yaml`, because rule 11 refuses a literal credential in
+      # configuration and the test would be exempting itself from a gate it is meant to run under.
+      S3_ACCESS_KEY_ID: enclave
+      S3_SECRET_ACCESS_KEY: enclave-dev-secret
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
       CARGO_PROFILE_TEST_DEBUG: line-tables-only
 
