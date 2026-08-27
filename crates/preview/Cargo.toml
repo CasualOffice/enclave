@@ -22,6 +22,9 @@ ab_glyph    = { workspace = true }
 image       = { workspace = true }
 sqlx        = { workspace = true }
 thiserror   = { workspace = true }
+# One line, in `blob.rs`: an object that outgrew the budget between its row being written and its
+# bytes being read is worth knowing about, and it is not the caller's fault.
+tracing     = { workspace = true }
 # `Bounded` enforces the wall clock with `tokio::time::timeout`; see `render.rs` for why that bound
 # is the pipeline's promise to its caller rather than a promise about the parser.
 tokio       = { workspace = true }
@@ -29,6 +32,11 @@ uuid        = { workspace = true }
 
 [dev-dependencies]
 enclave-testing = { workspace = true }
+# Both are here to *build* an `enclave_storage::ByteStream` — the store fake in `blob.rs`'s tests
+# is the only thing in the workspace that constructs one rather than collecting one.
+bytes           = { workspace = true }
+futures         = { workspace = true }
+url             = { workspace = true }
 # Used in `tests/raster.rs` to read a rendition's *pixels* back, for the one assertion that a
 # hand-parsed header cannot make: that the image is the source's and not a correctly-sized blank.
 # The header assertions deliberately do not go through it — see that file's module documentation.

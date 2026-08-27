@@ -36,14 +36,45 @@ async fn object_store(
     Ok(Some(store))
 }
 
-/// The rendition pipeline, which this binary cannot yet build.
+/// The rendition pipeline, over the store this deployment configured (`ENC-798`).
 ///
-/// `UnconfiguredPipeline` is the only `PreviewPipeline` in the workspace, so preview, thumbnail and
-/// export refuse whatever `storage.s3` says. Named as a function rather than inlined so the day a
-/// real pipeline exists there is one place to change, and so the asymmetry is visible: a configured
-/// bucket now serves downloads and still refuses renditions.
-fn unconfigured_preview() -> Arc<dyn enclave_preview::PreviewPipeline> {
-    Arc::new(enclave_preview::UnconfiguredPipeline)
+/// This function used to return `UnconfiguredPipeline` — the only `PreviewPipeline` in the
+/// workspace — so `preview`, `thumbnail` and `export` refused whatever `storage.s3` said. That is
+/// `ENC-770`'s shape one crate along: the route *takes* its dependency, so the gap would be a
+/// compile error, but the value passed was a constant rather than a build. A dependency that is
+/// always absent is not a dependency; it is a stub with a type signature.
+///
+/// The three parts come from `crates/preview`, and each is the narrow one:
+///
+/// * `RasterRenderer` decodes PNG, JPEG and WebP into `thumb`, `page-png-1x` and `page-png-2x`, on
+///   a blocking thread, inside `RenderBudget::DEFAULT`. Every other media type is refused — the
+///   document parsers belong in `plans/M2-ACCESS-DELIVERY.md` D17's out-of-process worker, and a
+///   half-built one would report "preview available" for a format whose sanitizer nobody has
+///   written.
+/// * `BlobSource` is the only holder of a `BlobStore` on the rendition path, and it reads one key
+///   it is handed by a `ReadableVersion`. The handlers hold none: they cannot name an object key,
+///   so they cannot ask for an original (`CLAUDE.md` rule 6).
+/// * `NoRenditionSink` keeps nothing, so every request renders again. Said out loud rather than
+///   left to be discovered, because a deployment that re-renders each preview and one serving a
+///   cache look identical from the outside until the load arrives (`ENC-802`).
+fn rendition_pipeline(
+    store: &Arc<dyn enclave_storage::BlobStore>,
+) -> Arc<dyn enclave_preview::PreviewPipeline> {
+    let budget = enclave_preview::RenderBudget::DEFAULT;
+    tracing::info!(
+        wall_clock_secs = budget.wall_clock.as_secs(),
+        max_input_bytes = budget.max_input_bytes,
+        max_output_bytes = budget.max_output_bytes,
+        "renditions are generated in process for image/png, image/jpeg and image/webp; every other \
+         media type is refused, and nothing is cached — `BlobStore` has no server-side write verb, \
+         so each request renders again (ENC-802)"
+    );
+    Arc::new(enclave_preview::RenditionService::new(
+        enclave_preview::RasterRenderer,
+        enclave_preview::BlobSource::new(Arc::clone(store), budget),
+        enclave_preview::NoRenditionSink,
+        budget,
+    ))
 }
 
 /// What a privileged administrative action demands, from `security.mfa`.
@@ -378,7 +409,14 @@ async fn main() -> anyhow::Result<()> {
     // start-up rather than at first use, because an unreachable bucket discovered on a user's
     // download is a bucket nobody notices is unreachable.
     let delivery = match object_store(config, &registry).await? {
-        Some(store) => Delivery { store: Arc::new(store), preview: unconfigured_preview() },
+        Some(store) => {
+            // One `Arc`, two capabilities: the download path gets the store, and the rendition
+            // pipeline gets a `BlobSource` wrapped around the same handle. Sharing it is the point
+            // — a second store built from the same section is a second place for the two to come
+            // to disagree about which bucket the product is using.
+            let store: Arc<dyn enclave_storage::BlobStore> = Arc::new(store);
+            Delivery { preview: rendition_pipeline(&store), store }
+        }
         None => Delivery::unconfigured(),
     };
     for capability in delivery.unconfigured_capabilities() {

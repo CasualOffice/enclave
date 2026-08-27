@@ -184,6 +184,9 @@ image        = { version = "0.25", default-features = false, features = ["png", 
 # misc
 async-trait  = "0.1"
 futures      = "0.3"
+# The chunk type `enclave_storage::ByteStream` yields. Needed by anything that *builds* one — a
+# store fake in a test — rather than by callers, who only collect.
+bytes        = "1"
 # 0.21 made serde opt-in; 0.20 enabled it by default. TrustedProxy.cidr is deserialised
 # straight from configuration, so the feature is load-bearing rather than convenience.
 ipnetwork    = { version = "0.21", features = ["serde"] }
