@@ -238,7 +238,16 @@ jobs:
             quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z server /data
           for _ in $(seq 1 60); do
             if curl -sf http://localhost:9000/minio/health/live >/dev/null; then
-              echo "MinIO is ready"; exit 0
+              # The bucket has to exist before anything starts `enclave-api`, and the reachability
+              # test does exactly that inside this job. `connect_and_verify` refuses a missing
+              # bucket at start-up, so without this the binary exits before binding and the test
+              # reports "never answered /health/live" — a message about the port, for a fault in
+              # the bucket. The BlobStore tests create their own buckets and did not need it.
+              docker run --rm --network host \
+                -e MC_HOST_local=http://enclave:enclave-dev-secret@localhost:9000 \
+                quay.io/minio/mc:RELEASE.2025-04-16T18-13-26Z \
+                mb --ignore-existing local/enclave-content
+              echo "MinIO is ready and enclave-content exists"; exit 0
             fi
             sleep 2
           done
