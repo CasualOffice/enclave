@@ -183,7 +183,11 @@ impl Item {
     /// alone would have to invent a capabilities object, and the only value available to invent is
     /// the default — nine `false`s, indistinguishable on the wire from a caller who may do nothing
     /// with the file. A row can therefore only be built by someone holding a resolved answer.
-    fn new(node: &FileNode, capabilities: Capabilities, obligations: WireObligations) -> Self {
+    pub(crate) fn new(
+        node: &FileNode,
+        capabilities: Capabilities,
+        obligations: WireObligations,
+    ) -> Self {
         Self {
             id: node.id.to_string(),
             node_type: node.node_type.as_str(),
@@ -251,7 +255,7 @@ struct CurrentVersion {
 /// implementation, and why a row of a listing and a file response cannot answer differently.
 #[derive(Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct Capabilities {
+pub(crate) struct Capabilities {
     /// True by construction: the caller could not be reading this without it.
     metadata_read: bool,
     preview: bool,
@@ -268,7 +272,7 @@ struct Capabilities {
 /// The obligations the caller must satisfy, rendered as `docs/05-API.md §7` shapes them.
 #[derive(Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct WireObligations {
+pub(crate) struct WireObligations {
     /// Every rendition of this resource must be watermarked before it is shown.
     watermark: bool,
     /// The actions that cannot proceed without a written justification, by capability name.
@@ -795,7 +799,7 @@ const CAPABILITY_ACTIONS: &[(&str, FileAction)] = &[
 /// form ends up answering something the batch form does not. Here that would be a `GET /files/{id}`
 /// that offers an action the row for the same file in the same caller's listing does not — a UI
 /// that changes its mind about what a user may do because they clicked into the item.
-async fn capabilities_for(
+pub(crate) async fn capabilities_for(
     authorization: &dyn AuthorizationService,
     ctx: &RequestContext,
     resource: &ResourceRef,

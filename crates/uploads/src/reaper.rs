@@ -36,7 +36,7 @@
 //! bucket lifecycle rule `AbortIncompleteMultipartUpload` (`docs/08-BYO-INFRA.md §5`); see this
 //! crate's `integrator_actions` note.
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use enclave_core::TenantId;
 use enclave_storage::BlobStore;
 use sqlx::PgConnection;
@@ -137,6 +137,146 @@ pub async fn reap_expired(
     Ok(report)
 }
 
+/// What one reclamation pass did, and what it left behind.
+///
+/// `ENC-787`'s row asks that a repair pass *"report what it found rather than delete quietly"*, and
+/// this is that report. [`ReclaimReport::found`] is the number that matters to an operator: a repair
+/// that silently collected nothing and a repair that was never run look identical without it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[must_use = "the counts are the point of a repair pass; a discarded report is a silent delete"]
+pub struct ReclaimReport {
+    /// Stranded sessions this pass claimed — `SCANNING`, idle, with no version behind them.
+    pub found: usize,
+    /// Sessions whose staged object was deleted and whose row is now `EXPIRED`.
+    pub reclaimed: usize,
+    /// Sessions left for the next pass because the object store or the row refused.
+    ///
+    /// Not an error, for [`ReapReport::deferred`]'s reason. A number that stays high across passes
+    /// is the signal.
+    pub deferred: usize,
+}
+
+impl ReclaimReport {
+    /// Whether this pass filled its batch, and should therefore be run again immediately.
+    #[must_use]
+    pub const fn is_full(&self, limit: usize) -> bool {
+        self.found >= limit
+    }
+}
+
+/// Reclaims `SCANNING` sessions that have no version behind them — `ENC-787`.
+///
+/// # What this is for, and why the ordinary reaper cannot do it
+///
+/// [`reap_expired`] claims `CREATED` and `UPLOADING` only, and `UploadState::Scanning` answers
+/// `false` to `holds_staged_bytes` — correctly, because for a session that *did* commit a version
+/// the staged key **is** the version's `object_key`, and releasing it would delete a live file's
+/// content. So a session stranded in `SCANNING` before `ENC-691` closed the completion path is
+/// collected by nothing: no antivirus pass will touch it (that pass queues on
+/// `file_versions.av_status`, and there is no version), no reaper will release its bytes, and no
+/// quota counts them. A charge nobody can spend and an object nobody will read, indefinitely.
+///
+/// # Telling a stranded session from one that is legitimately mid-flight
+///
+/// Not by state, which is identical, and not by timing alone. The distinguishing fact lives in
+/// another table and is asserted inside the claim itself — see `UploadRepository::claim_stranded`
+/// for both predicates and why each is applied — and it is carried out of the claim in the type:
+/// `StrandedSession` has one constructor, that statement, and it is the only value from which the
+/// `SCANNING` → `EXPIRED` transition can be reached. A caller cannot get here holding a session
+/// whose version was not checked.
+///
+/// `idle_for` is the grace period: a session is a candidate only once it has been claiming to scan
+/// for at least this long. It is the caller's to choose because the honest value differs between a
+/// one-off repair of a historical backlog and a standing sweep.
+///
+/// # Order of operations
+///
+/// [`reap_expired`]'s, unchanged and for its reason: **delete the bytes, then mark the row**. A row
+/// marked `EXPIRED` before a successful delete is never claimed again — the statement's predicate is
+/// `state = 'SCANNING'` — and its object would be orphaned permanently. In the other order the worst
+/// case is a delete that runs twice, which `BlobStore::delete` is idempotent for.
+///
+/// # Errors
+///
+/// Database failures from the claim itself. Failures on an *individual* session are counted in
+/// [`ReclaimReport::deferred`] rather than propagated, so one unreachable object does not strand the
+/// rest of the batch behind it.
+pub async fn reclaim_stranded(
+    conn: &mut PgConnection,
+    blob: &dyn BlobStore,
+    tenant: TenantId,
+    now: DateTime<Utc>,
+    idle_for: Duration,
+    limit: usize,
+) -> Result<ReclaimReport> {
+    let idle_since = now - idle_for;
+    let claimed = UploadRepository::claim_stranded(
+        conn,
+        tenant,
+        idle_since,
+        i64::try_from(limit).unwrap_or(i64::MAX),
+    )
+    .await?;
+
+    let mut report = ReclaimReport { found: claimed.len(), reclaimed: 0, deferred: 0 };
+
+    for session in claimed {
+        let id = session.record().id;
+        let key = session.record().staged.as_str().to_owned();
+
+        // Reported before anything is destroyed, and at `info` rather than `debug`: the row's own
+        // requirement is that this pass say what it found, and a line written only on success is a
+        // line missing from exactly the run an operator needs to read. The key is safe to log — it
+        // is UUIDs and carries no file name (`enclave_storage::key`).
+        tracing::info!(
+            tenant_id = %tenant,
+            upload_session_id = %id,
+            object_key = %key,
+            handed_off_at = %session.record().updated_at,
+            "reclaiming an upload session stranded in SCANNING with no version behind it"
+        );
+
+        if let Err(error) = blob.delete(&key).await {
+            tracing::warn!(
+                tenant_id = %tenant,
+                upload_session_id = %id,
+                object_key = %key,
+                error = %error,
+                "could not release a stranded upload's staged bytes; leaving it for the next pass"
+            );
+            report.deferred += 1;
+            continue;
+        }
+
+        match UploadRepository::apply(conn, session.expire(now)).await {
+            Ok(_) => report.reclaimed += 1,
+            Err(error) => {
+                // The bytes are gone and the row is not `EXPIRED`. Harmless: `delete` is idempotent
+                // and the next pass claims the row again. The interesting case is
+                // `ConcurrentTransition`, which means the session moved on between the claim and
+                // the write — the compare-and-swap refusing to overwrite somebody else's work.
+                tracing::warn!(
+                    tenant_id = %tenant,
+                    upload_session_id = %id,
+                    error = %error,
+                    "released a stranded upload's bytes but could not mark the session"
+                );
+                report.deferred += 1;
+            }
+        }
+    }
+
+    tracing::info!(
+        tenant_id = %tenant,
+        found = report.found,
+        reclaimed = report.reclaimed,
+        deferred = report.deferred,
+        "stranded upload sessions reclaimed"
+    );
+
+    Ok(report)
+}
+
 #[cfg(test)]
 mod tests {
     // Assertions are the point of a test; the workspace warns on these in non-test code.
@@ -164,5 +304,41 @@ mod tests {
             delete < mark,
             "the staged bytes must be released before the row is marked EXPIRED"
         );
+    }
+
+    #[test]
+    fn a_full_reclaim_batch_asks_to_be_run_again() {
+        assert!(ReclaimReport { found: 100, reclaimed: 100, deferred: 0 }.is_full(100));
+        assert!(!ReclaimReport { found: 3, reclaimed: 3, deferred: 0 }.is_full(100));
+        assert!(!ReclaimReport::default().is_full(1));
+    }
+
+    /// The repair pass has the same ordering as the reaper, asserted the same way.
+    ///
+    /// It matters more here, not less: `reclaim_stranded`'s claim is keyed on `state = 'SCANNING'`,
+    /// so a row marked `EXPIRED` before a successful delete is *permanently* invisible to this pass
+    /// — there is no later predicate that would find it again — and its object is orphaned for good.
+    #[test]
+    fn the_reclaim_deletes_before_it_marks_too() {
+        let source = include_str!("reaper.rs");
+        let body =
+            source.split("pub async fn reclaim_stranded(").nth(1).expect("the function exists");
+        let delete = body.find("blob.delete(").expect("it deletes");
+        let mark = body.find("session.expire(").expect("it marks the row");
+        assert!(delete < mark, "a stranded session's bytes go before its row is marked EXPIRED");
+    }
+
+    /// The pass reports what it found **before** it destroys anything.
+    ///
+    /// `ENC-787`'s row asks for a repair that reports rather than deletes quietly, and a line
+    /// written after the delete is the line missing from the run where the delete is what failed.
+    #[test]
+    fn every_reclaimed_session_is_named_in_the_log_before_its_bytes_go() {
+        let source = include_str!("reaper.rs");
+        let body =
+            source.split("pub async fn reclaim_stranded(").nth(1).expect("the function exists");
+        let announced = body.find("stranded in SCANNING with no version").expect("it announces");
+        let delete = body.find("blob.delete(").expect("it deletes");
+        assert!(announced < delete, "the session is named before anything is destroyed");
     }
 }

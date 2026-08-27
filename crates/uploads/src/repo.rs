@@ -34,8 +34,8 @@ use sqlx::PgConnection;
 use crate::error::{Result, UploadError};
 use crate::id::UploadSessionId;
 use crate::row::session_from_row;
-use crate::session::{LoadedSession, Resumable, Session};
-use crate::state::{Created, Phase, Transition};
+use crate::session::{LoadedSession, Resumable, Session, StrandedSession};
+use crate::state::{Created, Phase, Transition, UploadState};
 
 /// Reads and writes upload sessions.
 #[derive(Debug, Clone, Copy, Default)]
@@ -167,6 +167,66 @@ impl UploadRepository {
             .map(|row| session_from_row(row).and_then(LoadedSession::into_resumable))
             .collect()
     }
+
+    /// Claims `SCANNING` sessions that have **no version behind them** — `ENC-787`'s repair.
+    ///
+    /// # What makes a session stranded, and how this statement knows
+    ///
+    /// Two independent predicates, and each would be sufficient for a different reason. They are
+    /// both applied because they fail in opposite directions and a repair pass that deletes object
+    /// bytes should not rest on one argument.
+    ///
+    /// **`NOT EXISTS` a `file_versions` row naming the staged key.** This is the load-bearing one.
+    /// Since `ENC-691` the version is committed in the *same transaction* that writes `SCANNING`
+    /// (`routes::uploads::complete` → `promote`), so under MVCC a reader sees both or neither: a
+    /// committed `SCANNING` row with no version cannot be a completion in flight, because the
+    /// transaction that would have made the version has already ended. It is also the predicate that
+    /// makes the delete safe at all — the staged key *is* the version's `object_key`, so claiming a
+    /// session that did commit would destroy a live file's only copy. See
+    /// [`StrandedSession`](crate::StrandedSession).
+    ///
+    /// **`updated_at <= $2`, a caller-supplied cutoff.** `updated_at` is rewritten on every state
+    /// change (`Session::advance`), so for a `SCANNING` row it is the instant of hand-off, and this
+    /// clause reads "has been claiming to scan since before the cutoff". It is not redundant: it is
+    /// what still holds if some future path ever writes `SCANNING` and commits its version in a
+    /// *second* transaction, which the argument above would not survive. `expires_at` is deliberately
+    /// **not** used here — that is the upload TTL, a property of when the session was created rather
+    /// than of how long it has been claiming to scan, and a session handed off one minute before its
+    /// TTL ran out would be collected a minute later.
+    ///
+    /// `FOR UPDATE SKIP LOCKED` for `claim_expired`'s reasons, and one more that matters here: a
+    /// session another transaction is mid-completion on is skipped rather than waited for.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures, and [`UploadError::MalformedRow`] if a claimed row will not decode.
+    pub async fn claim_stranded(
+        conn: &mut PgConnection,
+        tenant: TenantId,
+        idle_since: DateTime<Utc>,
+        limit: i64,
+    ) -> Result<Vec<StrandedSession>> {
+        let rows = sqlx::query(SELECT_STRANDED)
+            .bind(sql(tenant))
+            .bind(idle_since)
+            .bind(limit)
+            .fetch_all(&mut *conn)
+            .await?;
+
+        rows.iter()
+            .map(|row| {
+                // The statement's own `state = 'SCANNING'` guarantees the decode lands in
+                // `Settled`; a row that decoded to anything else is schema drift, and refusing it is
+                // safer than expiring a session whose state this crate has misread.
+                match session_from_row(row)? {
+                    LoadedSession::Settled(settled) if settled.state() == UploadState::Scanning => {
+                        Ok(StrandedSession::new(settled.record().clone()))
+                    }
+                    other => Err(UploadError::NotResumable { state: other.state() }),
+                }
+            })
+            .collect()
+    }
 }
 
 /// The insert. `state` is the literal `'CREATED'` rather than a bind: a session's first state is a
@@ -207,6 +267,27 @@ const SELECT_EXPIRED: &str = "SELECT id, tenant_id, library_id, parent_id, file_
      LIMIT $3 \
      FOR UPDATE SKIP LOCKED";
 
+/// `SCANNING` sessions with no version behind them, idle since the cutoff.
+///
+/// The `NOT EXISTS` is correlated on `object_key = s.staged_key` **and** on `tenant_id`, which is not
+/// redundant with row-level security: `docs/04-DATA-MODEL.md §3` makes the application predicate and
+/// RLS two independent layers, and a subquery that matched a key across tenants would be the one
+/// place a stranded-session sweep could be talked out of a delete by another tenant's row — or into
+/// one. Both directions are bad and one predicate closes both.
+const SELECT_STRANDED: &str = "SELECT s.id, s.tenant_id, s.library_id, s.parent_id, s.file_id, \
+     s.name, s.declared_size, s.declared_mime, s.staged_key, s.multipart_id, s.state, \
+     s.bytes_received, s.created_by, s.created_at, s.updated_at, s.expires_at \
+     FROM upload_sessions s \
+     WHERE s.tenant_id = $1 \
+       AND s.state = 'SCANNING' \
+       AND s.updated_at <= $2 \
+       AND NOT EXISTS ( \
+             SELECT 1 FROM file_versions v \
+              WHERE v.tenant_id = s.tenant_id AND v.object_key = s.staged_key) \
+     ORDER BY s.updated_at ASC \
+     LIMIT $3 \
+     FOR UPDATE OF s SKIP LOCKED";
+
 #[cfg(test)]
 mod tests {
     // Assertions are the point of a test; the workspace warns on these in non-test code.
@@ -221,7 +302,7 @@ mod tests {
         // RLS is the other layer and neither is redundant (`docs/04-DATA-MODEL.md §3`). A query
         // that lost this would still be correct today and would stop being correct the moment
         // something ran it on a connection without a tenant context.
-        for query in [SELECT_SESSION, UPDATE_STATE, SELECT_EXPIRED] {
+        for query in [SELECT_SESSION, UPDATE_STATE, SELECT_EXPIRED, SELECT_STRANDED] {
             assert!(query.contains("tenant_id = $1"), "{query}");
         }
         assert!(INSERT_SESSION.contains("(tenant_id, id,"), "tenant_id is the first column");
@@ -247,11 +328,43 @@ mod tests {
         assert!(SELECT_EXPIRED.contains("FOR UPDATE SKIP LOCKED"));
     }
 
+    /// The reclaim's version check is in the **claim**, not in a caller.
+    ///
+    /// `ENC-787`. This is the predicate that stops the repair pass deleting a live file's content:
+    /// since `ENC-691` the staged key *is* the committed version's `object_key`, so a claim that
+    /// matched a session which did commit would hand `reclaim_stranded` an object it then deletes,
+    /// leaving a `file_versions` row pointing at nothing. Asserted against the statement text
+    /// because a check moved out to a caller is a check the next caller can forget — and the whole
+    /// design of `StrandedSession` is that there is no other way in.
+    ///
+    /// The tenant correlation is asserted separately from the key correlation. A subquery joined on
+    /// `object_key` alone would let another tenant's version row veto this tenant's reclaim, and —
+    /// worse in the other direction — would be the one place a sweep reasons about a row row-level
+    /// security was meant to hide from it.
+    #[test]
+    fn the_reclaim_cannot_claim_a_session_that_has_a_version_behind_it() {
+        assert!(SELECT_STRANDED.contains("NOT EXISTS"), "{SELECT_STRANDED}");
+        assert!(SELECT_STRANDED.contains("FROM file_versions v"), "{SELECT_STRANDED}");
+        assert!(SELECT_STRANDED.contains("v.object_key = s.staged_key"), "{SELECT_STRANDED}");
+        assert!(SELECT_STRANDED.contains("v.tenant_id = s.tenant_id"), "{SELECT_STRANDED}");
+
+        // The two guards that make "stranded" mean something, and the lock discipline that keeps
+        // two sweeps from claiming one row.
+        assert!(SELECT_STRANDED.contains("s.state = 'SCANNING'"), "{SELECT_STRANDED}");
+        assert!(SELECT_STRANDED.contains("s.updated_at <= $2"), "{SELECT_STRANDED}");
+        assert!(SELECT_STRANDED.contains("SKIP LOCKED"), "{SELECT_STRANDED}");
+
+        // `expires_at` is deliberately absent: it is the upload TTL, not a measure of how long the
+        // session has been claiming to scan. See `claim_stranded` for why the distinction matters.
+        assert!(!SELECT_STRANDED.contains("expires_at <="), "{SELECT_STRANDED}");
+    }
+
     /// `CLAUDE.md` rule 9 as a property of the SQL, not only of the types: no statement in this
     /// crate mentions a state that implies the content is scanned or readable.
     #[test]
     fn no_statement_can_write_a_post_scan_state() {
-        for query in [INSERT_SESSION, SELECT_SESSION, UPDATE_STATE, SELECT_EXPIRED] {
+        for query in [INSERT_SESSION, SELECT_SESSION, UPDATE_STATE, SELECT_EXPIRED, SELECT_STRANDED]
+        {
             for forbidden in [
                 UploadState::Available.as_str(),
                 UploadState::Processing.as_str(),

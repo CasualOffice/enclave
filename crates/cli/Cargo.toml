@@ -24,6 +24,11 @@ enclave-identity = { workspace = true }
 # against, and the drift would show up as tests that pass while the stack a
 # contributor is looking at is different (plans/M0-FOUNDATIONS.md D7).
 enclave-testing = { workspace = true }
+# `reclaim-uploads` runs `enclave_uploads::reclaim_stranded` — the same pass the tests exercise,
+# rather than a second implementation of "which session is stranded" that could disagree with it.
+# The store is needed because the repair deletes staged objects; see `reclaim.rs`.
+enclave-uploads = { workspace = true }
+enclave-storage = { workspace = true }
 anyhow       = { workspace = true }
 chrono       = { workspace = true }
 # Not yet in [workspace.dependencies]; see the ENC-115 report — the integrator

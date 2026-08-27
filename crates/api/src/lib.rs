@@ -131,7 +131,13 @@ pub fn router(state: ApiState, delivery: Delivery) -> Router {
         .route("/api/v1/workspaces/{id}/libraries", get(routes::libraries::list_in_workspace))
         .route("/api/v1/libraries/{id}", get(routes::libraries::read))
         // Files and folders (docs/05-API.md §7).
+        // Files and folders (docs/05-API.md §7). `POST /libraries/{id}/folders` is the document's
+        // own row 175 and the only write in that table anything serves: `FileRepository::create_folder`
+        // had no caller in any binary, so `POST /uploads`' `parentId` named a folder no client could
+        // have obtained and every upload landed at a library root (`ENC-788`). Registered beside the
+        // browse it makes non-trivial, and before `/files/{id}`, in the document's order.
         .route("/api/v1/libraries/{id}/items", get(content::browse))
+        .route("/api/v1/libraries/{id}/folders", post(routes::folders::create))
         .route("/api/v1/files/{id}", get(content::file_metadata))
         .route("/api/v1/files/{id}/versions", get(content::file_versions))
         // Upload (docs/05-API.md §8). The bytes never pass through here: `POST /uploads` decides,

@@ -30,7 +30,7 @@ use std::sync::Mutex;
 
 use async_trait::async_trait;
 use chrono::{Duration, Utc};
-use enclave_core::{FileId, LibraryId, TenantId, UserId, WorkspaceId};
+use enclave_core::{FileId, LibraryId, TenantId, UserId, Uuid, WorkspaceId};
 use enclave_db::{configure_storage_quota, sql, DbPool, Enforcement, TenantScoped};
 use enclave_libraries::{ExternalSharing, LibraryRepository, LibrarySettings, VersioningMode};
 use enclave_storage::{
@@ -1313,6 +1313,314 @@ async fn monitor_and_unmetered_tenants_are_never_refused_at_creation() {
     tx.commit().await.expect("commit");
 
     assert_eq!(store.created().len(), 2, "one refusal, two issues");
+
+    pool.close().await;
+    drop(db);
+}
+
+// ---------------------------------------------------------------------------------------------
+// `ENC-787` — reclaiming sessions stranded in `SCANNING`
+// ---------------------------------------------------------------------------------------------
+
+/// Drives one session to `SCANNING` and returns its id and staged key.
+///
+/// Goes through `UploadService::complete` rather than writing `'SCANNING'` into the column, because
+/// the property under test is about sessions the real completion path produced. A fixture written by
+/// hand could carry a state combination the machine cannot reach, and a reclaim tested only against
+/// those would be a reclaim tested against nothing that exists.
+async fn scanning_session(
+    tx: &mut TenantScoped,
+    store: &RecordingStore,
+    tenant: TenantId,
+    owner: UserId,
+    library_id: LibraryId,
+    name: &str,
+) -> (enclave_uploads::UploadSessionId, String) {
+    let issued = UploadService::create(
+        tx,
+        store,
+        tenant,
+        &upload(library_id, owner, name, 64),
+        &UploadLimits::unrestricted_up_to(1024),
+        Duration::hours(24),
+        Utc::now(),
+    )
+    .await
+    .expect("create");
+    let id = issued.session.id();
+    let key = issued.session.record().staged.as_str().to_owned();
+
+    let completion =
+        UploadService::complete(tx, store, tenant, id, &reported(64), Vec::new(), Utc::now())
+            .await
+            .expect("complete");
+    assert!(matches!(completion, Completion::HandedOff { .. }), "the session must reach SCANNING");
+    (id, key)
+}
+
+/// Writes the `files` and `file_versions` rows a *correctly completed* upload would have left.
+///
+/// This is the whole point of the control: `ENC-691` makes the staged key the version's `object_key`
+/// verbatim, so this row is what stands between the reclaim and a live file's only copy of its
+/// bytes.
+async fn commit_version_for(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    workspace: WorkspaceId,
+    library_id: LibraryId,
+    owner: UserId,
+    object_key: &str,
+    name: &str,
+) {
+    let file = FileId::new_v7();
+    sqlx::query(
+        "INSERT INTO files
+           (id, tenant_id, workspace_id, library_id, parent_id, node_type, name, normalized_name,
+            mime_type, status, created_by, modified_by, created_at, modified_at)
+         VALUES ($1, $2, $3, $4, NULL, 'FILE', $5, $6, 'application/pdf', 'PROCESSING', $7, $7,
+                 $8, $8)",
+    )
+    .bind(sql(file))
+    .bind(sql(tenant))
+    .bind(sql(workspace))
+    .bind(sql(library_id))
+    .bind(name)
+    .bind(name.to_lowercase())
+    .bind(sql(owner))
+    .bind(Utc::now())
+    .execute(&mut *conn)
+    .await
+    .expect("insert the file row");
+
+    sqlx::query(
+        "INSERT INTO file_versions
+           (id, tenant_id, file_id, object_key, storage_profile_id, size_bytes, checksum_sha256,
+            mime_type, major, minor, status, av_status, created_by, created_at)
+         VALUES ($1, $2, $3, $4, $5, 64, $6, 'application/pdf', 1, 0, 'SCANNING', 'PENDING', $7,
+                 $8)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(sql(tenant))
+    .bind(sql(file))
+    .bind(object_key)
+    .bind(Uuid::nil())
+    .bind(DIGEST_HEX)
+    .bind(sql(owner))
+    .bind(Utc::now())
+    .execute(&mut *conn)
+    .await
+    .expect("insert the version row");
+}
+
+/// Ages a session's `updated_at` an hour into the past, so the grace period has passed for it.
+async fn age_one_hour(conn: &mut PgConnection, id: enclave_uploads::UploadSessionId) {
+    sqlx::query("UPDATE upload_sessions SET updated_at = now() - interval '1 hour' WHERE id = $1")
+        .bind(sql(id))
+        .execute(&mut *conn)
+        .await
+        .expect("age the session");
+}
+
+/// The property `ENC-787` exists for, and the controls that make it mean something.
+///
+/// Three `SCANNING` sessions, produced by the same code path, differing only in the two facts the
+/// claim looks at:
+///
+/// * **stranded** — idle, no version behind it. Must be collected.
+/// * **committed** — idle, *with* a version naming its staged key. Must **not** be collected, and
+///   this is the assertion that matters most: the staged key is the version's `object_key`, so
+///   collecting it would delete a live file's only copy while leaving the row pointing at it.
+/// * **fresh** — no version, but handed off within the grace period. Must not be collected, because
+///   a completion that is genuinely in flight looks exactly like a stranded one for a moment.
+///
+/// "No live session is collected" passes for free against a pass that collects nothing, so the
+/// stranded session is the positive control and its `reclaimed: 1` is asserted in the same run — and
+/// the store's delete list is asserted to be *exactly* the stranded key, which is the assertion that
+/// fails if the pass over-collects rather than under-collects.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL and migration 0006 (upload_sessions); CI runs it with --include-ignored"]
+async fn a_stranded_session_is_reclaimed_and_a_committed_one_is_never_touched() {
+    let (db, fixtures, pool) = start().await;
+    let alpha = fixtures.alpha.id;
+    let owner = fixtures.alpha.owner;
+    let store = RecordingStore::default();
+
+    let mut tx = TenantScoped::begin(&pool, alpha).await.expect("begin");
+    let (workspace, library_id) = library(&mut tx, alpha, owner, "contracts", None).await;
+
+    let (stranded_id, stranded_key) =
+        scanning_session(&mut tx, &store, alpha, owner, library_id, "stranded.pdf").await;
+    let (committed_id, committed_key) =
+        scanning_session(&mut tx, &store, alpha, owner, library_id, "committed.pdf").await;
+    let (fresh_id, fresh_key) =
+        scanning_session(&mut tx, &store, alpha, owner, library_id, "fresh.pdf").await;
+
+    commit_version_for(
+        &mut tx,
+        alpha,
+        workspace,
+        library_id,
+        owner,
+        &committed_key,
+        "committed.pdf",
+    )
+    .await;
+    tx.commit().await.expect("commit the fixtures");
+
+    // All three were handed off just now. Age the first two an hour into the past so the grace
+    // period separates them from `fresh`, leaving the *version* as the only difference between
+    // `stranded` and `committed`.
+    let mut conn = db.connect().await.expect("connect");
+    age_one_hour(&mut conn, stranded_id).await;
+    age_one_hour(&mut conn, committed_id).await;
+
+    let mut tx = TenantScoped::begin(&pool, alpha).await.expect("begin");
+    let report = enclave_uploads::reclaim_stranded(
+        &mut tx,
+        &store,
+        alpha,
+        Utc::now(),
+        Duration::minutes(30),
+        100,
+    )
+    .await
+    .expect("reclaim");
+    tx.commit().await.expect("commit the reclaim");
+
+    assert_eq!(
+        (report.found, report.reclaimed, report.deferred),
+        (1, 1, 0),
+        "exactly the stranded session, and it was actually collected"
+    );
+
+    // The delete list is the sharp assertion: it fails if the pass collected too much as well as if
+    // it collected too little.
+    assert_eq!(
+        store.deleted(),
+        vec![stranded_key],
+        "only the stranded session's object may be deleted"
+    );
+    assert!(
+        !store.deleted().contains(&committed_key),
+        "deleting a committed session's object destroys a live file's only copy"
+    );
+    assert!(!store.deleted().contains(&fresh_key), "a session still in flight keeps its bytes");
+
+    let mut conn = db.connect().await.expect("connect");
+    assert_eq!(stored_state(&mut conn, &stranded_id.to_string()).await, "EXPIRED");
+    assert_eq!(
+        stored_state(&mut conn, &committed_id.to_string()).await,
+        "SCANNING",
+        "a session with a version behind it is antivirus's, not the reaper's"
+    );
+    assert_eq!(stored_state(&mut conn, &fresh_id.to_string()).await, "SCANNING");
+
+    pool.close().await;
+    drop(db);
+}
+
+/// A store that refuses the delete leaves the row `SCANNING` for the next pass.
+///
+/// The mirror of [`a_store_that_refuses_a_delete_leaves_the_session_for_the_next_pass`], and it
+/// matters more here: `claim_stranded`'s predicate is `state = 'SCANNING'`, so a row marked
+/// `EXPIRED` before a successful delete is *permanently* invisible to this pass — unlike the
+/// ordinary reaper's rows, there is no broader index predicate that would ever surface it again.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL and migration 0006 (upload_sessions); CI runs it with --include-ignored"]
+async fn a_refused_delete_leaves_a_stranded_session_claimable_again() {
+    let (db, fixtures, pool) = start().await;
+    let alpha = fixtures.alpha.id;
+    let owner = fixtures.alpha.owner;
+    let store = RecordingStore::default();
+
+    let mut tx = TenantScoped::begin(&pool, alpha).await.expect("begin");
+    let (_workspace, library_id) = library(&mut tx, alpha, owner, "contracts", None).await;
+    let (id, _key) =
+        scanning_session(&mut tx, &store, alpha, owner, library_id, "stranded.pdf").await;
+    tx.commit().await.expect("commit");
+
+    let mut conn = db.connect().await.expect("connect");
+    age_one_hour(&mut conn, id).await;
+
+    store.fail_deletes();
+    let mut tx = TenantScoped::begin(&pool, alpha).await.expect("begin");
+    let report = enclave_uploads::reclaim_stranded(
+        &mut tx,
+        &store,
+        alpha,
+        Utc::now(),
+        Duration::minutes(30),
+        100,
+    )
+    .await
+    .expect("reclaim");
+    tx.commit().await.expect("commit");
+
+    assert_eq!((report.found, report.reclaimed, report.deferred), (1, 0, 1));
+
+    // Still `SCANNING`. Marking it `EXPIRED` here would put it outside this pass's only predicate
+    // and orphan the bytes for good.
+    let mut conn = db.connect().await.expect("connect");
+    assert_eq!(stored_state(&mut conn, &id.to_string()).await, "SCANNING");
+
+    pool.close().await;
+    drop(db);
+}
+
+/// Another tenant's stranded session is invisible, and this tenant's is collected in the same run.
+///
+/// **Isolation layer**, and stated as such: row-level security, the `tenant_id = $1` predicate and
+/// the `TenantScoped` context each refuse this independently, so it would pass with any one of them
+/// removed. It is asserted because a sweep that *deletes object bytes* is the worst possible place
+/// for a tenant predicate to be missing, not because this test proves the predicate is what stops
+/// it. The same-run positive control is what keeps it from passing against a pass that collects
+/// nothing at all.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL and migration 0006 (upload_sessions); CI runs it with --include-ignored"]
+async fn a_reclaim_scoped_to_one_tenant_cannot_see_anothers_stranded_session() {
+    let (db, fixtures, pool) = start().await;
+    let (alpha, beta) = (fixtures.alpha.id, fixtures.beta.id);
+    let store = RecordingStore::default();
+
+    let mut tx = TenantScoped::begin(&pool, beta).await.expect("begin beta");
+    let (_ws, beta_library) = library(&mut tx, beta, fixtures.beta.owner, "beta", None).await;
+    let (beta_id, beta_key) =
+        scanning_session(&mut tx, &store, beta, fixtures.beta.owner, beta_library, "beta.pdf")
+            .await;
+    tx.commit().await.expect("commit beta");
+
+    let mut tx = TenantScoped::begin(&pool, alpha).await.expect("begin alpha");
+    let (_ws, alpha_library) = library(&mut tx, alpha, fixtures.alpha.owner, "alpha", None).await;
+    let (alpha_id, alpha_key) =
+        scanning_session(&mut tx, &store, alpha, fixtures.alpha.owner, alpha_library, "alpha.pdf")
+            .await;
+    tx.commit().await.expect("commit alpha");
+
+    let mut conn = db.connect().await.expect("connect");
+    age_one_hour(&mut conn, alpha_id).await;
+    age_one_hour(&mut conn, beta_id).await;
+
+    // Alpha's sweep. Beta's session differs in no way that matters — it is another tenant's.
+    let mut tx = TenantScoped::begin(&pool, alpha).await.expect("begin");
+    let report = enclave_uploads::reclaim_stranded(
+        &mut tx,
+        &store,
+        alpha,
+        Utc::now(),
+        Duration::minutes(30),
+        100,
+    )
+    .await
+    .expect("reclaim");
+    tx.commit().await.expect("commit");
+
+    assert_eq!((report.found, report.reclaimed), (1, 1), "alpha's own, and only alpha's");
+    assert_eq!(store.deleted(), vec![alpha_key], "beta's object must not be touched");
+    assert!(!store.deleted().contains(&beta_key));
+
+    let mut conn = db.connect().await.expect("connect");
+    assert_eq!(stored_state(&mut conn, &alpha_id.to_string()).await, "EXPIRED");
+    assert_eq!(stored_state(&mut conn, &beta_id.to_string()).await, "SCANNING");
 
     pool.close().await;
     drop(db);

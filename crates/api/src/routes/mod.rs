@@ -15,6 +15,7 @@
 
 pub mod auth;
 pub mod delivery;
+pub mod folders;
 pub mod libraries;
 pub mod search;
 pub mod shares;

@@ -769,56 +769,14 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Install the pinned toolchain
-        run: |
-          set -euo pipefail
-          channel=$(grep -E '^[[:space:]]*channel' rust-toolchain.toml | head -1 | sed -E 's/.*"(.*)".*/\1/')
-          rustup toolchain install "$channel" --profile minimal --no-self-update
-          rustup default "$channel"
+        run: rustup show active-toolchain || rustup toolchain install
 
-      - name: Cache cargo registry and target
-        uses: actions/cache@v6
-        with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-            target
-          key: ${{ runner.os }}-cargo-reach-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-reach-${{ hashFiles('rust-toolchain.toml') }}-
-            ${{ runner.os }}-cargo-reach-
-
-      # The fetch, retried; the assertion below is not. See the long comment in
-      # the `test` job for why that distinction is the whole point.
-      - name: Fetch dependencies (retried — registry only)
-        run: |
-          set -euo pipefail
-          for attempt in 1 2 3 4; do
-            if cargo fetch --locked; then
-              echo "dependencies fetched on attempt ${attempt}"
-              exit 0
-            fi
-            if [ "$attempt" -lt 4 ]; then
-              delay=$((attempt * attempt * 5))
-              echo "crates.io fetch failed (attempt ${attempt}/4); retrying in ${delay}s"
-              sleep "$delay"
-            fi
-          done
-          echo "::error title=Dependency registry unavailable — NOT a reachability failure::cargo could not fetch from index.crates.io after 4 attempts over ~70s. The reachability test did not run: nothing was asserted and nothing failed. Check https://status.crates.io and re-run the job."
-          exit 1
-
-      # `--nocapture`, deliberately: the run prints every route and its status, and the quarantine
-      # list of endpoints that cannot currently be reached by anybody. Both belong in the log of
-      # every pull request rather than only in the message of a failure.
       - name: Start MinIO
-        # A step, not a service container — MinIO's entrypoint needs `server /data` and a service
-        # container cannot specify a command. The `test` job already learned this; I added a
-        # `bitnami/minio` service here instead and CI failed on "Initialize containers" twice
-        # before I read the comment fifty lines up that says exactly why it cannot work.
+        # A step, not a service container: MinIO's entrypoint needs `server /data` and a service
+        # container cannot specify a command. The `test` job documents the same constraint.
         #
-        # The bucket has to exist before `enclave-api` starts: `connect_and_verify` refuses a
-        # missing bucket, and the job would fail with an error about credentials rather than about
-        # the bucket.
+        # The bucket must exist before `enclave-api` starts — `connect_and_verify` refuses a missing
+        # one, and the job would then fail with an error about credentials rather than the bucket.
         run: |
           set -euo pipefail
           docker run -d --name enclave-minio-reach \
@@ -832,7 +790,7 @@ jobs:
                 -e MC_HOST_local=http://enclave:enclave-dev-secret@localhost:9000 \
                 quay.io/minio/mc:RELEASE.2025-04-16T18-13-26Z \
                 mb --ignore-existing local/enclave-content
-              echo "MinIO is ready and the bucket exists"; exit 0
+              echo "MinIO is ready and enclave-content exists"; exit 0
             fi
             sleep 2
           done

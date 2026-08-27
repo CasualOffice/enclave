@@ -306,6 +306,23 @@ const SPECS: &[Spec] = &[
         credential: Credential::Bearer,
         expect: Expect::Served,
     },
+<<<<<<< HEAD
+=======
+    // Folder creation (docs/05-API.md §7, `ENC-788`). The name carries the fixture's `unknown`
+    // uuid rather than a literal, because this table is probed against a database the smoke run
+    // may re-enter: a fixed name would answer `201` on the first pass and `409 NAME_IN_USE` on the
+    // second, and a probe whose status depends on how often it has run is a probe that fails for a
+    // reason unrelated to what it is checking. `Expect::Served` therefore forbids `404` as well —
+    // the caller holds `container.create` on the spine's workspace, so a refusal here is wiring.
+    Spec {
+        method: "POST",
+        path: "/api/v1/libraries/{id}/folders",
+        target: "/api/v1/libraries/{lib}/folders",
+        body: Some(r#"{"name":"smoke-{unknown}"}"#),
+        credential: Credential::Bearer,
+        expect: Expect::Served,
+    },
+>>>>>>> feat/enc-788-folders-and-reclaim
     // Upload (docs/05-API.md §8).
     Spec {
         method: "POST",
