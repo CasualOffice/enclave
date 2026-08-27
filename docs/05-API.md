@@ -1,6 +1,6 @@
 # 05 — API Surface
 
-> **Status:** Draft · **Version:** 1.5 · **Owner:** Platform Engineering · **Last updated:** 2026-08-28
+> **Status:** Draft · **Version:** 1.6 · **Owner:** Platform Engineering · **Last updated:** 2026-08-28
 > **Authoritative for:** REST contracts, error model, pagination, idempotency, versioning, rate limits.
 
 ## 1. Principles
@@ -300,6 +300,72 @@ Rules, each of which the implementation is held to by a test:
   are **not** on the wire — the first three are internal references (a navigation response is not
   where a client learns which bucket content lands in), and the fourth describes the shape of the ACL
   rather than the caller's position in it, which `capabilities` already answers.
+
+### 7.2 Creating a folder
+
+`POST /libraries/{libraryId}/folders` appears in `§7`'s table above as four words — "Create folder" —
+and nothing else: no body, no response, no status, no statement of where `parentId` goes. This
+section is that specification, written for the same reason `§7.1` was (`ENC-794`): the code follows
+the document, so the document has to say something first. `ENC-788` is the row.
+
+```http
+POST /api/v1/libraries/{libraryId}/folders
+Content-Type: application/json
+
+{ "name": "Q3 Board Pack", "parentId": "01937fb2-…" }
+```
+
+`parentId` is **optional**; absent means the library root. It is a body field rather than a path
+segment because the path already names the library, and a folder's parent is a *choice* the request
+makes rather than a second route.
+
+`201 Created`, with the folder rendered exactly as `GET /libraries/{id}/items` renders it — the same
+object, the same `capabilities`, the same `obligations`:
+
+```json
+{
+  "id": "01937fb3-…",
+  "type": "FOLDER",
+  "name": "Q3 Board Pack",
+  "mimeType": "inode/directory",
+  "sizeBytes": 0,
+  "parentId": "01937fb2-…",
+  "libraryId": "01937fb1-…",
+  "status": "AVAILABLE",
+  "revision": 1,
+  "capabilities": { "metadataRead": true, "preview": true, "download": false, "print": false,
+                    "export": false, "edit": true, "share": true, "shareExternal": false,
+                    "delete": true, "sync": true },
+  "obligations": { "watermark": false, "justificationRequired": [], "approvalRequired": [] },
+  "createdAt": "2026-08-27T22:07:07Z",
+  "modifiedAt": "2026-08-27T22:07:07Z"
+}
+```
+
+Rules, each of which the implementation is held to by a test:
+
+- **The chain decides `container.create` on the container the folder would go into** — the folder
+  named by `parentId`, or the library when none is named. Never the library id in the path when a
+  `parentId` is present: a folder may break inheritance (`files.inherit_permissions`, `§7`'s
+  `break-inheritance`), and resolving against the library would ignore the ACL the folder actually
+  carries. This is the same choice `§8`'s `POST /uploads` makes for the same request shape, and the
+  two must not diverge — a folder a caller may put a file in and may not put a folder in would be two
+  answers to one question.
+- **A container the caller may not see is absent, not forbidden.** A `libraryId` or `parentId` in
+  another tenant, one that never existed, one that is trashed, and one this caller holds no grant on
+  are **one** answer: `404` (`§5`, `CLAUDE.md` rule 7). An id that does not parse is the same `404`
+  and not a `400`, because a `400` on one of them is a distinction.
+- **A duplicate name in one parent is `409`**, per `§5`'s status table, with `code:
+  "NAME_IN_USE"` and a `details` entry naming the `name` field. The refusal does **not** echo the
+  name: a collision report is the one place a folder the caller has not been shown could be named to
+  them.
+- **A folder created here always inherits.** There is deliberately no `inheritPermissions` field.
+  Breaking inheritance is `POST /files/{id}/permissions/break-inheritance`, a separate
+  `permissions.manage` question — a create that could ship a folder with inheritance already broken
+  would make the highest-consequence ACL edit in the tree reachable in one unreviewed request.
+- **Renaming, reparenting, trashing and restoring a folder are `§7`'s `/files/{id}` routes**, because
+  a folder is a node of the file tree (`04-DATA-MODEL.md §8`). There is no `/folders/{id}` resource.
+  Listing a folder's children is `GET /libraries/{id}/items?parentId=`.
 
 ## 8. Upload
 
