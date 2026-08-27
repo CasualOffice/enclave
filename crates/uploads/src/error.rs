@@ -127,6 +127,25 @@ pub enum UploadError {
     #[error("the declared checksum is not a lowercase hex SHA-256")]
     InvalidDeclaredChecksum,
 
+    /// The object store cannot have the provider confirm a digest for an upload this size.
+    ///
+    /// Raised before any URL is issued, from [`enclave_storage::StorageError::ChecksumUnverifiable`]
+    /// — on an S3-compatible backend, an upload above the multipart threshold, for which the
+    /// provider computes a checksum of the part checksums rather than the whole-object SHA-256 a
+    /// version row records.
+    ///
+    /// Refusing is deliberate and it is `ENC-820`'s substance: the alternative is to accept the
+    /// upload and write the client's unverified word into an immutable column that a later
+    /// integrity check reads as evidence. Reported as the per-file ceiling it functionally is, with
+    /// the number, so a client can say *"files above N are not accepted here"* rather than showing
+    /// an opaque failure. `ENC-829` is the row for restoring large uploads under a scheme the
+    /// provider can confirm.
+    #[error("this deployment cannot verify an upload above {limit_bytes} bytes")]
+    ChecksumUnverifiable {
+        /// The largest upload whose digest the object store can confirm, in bytes.
+        limit_bytes: u64,
+    },
+
     /// The upload declares a name that cannot be stored.
     #[error("the file name is not valid: {reason}")]
     InvalidName {
@@ -159,6 +178,10 @@ impl UploadError {
             // its limit is raised. Deletes are never quota-blocked, so that road is open.
             | Self::StorageQuotaExceeded { .. }
             | Self::InvalidDeclaredChecksum
+            // Not retryable either: the object store's capability does not change between one
+            // request and the next, so the same upload is refused identically until the file is
+            // smaller or the backend gains whole-object checksums.
+            | Self::ChecksumUnverifiable { .. }
             | Self::InvalidName { .. } => false,
         }
     }
@@ -198,7 +221,11 @@ impl From<UploadError> for CoreError {
             UploadError::InvalidDeclaredChecksum => {
                 Self::Validation(vec![FieldError::new("sha256", ValidationCode::InvalidFormat)])
             }
-            UploadError::FileTooLarge { limit } => Self::QuotaExceeded {
+            // Both are "this file is bigger than this deployment will take", and a client can act
+            // on either only by knowing the number — so both render as the per-file quota with the
+            // limit attached, and neither is a bare failure the user has to guess at.
+            UploadError::FileTooLarge { limit }
+            | UploadError::ChecksumUnverifiable { limit_bytes: limit } => Self::QuotaExceeded {
                 quota: QuotaKind::MaxFileBytes,
                 limit: i64::try_from(limit).unwrap_or(i64::MAX),
             },

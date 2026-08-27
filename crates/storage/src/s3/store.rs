@@ -12,9 +12,12 @@ use aws_sdk_s3::config::{BehaviorVersion, Credentials, Region};
 use aws_sdk_s3::error::ProvideErrorMetadata;
 use aws_sdk_s3::presigning::PresigningConfig;
 use aws_sdk_s3::types::{
-    BucketVersioningStatus, CompletedMultipartUpload, CompletedPart as S3CompletedPart,
+    BucketVersioningStatus, ChecksumMode, CompletedMultipartUpload,
+    CompletedPart as S3CompletedPart,
 };
 use aws_smithy_types::error::display::DisplayErrorContext;
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine as _;
 use chrono::{DateTime, TimeZone as _, Utc};
 use enclave_config::SecretRegistry;
 use url::Url;
@@ -23,12 +26,27 @@ use crate::blob_store::BlobStore;
 use crate::error::{Result, StorageError};
 use crate::key::ObjectKey;
 use crate::model::{
-    ByteRange, ByteStream, CompletedPart, MultipartLimits, ObjectMeta, PartTarget,
+    ByteRange, ByteStream, CompletedPart, MultipartLimits, ObjectMeta, PartTarget, RequiredHeader,
     StoreCapabilities, Support, UploadRequest, UploadSession, UploadTarget,
 };
 use crate::public_access::PublicAccessCheck as _;
 use crate::s3::anonymous::AnonymousProbe;
 use crate::s3::config::{S3Config, S3_MAX_PARTS, S3_MAX_PART_BYTES, S3_MIN_PART_BYTES};
+
+/// The header a pre-signed `PUT` must carry for the provider to verify what it stores.
+///
+/// Lowercase, because that is how it appears in `X-Amz-SignedHeaders` and how the client has to
+/// send it.
+const CHECKSUM_HEADER: &str = "x-amz-checksum-sha256";
+
+/// The other header a pre-signed `PUT` from this store commits the client to.
+///
+/// It has always been signed — the SDK puts it on the request when `content_type` is set — and was
+/// reported nowhere, which is `ENC-821`.
+const CONTENT_TYPE_HEADER: &str = "content-type";
+
+/// The number of hex characters in a SHA-256.
+const SHA256_HEX_LEN: usize = 64;
 
 /// An S3-compatible object store bound to one bucket.
 ///
@@ -286,12 +304,19 @@ impl S3BlobStore {
     }
 
     /// `HeadObject`, mapped into [`ObjectMeta`].
+    ///
+    /// `ChecksumMode::Enabled` is not optional decoration. S3 and MinIO omit `x-amz-checksum-*`
+    /// from a `HeadObject` response unless it is asked for, so without it `checksum_sha256` comes
+    /// back `None` for every object — including the ones the provider computed a digest for and
+    /// verified. That was the silent second half of `ENC-820`: the request on the way out lacked
+    /// the header, and the read on the way back would not have seen the answer either.
     async fn head(&self, key: ObjectKey) -> Result<ObjectMeta> {
         let head = self
             .client
             .head_object()
             .bucket(&self.config.bucket)
             .key(key.as_str())
+            .checksum_mode(ChecksumMode::Enabled)
             .send()
             .await
             .map_err(|err| self.map_err("HeadObject", Some(key.as_str()), &err))?;
@@ -315,12 +340,42 @@ impl BlobStore for S3BlobStore {
         let key = request.key;
         let bucket = &self.config.bucket;
 
+        // The digest, converted once, before anything is signed. `None` here means the caller asked
+        // for no provider verification — the internal-write paths, where this process is itself the
+        // client and there is no untrusted party to check.
+        let expected = request.checksum_sha256.as_deref().map(base64_sha256_of_hex).transpose()?;
+
         if request.content_length <= self.config.multipart_threshold_bytes {
             let ttl = self.config.signed_url_ttl.as_duration();
             let mut put = self.client.put_object().bucket(bucket).key(key.as_str());
+            let mut required_headers = Vec::new();
+
             if let Some(content_type) = &request.content_type {
                 put = put.content_type(content_type);
+                // Signed, therefore mandatory, therefore reported. `ENC-821`: this header was
+                // already being signed and was named nowhere, so a client that sent a different
+                // media type — or none — got a `403` that reads as an authorization failure.
+                required_headers.push(RequiredHeader {
+                    name: CONTENT_TYPE_HEADER.to_owned(),
+                    value: content_type.clone(),
+                });
             }
+
+            // The header goes on the request *before* it is signed, which is the whole mechanism:
+            // SigV4 covers every header present at signing time and names them in
+            // `X-Amz-SignedHeaders`, so the client cannot omit `x-amz-checksum-sha256` (the
+            // signature fails) and cannot alter it (likewise). Having received it, S3 and MinIO
+            // hash the body and refuse it if the two disagree — so a client that lies about its
+            // content gets a failed `PUT` rather than a stored object with a false digest beside
+            // it. `ENC-820`.
+            if let Some(digest) = &expected {
+                put = put.checksum_sha256(digest);
+                required_headers.push(RequiredHeader {
+                    name: CHECKSUM_HEADER.to_owned(),
+                    value: digest.clone(),
+                });
+            }
+
             let presigned = put
                 .presigned(self.presign_config(ttl)?)
                 .await
@@ -328,10 +383,23 @@ impl BlobStore for S3BlobStore {
 
             return Ok(UploadSession {
                 content_length: request.content_length,
-                target: UploadTarget::Single { url: parse_presigned(presigned.uri())? },
+                target: UploadTarget::Single {
+                    url: parse_presigned(presigned.uri())?,
+                    required_headers,
+                },
                 expires_at: Utc::now() + ttl,
                 completed_parts: Vec::new(),
                 key,
+            });
+        }
+
+        // Multipart, and this backend cannot be made to verify a whole-object digest for one. See
+        // `StorageError::ChecksumUnverifiable`. Refused here, above every `presigned()` call below,
+        // so the client is told before it spends a byte.
+        if expected.is_some() {
+            return Err(StorageError::ChecksumUnverifiable {
+                content_length: request.content_length,
+                threshold: self.config.multipart_threshold_bytes,
             });
         }
 
@@ -593,6 +661,37 @@ fn parse_presigned(uri: &str) -> Result<Url> {
     })
 }
 
+/// Turns the lowercase hex SHA-256 the platform speaks into the base64 S3 expects.
+///
+/// Two spellings of one digest, and the boundary between them is here rather than at every caller:
+/// hex is what `file_versions.checksum_sha256` holds and what `docs/05-API.md §8` puts on the wire,
+/// base64 is what `x-amz-checksum-sha256` carries. `enclave_uploads::content` performs the inverse
+/// on the way back, and the two are asserted against the same vector.
+///
+/// # Errors
+///
+/// [`StorageError::MalformedChecksum`] for anything that is not 64 lowercase hex characters. It
+/// refuses rather than passing the value through, because a digest the provider cannot parse is
+/// one it will ignore — leaving the upload unverified with nobody told.
+fn base64_sha256_of_hex(hex: &str) -> Result<String> {
+    if hex.len() != SHA256_HEX_LEN {
+        return Err(StorageError::MalformedChecksum);
+    }
+    let mut raw = [0_u8; SHA256_HEX_LEN / 2];
+    for (index, byte) in raw.iter_mut().enumerate() {
+        let nibble = |offset: usize| -> Option<u8> {
+            match hex.as_bytes().get(index * 2 + offset)? {
+                digit @ b'0'..=b'9' => Some(digit - b'0'),
+                letter @ b'a'..=b'f' => Some(letter - b'a' + 10),
+                _ => None,
+            }
+        };
+        let (high, low) = nibble(0).zip(nibble(1)).ok_or(StorageError::MalformedChecksum)?;
+        *byte = (high << 4) | low;
+    }
+    Ok(STANDARD.encode(raw))
+}
+
 /// S3 quotes its ETags. Stored unquoted so a comparison against a computed digest works without
 /// every call site remembering to trim.
 fn strip_quotes(etag: &str) -> String {
@@ -630,5 +729,52 @@ mod tests {
     fn a_presigned_url_that_does_not_parse_is_an_upstream_failure_not_a_panic() {
         assert!(parse_presigned("not a url").is_err());
         assert!(parse_presigned("https://example.com/a?b=c").is_ok());
+    }
+
+    /// The hex/base64 boundary, both directions.
+    ///
+    /// The reverse conversion lives in `enclave_uploads::content::decode_provider_sha256` and is
+    /// what completion compares against, so the two spellings have to be inverses or a digest the
+    /// provider confirmed would be reported as a mismatch. The empty-string digest is the vector
+    /// both sides use.
+    #[test]
+    fn the_platforms_hex_digest_becomes_the_base64_the_header_carries() {
+        const HEX: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        const B64: &str = "47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=";
+        assert_eq!(base64_sha256_of_hex(HEX).unwrap(), B64);
+
+        // Every byte value, so a nibble table that is wrong in one place cannot hide.
+        let all_bytes: String = (0..=255_u8).map(|b| format!("{b:02x}")).collect();
+        for chunk in all_bytes.as_bytes().chunks(64) {
+            let hex = core::str::from_utf8(chunk).unwrap();
+            let encoded = base64_sha256_of_hex(hex).unwrap();
+            let decoded = STANDARD.decode(&encoded).unwrap();
+            let round_tripped: String = decoded.iter().map(|b| format!("{b:02x}")).collect();
+            assert_eq!(round_tripped, hex);
+        }
+    }
+
+    /// Anything that is not 64 lowercase hex characters is refused rather than forwarded.
+    ///
+    /// Forwarding is the dangerous option: the provider ignores a digest it cannot parse, the
+    /// `PUT` succeeds, and the upload is unverified with nobody told — which is `ENC-820` again by
+    /// a different route.
+    #[test]
+    fn a_digest_the_provider_could_not_parse_is_refused_rather_than_forwarded() {
+        const HEX: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        for bad in [
+            String::new(),
+            "deadbeef".to_owned(),
+            HEX.to_uppercase(),
+            format!("{HEX}0"),
+            "g".repeat(64),
+            " ".repeat(64),
+            format!("{}=", &HEX[..63]),
+        ] {
+            assert!(
+                matches!(base64_sha256_of_hex(&bad), Err(StorageError::MalformedChecksum)),
+                "`{bad}` was accepted as a SHA-256"
+            );
+        }
     }
 }

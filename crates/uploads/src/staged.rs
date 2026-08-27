@@ -148,7 +148,10 @@ pub(crate) fn completion_session(
     expires_at: DateTime<Utc>,
 ) -> Result<UploadSession> {
     let target = match multipart_id {
-        None => UploadTarget::Single { url: sentinel_url(0)? },
+        // No required headers on the rebuilt target either. They belong to the `PUT` the client
+        // already made against the URL this session no longer holds; `complete_upload` reads the
+        // key and the part list and nothing else from here.
+        None => UploadTarget::Single { url: sentinel_url(0)?, required_headers: Vec::new() },
         Some(upload_id) => {
             let mut parts = Vec::with_capacity(reported_parts.len());
             for part in &reported_parts {

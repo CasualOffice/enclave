@@ -289,10 +289,13 @@ pub struct ReserveRequest {
     /// The version the client edited from. `None` for a file the client believes has none.
     #[serde(default)]
     base_version_id: Option<VersionId>,
-    /// The digest of what the client is about to send, so a corrupted transfer is refused at the
-    /// edge rather than stored.
-    #[serde(default)]
-    checksum_sha256: Option<String>,
+    /// The digest of what the client is about to send, lowercase hex.
+    ///
+    /// **Required**, for the reason `enclave_uploads::NewUpload::declared_sha256` gives: it is what
+    /// the object store is made to verify the body against, and a reservation without one produces
+    /// a session whose digest nothing can confirm. It was optional here, which meant the sync push
+    /// path had `ENC-820` in the same shape as `POST /uploads`.
+    checksum_sha256: String,
     /// What the client promises to send. Checked against the library's ceiling and the tenant's
     /// quota *here*, so a device does not upload gigabytes to be rejected at commit (`docs/10 §6`).
     size_bytes: u64,

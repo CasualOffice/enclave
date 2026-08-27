@@ -37,10 +37,26 @@ pub trait BlobStore: PublicAccessCheck + Send + Sync {
     /// choosing would have to know each backend's minimum part size, and would get it wrong for
     /// the one backend nobody tested against.
     ///
+    /// # A declared checksum is binding on the implementation
+    ///
+    /// [`UploadRequest::checksum_sha256`], when set, is **not a hint**. An implementation must
+    /// arrange for the *provider* to compute the digest of the bytes it receives and to refuse them
+    /// if the two disagree — which for S3 and MinIO means signing `x-amz-checksum-sha256` into the
+    /// URL, so the client cannot omit it. Any header the client must then send comes back on
+    /// [`UploadTarget::Single::required_headers`](crate::UploadTarget), because the process that
+    /// signs the URL is not the process that sends the bytes.
+    ///
+    /// An implementation that cannot arrange it for this particular request returns
+    /// [`crate::StorageError::ChecksumUnverifiable`] and issues nothing. Accepting the request and
+    /// leaving the digest unchecked is the one thing it may not do: the value ends up on
+    /// `file_versions.checksum_sha256`, which is immutable once written and is read later as
+    /// evidence that the stored bytes are the bytes that were sent (`ENC-820`).
+    ///
     /// # Errors
     ///
     /// [`crate::StorageError`] — most usefully `TooManyParts` when the object is larger than the
-    /// configured part size can address, and `AccessDenied` when the credential cannot create a
+    /// configured part size can address, `ChecksumUnverifiable` when a declared digest cannot be
+    /// confirmed for an upload of this size, and `AccessDenied` when the credential cannot create a
     /// multipart upload.
     async fn create_upload(&self, request: UploadRequest) -> Result<UploadSession>;
 
