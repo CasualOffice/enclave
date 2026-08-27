@@ -361,6 +361,71 @@ impl SettledSession {
     }
 }
 
+/// A `SCANNING` session that **provably has no version behind it**.
+///
+/// # Why this type exists rather than a boolean
+///
+/// `ENC-787`. A session stranded in `SCANNING` owns a staged object that nothing will ever read and
+/// that no quota counts — but so does a session that completed *correctly*, right up until the
+/// moment antivirus clears it. The two look identical in `upload_sessions`: same state, same key,
+/// same absence of `file_id` for a new-file upload. Telling them apart needs a fact from **another
+/// table**, and getting it wrong is not a missed clean-up.
+///
+/// It is data loss. `ENC-691` made the staged key *be* the version key — nothing is copied on commit
+/// (`crates/uploads::staged`, `routes::uploads::promote`) — so deleting the staged object of a
+/// session that did commit a version deletes the only copy of a live file's content, while leaving
+/// the `file_versions` row pointing at it. A reader would get a `404` from object storage for a file
+/// the database says is there.
+///
+/// So the fact is carried in the type. The only constructor is
+/// [`UploadRepository::claim_stranded`](crate::repo::UploadRepository::claim_stranded), whose
+/// statement asserts `NOT EXISTS (SELECT … FROM file_versions WHERE object_key = staged_key)` inside
+/// the same `FOR UPDATE` claim, and [`StrandedSession::expire`] is the only route from `SCANNING` to
+/// `EXPIRED` anywhere in the workspace. A caller cannot reach that transition holding anything else,
+/// which makes "the version was checked" a property of the call graph rather than of a comment
+/// somebody has to keep reading.
+///
+/// # It is not a `Session<Scanning>`
+///
+/// `Scanning`'s evidence is a [`VerifiedContent`], which can only be built by comparing the client's
+/// declaration against the object store's observation — and a repair pass reading a row two days
+/// later has no such comparison to offer and must not fabricate one. `SCANNING` therefore still
+/// decodes to [`SettledSession`], `Session<Scanning>` still has no transition out of it, and rule 9
+/// is untouched: nothing here can reach `PROCESSING`, `QUARANTINED` or `AVAILABLE`, because no phase
+/// after this one exists to move to.
+#[derive(Debug, Clone)]
+pub struct StrandedSession {
+    record: SessionRecord,
+}
+
+impl StrandedSession {
+    /// Builds one. Crate-private, and deliberately reachable from exactly one statement — see the
+    /// type's note for why a second constructor would be the defect this type exists to prevent.
+    pub(crate) const fn new(record: SessionRecord) -> Self {
+        Self { record }
+    }
+
+    /// The row.
+    #[must_use]
+    pub const fn record(&self) -> &SessionRecord {
+        &self.record
+    }
+
+    /// `SCANNING` → `EXPIRED`: the session claims to be scanning and there is nothing to scan.
+    ///
+    /// The staged bytes are released by the caller **before** this is applied, which is
+    /// `crate::reaper`'s ordering and for its reason: a row marked `EXPIRED` before a successful
+    /// delete is never examined again, and its object is orphaned permanently.
+    ///
+    /// The write is still a compare-and-swap on `state = 'SCANNING'`, so a session that moved on
+    /// between the claim and the write loses the race and is reported rather than overwritten.
+    pub fn expire(self, now: DateTime<Utc>) -> Transition<Expired> {
+        let mut record = self.record;
+        record.updated_at = now;
+        Transition::new(UploadState::Scanning, Session::<Expired>::from_parts(record, ()))
+    }
+}
+
 /// The two phases this crate may still advance, without the caller having to match on a phase type.
 #[derive(Debug, Clone)]
 #[non_exhaustive]

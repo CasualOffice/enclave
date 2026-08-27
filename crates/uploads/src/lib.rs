@@ -74,10 +74,12 @@ pub use error::{Result, UploadError};
 pub use id::UploadSessionId;
 pub use limits::{extension_of, UploadLimits, MAX_NAME_CHARS};
 pub use quota::{preflight, Preflight};
-pub use reaper::{reap_expired, ReapReport};
+pub use reaper::{reap_expired, reclaim_stranded, ReapReport, ReclaimReport};
 pub use repo::UploadRepository;
 pub use service::{Completion, IssuedUpload, NewUpload, UploadIntent, UploadService};
-pub use session::{LoadedSession, Resumable, ScanHandoff, Session, SessionRecord, SettledSession};
+pub use session::{
+    LoadedSession, Resumable, ScanHandoff, Session, SessionRecord, SettledSession, StrandedSession,
+};
 pub use staged::StagedObject;
 pub use state::{
     Aborted, Created, Expired, Failed, Live, Phase, Scanning, Transition, UploadState, Uploaded,
