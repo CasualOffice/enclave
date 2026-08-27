@@ -1986,6 +1986,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "aws-smithy-http-client",
+ "aws-smithy-runtime-api",
+ "aws-smithy-types",
  "bytes",
  "chrono",
  "enclave-antivirus",
@@ -2003,6 +2006,7 @@ dependencies = [
  "enclave-search",
  "enclave-storage",
  "enclave-testing",
+ "enclave-uploads",
  "enclave-versions",
  "futures",
  "milvus-sdk-rust",
