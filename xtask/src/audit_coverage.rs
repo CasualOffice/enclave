@@ -350,6 +350,28 @@ pub(crate) const ACKNOWLEDGED: &[Acknowledged] = &[
                  documents as a hint that writes no audit row: it cannot allow anything, and the \
                  enforcement happens when the action is actually attempted. Guarded the same way.",
     },
+    Acknowledged {
+        file: "crates/api/src/routes/workspaces.rs",
+        function: "admit",
+        kind: SiteKind::Conversion,
+        reason: "`content.rs::readable_children` for containers (`ENC-791`): the trim behind \
+                 `GET /workspaces` and `GET /workspaces/{id}/libraries`. Guarded by \
+                 `if !decision.is_allowed() { continue }` on the line above, so the conversion \
+                 cannot produce an `Err` and refuses nothing — it exists to carry the admitted \
+                 row's obligations forward rather than drop them. The listing itself is audited by \
+                 the chain; per-row trimming is deliberately not a separate audit event \
+                 (docs/07 §6.2), because auditing it would write one speculative ALLOW per \
+                 candidate for a question nobody asked.",
+    },
+    Acknowledged {
+        file: "crates/api/src/routes/workspaces.rs",
+        function: "capabilities_for_containers",
+        kind: SiteKind::Conversion,
+        reason: "The container half of the docs/05-API.md §7 capabilities probe (`ENC-793`), \
+                 shared by both navigation modules. A hint that writes no audit row: it cannot \
+                 allow anything, and the enforcement happens when the action is attempted. \
+                 Guarded the same way.",
+    },
 ];
 
 // ---------------------------------------------------------------------------

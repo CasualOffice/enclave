@@ -31,6 +31,10 @@ enclave-identity = { workspace = true }
 # ENC-690: the upload and sharing routes. Both crates were complete and depended on by nothing —
 # these two lines are the whole of what `crates/api` was missing to have a write path.
 enclave-libraries = { workspace = true }
+# ENC-791: the four navigation endpoints. `crates/workspaces` was 1,923 lines, complete and tested,
+# and depended on by nothing — this line is the whole of what `crates/api` was missing to be able to
+# answer "which workspaces am I in".
+enclave-workspaces = { workspace = true }
 enclave-sharing = { workspace = true }
 enclave-uploads = { workspace = true }
 # The rendition pipeline, behind `PreviewPipeline`.

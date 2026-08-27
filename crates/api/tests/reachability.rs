@@ -241,6 +241,46 @@ const SPECS: &[Spec] = &[
         credential: Credential::Bearer,
         expect: Expect::ServedOrAbsent,
     },
+    // Navigation — workspaces and libraries (docs/05-API.md §7.1, `ENC-791`). All four name the
+    // fixture spine's own workspace and library, which the caller holds every container action on,
+    // so `Expect::Served` forbids `404` here and the two listings must come back non-empty for the
+    // right reason. That is the assertion this table can make and a unit test cannot: the workspace
+    // listing's audited decision is `container.read` on the caller's own `users` row, answered by
+    // `SelfServiceOr` — which only the composed binary wires — and every row on the page is then
+    // trimmed by `PgAclAuthorization`. A binary composing either service alone answers `200` with an
+    // empty list rather than failing, so `ENC-746`'s row is load-bearing for these two as well.
+    Spec {
+        method: "GET",
+        path: "/api/v1/workspaces",
+        target: "/api/v1/workspaces",
+        body: None,
+        credential: Credential::Bearer,
+        expect: Expect::Served,
+    },
+    Spec {
+        method: "GET",
+        path: "/api/v1/workspaces/{id}",
+        target: "/api/v1/workspaces/{ws}",
+        body: None,
+        credential: Credential::Bearer,
+        expect: Expect::Served,
+    },
+    Spec {
+        method: "GET",
+        path: "/api/v1/workspaces/{id}/libraries",
+        target: "/api/v1/workspaces/{ws}/libraries",
+        body: None,
+        credential: Credential::Bearer,
+        expect: Expect::Served,
+    },
+    Spec {
+        method: "GET",
+        path: "/api/v1/libraries/{id}",
+        target: "/api/v1/libraries/{lib}",
+        body: None,
+        credential: Credential::Bearer,
+        expect: Expect::Served,
+    },
     // Files and folders (docs/05-API.md §7).
     Spec {
         method: "GET",
@@ -1168,6 +1208,9 @@ fn json_string(body: &str, field: &str) -> Option<String> {
 /// The identifiers a request template can name.
 #[derive(Debug, Default)]
 struct Fixtures {
+    /// The spine's workspace — the container the grant loop below hangs every action on, and
+    /// therefore the one the navigation probes can require an answer other than `404` for.
+    workspace: String,
     library: String,
     file: String,
     /// An identifier of the right shape that names nothing. Fixed rather than random, so a failure
@@ -1181,6 +1224,7 @@ struct Fixtures {
 impl Fixtures {
     fn fill(&self, template: &str) -> String {
         template
+            .replace("{ws}", &self.workspace)
             .replace("{lib}", &self.library)
             .replace("{file}", &self.file)
             .replace("{unknown}", &self.unknown)
@@ -1284,6 +1328,7 @@ async fn every_registered_route_answers_an_authenticated_caller() {
         .to_owned();
 
     let mut fixture_ids = Fixtures {
+        workspace: spine.workspace.as_uuid().to_string(),
         library: spine.library.as_uuid().to_string(),
         file: spine.file.as_uuid().to_string(),
         unknown: "00000000-0000-4000-8000-000000000000".to_owned(),

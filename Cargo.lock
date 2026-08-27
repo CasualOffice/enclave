@@ -1361,6 +1361,7 @@ dependencies = [
  "enclave-uploads",
  "enclave-versions",
  "enclave-workflows",
+ "enclave-workspaces",
  "image",
  "rand 0.10.2",
  "serde",

@@ -121,6 +121,15 @@ pub fn router(state: ApiState, delivery: Delivery) -> Router {
         .route("/api/v1/auth/sessions/{sid}", delete(routes::auth::revoke_session))
         // Identity (docs/05-API.md §3).
         .route("/api/v1/me", get(me::me))
+        // Navigation — workspaces and libraries (docs/05-API.md §7.1). Registered before the file
+        // surface because they are how a client *reaches* it: `GET /libraries/{id}/items` was
+        // registered from M1 and nothing told a caller which id to pass, so the library picker in
+        // the web shell was drawn as unbuilt (`ENC-778`). Every one of the four is a read; the
+        // create and update halves are `/admin/workspaces` and `/admin/libraries`, unbuilt.
+        .route("/api/v1/workspaces", get(routes::workspaces::list))
+        .route("/api/v1/workspaces/{id}", get(routes::workspaces::read))
+        .route("/api/v1/workspaces/{id}/libraries", get(routes::libraries::list_in_workspace))
+        .route("/api/v1/libraries/{id}", get(routes::libraries::read))
         // Files and folders (docs/05-API.md §7).
         .route("/api/v1/libraries/{id}/items", get(content::browse))
         .route("/api/v1/files/{id}", get(content::file_metadata))
