@@ -19,7 +19,19 @@ permissions:
 # newest commit gets the runners. Pushes to main are never cancelled — main's
 # history must have a verdict for every commit.
 concurrency:
-  group: ci-${{ github.ref }}
+  # On a pull request the group is the PR, and a new push cancels the run in flight: only
+  # the tip is worth testing. On a push to `main` the group is the **commit**, and that is
+  # the part that is easy to get wrong. `cancel-in-progress: false` stops a running job
+  # being killed, but it does not stop a newly queued run from displacing the one already
+  # *pending* in the same group — so three merges nineteen seconds apart left two of the
+  # three commits on `main` with cancelled checks and only the last one tested.
+  #
+  # That reads as a red `main`. A cancelled required check is indistinguishable from a
+  # failing one in the merge box, so the next pull request cannot be merged and the cause
+  # is a scheduling artefact rather than anything in the tree. Keying on `github.sha`
+  # gives every commit on `main` its own group, which is what "every commit on main is
+  # tested" actually requires.
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
