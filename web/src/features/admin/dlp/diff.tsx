@@ -2,7 +2,9 @@ import type { ReactNode } from 'react';
 import { useT } from '../../../shared/i18n/index.tsx';
 import { useFormatters } from '../../../shared/i18n/format.ts';
 import type { MessageKey } from '../../../shared/i18n/catalog.ts';
-import { LaterChip } from '../../../shared/ui/primitives.tsx';
+import { Eyebrow } from '../../../shared/ui/layout.tsx';
+import { LaterChip, Pill } from '../../../shared/ui/primitives.tsx';
+import { CLASSIFICATION_KEY } from '../../../entities/classification/model.ts';
 import { useListFormat } from '../rich-text.tsx';
 import {
   ACTION_KEY,
@@ -28,14 +30,6 @@ import {
  * tenant enforces before* against *what it would enforce after*, which is the
  * question an approver actually has.
  */
-
-const CLASSIFICATION_KEY_RANKED: Record<string, MessageKey> = {
-  public: 'classification.public',
-  internal: 'classification.internal',
-  confidential: 'classification.confidential',
-  highlyConfidential: 'classification.highlyConfidential',
-  restricted: 'classification.restricted',
-};
 
 interface Row {
   readonly field: MessageKey;
@@ -63,25 +57,23 @@ export function PolicyDiff({
   const and = useListFormat('conjunction');
 
   const unset = <span className="adm-muted">{t('admin.dlp.diff.unset')}</span>;
-  const terms = (items: readonly string[]) =>
-    items.length === 0
+  /* Keys rather than translated strings, so the term is a `Pill` — the shared
+   * 20px sunken chip this file had written out by hand. A component that takes
+   * a `MessageKey` cannot be handed a literal (`CLAUDE.md` rule 12), which is
+   * the reason the mapping happens here rather than at the call sites. */
+  const terms = (keys: readonly MessageKey[]) =>
+    keys.length === 0
       ? unset
-      : and(
-          items.map((item) => (
-            <span className="adm-chip adm-chip-sm" key={item}>
-              {item}
-            </span>
-          )),
-        );
+      : and(keys.map((key) => <Pill key={key} label={key} />));
 
-  const scopeTerms = (rule: DlpRule) => terms(rule.scope.map((scope) => t(SCOPE_KEY[scope])));
+  const scopeTerms = (rule: DlpRule) => terms(rule.scope.map((scope) => SCOPE_KEY[scope]));
   const categoryTerms = (rule: DlpRule) =>
-    terms(categoriesOf(rule).map((category) => t(CATEGORY_KEY[category])));
+    terms(categoriesOf(rule).map((category) => CATEGORY_KEY[category]));
   const levelTerm = (rule: DlpRule) => {
     const level = classificationOf(rule);
-    if (level === undefined) return unset;
-    const key = CLASSIFICATION_KEY_RANKED[level];
-    return key === undefined ? unset : <span className="adm-chip adm-chip-sm">{t(key)}</span>;
+    /* `entities/classification`'s map, not a fifth private copy of it. It is
+     * total over the six levels, so there is no "key not found" branch left. */
+    return level === undefined ? unset : <Pill label={CLASSIFICATION_KEY[level]} />;
   };
 
   const rows: readonly Row[] = [
@@ -128,10 +120,8 @@ export function PolicyDiff({
   const changedCount = rows.filter((row) => row.changed).length;
 
   return (
-    <section className="adm-panel" aria-labelledby="adm-diff-title">
-      <h3 className="adm-panel-title" id="adm-diff-title">
-        {t('admin.dlp.diff.title')}
-      </h3>
+    <section className="ui-card adm-panel" data-padded="" aria-label={t('admin.dlp.diff.title')}>
+      <Eyebrow label="admin.dlp.diff.title" />
       <p className="adm-muted">
         {baseline === undefined
           ? t('admin.dlp.diff.newPolicy')
@@ -140,10 +130,20 @@ export function PolicyDiff({
 
       <table className="adm-diff">
         <thead>
+          {/* The uppercase is `.ui-eyebrow-text`'s, behind its `:lang()`
+            * allowlist — a `<th>` cannot hold the `Eyebrow` heading, but it can
+            * hold the span that carries the transform, and the catalog stays
+            * sentence case either way (`docs/14`). */}
           <tr>
-            <th scope="col">{t('admin.dlp.diff.field')}</th>
-            <th scope="col">{t('admin.dlp.diff.before')}</th>
-            <th scope="col">{t('admin.dlp.diff.after')}</th>
+            <th scope="col">
+              <span className="ui-eyebrow-text">{t('admin.dlp.diff.field')}</span>
+            </th>
+            <th scope="col">
+              <span className="ui-eyebrow-text">{t('admin.dlp.diff.before')}</span>
+            </th>
+            <th scope="col">
+              <span className="ui-eyebrow-text">{t('admin.dlp.diff.after')}</span>
+            </th>
           </tr>
         </thead>
         <tbody>

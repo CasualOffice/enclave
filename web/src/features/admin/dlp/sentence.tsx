@@ -2,7 +2,10 @@ import type { ReactNode } from 'react';
 import { useT } from '../../../shared/i18n/index.tsx';
 import type { MessageKey } from '../../../shared/i18n/catalog.ts';
 import { Icon } from '../../../shared/ui/icon-sprite.tsx';
+import { Card, Eyebrow, Field } from '../../../shared/ui/layout.tsx';
 import { LaterChip } from '../../../shared/ui/primitives.tsx';
+import { ClassificationChip } from '../../../entities/classification/chip.tsx';
+import { CLASSIFICATION_KEY } from '../../../entities/classification/model.ts';
 import { useListFormat, useRichT } from '../rich-text.tsx';
 import {
   ACTION_KEY,
@@ -143,13 +146,23 @@ function TermChip({
 /**
  * The classification threshold, wearing the locked palette.
  *
- * The recipe is copied from `.egl-classification` and **not** from the
- * prototype: the reference mixes the badge text at 82% of the classification
- * colour, which is 3.68:1 and fails AA. 70% is what ships, and
- * `tools/classification-contrast.mjs` is why. The colours themselves are locked
- * (`docs/09 §16a`) and the word carries the meaning either way (`§15`).
+ * **One badge, and this is not a second one.** `entities/classification/chip`
+ * is the only implementation (`docs/09 §16a` locks the palette; four
+ * hand-maintained copies lock nothing, and they had already drifted to four
+ * heights, four dot sizes and three type sizes). Admin's copy was one of the
+ * four: 22px, no `unclassified` branch, and its own five `--c-*` bindings.
+ *
+ * Read-only is the chip itself. Editable reuses the chip's *class*, because the
+ * shared component takes no children and a threshold is a badge with a `select`
+ * in it — the alternative is a second set of `--c-*` bindings, which is the
+ * thing being deleted. `size="md"` is the 22px form admin already used.
+ *
+ * The option labels come from `CLASSIFICATION_KEY`. The list of options does
+ * not: `DlpClassification.options` is the five ranked levels, and
+ * `unclassified` is an absence rather than a sixth level, so it can never be a
+ * threshold.
  */
-function ClassificationChip({
+function ClassificationThreshold({
   value,
   onChange,
   readOnly,
@@ -158,31 +171,27 @@ function ClassificationChip({
   onChange: (next: DlpClassification) => void;
   readOnly: boolean;
 }) {
+  const t = useT();
+  if (readOnly) return <ClassificationChip level={value} size="md" />;
+
   return (
-    <span className="adm-classification" data-level={value}>
-      <SelectChip
-        label="admin.dlp.chip.classificationLabel"
+    <span className="ui-classification" data-level={value} data-size="md">
+      <select
+        className="adm-select"
+        aria-label={t('admin.dlp.chip.classificationLabel')}
         value={value}
-        options={DlpClassification.options}
-        optionKey={CLASSIFICATION_THRESHOLD_KEY}
-        onChange={onChange}
-        readOnly={readOnly}
-        className="adm-classification-inner"
-      />
+        onChange={(event) => onChange(event.target.value as DlpClassification)}
+      >
+        {DlpClassification.options.map((option) => (
+          <option key={option} value={option}>
+            {t(CLASSIFICATION_KEY[option])}
+          </option>
+        ))}
+      </select>
+      <Chevron />
     </span>
   );
 }
-
-/* The five ranked levels only. `unclassified` is an absence, not a sixth level,
- * so it cannot be a threshold — which is why this is its own map rather than
- * `entities/classification`'s six-entry one. */
-const CLASSIFICATION_THRESHOLD_KEY: Record<DlpClassification, MessageKey> = {
-  public: 'classification.public',
-  internal: 'classification.internal',
-  confidential: 'classification.confidential',
-  highlyConfidential: 'classification.highlyConfidential',
-  restricted: 'classification.restricted',
-};
 
 function Band({
   heading,
@@ -198,9 +207,15 @@ function Band({
   const t = useT();
   return (
     <>
+      {/* `Eyebrow` owns the uppercase, behind a `:lang()` allowlist — it is
+        * wrong in Turkish, strips accents in Greek and means nothing in a
+        * caseless script (`docs/14`), and a catalog holding "WHEN" in capitals
+        * would be untranslatable. The band was one of three places in this file
+        * that wrote `text-transform: uppercase` out by hand. */}
       <div className="adm-band">
-        <span className="adm-band-title">{t(heading)}</span>
-        {hint !== undefined && <span className="adm-band-hint">{t(hint)}</span>}
+        <Eyebrow label={heading}>
+          {hint !== undefined && <span className="adm-band-hint">{t(hint)}</span>}
+        </Eyebrow>
       </div>
       <ul className="adm-clauses">{children}</ul>
     </>
@@ -270,18 +285,23 @@ export function PolicySentence({ rule, onChange, readOnly }: SentenceProps) {
   };
 
   return (
-    <div className="adm-builder">
+    /* `.adm-builder` is kept as the class name because the accessibility and
+     * screenshot runs wait on it; the raised surface under it is `Card`'s. */
+    <Card className="adm-builder" padded={false}>
       <Band heading="admin.dlp.band.identity">
         <li className="adm-clause">
           {rich('admin.dlp.clause.name', {
             name: readOnly ? (
               <span className="adm-chip">{rule.name}</span>
             ) : (
-              <input
-                className="adm-chip adm-chip-input"
-                aria-label={t('admin.dlp.chip.nameLabel')}
+              /* The width is the content's, in `ch`, so the field reads as a
+               * word in the sentence rather than as a form control that
+               * happens to sit in one. `size=` cannot do it here: `Field` owns
+               * that prop for its own three heights. */
+              <Field
+                label="admin.dlp.chip.nameLabel"
                 value={rule.name}
-                size={Math.max(rule.name.length, 12)}
+                style={{ inlineSize: `${Math.max(rule.name.length, 12)}ch` }}
                 onChange={(event) => onChange({ ...rule, name: event.target.value })}
               />
             ),
@@ -292,12 +312,12 @@ export function PolicySentence({ rule, onChange, readOnly }: SentenceProps) {
             priority: readOnly ? (
               <span className="adm-chip">{rule.priority}</span>
             ) : (
-              <input
-                className="adm-chip adm-chip-input adm-chip-number"
+              <Field
+                label="admin.dlp.chip.priorityLabel"
                 type="number"
                 min={0}
-                aria-label={t('admin.dlp.chip.priorityLabel')}
                 value={rule.priority}
+                style={{ inlineSize: '9ch' }}
                 onChange={(event) =>
                   onChange({ ...rule, priority: Math.max(0, event.target.valueAsNumber || 0) })
                 }
@@ -312,7 +332,11 @@ export function PolicySentence({ rule, onChange, readOnly }: SentenceProps) {
           <li className="adm-clause">
             {rich('admin.dlp.clause.classification', {
               level: (
-                <ClassificationChip value={level} onChange={setClassification} readOnly={readOnly} />
+                <ClassificationThreshold
+                  value={level}
+                  onChange={setClassification}
+                  readOnly={readOnly}
+                />
               ),
             })}
           </li>
@@ -417,7 +441,7 @@ export function PolicySentence({ rule, onChange, readOnly }: SentenceProps) {
       <Band heading="admin.dlp.band.where">
         <UnbuiltClause note="admin.dlp.clause.whereUnbuilt" />
       </Band>
-    </div>
+    </Card>
   );
 }
 
@@ -436,10 +460,11 @@ export function DenialPreview({ rule }: { rule: DlpRule }) {
   const denial = denialFor(rule.action);
 
   return (
-    <section className="adm-panel" aria-labelledby="adm-preview-title">
-      <h3 className="adm-panel-title" id="adm-preview-title">
-        {t('admin.dlp.preview.title')}
-      </h3>
+    /* Still a `<section>` with an accessible name, so it stays a landmark; the
+     * raised surface is `.ui-card`'s, which `Card` also renders — the component
+     * would have made it a `<div>`. */
+    <section className="ui-card adm-panel" data-padded="" aria-label={t('admin.dlp.preview.title')}>
+      <Eyebrow label="admin.dlp.preview.title" />
       {denial === undefined ? (
         <p className="adm-muted">{t('admin.dlp.preview.none')}</p>
       ) : (
