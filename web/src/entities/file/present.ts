@@ -67,11 +67,13 @@ export function splitName(name: string): { readonly stem: string; readonly exten
  */
 export function rowFromItem(item: Item): FileRow {
   const { stem, extension } = splitName(item.name);
+  const isFolder = item.type === 'FOLDER';
   return {
     id: item.id,
+    isFolder,
     name: stem,
     extension,
-    kind: item.type === 'FOLDER' ? 'other' : kindOf(item.mimeType),
+    kind: isFolder ? 'folder' : kindOf(item.mimeType),
     classification: 'unclassified',
     modifiedAt: Date.parse(item.modifiedAt),
     modifiedByInitials: '',

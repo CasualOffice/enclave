@@ -45,7 +45,17 @@ export function FileIcon({ className, kind }: { className?: string; kind: string
       aria-hidden="true"
       focusable="false"
     >
-      <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8zM14 3v5h5" />
+      {/* A folder is a different shape, not a differently tinted page.
+       *
+       * The list is mostly scanned rather than read, and the glyph is the first
+       * thing that says "this opens into more rows" — a folder wearing the page
+       * outline made every row look alike until the name was read. `#folder` in
+       * `design-system-v2.html` is the source of this path. */}
+      {kind === 'folder' ? (
+        <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+      ) : (
+        <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8zM14 3v5h5" />
+      )}
     </svg>
   );
 }

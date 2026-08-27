@@ -8,11 +8,18 @@ import {
   type ReactNode,
 } from 'react';
 import { useT } from '../../shared/i18n/index.tsx';
-import { replaceParams, useRoute } from '../../app/routes.ts';
+/* `shared/url-state.ts`, not `app/routes.ts`.
+ *
+ * `docs/17 §2` forbids a feature from importing `app/`, and `url-state` exists
+ * precisely to close the gap that rule left — its own header records that two
+ * sessions independently reached for `window.location` instead. This screen
+ * predates it and kept the illegal import; the boundary rule in
+ * `tools/lint-web.mjs` is what finally surfaced that. */
+import { useSearchString, useWriteSearchParams } from '../../shared/url-state.ts';
 import { Icon } from '../../shared/ui/icon-sprite.tsx';
 import { Button, Kbd } from '../../shared/ui/primitives.tsx';
-import { useGroupedWindow } from '../libraries/list/use-grouped-window.ts';
-import type { Density, GroupSpec } from '../libraries/list/geometry.ts';
+import { useGroupedWindow } from '../../shared/list/use-grouped-window.ts';
+import type { Density, GroupSpec } from '../../shared/list/geometry.ts';
 import {
   activeFilters,
   filterDefs,
@@ -127,12 +134,17 @@ function optionText(option: FilterOption, t: (key: MessageKey) => string): strin
 
 export default function SearchScreen() {
   const t = useT();
-  const route = useRoute();
+  const writeParams = useWriteSearchParams();
 
-  /* Read once per route snapshot. `readFilters` builds a fresh object, so
-   * deriving it inline would give every `useMemo` below a new dependency on
-   * every render and quietly turn all of them off. */
-  const params = route.params;
+  /* Memoized on the search *string*, not on a `URLSearchParams`.
+   *
+   * `useSearchParams()` allocates a fresh object per render — it has to, the
+   * object is mutable — so depending on it would give every `useMemo` below a
+   * new dependency on every render and quietly turn all of them off. The
+   * string is stable between actual changes, which is what a dependency needs
+   * to be. */
+  const search = useSearchString();
+  const params = useMemo(() => new URLSearchParams(search), [search]);
   const query = params.get('q') ?? '';
   const filters = useMemo(() => readFilters(params), [params]);
   const retrieval = useMemo(() => readRetrieval(params), [params]);
@@ -152,9 +164,14 @@ export default function SearchScreen() {
        * showing. Neither is part of the product's filter set. */
       if (surfaceParam !== null) next['surface'] = surfaceParam;
       if (retrievalParam !== null) next['retrieval'] = retrievalParam;
-      replaceParams(next);
+      /* `useWriteSearchParams` merges rather than replaces, so every key this
+       * screen does not name is preserved. `toParams` already emits the full
+       * filter set, and the two carried keys above are added explicitly, so the
+       * behaviour is unchanged — but a key added later by another surface is no
+       * longer silently dropped. */
+      writeParams(next);
     },
-    [surfaceParam, retrievalParam],
+    [surfaceParam, retrievalParam, writeParams],
   );
 
   const clearFilters = useCallback(() => write(query, NO_FILTERS), [write, query]);

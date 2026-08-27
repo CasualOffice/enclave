@@ -1,5 +1,5 @@
 import { useT } from '../../../shared/i18n/index.tsx';
-import type { Density } from './geometry.ts';
+import type { Density } from '../../../shared/list/geometry.ts';
 
 /* The four states `docs/09 §11` requires, none of which appears anywhere in the
  * v2 reference on any of its five layouts (`plans/M5-MVP-GA.md` D35.7). So they

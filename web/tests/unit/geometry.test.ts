@@ -7,7 +7,7 @@ import {
   scrollTopForAnchor,
   sliceWindow,
   type GroupSpec,
-} from '../../src/features/libraries/list/geometry.ts';
+} from '../../src/shared/list/geometry.ts';
 
 /* The arithmetic, without a DOM.
  *

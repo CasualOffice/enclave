@@ -1,0 +1,51 @@
+/* The peek panel's Preview tab.
+ *
+ * The panel is 372 px at rest, so the image is width-constrained and never
+ * forces the panel to scroll horizontally. Logical properties throughout.
+ */
+
+/* Quiet text is `--fg2`, never `--fg3` or `--fg4` (`ENC-680`).
+ *
+ * Measured by axe in real Chromium: in the light theme `--fg4` is 3.47:1 and
+ * `--fg3` is 4.23:1 on the sunken surface — both short of the 4.5:1 that
+ * `docs/09 §15` requires for text. `grouped-list.css` already records this and
+ * uses `--fg2` throughout for the same reason. Until the token scale is fixed,
+ * every quiet text colour in this file is `--fg2`.
+ */
+
+.peek-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-block: 4px;
+  min-inline-size: 0;
+}
+
+.peek-preview-image {
+  inline-size: 100%;
+  block-size: auto;
+  max-block-size: 320px;
+  object-fit: contain;
+  border-radius: var(--r-ctrl);
+  background: var(--sunken);
+  /* A hairline rather than a border: `docs/09 §3` — surfaces are separated by
+   * shadow, and a light image against a light sheet needs an edge to read as
+   * an object. */
+  box-shadow: var(--hairline);
+}
+
+.peek-preview-note {
+  margin: 0;
+  font-size: 12px;
+  color: var(--fg2);
+  line-height: 1.5;
+}
+
+/* Every state's note is the same neutral colour, and that is deliberate.
+ *
+ * Not-ready is a statement about processing; denied is a refusal; empty is an
+ * absence. None of the three is a *fault*, so none borrows the error treatment
+ * (`docs/17 §7`), and the three had separate rules here only because they
+ * started with different values. They do not differ, so they are one rule — the
+ * distinction a reader needs is in the sentence, which is what carries it.
+ */

@@ -1,9 +1,10 @@
-import { useState, type ReactNode } from 'react';
+import type { ReactNode } from 'react';
 import { useT } from '../../../shared/i18n/index.tsx';
 import { useFormatters } from '../../../shared/i18n/format.ts';
 import type { MessageKey } from '../../../shared/i18n/catalog.ts';
 import { Icon } from '../../../shared/ui/icon-sprite.tsx';
 import { Kbd, LaterChip, Skeleton } from '../../../shared/ui/primitives.tsx';
+import { PreviewTab } from './preview-tab.tsx';
 import { FailureState } from '../../../shared/ui/surface-states.tsx';
 import { failureOf } from '../../../shared/api/failure.ts';
 import type {
@@ -33,16 +34,20 @@ import type {
  *
  * - `details`  — `GET /files/{id}`. Real.
  * - `versions` — `GET /files/{id}/versions`. Real.
- * - `preview`  — needs a rendition, and `crates/api/src/main.rs` binds
- *                `Delivery::unconfigured()` unconditionally, so the preview
- *                route answers 503 in every build of this binary.
+ * - `preview`  — `GET /files/{id}/preview`. **Now real.** The binary composes
+ *                an object store when `storage:` is configured, and the route
+ *                answers PNG bytes for a readable `image/png|jpeg|webp`. It
+ *                also answers 404 for a version rule 9 will not serve and 503
+ *                for a media type with no renderer, and `preview-tab.tsx`
+ *                tells those two apart rather than collapsing them into one
+ *                error.
  * - `access`   — no ACL read endpoint is registered.
  * - `activity` — blocked on `docs/17` Q24: `audit_events` is hash-chained and
  *                deliberately not a user-facing feed (`CLAUDE.md` rule 10), so
  *                the tab cannot be built on it and must not be faked from it.
  */
 const TABS = [
-  { id: 'preview', label: 'library.peek.tab.preview', built: false },
+  { id: 'preview', label: 'library.peek.tab.preview', built: true },
   { id: 'details', label: 'library.peek.tab.details', built: true },
   { id: 'access', label: 'library.peek.tab.access', built: false },
   { id: 'versions', label: 'library.peek.tab.versions', built: true },
@@ -51,9 +56,11 @@ const TABS = [
 
 type TabId = (typeof TABS)[number]['id'];
 
+/** The tab ids, for validating the one that arrives from the URL. */
+const TAB_IDS: readonly TabId[] = TABS.map((entry) => entry.id);
+
 /** The unbuilt note for each tab that has no endpoint, naming *why* rather than shrugging. */
 const UNBUILT_NOTE: Record<string, MessageKey> = {
-  preview: 'library.peek.tab.preview.unbuilt',
   access: 'library.peek.tab.access.unbuilt',
   activity: 'library.peek.tab.activity.unbuilt',
 };
@@ -306,6 +313,7 @@ export function PeekPanel({
   error,
   onClose,
   onRetry,
+  activeTab,
   onTabChange,
   navigation,
 }: {
@@ -316,6 +324,8 @@ export function PeekPanel({
   error: unknown;
   onClose: () => void;
   onRetry: () => void;
+  /** The open tab, from the route. */
+  activeTab: string;
   onTabChange: (tab: TabId) => void;
   navigation?: PeekNavigation | undefined;
 }) {
@@ -325,7 +335,15 @@ export function PeekPanel({
    * loading and error paths React saw a different hook sequence, which is the
    * "rendered fewer hooks than expected" crash rather than a style point. */
   const formatters = useFormatters();
-  const [tab, setTab] = useState<TabId>('details');
+  /* The open tab is **URL state**, not component state (`docs/17 §4`).
+   *
+   * It was `useState` and that made a peek unshareable at the tab a colleague
+   * needs: "look at the versions of this file" had to be said in words beside
+   * the link. It is exactly the class of thing `docs/09 §3` puts in the route —
+   * addressable, survives reload, survives back/forward — and it costs one
+   * parameter. The screen owns the parameter and passes it down, so the panel
+   * stays a controlled component with no route knowledge of its own. */
+  const tab: TabId = TAB_IDS.includes(activeTab as TabId) ? (activeTab as TabId) : 'details';
 
   /* Pinned open with nothing selected. A real state, not a gap: the panel keeps
    * its width so the list does not reflow when a row is picked. */
@@ -426,7 +444,6 @@ export function PeekPanel({
               role="tab"
               aria-selected={selected}
               onClick={() => {
-                setTab(entry.id);
                 onTabChange(entry.id);
               }}
             >
@@ -437,7 +454,35 @@ export function PeekPanel({
       </div>
 
       <div className="library-peek-body">
-        {tab === 'versions' ? <VersionList versions={versions} /> : <DetailsTab detail={detail} />}
+        {tab === 'preview' ? (
+          /* The Preview tab reads `versions` too, because `isReadable` is the
+           * only field that answers whether bytes may be served and it lives
+           * there rather than on `FileDetail` (`ENC-825`). Passing the page in
+           * rather than fetching it again keeps one request behind two tabs.
+           *
+           * `detail` is awaited rather than defaulted. A placeholder
+           * `capabilities` of all-`false` would render *preview refused* — a
+           * denial the policy chain never issued, shown with the confidence of
+           * a real one, which is the exact failure `docs/17 §3` names. */
+          detail === undefined ? (
+            <div className="peek-preview" role="status" aria-busy="true">
+              <Skeleton width="100%" />
+            </div>
+          ) : (
+            <PreviewTab
+              fileId={fileId}
+              name={detail.name}
+              mimeType={detail.mimeType}
+              capabilities={detail.capabilities}
+              versions={versions}
+              versionsPending={versions === undefined}
+            />
+          )
+        ) : tab === 'versions' ? (
+          <VersionList versions={versions} />
+        ) : (
+          <DetailsTab detail={detail} />
+        )}
       </div>
     </PeekChrome>
   );

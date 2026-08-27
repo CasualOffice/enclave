@@ -1,33 +1,39 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo } from 'react';
 import { useT } from '../../shared/i18n/index.tsx';
 import { Icon } from '../../shared/ui/icon-sprite.tsx';
 import { Button } from '../../shared/ui/primitives.tsx';
-import { FailureState, UnbuiltState } from '../../shared/ui/surface-states.tsx';
+import { FailureState } from '../../shared/ui/surface-states.tsx';
 import { failureOf } from '../../shared/api/failure.ts';
 import { rowFromItem } from '../../entities/file/present.ts';
 import type { Item } from '../../entities/file/api-model.ts';
+import { useUploadStore } from '../../entities/upload/store.ts';
+import { useUploadTarget } from '../../entities/upload/use-upload-target.ts';
+import { isActive } from '../../entities/upload/model.ts';
 import { useSearchParam, useWriteSearchParams } from '../../shared/url-state.ts';
 import { GroupedFileList } from './list/grouped-file-list.tsx';
-import type { DensityName, GroupSpec } from './list/geometry.ts';
+import type { DensityName, GroupSpec } from '../../shared/list/geometry.ts';
 import { useListViewStore } from './list-view-store.ts';
 import { useFileDetail, useFileVersions, useLibraryItems } from './api.ts';
+import { useLibrary } from './picker-api.ts';
+import { LibraryPicker } from './picker.tsx';
 import { PeekPanel } from './peek/peek-panel.tsx';
 import './library.css';
 
 /* The file browser, reading `GET /api/v1/libraries/{id}/items`.
  *
- * ## The picker that cannot exist yet
+ * ## The picker exists now
  *
- * There is no `GET /api/v1/libraries`. The API registers `/libraries/{id}/items`
- * and nothing that enumerates libraries, workspaces or sites — so a client has
- * no way to discover which library to open, and the sidebar cannot list them.
+ * This file used to open with a note explaining that no endpoint enumerated
+ * libraries, so the id had to come from the URL and the screen drew the unbuilt
+ * treatment without one. `PR #71` added `GET /workspaces`,
+ * `GET /workspaces/{id}/libraries` and `GET /libraries/{id}`, so that note is
+ * no longer true and the treatment is withdrawn — a `Later` chip left on a
+ * surface that has been built erodes the marker exactly as fast as a denial
+ * left on one that has not (`ENC-673`).
  *
- * The library id therefore comes from the URL, which is where `docs/17 §5` puts
- * it anyway (`/w/:workspaceId/l/:libraryId`). With no id in the URL the screen
- * renders the **unbuilt** treatment and says why. It does not hard-code an id,
- * and it does not show an empty list — an empty list would be a lie about the
- * user's access, and it is exactly the lie `docs/09 §11` separates the empty
- * states to prevent.
+ * The library id is still URL state, which is where `docs/17 §5` puts it. What
+ * changed is that a viewer with no id in the URL now gets a **picker** rather
+ * than an explanation.
  */
 
 /** Folders above files. The only grouping the listing payload can support. */
@@ -56,9 +62,6 @@ export default function LibraryScreen() {
   const folderIdRaw = useSearchParam('folder');
   const peekIdRaw = useSearchParam('peek');
   const folderId = folderIdRaw.length > 0 ? folderIdRaw : undefined;
-  /* Density is a display preference and belongs in the URL rather than in a
-   * store, for the same reason the filters do: a colleague opening the link
-   * should see the view that was described to them (`docs/17 §4`). */
   const density: DensityName = useSearchParam('density') === 'compact' ? 'compact' : 'default';
   const peekId = peekIdRaw.length > 0 ? peekIdRaw : undefined;
 
@@ -67,18 +70,52 @@ export default function LibraryScreen() {
     [write],
   );
   const setPeekId = useCallback((id: string | undefined) => write({ peek: id ?? null }), [write]);
+  const setLibraryId = useCallback(
+    (id: string) => write({ library: id, folder: null, peek: null }),
+    [write],
+  );
 
   const collapsed = useListViewStore((state) => state.collapsed);
   const selected = useListViewStore((state) => state.selected);
   const toggleGroup = useListViewStore((state) => state.toggleGroup);
   const toggleSelected = useListViewStore((state) => state.toggleSelected);
 
-  const items = useLibraryItems(libraryId, folderId);
+  const hasLibrary = libraryId.length > 0;
+  const library = useLibrary(hasLibrary ? libraryId : undefined);
+  const items = useLibraryItems(hasLibrary ? libraryId : undefined, folderId);
   const peek = useFileDetail(peekId);
-  /* The Versions tab fetches only once it is opened. A panel that loaded every
-   * tab's data on open would issue four requests to render one. */
-  const [peekTab, setPeekTab] = useState<string>('details');
-  const versions = useFileVersions(peekId, peekTab === 'versions');
+  /* The open peek tab is URL state, so a peek can be shared at the tab the
+   * recipient needs (`docs/17 §4`). It was component state, which made
+   * "look at the versions of this file" a sentence rather than a link. */
+  const peekTabRaw = useSearchParam('tab');
+  const peekTab = peekTabRaw.length > 0 ? peekTabRaw : 'details';
+  const setPeekTab = useCallback((tab: string) => write({ tab }), [write]);
+  /* The Preview tab needs `isReadable` as much as the Versions tab does, so the
+   * versions query is enabled for both rather than for one. */
+  const versions = useFileVersions(peekId, peekTab === 'versions' || peekTab === 'preview');
+
+  /* Upload rows for *this* container, drawn in the list as the prototype draws
+   * them. The queue itself lives in `entities/upload` because two features read
+   * it and a feature may not import a feature (`docs/17 §2`). */
+  const uploads = useUploadStore((state) => state.rows);
+  const localUploads = useMemo(
+    () =>
+      uploads.filter(
+        (row) =>
+          row.libraryId === libraryId &&
+          (row.parentId ?? undefined) === folderId &&
+          isActive(row.phase),
+      ),
+    [uploads, libraryId, folderId],
+  );
+
+  /* **The server decides.** Upload is offered from the library's own
+   * `capabilities.create` and from nothing else — not from `isAdmin`, not from
+   * the viewer's role, not from whether the list happens to be non-empty
+   * (`docs/17 §1`). While the library metadata is still loading the control is
+   * *busy* rather than denied: not knowing yet is not a refusal. */
+  const canCreate = library.data?.capabilities.create === true;
+  const target = useUploadTarget(hasLibrary ? libraryId : undefined, folderId, canCreate);
 
   const { groups, ordered } = useMemo(
     () => groupItems(items.data?.items ?? []),
@@ -87,8 +124,6 @@ export default function LibraryScreen() {
 
   const rows = useMemo(() => ordered.map(rowFromItem), [ordered]);
 
-  /* Group names come from the catalog rather than from the payload: `FOLDER`
-   * and `FILE` are enum values on the wire, not words to show a person. */
   const namedGroups = useMemo(
     () =>
       groups.map((group) => ({
@@ -100,12 +135,6 @@ export default function LibraryScreen() {
 
   const closePeek = useCallback(() => setPeekId(undefined), [setPeekId]);
 
-  /* Walking the peek across the loaded rows.
-   *
-   * Pure list navigation over rows the server already returned and already
-   * filtered — no capability is consulted, because none is involved. Reaching
-   * the end of the list is a neutral disabled state and must never borrow the
-   * denial treatment (`docs/17 §6`). */
   const peekIndex = peekId === undefined ? -1 : ordered.findIndex((row) => row.id === peekId);
   const navigation =
     peekIndex < 0
@@ -114,18 +143,19 @@ export default function LibraryScreen() {
           hasPrevious: peekIndex > 0,
           hasNext: peekIndex < ordered.length - 1,
           onPrevious: () => {
-            const target = ordered[peekIndex - 1];
-            if (target !== undefined) setPeekId(target.id);
+            const target_ = ordered[peekIndex - 1];
+            if (target_ !== undefined) setPeekId(target_.id);
           },
           onNext: () => {
-            const target = ordered[peekIndex + 1];
-            if (target !== undefined) setPeekId(target.id);
+            const target_ = ordered[peekIndex + 1];
+            if (target_ !== undefined) setPeekId(target_.id);
           },
         };
 
-  if (libraryId.length === 0) {
+  /* ------------------------------------------------------------ the picker */
+  if (!hasLibrary) {
     return (
-      <main className="library">
+      <main className="library" data-screen="library" data-state="picker">
         <div className="library-location">
           <nav className="library-crumbs" aria-label={t('library.breadcrumb')}>
             <ol>
@@ -137,9 +167,7 @@ export default function LibraryScreen() {
             </ol>
           </nav>
         </div>
-        <div className="library-peek-body">
-          <UnbuiltState heading="library.noPicker.title" note="library.noPicker.body" />
-        </div>
+        <LibraryPicker onPick={setLibraryId} />
       </main>
     );
   }
@@ -147,30 +175,40 @@ export default function LibraryScreen() {
   const peekOpen = peekId !== undefined && peekId.length > 0;
 
   return (
-    <main className="library">
+    <main className="library" data-screen="library">
       {/* --------------------------------------------------- the location bar */}
       <div className="library-location">
         <nav className="library-crumbs" aria-label={t('library.breadcrumb')}>
           <ol>
             <li>
-              {/* The library's *name* is not on the wire either — `browse`
-               * returns items and a page, never the container's own metadata —
-               * so the crumb is the generic label rather than an id dressed up
-               * as a title. */}
-              <button
-                type="button"
-                className="library-crumb"
-                aria-current={folderId === undefined ? 'page' : undefined}
-                onClick={() => setFolderId(undefined)}
-              >
+              {/* Back to the picker. It is a real destination now. */}
+              <button type="button" className="library-crumb" onClick={() => write({ library: null, folder: null, peek: null })}>
                 {t('library.title')}
               </button>
             </li>
+            <li>
+              {/* The library's **name**, from `GET /libraries/{id}`.
+               *
+               * This crumb used to read the generic word "Files" because the
+               * listing endpoint returns items and never the container's own
+               * metadata, and an id dressed up as a title was rightly refused.
+               * There is a route for it now. While it loads the crumb shows
+               * nothing rather than a placeholder that would be replaced by a
+               * different string a moment later. */}
+              <span className="library-crumb" aria-current={folderId === undefined ? 'page' : undefined}>
+                <bdi dir="auto">{library.data?.name ?? ''}</bdi>
+              </span>
+            </li>
             {folderId !== undefined && (
               <li>
-                <span className="library-crumb" aria-current="page">
+                <button
+                  type="button"
+                  className="library-crumb"
+                  aria-current="page"
+                  onClick={() => setFolderId(undefined)}
+                >
                   {t('library.folder')}
-                </span>
+                </button>
               </li>
             )}
           </ol>
@@ -191,9 +229,6 @@ export default function LibraryScreen() {
 
       {/* ------------------------------------------------------- the view bar */}
       <div className="library-viewbar">
-        {/* Saved views come from the server in the design, and there is no
-         * endpoint for them. One view is shown — the one that exists — rather
-         * than a hard-coded strip of tabs that all show the same rows. */}
         <div className="library-views" role="tablist" aria-label={t('library.views')}>
           <button type="button" role="tab" aria-selected="true" className="library-view">
             {t('library.view.all')}
@@ -204,15 +239,9 @@ export default function LibraryScreen() {
         </div>
 
         <span className="library-viewbar-trailing">
-          {/* The prototype draws Filter, Display, Upload and + New here, and all
-           * four are drawn here too — under the unbuilt treatment rather than
-           * omitted. A control that vanishes tells a user the product does not
-           * have the idea; a control marked `Later` tells them it does not have
-           * it *yet*, which is the true statement (D33).
-           *
-           * None of them is *denied*: the policy chain has refused nobody. There
-           * is no endpoint that filters a listing, none that stores a display
-           * preference, and none that creates a folder. */}
+          {/* Filter and Display stay unbuilt, and honestly so: no endpoint
+           * filters a listing and none stores a display preference. Neither is
+           * *denied* — the policy chain has refused nobody. */}
           <Button
             label="library.filter"
             icon="filter"
@@ -225,17 +254,31 @@ export default function LibraryScreen() {
             size="sm"
             state={{ kind: 'unbuilt', note: 'library.display.unbuilt' }}
           />
-          {/* Upload is not hidden and not denied — it is **unbuilt**, and the
-           * distinction is the point (`docs/17 §6`). `POST /api/v1/uploads`
-           * exists but `crates/api/src/main.rs` binds `Delivery::unconfigured()`
-           * unconditionally, so it answers 503 in every build of this binary.
-           * That is the product not having the feature, not the policy chain
-           * refusing this user, and it must not wear the denial treatment. */}
+
+          {/* **Upload is real.** Three states, and they are three different
+           * things (`docs/17 §6`):
+           *
+           *   * `busy`    — the library's capabilities have not arrived. Not
+           *                 knowing is not a refusal.
+           *   * `denied`  — `capabilities.create` is `false`. Shown, focusable,
+           *                 not hidden (`docs/09 §5`). It carries **no reason**,
+           *                 because `capabilities` does not yet supply one
+           *                 (`ENC-674`) and a client-invented explanation of a
+           *                 policy decision is the client re-deriving it.
+           *   * `ready`   — opens the file picker.
+           */}
           <Button
             label="library.upload"
             icon="up"
             size="sm"
-            state={{ kind: 'unbuilt', note: 'library.upload.unbuilt' }}
+            onClick={target.pickFiles}
+            state={
+              library.isPending
+                ? { kind: 'busy' }
+                : canCreate
+                  ? { kind: 'ready' }
+                  : { kind: 'denied', reason: t('library.upload.denied') }
+            }
           />
           <Button
             label="library.new"
@@ -248,7 +291,29 @@ export default function LibraryScreen() {
       </div>
 
       {/* ----------------------------------------------------------- the body */}
-      <div className="library-body" data-peek={peekOpen ? 'open' : 'closed'}>
+      <div
+        className="library-body"
+        data-peek={peekOpen ? 'open' : 'closed'}
+        {...target.dropHandlers}
+      >
+        {/* The hidden input the Upload button clicks. `multiple`, because
+         * `docs/09 §8` describes a queue rather than one file at a time. */}
+        <input
+          ref={target.inputRef}
+          type="file"
+          multiple
+          className="ui-sr-only"
+          tabIndex={-1}
+          aria-hidden="true"
+          onChange={target.onInputChange}
+        />
+
+        {target.isDragging && (
+          <div className="upl-dropzone" aria-hidden="true">
+            {t('upload.dropHere')}
+          </div>
+        )}
+
         <div className="library-list">
           {items.isError ? (
             <div className="library-peek-body">
@@ -258,6 +323,7 @@ export default function LibraryScreen() {
             <GroupedFileList
               groups={namedGroups}
               rows={rows}
+              uploads={localUploads}
               collapsed={collapsed}
               onToggleGroup={toggleGroup}
               selected={selected}
@@ -265,7 +331,7 @@ export default function LibraryScreen() {
               density={density}
               status={items.isPending ? 'loading' : 'ready'}
               filtersActive={false}
-              onUpload={undefined}
+              onUpload={canCreate ? target.pickFiles : undefined}
             />
           )}
         </div>
@@ -279,6 +345,7 @@ export default function LibraryScreen() {
             error={peek.error}
             onClose={closePeek}
             onRetry={() => void peek.refetch()}
+            activeTab={peekTab}
             onTabChange={setPeekTab}
             navigation={navigation}
           />

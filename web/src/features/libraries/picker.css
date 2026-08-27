@@ -1,0 +1,104 @@
+/* The library picker.
+ *
+ * Follows the sidebar's nav-row rhythm rather than inventing a list style: 26 px
+ * rows, 12.5 px labels, `--r-ctrl` corners, `--hover` on hover. Logical
+ * properties only.
+ */
+
+/* Quiet text is `--fg2`, never `--fg3` or `--fg4` (`ENC-680`).
+ *
+ * Measured by axe in real Chromium: in the light theme `--fg4` is 3.47:1 and
+ * `--fg3` is 4.23:1 on the sunken surface — both short of the 4.5:1 that
+ * `docs/09 §15` requires for text. `grouped-list.css` already records this and
+ * uses `--fg2` throughout for the same reason. Until the token scale is fixed,
+ * every quiet text colour in this file is `--fg2`.
+ */
+
+.lib-picker {
+  padding-block: 20px;
+  padding-inline: 20px;
+  max-inline-size: 560px;
+}
+
+.lib-picker-title {
+  margin: 0 0 12px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--fg2);
+}
+
+.lib-picker-list,
+.lib-picker-libs {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.lib-picker-ws + .lib-picker-ws {
+  margin-block-start: 16px;
+}
+
+.lib-picker-ws-name {
+  margin: 0 0 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--fg2);
+}
+
+.lib-picker-lib {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  inline-size: 100%;
+  block-size: 28px;
+  padding-inline: 8px;
+  border: 0;
+  border-radius: var(--r-ctrl);
+  background: transparent;
+  color: var(--fg);
+  font-size: 12.5px;
+  font-weight: 450;
+  text-align: start;
+  cursor: pointer;
+}
+
+.lib-picker-lib:hover {
+  background: var(--hover);
+}
+
+.lib-picker-lib[aria-disabled='true'] {
+  color: var(--fg2);
+  cursor: default;
+}
+
+.lib-picker-lib[aria-disabled='true']:hover {
+  background: transparent;
+}
+
+.lib-picker-lib-name {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lib-picker-lib-tag {
+  margin-inline-start: auto;
+  flex: none;
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--fg2);
+  background: var(--sunken);
+  border-radius: 999px;
+  padding-block: 1px;
+  padding-inline: 7px;
+}
+
+.lib-picker-none {
+  margin: 0;
+  padding-inline: 8px;
+  font-size: 12px;
+  color: var(--fg2);
+}
