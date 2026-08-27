@@ -1082,6 +1082,144 @@ async fn the_antivirus_pass_finds_the_version_a_completed_upload_committed() {
     assert_ne!(after.status, "AVAILABLE");
 }
 
+/// A commit the database refuses must not leave a session `SCANNING` with nothing to scan.
+///
+/// This is `ENC-691`'s failure mode reached the other way round. The session's `SCANNING` write and
+/// the version commit share one transaction, so a refusal — here a live sibling already holding the
+/// name — takes both back. The session goes to the state it can be retried from, the bytes stay
+/// staged under a session the reaper still counts, and no half-written journey survives.
+///
+/// A refused *completion* is the opposite and is asserted next door: wrong bytes are persisted as
+/// `FAILED`, because retrying them cannot work. The two refusals are deliberately not the same.
+///
+/// The positive control is the first upload: the same fixture, the same store, the same name, and
+/// it does produce a file and a version. Without it, "the second one wrote nothing" holds against
+/// a completion path that writes nothing at all.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL; CI runs it with --include-ignored"]
+async fn a_refused_commit_takes_the_session_back_rather_than_stranding_it() {
+    let (db, fixtures, _pool, alpha_library, _beta) = setup().await;
+    let harness = harness(&db).await;
+    let alpha = fixtures.alpha.id;
+
+    let mut sessions = Vec::new();
+    for _attempt in 0..2 {
+        let (status, issued) = call(
+            &harness,
+            alpha,
+            fixtures.alpha.member,
+            "POST",
+            "/api/v1/uploads",
+            Some(upload_body(alpha_library, "Quarterly Plan.pdf", 64)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{issued}");
+        sessions.push(issued["uploadId"].as_str().expect("uploadId").to_owned());
+    }
+
+    async fn complete(
+        harness: &Harness,
+        at: &Fixtures,
+        id: &str,
+    ) -> (StatusCode, serde_json::Value) {
+        call(
+            harness,
+            at.alpha.id,
+            at.alpha.member,
+            "POST",
+            &format!("/api/v1/uploads/{id}/complete"),
+            Some(serde_json::json!({ "sizeBytes": 64, "sha256": DIGEST_HEX })),
+        )
+        .await
+    }
+
+    // The control: the first upload of that name lands.
+    let (status, body) = complete(&harness, &fixtures, &sessions[0]).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    assert_eq!(content_rows(&db, alpha).await, (1, 1));
+
+    // The second one cannot: `uq_files_sibling_name` holds the name.
+    let (status, body) = complete(&harness, &fixtures, &sessions[1]).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["details"][0]["field"], "name", "{body}");
+
+    assert_ne!(
+        stored_state(&db, &sessions[1]).await,
+        "SCANNING",
+        "the refused session was left SCANNING with no version behind it — the stranded state \
+         ENC-691 is about, reached from the other direction. The session's state write and the \
+         commit share one transaction so that this cannot happen"
+    );
+    assert_eq!(content_rows(&db, alpha).await, (1, 1), "the refused commit left rows behind");
+}
+
+/// The same claim on the one refusal PostgreSQL does **not** enforce for us.
+///
+/// `a_refused_commit_takes_the_session_back_rather_than_stranding_it` turned out to prove less than
+/// it looked like it did: a duplicate name is a constraint violation, which aborts the transaction,
+/// and `COMMIT` on an aborted transaction is a rollback. Replacing the handler's `rollback` with a
+/// `commit` failed nothing — so that test holds its property by accident of the database rather
+/// than by the handler's choice.
+///
+/// A quota refusal is the case where the choice is real. `charge_storage` refuses from a statement
+/// that **succeeded** — the limit is in its `WHERE` clause, so "no room" is zero rows updated, not
+/// an error — and the transaction is still perfectly committable at that point. Committing it would
+/// leave the session `SCANNING`, a `files` row behind it, and no version: exactly `ENC-691`'s
+/// stranded state, produced deliberately.
+///
+/// The headroom is removed *after* the session exists, because `UploadService::create`'s preflight
+/// would otherwise refuse before a URL was ever issued — which is a different refusal, asserted in
+/// `an_upload_with_no_headroom_is_refused_before_a_url_exists`.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL; CI runs it with --include-ignored"]
+async fn a_commit_the_quota_refuses_takes_the_session_back_too() {
+    let (db, fixtures, pool, alpha_library, _beta) = setup().await;
+    let harness = harness(&db).await;
+    let alpha = fixtures.alpha.id;
+
+    set_quota(&pool, alpha, 1024 * 1024, Enforcement::Block).await;
+    let (status, issued) = call(
+        &harness,
+        alpha,
+        fixtures.alpha.member,
+        "POST",
+        "/api/v1/uploads",
+        Some(upload_body(alpha_library, "Quarterly Plan.pdf", 64)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{issued}");
+    let upload_id = issued["uploadId"].as_str().expect("uploadId").to_owned();
+
+    // The tenant's headroom disappears while the bytes are in flight.
+    set_quota(&pool, alpha, 8, Enforcement::Block).await;
+
+    let (status, body) = call(
+        &harness,
+        alpha,
+        fixtures.alpha.member,
+        "POST",
+        &format!("/api/v1/uploads/{upload_id}/complete"),
+        Some(serde_json::json!({ "sizeBytes": 64, "sha256": DIGEST_HEX })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["error"]["code"], "QUOTA_EXCEEDED", "{body}");
+
+    assert_ne!(
+        stored_state(&db, &upload_id).await,
+        "SCANNING",
+        "the session was left SCANNING with no version behind it. A quota refusal comes back from a \
+         statement that succeeded, so the transaction is still committable and only the handler's \
+         rollback stops this"
+    );
+    assert_eq!(
+        content_rows(&db, alpha).await,
+        (0, 0),
+        "the refused commit left a files row behind, pointing at nothing"
+    );
+    assert_eq!(used_bytes(&db, alpha).await, 0, "a refused charge must move no counter");
+}
+
 /// A size the store contradicts is a **persisted** refusal, not a warning.
 ///
 /// The session ends `FAILED` and the client is told which field it got wrong. Retrying the same
