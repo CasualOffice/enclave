@@ -1,6 +1,6 @@
 # 03 — Low-Level Design
 
-> **Status:** Draft · **Version:** 2.0 · **Owner:** Platform Engineering · **Last updated:** 2026-08-18
+> **Status:** Draft · **Version:** 2.1 · **Owner:** Platform Engineering · **Last updated:** 2026-08-28
 > **Authoritative for:** Rust types and traits, policy enforcement implementation, runtime rules.
 > DDL lives in `04-DATA-MODEL.md`. Endpoint contracts live in `05-API.md`. The crate list lives in `02-HLD.md §4`.
 
@@ -405,8 +405,17 @@ CREATED -> UPLOADING -> UPLOADED -> SCANNING -> PROCESSING -> AVAILABLE
 Failure states: `QUARANTINED`, `FAILED`, `ABORTED`, `EXPIRED`.
 
 Blob storage cannot join a SQL transaction, so bytes are staged under an upload-scoped key and
-promoted on commit. Orphaned staged objects are reaped by the scheduler after
-`upload.session_ttl` (default 24h).
+promoted on commit. Orphaned staged objects are reaped after `upload.session_ttl` (default 24h) by
+**`enclave-worker`'s `upload-reaper` pass**, which also reclaims sessions stranded in `SCANNING`
+with no version behind them.
+
+That sentence used to say "by the scheduler", and it was untrue of everything that shipped:
+`enclave_uploads::reap_expired` existed from M1 with no caller in any binary, so no deployment ever
+released a staged object (`ENC-806`). It names a process now because a document naming a role
+nobody implemented is how that survived five milestones. The reaper is in the worker rather than in
+`enclave-scheduler` because it needs a verified object store, a tenant enumerator, per-tenant
+failure isolation and a way to be *visibly* unscheduled when no bucket is configured — see
+`crates/worker/src/uploads.rs` for the argument.
 
 Atomic version commit:
 
