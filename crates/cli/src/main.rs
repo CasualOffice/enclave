@@ -9,6 +9,9 @@
 //! * `doctor` — the read-only command someone runs when the stack "doesn't work", which checks the
 //!   things that are wrong nine times out of ten, including the two security properties that fail
 //!   silently: forced row-level security and an append-only audit log.
+//! * `reclaim-uploads` — the repair pass for `ENC-787`: upload sessions left `SCANNING` with no
+//!   version behind them, which no antivirus pass and no reaper will ever collect. See
+//!   `crates/cli/src/reclaim.rs` for why it is a command rather than a background loop.
 //! * `set-password` — the moment after the first two: a seeded deployment has a directory full of
 //!   accounts and no credentials, so every one of them correctly answers `401`. This is how the
 //!   first sign-in becomes possible (`ENC-687`).
@@ -27,6 +30,7 @@ mod connect;
 mod doctor;
 mod migrate;
 mod password;
+mod reclaim;
 mod schema;
 mod seed;
 
@@ -65,5 +69,6 @@ async fn dispatch(cli: Cli) -> anyhow::Result<()> {
         Command::Migrate => migrate::run(&target).await,
         Command::Doctor => doctor::run(&target).await,
         Command::SetPassword(args) => password::run(&target, args).await,
+        Command::ReclaimUploads(args) => reclaim::run(&target, cli.config.as_deref(), args).await,
     }
 }

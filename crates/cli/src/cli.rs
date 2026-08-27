@@ -46,6 +46,14 @@ pub(crate) enum Command {
     /// Check the database the way someone does when the stack "doesn't work". Read-only.
     Doctor,
 
+    /// Reclaim upload sessions stranded in `SCANNING` with no version behind them.
+    ///
+    /// The repair pass for `ENC-787`. A session left `SCANNING` by the pre-`ENC-691` completion
+    /// path is collected by nothing — no antivirus pass (it queues on `file_versions.av_status`,
+    /// and there is no version), no reaper (`Scanning.holds_staged_bytes()` is `false`) — so its
+    /// staged object sits in the bucket, unmetered and unreadable, indefinitely.
+    ReclaimUploads(ReclaimUploadsArgs),
+
     /// Set an account's password, reading it from standard input.
     ///
     /// The command a deployment needs to get its first sign-in: `seed` writes users and nothing has
@@ -72,6 +80,43 @@ pub(crate) struct SetPasswordArgs {
     /// The account's email address. Normalised the way the login path normalises it.
     #[arg(long, value_name = "EMAIL")]
     pub(crate) email: String,
+}
+
+/// Arguments for `reclaim-uploads`.
+#[derive(Debug, Args)]
+pub(crate) struct ReclaimUploadsArgs {
+    /// The tenant's slug, as `seed` writes it and as the routing host uses it.
+    ///
+    /// A slug and not a UUID, for `set-password`'s reason: the operator has the hostname in front
+    /// of them. There is no `--all-tenants`, deliberately — the sweep runs inside a `TenantScoped`
+    /// transaction, and a cross-tenant one would need a connection with row-level security
+    /// disabled (`docs/04-DATA-MODEL.md §3`).
+    #[arg(long, value_name = "SLUG")]
+    pub(crate) tenant: String,
+
+    /// How long a session must have been claiming to scan before it is a candidate.
+    ///
+    /// The grace period. It exists so that a completion genuinely in flight is never collected, and
+    /// it is the operator's to choose because a one-off repair of a two-year backlog and a routine
+    /// sweep want different answers. The default is a day: long past any real hand-off, and short
+    /// enough that a backlog is not left sitting.
+    #[arg(long, value_name = "HOURS", default_value_t = 24)]
+    pub(crate) idle_hours: u32,
+
+    /// The most sessions to claim in one run.
+    ///
+    /// Small on purpose. The claim takes `FOR UPDATE`, so the rows stay locked for the whole batch,
+    /// and each release is a round trip to the object store — a huge batch holds locks across
+    /// minutes of I/O. The report says when it filled, so run it again.
+    #[arg(long, value_name = "N", default_value_t = 100)]
+    pub(crate) limit: usize,
+
+    /// List what would be reclaimed and delete nothing.
+    ///
+    /// `ENC-787` asks for a pass that reports what it found rather than deleting quietly. This is
+    /// the strong form of that: an operator can read the whole list before anything is destroyed.
+    #[arg(long)]
+    pub(crate) dry_run: bool,
 }
 
 /// Arguments for `seed`.
