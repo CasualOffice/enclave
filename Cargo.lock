@@ -1364,6 +1364,7 @@ dependencies = [
  "enclave-versions",
  "enclave-worker",
  "enclave-workflows",
+ "enclave-workspaces",
  "futures",
  "image",
  "rand 0.10.2",

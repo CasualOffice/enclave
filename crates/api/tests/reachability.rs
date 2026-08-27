@@ -241,6 +241,46 @@ const SPECS: &[Spec] = &[
         credential: Credential::Bearer,
         expect: Expect::ServedOrAbsent,
     },
+    // Navigation — workspaces and libraries (docs/05-API.md §7.1, `ENC-791`). All four name the
+    // fixture spine's own workspace and library, which the caller holds every container action on,
+    // so `Expect::Served` forbids `404` here and the two listings must come back non-empty for the
+    // right reason. That is the assertion this table can make and a unit test cannot: the workspace
+    // listing's audited decision is `container.read` on the caller's own `users` row, answered by
+    // `SelfServiceOr` — which only the composed binary wires — and every row on the page is then
+    // trimmed by `PgAclAuthorization`. A binary composing either service alone answers `200` with an
+    // empty list rather than failing, so `ENC-746`'s row is load-bearing for these two as well.
+    Spec {
+        method: "GET",
+        path: "/api/v1/workspaces",
+        target: "/api/v1/workspaces",
+        body: None,
+        credential: Credential::Bearer,
+        expect: Expect::Served,
+    },
+    Spec {
+        method: "GET",
+        path: "/api/v1/workspaces/{id}",
+        target: "/api/v1/workspaces/{ws}",
+        body: None,
+        credential: Credential::Bearer,
+        expect: Expect::Served,
+    },
+    Spec {
+        method: "GET",
+        path: "/api/v1/workspaces/{id}/libraries",
+        target: "/api/v1/workspaces/{ws}/libraries",
+        body: None,
+        credential: Credential::Bearer,
+        expect: Expect::Served,
+    },
+    Spec {
+        method: "GET",
+        path: "/api/v1/libraries/{id}",
+        target: "/api/v1/libraries/{lib}",
+        body: None,
+        credential: Credential::Bearer,
+        expect: Expect::Served,
+    },
     // Files and folders (docs/05-API.md §7).
     Spec {
         method: "GET",
@@ -275,16 +315,14 @@ const SPECS: &[Spec] = &[
             r#"{"libraryId":"{lib}","name":"smoke.txt","sizeBytes":11,"mimeType":"text/plain"}"#,
         ),
         credential: Credential::Bearer,
-        expect: Expect::Unreachable {
-            status: 500,
-            tracker: "ENC-770",
-            why:
-                "`crates/api/src/main.rs` composes `Delivery::unconfigured()` unconditionally and \
-                  never reads the `storage:` section of enclave.yaml, so the handler asks an \
-                  `UnconfiguredBlobStore` to stage a part and is told `no object storage is \
-                  configured`. The whole write path is dead in the shipped binary, and it answers \
-                  `500 INTERNAL` rather than a refusal that names the cause",
-        },
+        // Was `Expect::Unreachable { status: 500, tracker: "ENC-770" }` — the binary bound
+        // `Delivery::unconfigured()` unconditionally and never read the `storage:` section, so the
+        // whole write path answered `500 INTERNAL` on a fully specified S3 deployment. `080c689`
+        // composes the real store from `storage.s3`, and this probe now answers `201` with a signed
+        // `PutObject` URL. The quarantine's own instruction was to delete the entry when the wiring
+        // was fixed rather than keep asserting a status that had stopped being true, and this is
+        // that deletion — the entry did exactly what a quarantine is for.
+        expect: Expect::Served,
     },
     Spec {
         method: "POST",
@@ -977,8 +1015,20 @@ impl Server {
             // 2am.
             .env("REDIS_URL", "redis://127.0.0.1:6379")
             .env("NATS_URL", "nats://127.0.0.1:4222")
-            .env("S3_ACCESS_KEY_ID", "reachability")
-            .env("S3_SECRET_ACCESS_KEY", "reachability")
+            // **Inherited, not invented** (`ENC-796`). These were the literals `"reachability"`,
+            // which was correct while `main.rs` bound `Delivery::unconfigured()` and never touched
+            // object storage. `ENC-770` made it compose the real store from `storage.s3` *and*
+            // self-check the bucket at start-up, so the binary now refuses to start with
+            // `InvalidAccessKeyId` and this test fails before it reads a single route — which is
+            // the right behaviour from `main.rs` and a stale fixture here.
+            //
+            // Taking them from the test process's own environment is what keeps
+            // `Server::start`'s promise above true: the recipe in `README.md` §"Running the server"
+            // and the one exercised here are now literally the same two variables. No value is
+            // written down (`CLAUDE.md` rule 11); an unset variable falls back to a placeholder,
+            // which fails loudly at start-up with the log attached rather than silently.
+            .env("S3_ACCESS_KEY_ID", inherited("S3_ACCESS_KEY_ID"))
+            .env("S3_SECRET_ACCESS_KEY", inherited("S3_SECRET_ACCESS_KEY"))
             .env("RUST_LOG", "info")
             .stdout(log.try_clone().expect("clone the log handle"))
             .stderr(log)
@@ -1021,6 +1071,16 @@ impl Drop for Server {
         let _ignored = self.child.wait();
         let _ignored = std::fs::remove_dir_all(&self.directory);
     }
+}
+
+/// One environment variable, passed through to the child, or a placeholder that will fail loudly.
+///
+/// The placeholder is deliberately not a plausible credential: if the variable is unset, the child
+/// refuses to start and `wait_until_ready` prints its log, which names the variable in the S3
+/// error. A default that happened to work on one machine would make the test's requirement
+/// invisible everywhere else.
+fn inherited(name: &str) -> String {
+    std::env::var(name).unwrap_or_else(|_| format!("unset-{name}"))
 }
 
 /// A port nothing is listening on, released immediately before the child is told to bind it.
@@ -1168,6 +1228,9 @@ fn json_string(body: &str, field: &str) -> Option<String> {
 /// The identifiers a request template can name.
 #[derive(Debug, Default)]
 struct Fixtures {
+    /// The spine's workspace — the container the grant loop below hangs every action on, and
+    /// therefore the one the navigation probes can require an answer other than `404` for.
+    workspace: String,
     library: String,
     file: String,
     /// An identifier of the right shape that names nothing. Fixed rather than random, so a failure
@@ -1181,6 +1244,7 @@ struct Fixtures {
 impl Fixtures {
     fn fill(&self, template: &str) -> String {
         template
+            .replace("{ws}", &self.workspace)
             .replace("{lib}", &self.library)
             .replace("{file}", &self.file)
             .replace("{unknown}", &self.unknown)
@@ -1284,6 +1348,7 @@ async fn every_registered_route_answers_an_authenticated_caller() {
         .to_owned();
 
     let mut fixture_ids = Fixtures {
+        workspace: spine.workspace.as_uuid().to_string(),
         library: spine.library.as_uuid().to_string(),
         file: spine.file.as_uuid().to_string(),
         unknown: "00000000-0000-4000-8000-000000000000".to_owned(),
