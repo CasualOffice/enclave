@@ -2,8 +2,9 @@
 //!
 //! # What it renders, and what it deliberately leaves to [`NoRenderer`](crate::NoRenderer)
 //!
-//! PNG, JPEG and WebP sources; the [`Thumb`](RenditionProfile::Thumb) and
-//! [`PagePng1x`](RenditionProfile::PagePng1x) profiles. Nothing else.
+//! PNG, JPEG and WebP sources; the three raster profiles — [`Thumb`](RenditionProfile::Thumb),
+//! [`PagePng1x`](RenditionProfile::PagePng1x) and [`PagePng2x`](RenditionProfile::PagePng2x).
+//! Nothing else.
 //!
 //! `PdfSanitized`, `HtmlSanitized` and the office formats behind them are **not** here and are not
 //! half-here. They need a parser rather than a decoder, running out of process under the limits
@@ -12,11 +13,27 @@
 //! yet. [`NoRenderer`](crate::NoRenderer) still answers for those, which is the deny-by-default this
 //! crate already relies on.
 //!
-//! `PagePng2x` is refused too, and that is a decision rather than an omission. The 2x profile exists
-//! so a high-density display gets real detail; a raster source has none to give above its own pixel
-//! grid, so serving it would mean upscaling — double the cache footprint for pixels that were
-//! interpolated rather than read. A source that genuinely has more detail at 2x is a vector one, and
-//! that arrives with the D17 worker.
+//! # `PagePng2x` was refused, and now is not (`ENC-800`)
+//!
+//! `ENC-146a` declined the 2x profile on the grounds that a raster source has no detail to give
+//! above its own pixel grid, so serving it would mean upscaling: double the cache footprint for
+//! pixels that were interpolated rather than read.
+//!
+//! That reasoning was right about upscaling and wrong about what this renderer does, because
+//! [`fit_within`] **never enlarges**. A 900 px photograph asked for at 2x comes back at 900 px, not
+//! at 3200; only a source that genuinely has the pixels produces a larger artefact, and for that
+//! source the extra detail is read rather than invented. The cost the decision was protecting
+//! against — interpolation nobody asked for — is not reachable from here.
+//!
+//! What made the refusal expensive is that `page-png-2x` is the profile
+//! `crates/api/src/preview.rs` uses when a caller names none, because `docs/05-API.md §9` writes it
+//! in its example. A renderer that refuses it answers `404` to every `GET /files/{id}/preview` in
+//! the product — the documented request, on the endpoint the product is sold on. The two decisions
+//! were made in different files six weeks apart, and this is where they meet.
+//!
+//! A source that has *genuinely* more detail at 2x than at 1x is still a vector one, and that still
+//! arrives with the D17 worker. This profile is now honest about what a raster source can offer it:
+//! everything it has, and no more.
 //!
 //! # The decode bomb, and the exact point it is stopped
 //!
@@ -102,7 +119,12 @@ use crate::render::{RenderOutcome, RenderRequest, RenderedArtifact, Renderer};
 /// a decoder is exactly the kind of change that alters output while looking like it could not:
 /// `tests` reads the resolved version out of `Cargo.lock` and fails if the two have drifted, so an
 /// upgrade cannot silently leave the cache serving artefacts from the build it replaced.
-const GENERATOR: &str = "raster/1+image-0.25.10";
+/// `raster/2` because `ENC-800` widened the profile set. Nothing this renderer already produced
+/// changes, so no artefact is *wrong* under the old string — but the number describes the build's
+/// output decisions, and a build that answers a profile the previous one refused has made a
+/// different set of them. Bumping costs one regeneration per cached artefact; not bumping is a
+/// habit of leaving it alone, and the next change to this file will be one that does alter pixels.
+const GENERATOR: &str = "raster/2+image-0.25.10";
 
 /// The formats this renderer will hand to a decoder.
 ///
@@ -124,6 +146,13 @@ const THUMB_EDGE: u32 = 320;
 /// Roughly an A4 page at 135 dpi: legible full-screen, and small enough that the RGBA buffer behind
 /// it is single-digit megabytes however large the source was.
 const PAGE_1X_EDGE: u32 = 1_600;
+
+/// The longest edge of a page image for a high-density display, in pixels.
+///
+/// Twice [`PAGE_1X_EDGE`], and a ceiling rather than a target: [`fit_within`] never enlarges, so a
+/// source smaller than this is served at its own size and the profile costs exactly what the 1x one
+/// would. See the module documentation for why this is no longer refused.
+const PAGE_2X_EDGE: u32 = 3_200;
 
 /// Renders raster images, in process, on a blocking thread.
 ///
@@ -265,9 +294,8 @@ const fn longest_edge(profile: RenditionProfile) -> Option<u32> {
     match profile {
         RenditionProfile::Thumb => Some(THUMB_EDGE),
         RenditionProfile::PagePng1x => Some(PAGE_1X_EDGE),
-        RenditionProfile::PagePng2x
-        | RenditionProfile::PdfSanitized
-        | RenditionProfile::HtmlSanitized => None,
+        RenditionProfile::PagePng2x => Some(PAGE_2X_EDGE),
+        RenditionProfile::PdfSanitized | RenditionProfile::HtmlSanitized => None,
     }
 }
 
@@ -359,14 +387,32 @@ mod tests {
     }
 
     #[test]
-    fn only_the_two_raster_profiles_are_claimed() {
+    fn only_the_three_raster_profiles_are_claimed() {
         assert!(RasterRenderer.supports(RenditionProfile::Thumb));
         assert!(RasterRenderer.supports(RenditionProfile::PagePng1x));
-        // Not omissions. See the module documentation: 2x of a raster source is upscaling, and the
-        // document profiles need the out-of-process worker rather than a decoder.
-        assert!(!RasterRenderer.supports(RenditionProfile::PagePng2x));
+        // `ENC-800`. The profile `crates/api/src/preview.rs` asks for when a caller names none, and
+        // refusing it answered `404` to the documented request on every file in the product.
+        assert!(RasterRenderer.supports(RenditionProfile::PagePng2x));
+        // Not omissions: the document profiles need the out-of-process worker of D17 rather than a
+        // decoder, and half of one would report "preview available" for a format whose sanitizer
+        // nobody has written.
         assert!(!RasterRenderer.supports(RenditionProfile::PdfSanitized));
         assert!(!RasterRenderer.supports(RenditionProfile::HtmlSanitized));
+    }
+
+    /// The 2x profile is a ceiling, not a target — the property the module's reversal rests on.
+    ///
+    /// If this ever enlarged, `ENC-146a`'s objection would be right again and the profile would be
+    /// paying double the bytes for interpolation.
+    #[test]
+    fn the_two_x_profile_never_invents_a_pixel() {
+        assert_eq!(fit_within(900, 600, PAGE_2X_EDGE), (900, 600), "a small source is untouched");
+        assert_eq!(fit_within(6_400, 3_200, PAGE_2X_EDGE), (3_200, 1_600));
+        assert_eq!(
+            PAGE_2X_EDGE,
+            PAGE_1X_EDGE * 2,
+            "the profile is named for its density and must stay twice the nominal edge"
+        );
     }
 
     #[test]

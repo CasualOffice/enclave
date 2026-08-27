@@ -77,27 +77,31 @@ impl Default for ScanPolicy {
 impl ScanPolicy {
     /// The policy a deployment's `antivirus:` section resolves to.
     ///
-    /// One knob comes from configuration and one deliberately does not, and the asymmetry is the
-    /// point:
+    /// Both knobs now come from configuration, and the second one has a history worth keeping.
     ///
-    /// * [`ScanPolicy::unavailable`] is `av.unavailable_policy`, which `docs/06 §6.2` names as a
-    ///   tenant-settable trade — availability against a malware window — and which
-    ///   `enclave_config` already parses, defaulting to [`UnavailablePolicy::Hold`].
-    /// * [`ScanPolicy::unsupported`] is **always** [`UnsupportedPolicy::Block`], because
-    ///   `AntivirusConfig` has no key for it and this function does not invent one. That absence is
-    ///   load-bearing rather than an omission: `ALLOW_WITH_FLAG` is the single setting that would
-    ///   let content nobody scanned become `AVAILABLE`, and a control expressed as a configuration
-    ///   default is a control somebody turns off — the shape `ENC-157` removed from
-    ///   `preview.watermark_cache`. In particular it is what stops `antivirus.provider: none`,
-    ///   whose scanner answers [`ScanVerdict::Unsupported`] for every object, from becoming a
-    ///   deployment-wide bypass of `CLAUDE.md` rule 9.
+    /// * [`ScanPolicy::unavailable`] is `av.unavailable_policy` — `docs/06 §6.2` names it as a
+    ///   tenant-settable trade between availability and a malware window.
+    /// * [`ScanPolicy::unsupported`] is `antivirus.unsupported_policy`, and **was pinned to
+    ///   [`UnsupportedPolicy::Block`] until the key existed**. The pin's argument was that a control
+    ///   expressed as a configuration default is a control somebody turns off — `ENC-157`'s shape.
+    ///   The argument that overruled it: a developer whose platform has no scanner image is not
+    ///   choosing to weaken a control, they are choosing to run the product at all, and a setting
+    ///   they cannot express is one they route around by worse means.
     ///
-    /// A tenant that genuinely needs `ALLOW_WITH_FLAG` therefore needs a change to `docs/06`, a
-    /// configuration key and a review — which is the price the setting should cost.
-    #[must_use]
+    /// What survives the change is the part that was actually load-bearing. `blocks_unsupported`
+    /// still refuses unscanned content at `CONFIDENTIAL` and above **on rank alone**, whatever this
+    /// key says — so `ALLOW_WITH_FLAG` buys availability for ordinary content and changes nothing
+    /// for the content the rule exists to protect. A version admitted this way is recorded
+    /// `SKIPPED`, not `CLEAN`, and `crates/worker` re-offers it the moment a scanning engine
+    /// answers.
     pub const fn from_config(config: &enclave_config::AntivirusConfig) -> Self {
         Self {
-            unsupported: UnsupportedPolicy::Block,
+            unsupported: match config.unsupported_policy {
+                enclave_config::UnsupportedPolicy::Block => UnsupportedPolicy::Block,
+                enclave_config::UnsupportedPolicy::AllowWithFlag => {
+                    UnsupportedPolicy::AllowWithFlag
+                }
+            },
             unavailable: config.unavailable_policy,
             block_unsupported_at_or_above: CONFIDENTIAL_RANK,
         }

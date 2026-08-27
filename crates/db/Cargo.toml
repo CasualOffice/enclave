@@ -11,6 +11,17 @@ authors.workspace      = true
 [dependencies]
 enclave-core = { workspace = true }
 enclave-config = { workspace = true }
+# `enclave-auth` is a *dependency of the storage crate*, which reads backwards until you see which
+# direction the edge points: `auth` depends on `core` and nothing else, so this is acyclic, and what
+# lives here is the PostgreSQL implementation of the four store traits `auth` declares
+# (`src/auth_tokens.rs`, `ENC-687`). It is here rather than in `crates/auth` because three of its
+# statements are cross-tenant and `DbPool::platform_connection` may not be called from outside this
+# crate — `.github/scripts/no_raw_pool.py` fails CI on that, and the rule is what keeps
+# `grep -rn platform_connection crates/` a complete list of where isolation is bypassed.
+enclave-auth = { workspace = true }
+
+async-trait = { workspace = true }
+chrono    = { workspace = true }
 
 # `anyhow` appears here, against the usual "anyhow only in binaries" rule
 # (plans/M0-FOUNDATIONS.md D2), for exactly one reason: `enclave_core::Error::Internal` *holds* an
@@ -28,6 +39,9 @@ thiserror = { workspace = true }
 tracing   = { workspace = true }
 
 [dev-dependencies]
+# The round-trip assertion in `src/auth_tokens.rs` compares the hand-written column spelling of
+# `RevokeReason` against the crate's own serde rename. Nothing outside a test serialises one.
+serde_json = { workspace = true }
 # `sync` and `time` are the storage-quota suite's (`ENC-584`): `Barrier` holds every contender in
 # the read-to-write window until all of them are inside it — the arrangement `docs/12 §4.4` H3
 # records as the difference between a concurrency test and a sequential one wearing `tokio::spawn`

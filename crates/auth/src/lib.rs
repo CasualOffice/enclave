@@ -88,8 +88,8 @@ pub use cookie::{RefreshCookieConfig, DEFAULT_COOKIE_NAME, DEFAULT_COOKIE_PATH};
 pub use error::{AuthError, KeyProviderError, StoreUnavailable};
 pub use jwks::{Jwk, Jwks};
 pub use keys::{
-    KeyId, KeyProvider, KeySet, KeyStatus, LocalFileKeyProvider, PrivateSigningKey,
-    PublicSigningKey,
+    ConfiguredKeyProvider, KeyId, KeyProvider, KeySet, KeyStatus, LocalFileKeyProvider,
+    PrivateSigningKey, PublicSigningKey,
 };
 pub use password::{PasswordHasher, PasswordVerdict};
 pub use refresh::{

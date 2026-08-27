@@ -1,0 +1,872 @@
+/* Admin — DLP policy.
+ *
+ * Values from `web/design-system/enclave-client-prototype.html`
+ * (`data-screen-label="Admin — DLP policy"`), which is authoritative for
+ * appearance. **Property names are logical throughout**, which the prototype's
+ * inline styles are not: it writes `margin-left:auto`, `text-align:right`,
+ * `float:right` and `left:` on that screen alone. `en-XB` mirrors direction in
+ * CI, so copying its values and never its property names is the rule
+ * (`docs/17 §8`).
+ *
+ * Two deliberate departures from the reference, both because the reference is
+ * wrong rather than because taste differs:
+ *
+ *   1. The classification badge mixes its text at **70%** of the locked
+ *      classification colour, not the prototype's 82%. 82% is 3.68:1 against the
+ *      11% tint and fails WCAG AA; axe catches it. The recipe is copied from
+ *      `.egl-classification` so the two surfaces cannot drift.
+ *   2. Nothing here restyles `--c-pub … --c-restr`. They are locked
+ *      (`docs/09 §16a`) — a tenant recolouring "Restricted" is a tenant whose
+ *      users misread sensitivity at a glance.
+ *
+ * No z-index is invented: the scale is documented at the top of
+ * `shared/ui/primitives.css` and nothing on this screen floats.
+ */
+
+.adm {
+  display: grid;
+  grid-template-columns: 200px minmax(0, 1fr);
+  flex: 1;
+  min-block-size: 0;
+}
+
+/* ------------------------------------------------------------------ the rail */
+
+.adm-nav {
+  padding-block: 14px;
+  padding-inline: 12px 8px;
+  color: var(--fg2);
+  font-size: 12.5px;
+  overflow: auto;
+}
+
+.adm-nav-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--fg2);
+  padding-block: 12px 4px;
+  padding-inline: 8px;
+  font-weight: 500;
+}
+
+.adm-nav-group:first-child {
+  padding-block-start: 0;
+}
+
+.adm-nav-link {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-block: 5px;
+  padding-inline: 8px;
+  border-radius: var(--r-ctrl);
+  text-decoration: none;
+  color: var(--fg2);
+  cursor: pointer;
+}
+
+.adm-nav-link:hover {
+  background: var(--hover);
+  color: var(--fg);
+}
+
+.adm-nav-link[aria-current='page'] {
+  background: var(--selected);
+  color: var(--fg);
+  font-weight: 500;
+}
+
+/* Unbuilt: neutral, never the denial treatment, and the component keeps it out
+ * of the tab order because focus order is behaviour rather than styling. */
+.adm-nav-link[data-unbuilt='true'] {
+  opacity: 0.5;
+  cursor: default;
+  justify-content: space-between;
+}
+
+.adm-nav-link[data-unbuilt='true']:hover {
+  background: transparent;
+  color: var(--fg2);
+}
+
+.adm-nav-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  block-size: 26px;
+  padding-inline: 8px;
+  margin-block-end: 4px;
+  border-radius: var(--r-ctrl);
+  background: var(--sunken);
+  color: var(--fg2);
+}
+
+.adm-nav-search input {
+  flex: 1;
+  min-inline-size: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  color: var(--fg);
+  outline: none;
+}
+
+.adm-nav-rules {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.adm-nav-broken {
+  font-size: 10.5px;
+  color: var(--danger);
+  margin-inline-start: auto;
+}
+
+/* ------------------------------------------------------------------- the pane */
+
+.adm-pane {
+  padding-block: 20px 28px;
+  padding-inline: 28px;
+  overflow: auto;
+  min-inline-size: 0;
+}
+
+.adm-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.adm-crumbs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--fg2);
+  font-size: 12.5px;
+}
+
+.adm-crumbs b {
+  color: var(--fg);
+  font-weight: 500;
+}
+
+.adm-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.adm-h1 {
+  margin: 0;
+  font-family: var(--tight);
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.adm-spacer {
+  flex: 1;
+}
+
+.adm-modenote {
+  margin-block: -8px 0;
+}
+
+.adm-muted {
+  color: var(--fg2);
+  font-size: 11.5px;
+  margin: 0;
+  max-inline-size: 78ch;
+}
+
+/* -------------------------------------------------------- the sentence builder */
+
+.adm-builder {
+  border-radius: var(--r-surf);
+  box-shadow: var(--hairline);
+  overflow: hidden;
+  background: var(--sheet);
+}
+
+.adm-band {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-block: 10px;
+  padding-inline: 14px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--fg2);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  background: var(--sunken);
+}
+
+.adm-band-hint {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 400;
+  color: var(--fg2);
+}
+
+.adm-clauses {
+  list-style: none;
+  margin: 0;
+  padding-block: 10px;
+  padding-inline: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* A clause is prose with controls in it, so it wraps like prose. The chips are
+ * inline-flex and inherit the line box; nothing is positioned. */
+.adm-clause {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--fg);
+  margin: 0;
+}
+
+.adm-lit {
+  color: var(--fg2);
+}
+
+/* No opacity on an unbuilt clause, and `--fg2` rather than the fainter greys.
+ *
+ * The first draft dimmed it to 0.55 and the greys to `--fg3`; axe put four of
+ * these under 4.5:1. Dimming a neutral marker below AA is how it stops being
+ * read at all, which defeats the point — the `Later` chip beside it carries the
+ * meaning (`docs/09 §15`: colour is never the only carrier), so the text only
+ * has to stay legible. */
+.adm-clause-unbuilt {
+  color: var(--fg2);
+}
+
+/* ------------------------------------------------------------------- the chips */
+
+.adm-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  block-size: 26px;
+  padding-inline: 9px;
+  border-radius: 7px;
+  box-shadow: var(--hairline);
+  background: var(--sheet);
+  color: var(--fg);
+  font-size: 12.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  max-inline-size: 100%;
+}
+
+.adm-chip-sm {
+  block-size: 20px;
+  padding-inline: 7px;
+  font-size: 11px;
+  border-radius: 999px;
+  background: var(--sunken);
+  box-shadow: none;
+  color: var(--fg2);
+}
+
+.adm-chip-control {
+  padding-inline: 9px 4px;
+}
+
+.adm-chip-control:hover,
+.adm-chip-add:hover {
+  background: var(--sunken);
+}
+
+.adm-select {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: inherit;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
+  max-inline-size: 22ch;
+}
+
+.adm-select:focus-visible,
+.adm-chip-input:focus-visible,
+.adm-chip-x:focus-visible,
+.adm-json:focus-visible,
+.adm-nav-search input:focus-visible {
+  outline: 2px solid var(--accent-ring);
+  outline-offset: 2px;
+}
+
+/* `--fg3`, not `--fg4`. These two are graphics rather than text, so axe's
+ * colour-contrast rule does not look at them — but WCAG 1.4.11 wants 3:1 for a
+ * meaningful graphic and `--fg4` is 2.44:1 on the sheet. A rule a linter does
+ * not check is still a rule. */
+.adm-chip-chev {
+  color: var(--fg3);
+  flex: none;
+}
+
+.adm-chip-add {
+  color: var(--fg2);
+  font-weight: 400;
+  box-shadow: none;
+  padding-inline: 9px;
+}
+
+.adm-chip-input {
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--fg);
+  border: 0;
+  background: var(--sheet);
+  min-inline-size: 6ch;
+}
+
+.adm-chip-number {
+  inline-size: 9ch;
+}
+
+.adm-chip-x {
+  inline-size: 18px;
+  block-size: 18px;
+  border-radius: 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--fg3);
+  cursor: pointer;
+  flex: none;
+}
+
+.adm-chip-x:hover {
+  background: var(--hover);
+  color: var(--fg);
+}
+
+.adm-chip-effect {
+  font-weight: 500;
+}
+
+.adm-code {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  padding-block: 1px;
+  padding-inline: 5px;
+  border-radius: 5px;
+  background: var(--sunken);
+  color: var(--fg2);
+}
+
+/* The locked classification palette, mixed at 70% — see the header. */
+.adm-classification {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  block-size: 22px;
+  padding-inline: 7px 6px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0;
+  white-space: nowrap;
+  background: color-mix(in srgb, var(--cc) 11%, transparent);
+  color: color-mix(in srgb, var(--cc) 70%, var(--fg));
+}
+
+.adm-classification::before {
+  content: '';
+  inline-size: 6px;
+  block-size: 6px;
+  border-radius: 50%;
+  background: var(--cc);
+  flex: none;
+}
+
+.adm-classification[data-level='public'] {
+  --cc: var(--c-pub);
+}
+.adm-classification[data-level='internal'] {
+  --cc: var(--c-int);
+}
+.adm-classification[data-level='confidential'] {
+  --cc: var(--c-conf);
+}
+.adm-classification[data-level='highlyConfidential'] {
+  --cc: var(--c-hconf);
+}
+.adm-classification[data-level='restricted'] {
+  --cc: var(--c-restr);
+}
+
+.adm-classification-inner {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: inherit;
+  font-size: 11px;
+}
+
+.adm-classification-inner .adm-select {
+  font-size: 11px;
+  font-weight: 500;
+}
+
+/* ------------------------------------------------------------------- panels */
+
+.adm-panel {
+  border-radius: var(--r-surf);
+  box-shadow: var(--hairline);
+  background: var(--sheet);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-inline-size: 0;
+}
+
+.adm-panel-title {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--fg2);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.adm-panel-title-lg {
+  font-size: 12px;
+  color: var(--fg2);
+}
+
+/* --------------------------------------------------------- the denial preview */
+
+.adm-denial {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  border-radius: var(--r-ctrl);
+  background: color-mix(in srgb, var(--danger) 7%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 20%, transparent);
+}
+
+.adm-denial-message {
+  margin: 0;
+  font-size: 13px;
+  color: var(--fg);
+}
+
+.adm-denial-remedy {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--fg2);
+}
+
+.adm-denial-code {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 11px;
+  color: var(--fg2);
+}
+
+/* --------------------------------------------------------------- simulation */
+
+.adm-sim {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.adm-sim-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.adm-sim-stale {
+  margin: 0;
+  font-size: 12px;
+  color: color-mix(in srgb, var(--warn) 66%, var(--fg));
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  padding-block: 6px;
+  padding-inline: 10px;
+  border-radius: var(--r-ctrl);
+}
+
+.adm-sim-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.adm-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 10px;
+}
+
+.adm-stat {
+  border-radius: var(--r-surf);
+  box-shadow: var(--hairline);
+  padding-block: 12px;
+  padding-inline: 14px;
+  background: var(--sheet);
+}
+
+.adm-stat-value {
+  display: block;
+  font-family: var(--tight);
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+  min-block-size: 24px;
+}
+
+.adm-stat-label {
+  display: block;
+  color: var(--fg2);
+  font-size: 11.5px;
+}
+
+.adm-blast {
+  margin: 0;
+  font-size: 13px;
+  color: var(--fg);
+}
+
+.adm-sim-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 14px;
+}
+
+.adm-bars {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.adm-bar-row {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr) 36px;
+  align-items: center;
+  gap: 10px;
+}
+
+.adm-bar {
+  block-size: 6px;
+  border-radius: 3px;
+  background: var(--fg2);
+  opacity: 0.7;
+  display: block;
+  transition: inline-size 500ms cubic-bezier(0.2, 0.7, 0.3, 1);
+}
+
+.adm-bar-count {
+  text-align: end;
+  color: var(--fg2);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.adm-events {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: 12.5px;
+}
+
+.adm-event {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.adm-event-text {
+  min-inline-size: 0;
+}
+
+.adm-event-when {
+  margin-inline-start: auto;
+  color: var(--fg2);
+  font-size: 11px;
+  font-family: var(--mono);
+  white-space: nowrap;
+}
+
+.adm-event-cats {
+  flex-basis: 100%;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  color: var(--fg2);
+  font-size: 11.5px;
+}
+
+/* --------------------------------------------------------------------- diff */
+
+.adm-diff {
+  inline-size: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+.adm-diff th,
+.adm-diff td {
+  text-align: start;
+  vertical-align: top;
+  padding-block: 7px;
+  padding-inline: 8px;
+  border-block-end: 1px solid var(--line);
+}
+
+.adm-diff thead th {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--fg2);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.adm-diff tbody th {
+  font-weight: 500;
+  color: var(--fg2);
+  inline-size: 26%;
+}
+
+.adm-diff tr[data-changed='true'] td:last-child {
+  background: color-mix(in srgb, var(--ok) 9%, transparent);
+}
+
+.adm-confirm {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.adm-confirm input {
+  accent-color: var(--accent);
+  inline-size: 14px;
+  block-size: 14px;
+  margin: 0;
+}
+
+/* --------------------------------------------------------------------- gate */
+
+.adm-gate {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  counter-reset: adm-step;
+}
+
+.adm-gate-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 12.5px;
+}
+
+.adm-gate-mark {
+  inline-size: 20px;
+  block-size: 20px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  background: var(--sunken);
+  color: var(--fg2);
+}
+
+.adm-gate-step[data-state='done'] .adm-gate-mark {
+  background: color-mix(in srgb, var(--ok) 14%, transparent);
+  color: color-mix(in srgb, var(--ok) 70%, var(--fg));
+}
+
+.adm-gate-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-inline-size: 0;
+}
+
+.adm-gate-status {
+  margin-inline-start: auto;
+  font-size: 11px;
+  color: var(--fg2);
+  white-space: nowrap;
+}
+
+.adm-gate-status[data-state='done'] {
+  color: color-mix(in srgb, var(--ok) 70%, var(--fg));
+}
+
+/* --------------------------------------------------------------------- JSON */
+
+.adm-json {
+  margin: 0;
+  padding: 12px;
+  border-radius: var(--r-ctrl);
+  background: var(--sunken);
+  color: var(--fg2);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.55;
+  overflow: auto;
+  max-block-size: 320px;
+}
+
+/* ------------------------------------------------------------------- states */
+
+.adm-fixture {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-block: 0 12px;
+  font-size: 11.5px;
+  color: var(--fg2);
+}
+
+.adm-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-block-size: 60vh;
+  padding-inline: 32px;
+  text-align: center;
+}
+
+/* The mark's own construction, at rest: a bounded field with a window inside
+ * it. Drawn from tokens rather than shipped as a raster, so it re-themes. */
+.adm-state-figure {
+  inline-size: 44px;
+  block-size: 44px;
+  border-radius: 11px;
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+  position: relative;
+  margin-block-end: 4px;
+  color: var(--fg4);
+}
+
+.adm-state-figure::after {
+  content: '';
+  position: absolute;
+  inset-block-start: 13.75px;
+  inset-inline-start: 13.75px;
+  inline-size: 22px;
+  block-size: 22px;
+  border-radius: 0 5.5px 5.5px 5.5px;
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+}
+
+:dir(rtl) .adm-state-figure::after {
+  border-radius: 5.5px 0 5.5px 5.5px;
+}
+
+.adm-state-figure[data-tone='error'],
+.adm-state-figure[data-tone='error']::after {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 34%, transparent);
+}
+
+/* The denial treatment, and it is deliberately not the error one. A refusal is
+ * a successful request with a refusing answer (`docs/17 §7`), so it reads as a
+ * closed door rather than as a broken pipe — and it offers no retry. */
+.adm-state-figure[data-tone='denied'],
+.adm-state-figure[data-tone='denied']::after {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warn) 40%, transparent);
+}
+
+.adm-state-title {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  margin: 0;
+}
+
+.adm-state-body {
+  color: var(--fg2);
+  font-size: 12.5px;
+  max-inline-size: 46ch;
+  margin: 0;
+}
+
+.adm-request-id {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--fg2);
+  margin: 0;
+}
+
+.adm-request-id code {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--fg2);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .adm-bar {
+    transition: none;
+  }
+}
+
+/* `docs/09 §16`: the admin surface says so rather than rendering an unusable
+ * table. Below the rail's breakpoint the sections stack and the pane keeps its
+ * own scroll, so the builder is still readable at a phone width even though it
+ * is not where this work gets done. */
+@media (max-width: 720px) {
+  .adm {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .adm-pane {
+    padding-inline: 16px;
+  }
+
+  .adm-bar-row {
+    grid-template-columns: 88px minmax(0, 1fr) 32px;
+  }
+}

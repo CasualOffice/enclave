@@ -273,6 +273,20 @@ pub(crate) const ACKNOWLEDGED: &[Acknowledged] = &[
                  position as the extractor above: no verified tenant, so no chain.",
     },
     Acknowledged {
+        file: "crates/api/src/routes/auth.rs",
+        function: "refresh_failure",
+        kind: SiteKind::ErrorRefusal,
+        reason: "Renames a refusal `TokenService::refresh` already took, on the rotation path, \
+                 which is on the policy-routing ALLOWLIST for the same reason the extractor above \
+                 is acknowledged: the chain has not run, because refresh *is* the step that \
+                 produces the principal the chain presupposes. The one denial it carries a code \
+                 for is NETWORK_NOT_ALLOWED from the RefreshGuard — a conditional-access decision \
+                 taken inside `crates/auth`, where no tenant is in hand to key an audit chain by. \
+                 `ENC-687` is the row that owns the gap: it moves the refresh store into \
+                 PostgreSQL, at which point the family's tenant is known at the point of refusal \
+                 and this refusal can be recorded against it.",
+    },
+    Acknowledged {
         file: "crates/auth/src/error.rs",
         function: "from",
         kind: SiteKind::ErrorRefusal,
@@ -335,6 +349,28 @@ pub(crate) const ACKNOWLEDGED: &[Acknowledged] = &[
         reason: "The capabilities probe of docs/05-API.md §7, which `PolicyEngine::authorization` \
                  documents as a hint that writes no audit row: it cannot allow anything, and the \
                  enforcement happens when the action is actually attempted. Guarded the same way.",
+    },
+    Acknowledged {
+        file: "crates/api/src/routes/workspaces.rs",
+        function: "admit",
+        kind: SiteKind::Conversion,
+        reason: "`content.rs::readable_children` for containers (`ENC-791`): the trim behind \
+                 `GET /workspaces` and `GET /workspaces/{id}/libraries`. Guarded by \
+                 `if !decision.is_allowed() { continue }` on the line above, so the conversion \
+                 cannot produce an `Err` and refuses nothing — it exists to carry the admitted \
+                 row's obligations forward rather than drop them. The listing itself is audited by \
+                 the chain; per-row trimming is deliberately not a separate audit event \
+                 (docs/07 §6.2), because auditing it would write one speculative ALLOW per \
+                 candidate for a question nobody asked.",
+    },
+    Acknowledged {
+        file: "crates/api/src/routes/workspaces.rs",
+        function: "capabilities_for_containers",
+        kind: SiteKind::Conversion,
+        reason: "The container half of the docs/05-API.md §7 capabilities probe (`ENC-793`), \
+                 shared by both navigation modules. A hint that writes no audit row: it cannot \
+                 allow anything, and the enforcement happens when the action is attempted. \
+                 Guarded the same way.",
     },
 ];
 

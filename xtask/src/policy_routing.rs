@@ -98,6 +98,13 @@ pub(crate) const ALLOWLIST: &[Exemption] = &[
                  verification (ENC-111), not the policy chain.",
     },
     Exemption {
+        handler: "mfa_verify",
+        reason: "The second half of one credential exchange. `login` refused with MFA_REQUIRED \
+                 and issued no token; this completes that challenge and produces the first \
+                 verified principal of the session. Its controls are the single-use, \
+                 five-minute challenge and the second-factor verifier (ENC-685).",
+    },
+    Exemption {
         handler: "refresh",
         reason: "Refresh rotation. Same reason as login, plus reuse detection, which is a token \
                  lifecycle control rather than a resource authorization decision (docs/03 §5).",

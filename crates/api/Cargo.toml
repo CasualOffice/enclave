@@ -21,10 +21,33 @@ enclave-information_barriers = { workspace = true }
 enclave-classification = { workspace = true }
 enclave-dlp = { workspace = true }
 enclave-retention = { workspace = true }
+# `POST /api/v1/search`. The post-filter, the lexical generator and the degraded envelope all live
+# there; this crate holds none of that logic and must not grow any (crates/api/src/routes/search.rs).
+enclave-search = { workspace = true }
 enclave-files = { workspace = true }
+# `normalize_email` on the login path: the writer of `users.normalized_email` and its reader must
+# fold identically, or a login lookup finds a second row for the same person (crates/identity).
+enclave-identity = { workspace = true }
+# ENC-690: the upload and sharing routes. Both crates were complete and depended on by nothing —
+# these two lines are the whole of what `crates/api` was missing to have a write path.
+enclave-libraries = { workspace = true }
+# ENC-791: the four navigation endpoints. `crates/workspaces` was 1,923 lines, complete and tested,
+# and depended on by nothing — this line is the whole of what `crates/api` was missing to be able to
+# answer "which workspaces am I in".
+enclave-workspaces = { workspace = true }
+enclave-sharing = { workspace = true }
+enclave-uploads = { workspace = true }
 # The rendition pipeline, behind `PreviewPipeline`.
 enclave-preview = { workspace = true }
 enclave-versions = { workspace = true }
+# The four sync endpoints of docs/05-API.md §13 (ENC-733). `libraries` and `uploads` are reached
+# only by `POST /sync/reserve`, which claims an ordinary upload session rather than a sync-only one
+# — docs/10 §2's "it gets no privileged endpoint", held by using the same service every other
+# uploader will.
+enclave-sync = { workspace = true }
+# The workflow model, the evaluator and the repository (`ENC-739`). The evaluator takes no
+# connection, which is what stops `simulate` from diverging from a real start.
+enclave-workflows = { workspace = true }
 enclave-observability = { workspace = true, features = ["exposition"] }
 # The delivery paths: `download` mints a signed URL through `BlobStore`; `preview` deliberately
 # does not depend on it at the module level (crates/api/src/preview.rs).
@@ -35,6 +58,12 @@ enclave-storage = { workspace = true }
 
 anyhow       = { workspace = true }
 async-trait  = { workspace = true }
+# A print grant is 256 bits from the OS CSPRNG, returned once, and retained only as its SHA-256
+# (`crates/api/src/routes/delivery.rs`, ENC-720). Same three crates and the same treatment
+# `crates/auth` gives a refresh token, because it is the same problem.
+base64       = { workspace = true }
+rand         = { workspace = true }
+sha2         = { workspace = true }
 axum         = { workspace = true }
 chrono       = { workspace = true }
 serde        = { workspace = true }
@@ -46,13 +75,27 @@ tracing      = { workspace = true }
 uuid         = { workspace = true }
 
 [dev-dependencies]
+# `crates/api/tests/auth_postgres.rs` reads the claims out of a token it was just handed, to assert
+# what was *minted*. Decoding a compact JWS payload is base64url and nothing else; the signature is
+# verified by the routes the same tests then call.
 # Decoding the stub rendition and the marked response in the delivery tests.
 image = { workspace = true }
 enclave-testing = { workspace = true }
 tower = { workspace = true }
 serde_json = { workspace = true }
-# `tests/delivery.rs` implements a `BlobStore` that counts the URLs it is asked to mint.
+# `tests/delivery.rs` implements a `BlobStore` that counts the URLs it is asked to mint, and
+# `tests/uploads.rs` one that records what it was asked to stage.
 url = { workspace = true }
+# `ENC-691`: the completion test does not stop at the response. It runs the worker's own antivirus
+# pass over the version the upload just committed, because "the row exists" and "the pass that has
+# to move it can find it" are two different claims, and the second is the one M1's exit criterion
+# needs. Test-only, and one direction only — `crates/worker` does not depend on `crates/api`.
+enclave-worker = { workspace = true }
+enclave-antivirus = { workspace = true }
+# The pass streams a version's bytes before scanning them, so the store this leg runs against has
+# to serve some. `RecordingStore` deliberately panics there, and stays that way.
+bytes = "1"
+futures = { workspace = true }
 
 [lints]
 workspace = true

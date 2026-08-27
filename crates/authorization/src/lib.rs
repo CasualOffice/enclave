@@ -66,5 +66,5 @@ pub use resolve::{
     AclEntry, AclResourceType, ChainNode, Effect, Effective, EffectiveGrid, EffectiveIndex,
     InheritanceChain, Principal, PrincipalKind, PrincipalSet,
 };
-pub use self_service::SelfServiceAuthorization;
+pub use self_service::{SelfServiceAuthorization, SelfServiceOr};
 pub use service::{AclResolver, PgAclAuthorization, ResolverLimits};

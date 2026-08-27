@@ -241,9 +241,9 @@ pub async fn preview(
 /// what they are called — and a display name and an email are exactly the fields that must be
 /// current at the moment of viewing, not as of whenever the token was issued.
 #[derive(Debug, Clone)]
-struct Viewer {
-    display_name: String,
-    email: String,
+pub(crate) struct Viewer {
+    pub(crate) display_name: String,
+    pub(crate) email: String,
 }
 
 /// The principal a watermark can name, or the refusal that they are not one.
@@ -259,7 +259,7 @@ struct Viewer {
 /// [`Refused`] when the actor is a service account, an MCP client or the system. Refused rather
 /// than marked "system": a watermark exists to attribute a leak to a person, and one naming nobody
 /// in particular satisfies the obligation on paper and not in fact.
-fn stampable(ctx: &RequestContext) -> Result<enclave_core::UserId, Refused> {
+pub(crate) fn stampable(ctx: &RequestContext) -> Result<enclave_core::UserId, Refused> {
     match ctx.actor {
         enclave_core::Actor::User(actor) => Ok(actor),
         // `ACCESS_DENIED` rather than the obligation's standard `PREVIEW_ONLY`, which would advise
@@ -275,7 +275,7 @@ fn stampable(ctx: &RequestContext) -> Result<enclave_core::UserId, Refused> {
 ///
 /// `404` if the actor has no user row in this tenant, which is the same answer as a missing file —
 /// a session whose subject has been deleted must not be told that it has been.
-async fn viewer_identity(
+pub(crate) async fn viewer_identity(
     tx: &mut enclave_db::TenantScoped,
     ctx: &RequestContext,
     actor: enclave_core::UserId,
@@ -309,7 +309,7 @@ async fn viewer_identity(
 ///
 /// [`Refused`] naming the watermark obligation, on every path that cannot burn it in. Every one is
 /// recorded by the caller before it reaches the client (`ENC-606`).
-fn mark(
+pub(crate) fn mark(
     bytes: Vec<u8>,
     media_type: &str,
     viewer: Option<&Viewer>,
@@ -379,7 +379,11 @@ fn mark(
 /// * **`sandbox`.** `docs/05-API.md` requires it for HTML renditions; it is set for every profile
 ///   because a header that is only correct for some responses is one somebody forgets to set on the
 ///   next one.
-fn rendition_response(bytes: Vec<u8>, media_type: &str, request_id: RequestId) -> Response {
+pub(crate) fn rendition_response(
+    bytes: Vec<u8>,
+    media_type: &str,
+    request_id: RequestId,
+) -> Response {
     let mut response = Response::new(bytes.into());
     let headers = response.headers_mut();
 
@@ -400,7 +404,7 @@ fn rendition_response(bytes: Vec<u8>, media_type: &str, request_id: RequestId) -
 }
 
 /// A rendition is never cached by anything between here and the viewer.
-const NO_STORE: HeaderValue = HeaderValue::from_static("private, no-store");
+pub(crate) const NO_STORE: HeaderValue = HeaderValue::from_static("private, no-store");
 
 /// Maps the wire profile name onto the pipeline's vocabulary.
 ///
@@ -421,7 +425,7 @@ fn profile_for(name: &str) -> Option<RenditionProfile> {
 /// The file row is still read first, and separately, because `files` is where "folder", "trashed"
 /// and "belongs to another tenant" live — three answers that must be the same `404` as "no readable
 /// version" and would otherwise have three different shapes.
-async fn readable_version(
+pub(crate) async fn readable_version(
     tx: &mut enclave_db::TenantScoped,
     ctx: &RequestContext,
     file: FileId,
@@ -457,7 +461,7 @@ async fn readable_version(
 ///
 /// [`Refused`] when an obligation cannot be satisfied on this path — recorded by the caller before
 /// it becomes the client's `403` (`ENC-606`).
-fn satisfy(obligations: &Obligations) -> Result<Required, Refused> {
+pub(crate) fn satisfy(obligations: &Obligations) -> Result<Required, Refused> {
     let mut required = Required::default();
     for obligation in obligations {
         match *obligation {
@@ -510,9 +514,9 @@ fn satisfy(obligations: &Obligations) -> Result<Required, Refused> {
 /// print restriction, a classification banner — belongs beside it, and a second `bool` returned
 /// from the same function is how call sites start passing them in the wrong order.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct Required {
+pub(crate) struct Required {
     /// The rendition must be marked with the viewer's identity.
-    watermark: bool,
+    pub(crate) watermark: bool,
 }
 
 /// Validates the caller-controlled query parameters.

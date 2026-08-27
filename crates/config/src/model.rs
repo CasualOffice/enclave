@@ -987,9 +987,30 @@ pub enum SameSite {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SigningKeysConfig {
-    /// Reference to the key material. `None` means the development file provider generates a key
-    /// on first run; no key is ever committed, even a throwaway one.
+    /// Reference to the key material — `vault://…`, `env://…`, `file://…`. **Never a literal**
+    /// (`CLAUDE.md` rule 11), which is why the type is a [`SecretRef`] and not a `String`: there is
+    /// no field here that *can* hold a key.
+    ///
+    /// The resolved value is standard base64 of an Ed25519 PKCS#8 DER document, which is the one
+    /// encoding `enclave_auth::ConfiguredKeyProvider` accepts. That type argues why it is one
+    /// encoding and not two.
+    ///
+    /// `None` is a **development** posture and only a development one. `crates/api/src/main.rs`
+    /// builds `LocalFileKeyProvider` over [`Self::directory`] in that case, and it can only do so
+    /// for a `community` profile bound to a loopback address — see `SigningKeys::choose` there for
+    /// the mechanism and for exactly what it does and does not close off. Every other deployment
+    /// with nothing here refuses to start.
     pub key_ref: Option<SecretRef>,
+    /// Where the **development** key provider keeps the key it generates on first run.
+    ///
+    /// Read only when [`Self::key_ref`] is absent, and only by the branch that is reachable in a
+    /// `community` profile. It is a path and not a secret reference because it names a directory
+    /// rather than a value; the directory must be outside the repository or git-ignored, and
+    /// `deploy/config/dev-keys/` — the default — is the latter.
+    ///
+    /// Nothing is read from the repository, because nothing is committed to it: the provider
+    /// generates its first key on demand and writes it `0600`.
+    pub directory: PathBuf,
     /// How often a new signing key is introduced.
     pub rotation_interval: HumanDuration,
     /// How long the retired key stays in the JWKS so tokens signed just before rotation still
@@ -1001,6 +1022,7 @@ impl Default for SigningKeysConfig {
     fn default() -> Self {
         Self {
             key_ref: None,
+            directory: PathBuf::from("deploy/config/dev-keys"),
             rotation_interval: HumanDuration::from_secs(90 * 86_400),
             overlap: HumanDuration::from_secs(86_400),
         }
@@ -1263,6 +1285,14 @@ pub struct AntivirusConfig {
     /// `SCANNING`, which is the only state consistent with "nothing is `AVAILABLE` before antivirus
     /// completes" (CLAUDE.md rule 9).
     pub unavailable_policy: UnavailablePolicy,
+    /// What to do with content no engine inspected — `BLOCK` or `ALLOW_WITH_FLAG`.
+    ///
+    /// `ALLOW_WITH_FLAG` is what makes a deployment with `provider: none` usable. It does **not**
+    /// reach `CONFIDENTIAL` and above: `ScanPolicy::blocks_unsupported` refuses those on rank
+    /// regardless of this key, so the setting buys availability for ordinary content and changes
+    /// nothing for the content that matters most.
+    #[serde(default)]
+    pub unsupported_policy: UnsupportedPolicy,
 }
 
 impl Default for AntivirusConfig {
@@ -1275,6 +1305,7 @@ impl Default for AntivirusConfig {
             archive_depth: 5,
             timeout: HumanDuration::from_secs(120),
             unavailable_policy: UnavailablePolicy::Hold,
+            unsupported_policy: UnsupportedPolicy::Block,
         }
     }
 }
@@ -1302,6 +1333,33 @@ pub enum AntivirusProvider {
     /// Explicitly disabled. Spelled out rather than expressed as `enabled: false` so that turning
     /// scanning off is a visible, greppable choice in the configuration diff.
     None,
+}
+
+/// What to do with content no scanner inspected.
+///
+/// `docs/06-SECURITY-DLP-ACCESS.md §6.2`, and the one setting that decides whether a deployment
+/// running `antivirus.provider: none` can serve anything at all.
+///
+/// This key did not exist until now, and its absence was deliberate: `ScanPolicy::from_config`
+/// pinned `BLOCK` on the argument that a control expressed as a configuration default is a control
+/// somebody turns off — the shape `ENC-157` removed from `preview.watermark_cache`. The counter-
+/// argument, which the repo owner made and which decides it, is that a developer on a machine with
+/// no scanner available is not choosing to weaken a control; they are choosing to run the product
+/// at all, and a setting they cannot express is one they route around by other means.
+///
+/// So the key exists in every profile. What stands between it and a silent production bypass is not
+/// its absence but its noise: `crates/worker` already logs at **error** level that *"nothing
+/// uploaded to this deployment will be readable"* when no engine scans, `AVAILABLE` still requires
+/// `av_status = 'CLEAN'`, and a version admitted this way is recorded `SKIPPED` — re-offered
+/// automatically the moment a scanning engine answers, rather than left to be rediscovered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum UnsupportedPolicy {
+    /// Refuse it. The default, and what `CONFIDENTIAL` and above always get regardless.
+    #[default]
+    Block,
+    /// Publish it, marked unscanned, so a later signature update revisits it.
+    AllowWithFlag,
 }
 
 /// What to do when the scanner is unavailable.

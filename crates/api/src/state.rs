@@ -31,6 +31,19 @@ pub struct ApiState {
     /// message reaches one replica; a deployment is several*. Nothing in the admin surface's
     /// behaviour turns on it, which is exactly why it is an `Option` and not a required argument.
     pub rule_cache: Option<SharedRuleCache>,
+    /// Whether a privileged administrative action demands a recent second factor.
+    ///
+    /// `security.mfa.admins_required`, which existed, was documented, defaulted to `true`, and was
+    /// **read by nothing** — `require_step_up` compared against a hard-coded constant instead. So
+    /// every `/admin/**` mutation demanded MFA, the binary wired an `MfaVerifier` that refuses every
+    /// code, and no principal in any deployment could satisfy it. A tenant administrator was locked
+    /// out of their own policy surface with a `403` naming a factor they had no way to present.
+    ///
+    /// That is worse than either honest answer. Requiring MFA is defensible; not requiring it is
+    /// defensible; requiring something unsatisfiable is a control that cannot be operated, which is
+    /// the failure `plans/M4-GOVERNANCE.md §2` is written against. Now the configured value decides,
+    /// and `main.rs` refuses to start if it demands a factor no verifier can check (`ENC-771`).
+    pub step_up: StepUpPolicy,
     /// The DLP rule cache this replica reads, when the binary has one to hand.
     ///
     /// `None` is a supported deployment for [`ApiState::rule_cache`]'s reason, and one extra: a
@@ -38,6 +51,16 @@ pub struct ApiState {
     /// cache because it reads no rules. There is nothing to invalidate, and that is a posture
     /// rather than a gap (`ENC-633`).
     pub dlp_rule_cache: Option<SharedDlpRuleCache>,
+    /// What `/api/v1/auth/*` issues, rotates and revokes with (`ENC-685`).
+    ///
+    /// Not `Option`, for [`crate::Delivery`]'s reason: the routes register unconditionally, so a
+    /// dependency a deployment could omit would be an unexplained `500` rather than a refusal. A
+    /// deployment that has wired no token service carries
+    /// [`AuthSurface::unconfigured`](crate::routes::auth::AuthSurface::unconfigured), which refuses
+    /// every route with `503` and says so at start-up — distinguishable from a wrong password,
+    /// which is the property that matters when someone is deciding whether to look at the
+    /// configuration or at the user.
+    pub auth: Arc<crate::routes::auth::AuthSurface>,
     /// Where a refusal *this layer* takes is recorded (`ENC-606`).
     ///
     /// Not `Option`, and not a builder step that a deployment could forget. `ENC-606` was a class
@@ -83,9 +106,26 @@ impl ApiState {
             tokens: Arc::new(AccessTokenVerifier::new(issuer, audience, keys)),
             edge: Arc::new(Edge::untrusting()),
             rule_cache: None,
+            // The safe default, and the same value `MfaConfig::default()` carries. `main.rs`
+            // overrides it from configuration and refuses to start on the unsatisfiable pairing.
+            step_up: StepUpPolicy::Required { max_age_secs: 900 },
             dlp_rule_cache: None,
+            auth: Arc::new(crate::routes::auth::AuthSurface::unconfigured()),
             audit,
         }
+    }
+
+    /// Supplies the authentication surface `/api/v1/auth/*` runs on.
+    ///
+    /// A builder step rather than a constructor argument for the same reason [`ApiState::with_edge`]
+    /// is one — and with a consequence that is loud rather than quiet when it is forgotten: every
+    /// auth route answers `503` and `main.rs` warns about it at boot. That is the direction to fail
+    /// in; the alternative, a surface assembled from defaults, would be a deployment issuing tokens
+    /// signed by a key nobody chose.
+    #[must_use]
+    pub fn with_auth(mut self, auth: crate::routes::auth::AuthSurface) -> Self {
+        self.auth = Arc::new(auth);
+        self
     }
 
     /// Supplies the sink handler refusals are recorded into.
@@ -163,4 +203,54 @@ pub fn unconfigured_stages() -> &'static [&'static str] {
         "authorization (content is self-read only — ENC-126 brings ACL resolution; administrative \
          actions are decided from users.is_admin)",
     ]
+}
+
+impl ApiState {
+    /// Sets what a privileged administrative action demands of the caller's session.
+    #[must_use]
+    pub fn with_step_up(mut self, policy: StepUpPolicy) -> Self {
+        self.step_up = policy;
+        self
+    }
+}
+
+/// What a privileged administrative action requires of the caller's session.
+///
+/// Two values rather than a `bool` because the disabled case has to say *why* it is disabled where
+/// an operator reads it, and because `Required` carries the freshness window that the refusal
+/// echoes back to the client as `maxAge`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepUpPolicy {
+    /// A second factor, no older than this many seconds.
+    Required { max_age_secs: i64 },
+    /// No second factor is demanded of administrators.
+    ///
+    /// `security.mfa.admins_required: false`. Reachable, and deliberately so: a deployment with no
+    /// MFA verifier configured cannot satisfy `Required`, and a requirement nobody can satisfy is
+    /// not a stricter control — it is an administrative surface that does not exist.
+    NotRequired,
+}
+
+impl StepUpPolicy {
+    /// Whether this session may take a privileged administrative action.
+    #[must_use]
+    pub fn satisfied_by(self, strength: enclave_core::AuthStrength, age_secs: i64) -> bool {
+        match self {
+            Self::NotRequired => true,
+            Self::Required { max_age_secs } => {
+                strength.meets(enclave_core::AuthStrength::MultiFactor) && age_secs <= max_age_secs
+            }
+        }
+    }
+
+    /// The window a refusal reports, so the client can say how fresh a sign-in must be.
+    #[must_use]
+    pub const fn max_age_secs(self) -> i64 {
+        match self {
+            Self::Required { max_age_secs } => max_age_secs,
+            // Unreachable in a refusal — `NotRequired` never refuses — but a total function here
+            // keeps the envelope's shape from depending on an unwrap.
+            Self::NotRequired => 0,
+        }
+    }
 }

@@ -1,0 +1,791 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+@font-face{font-family:'Inter';font-style:normal;font-weight:400 600;font-display:swap;src:url('../public/fonts/inter-latin.woff2') format('woff2');unicode-range:U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD}
+@font-face{font-family:'Inter';font-style:normal;font-weight:400 600;font-display:swap;src:url('../public/fonts/inter-latin-ext.woff2') format('woff2');unicode-range:U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF}
+@font-face{font-family:'Inter Tight';font-style:normal;font-weight:500 600;font-display:swap;src:url('../public/fonts/inter-tight-latin.woff2') format('woff2');unicode-range:U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD}
+@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:400 500;font-display:swap;src:url('../public/fonts/jetbrains-mono-latin.woff2') format('woff2');unicode-range:U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD}
+html,body{margin:0;padding:0;background:#F7F7F5}
+a{color:inherit}a:hover{color:inherit}
+#enc{
+  --g0:#fff;--g25:#FCFCFB;--g50:#F7F7F5;--g100:#F0F0ED;--g150:#E8E8E4;--g200:#DEDEDA;--g300:#C8C8C3;--g400:#8A8A84;--g500:#72726C;--g600:#5B5B56;--g700:#3F3F3B;--g800:#2A2A27;--g900:#1A1A18;--ink:#141412;
+  --ok:#1D8A55;--warn:#B7791F;--danger:#C0392B;--info:#2F6FDB;
+  --c-pub:#8A97A6;--c-int:#2F6FDB;--c-conf:#B7791F;--c-hconf:#D2591C;--c-restr:#C2273A;
+  --accent:#4F46E5;--accent-soft:rgba(79,70,229,.10);--accent-ring:rgba(79,70,229,.35);--r-ctrl:6px;--r-surf:10px;--r-sheet:14px;
+  --canvas:var(--g50);--sheet:var(--g0);--sunken:var(--g100);--hover:rgba(20,20,18,.045);--selected:rgba(20,20,18,.06);
+  --line:rgba(20,20,18,.07);--line-strong:rgba(20,20,18,.13);--hairline:0 0 0 1px var(--line);
+  --fg:var(--ink);--fg2:var(--g600);--fg3:var(--g500);--fg4:var(--g400);
+  --el1:0 0 0 1px rgba(20,20,18,.06),0 1px 2px rgba(20,20,18,.04);
+  --el2:0 0 0 1px rgba(20,20,18,.06),0 4px 12px -2px rgba(20,20,18,.10),0 12px 32px -8px rgba(20,20,18,.10);
+  --el3:0 0 0 1px rgba(20,20,18,.08),0 16px 48px -12px rgba(20,20,18,.24),0 32px 80px -24px rgba(20,20,18,.20);
+  --sans:'Inter',system-ui,-apple-system,sans-serif;--tight:'Inter Tight','Inter',system-ui,sans-serif;--mono:'JetBrains Mono',ui-monospace,SFMono-Regular,monospace;
+  --selbar-bg:var(--ink);--selbar-fg:#fff;--selbar-hov:rgba(255,255,255,.12);--selbar-kbd:rgba(255,255,255,.14);--selbar-i:rgba(255,255,255,.18);
+  --av-a-bg:#E0E7FF;--av-a-fg:#3730A3;--av-b-bg:#FDE7DE;--av-b-fg:#9A3412;--av-c-bg:#DCFCE7;--av-c-fg:#166534;--av-d-bg:#FEF3C7;--av-d-fg:#92400E;
+}
+#enc[data-brand="northwind"]{--accent:#0F766E;--accent-soft:rgba(15,118,110,.10);--accent-ring:rgba(15,118,110,.35);--r-ctrl:8px;--r-surf:12px;--r-sheet:18px}
+#enc[data-brand="meridian"]{--accent:#111827;--accent-soft:rgba(17,24,39,.08);--accent-ring:rgba(17,24,39,.30);--r-ctrl:4px;--r-surf:6px;--r-sheet:8px}
+#enc[data-theme="dark"]{--canvas:#0F0F0E;--sheet:#161615;--sunken:#1D1D1B;--hover:rgba(255,255,255,.05);--selected:rgba(255,255,255,.07);--line:rgba(255,255,255,.08);--line-strong:rgba(255,255,255,.14);--fg:#F2F2EF;--fg2:#B5B5AF;--fg3:#8A8A84;--fg4:#5E5E59;--el1:0 0 0 1px rgba(255,255,255,.06),0 1px 2px rgba(0,0,0,.4);--el2:0 0 0 1px rgba(255,255,255,.07),0 8px 24px -4px rgba(0,0,0,.6);--el3:0 0 0 1px rgba(255,255,255,.08),0 24px 64px -12px rgba(0,0,0,.8);--g100:#1D1D1B;--g150:#232321;--g200:#2B2B28;--accent:#8B85FF;--accent-soft:rgba(139,133,255,.14);--accent-ring:rgba(139,133,255,.4);--selbar-bg:#F2F2EF;--selbar-fg:#141412;--selbar-hov:rgba(0,0,0,.08);--selbar-kbd:rgba(0,0,0,.1);--selbar-i:rgba(0,0,0,.14);--av-a-bg:#2E2B6B;--av-a-fg:#C7D2FE;--av-b-bg:#5A2A1A;--av-b-fg:#FED7C3;--av-c-bg:#14442A;--av-c-fg:#BBF7D0;--av-d-bg:#4A3410;--av-d-fg:#FDE68A}
+#enc[data-theme="dark"][data-brand="northwind"]{--accent:#2DD4BF;--accent-soft:rgba(45,212,191,.13);--accent-ring:rgba(45,212,191,.38)}
+#enc[data-theme="dark"][data-brand="meridian"]{--accent:#E5E7EB;--accent-soft:rgba(229,231,235,.1);--accent-ring:rgba(229,231,235,.3)}
+#enc :focus-visible{outline:2px solid var(--accent-ring);outline-offset:1px;border-radius:6px}
+@keyframes encSh{0%{background-position:200% 0}100%{background-position:-200% 0}}
+@keyframes encIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+@keyframes encPeek{from{opacity:0;transform:translateX(14px)}to{opacity:1;transform:none}}
+@keyframes encFade{from{opacity:0}to{opacity:1}}
+@keyframes encPop{from{opacity:0;transform:translateX(-50%) translateY(8px) scale(.97)}to{opacity:1;transform:translateX(-50%) translateY(0) scale(1)}}
+@keyframes encToast{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+@keyframes encSpin{to{transform:rotate(360deg)}}
+@keyframes encStrata{0%{transform:scaleX(.25);opacity:.35}30%{transform:scaleX(1);opacity:1}70%{transform:scaleX(1);opacity:1}100%{transform:scaleX(.25);opacity:.35}}
+@media (prefers-reduced-motion:reduce){#enc *{transition:none!important;animation-duration:.01s!important}}
+</style>
+<link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
+</helmet>
+<svg width="0" height="0" style="position:absolute;width:0;height:0" aria-hidden="true">
+ <symbol id="s" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5"></path></symbol>
+ <symbol id="plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"></path></symbol>
+ <symbol id="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"></path></symbol>
+ <symbol id="chevr" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"></path></symbol>
+ <symbol id="updown" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m8 9 4-4 4 4M8 15l4 4 4-4"></path></symbol>
+ <symbol id="inbox" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M3 13h5l2 3h4l2-3h5M5 5h14l2 8v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-6z"></path></symbol>
+ <symbol id="home" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="m3 11 9-8 9 8v10a1 1 0 0 1-1 1h-5v-7h-6v7H4a1 1 0 0 1-1-1z"></path></symbol>
+ <symbol id="folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path></symbol>
+ <symbol id="list" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"></path></symbol>
+ <symbol id="page" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9zM14 3v6h6"></path></symbol>
+ <symbol id="act" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"></path></symbol>
+ <symbol id="star" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="m12 2 3.1 6.3 6.9 1-5 4.9 1.2 6.8L12 17.8 5.8 21l1.2-6.8-5-4.9 6.9-1z"></path></symbol>
+ <symbol id="share" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"></circle><circle cx="6" cy="12" r="3"></circle><circle cx="18" cy="19" r="3"></circle><path d="m8.6 13.5 6.8 4M15.4 6.5l-6.8 4"></path></symbol>
+ <symbol id="trash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"></path></symbol>
+ <symbol id="gear" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"></path></symbol>
+ <symbol id="up" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"></path></symbol>
+ <symbol id="down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"></path></symbol>
+ <symbol id="move" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"></path></symbol>
+ <symbol id="more" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.7"></circle><circle cx="12" cy="12" r="1.7"></circle><circle cx="19" cy="12" r="1.7"></circle></symbol>
+ <symbol id="lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"></rect><path d="M8 11V7a4 4 0 0 1 8 0v4"></path></symbol>
+ <symbol id="shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M12 2 4 5v6c0 5 3.4 9.4 8 11 4.6-1.6 8-6 8-11V5z"></path></symbol>
+ <symbol id="eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"></path><circle cx="12" cy="12" r="3"></circle></symbol>
+ <symbol id="warn" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0zM12 9v4M12 17h.01"></path></symbol>
+ <symbol id="info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="10"></circle><path d="M12 16v-4M12 8h.01"></path></symbol>
+ <symbol id="block" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"></circle><path d="m5 5 14 14"></path></symbol>
+ <symbol id="check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5L20 7"></path></symbol>
+ <symbol id="x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"></path></symbol>
+ <symbol id="spark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8zM19 17l.7 2 2 .7-2 .7-.7 2-.7-2-2-.7 2-.7z"></path></symbol>
+ <symbol id="user" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="8" r="4"></circle><path d="M4 21a8 8 0 0 1 16 0"></path></symbol>
+ <symbol id="clock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="10"></circle><path d="M12 6v6l4 2"></path></symbol>
+ <symbol id="globe" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"></circle><path d="M2 12h20M12 2a15 15 0 0 1 0 20 15 15 0 0 1 0-20z"></path></symbol>
+ <symbol id="filter" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5h18l-7 8v6l-4 2v-8z"></path></symbol>
+ <symbol id="sliders" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"></path></symbol>
+ <symbol id="file" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8zM14 3v5h5"></path></symbol>
+ <symbol id="ext" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6M20 4l-9 9M19 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5"></path></symbol>
+ <symbol id="side" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="2"></rect><path d="M15 4v16"></path></symbol>
+ <symbol id="bot" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="4" y="8" width="16" height="12" rx="3"></rect><path d="M12 8V4M9 14h.01M15 14h.01"></path></symbol>
+ <symbol id="logo" viewBox="0 0 48 48"><rect x="7" y="8" width="34" height="9.5" rx="4.75" fill="currentColor"></rect><rect x="7" y="19.25" width="22" height="9.5" rx="4.75" fill="currentColor" opacity=".55"></rect><rect x="7" y="30.5" width="34" height="9.5" rx="4.75" fill="currentColor"></rect></symbol>
+</svg>
+<div id="enc" data-theme="{{themeAttr}}" data-brand="{{brandAttr}}" style="height:100vh;overflow:hidden;background:var(--canvas);color:var(--fg);font-family:var(--sans);font-size:13px;line-height:1.45;letter-spacing:-.006em;-webkit-font-smoothing:antialiased;position:relative">
+
+<sc-if value="{{isSignin}}" hint-placeholder-val="{{true}}">
+<div data-screen-label="Sign in" style="height:100%;display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden">
+  <div style="position:absolute;inset:0;background-image:radial-gradient(var(--line-strong) 1px,transparent 1px);background-size:22px 22px;-webkit-mask-image:radial-gradient(ellipse at center,#000 30%,transparent 72%);mask-image:radial-gradient(ellipse at center,#000 30%,transparent 72%);opacity:.7"></div>
+  <div style="position:relative;width:360px;padding:28px 28px 22px;border-radius:16px;box-shadow:var(--el2);background:var(--sheet);animation:encIn .3s cubic-bezier(.2,.7,.3,1) both">
+    <div style="margin-bottom:18px"><svg viewBox="0 0 48 48" style="width:34px;height:34px;color:var(--accent)"><use href="#logo"></use></svg></div>
+    <h3 style="margin:0;font-family:var(--tight);font-size:20px;font-weight:600;letter-spacing:-.02em;margin-bottom:4px">Sign in to {{brandName}}</h3>
+    <p style="margin:0;color:var(--fg3);font-size:12.5px;margin-bottom:18px">{{signinSub}}</p>
+    <div style="display:flex;flex-direction:column;gap:8px">
+      <button onClick="{{signIn}}" style="display:inline-flex;align-items:center;justify-content:center;gap:6px;height:36px;padding:0 14px;border-radius:calc(var(--r-ctrl) + 2px);border:0;font:inherit;font-size:13px;font-weight:500;cursor:pointer;background:var(--accent);color:#fff" style-hover="filter:brightness(1.08)"><svg viewBox="0 0 24 24" style="width:14px;height:14px"><use href="#shield"></use></svg>Continue with passkey</button>
+      <button onClick="{{signIn}}" style="display:inline-flex;align-items:center;justify-content:center;gap:6px;height:36px;padding:0 14px;border-radius:calc(var(--r-ctrl) + 2px);border:0;font:inherit;font-size:13px;font-weight:500;cursor:pointer;background:var(--sheet);color:var(--fg);box-shadow:var(--hairline)" style-hover="background:var(--sunken)">Continue with SSO</button>
+      <div style="display:flex;align-items:center;gap:10px;color:var(--fg4);font-size:11px;margin:6px 0"><i style="flex:1;height:1px;background:var(--line)"></i>or<i style="flex:1;height:1px;background:var(--line)"></i></div>
+      <input placeholder="name@northwind.example" style="height:36px;padding:0 9px;border:0;border-radius:var(--r-ctrl);background:var(--sheet);box-shadow:var(--hairline);color:var(--fg);font:inherit;font-size:12.5px;width:100%;box-sizing:border-box" style-focus="outline:0;box-shadow:0 0 0 1px var(--accent),0 0 0 4px var(--accent-ring)">
+      <button onClick="{{signIn}}" style="display:inline-flex;align-items:center;justify-content:center;height:36px;padding:0 14px;border-radius:calc(var(--r-ctrl) + 2px);border:0;font:inherit;font-size:13px;font-weight:500;cursor:pointer;background:var(--sheet);color:var(--fg);box-shadow:var(--hairline)" style-hover="background:var(--sunken)">Continue with email</button>
+    </div>
+    <div style="display:flex;gap:12px;font-size:11px;color:var(--fg4);margin-top:16px"><a href="#" style="text-decoration:none">Support</a><a href="#" style="text-decoration:none">Privacy</a><a href="#" style="text-decoration:none">Terms</a><span style="margin-left:auto;font-family:var(--mono)">v2.4.1</span></div>
+  </div>
+</div>
+</sc-if>
+
+<sc-if value="{{isApp}}" hint-placeholder-val="{{false}}">
+<div style="display:grid;grid-template-columns:232px 1fr;height:100%">
+  <aside style="padding:12px 8px 12px 10px;display:flex;flex-direction:column;gap:1px;color:var(--fg2);min-width:0;overflow:auto">
+    <sc-if value="{{notAdmin}}" hint-placeholder-val="{{true}}">
+      <div style="display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:var(--r-ctrl);cursor:pointer;margin-bottom:8px" style-hover="background:var(--hover)"><svg viewBox="0 0 48 48" style="width:18px;height:18px;color:var(--accent);flex:none"><use href="#logo"></use></svg><b style="font-weight:500;color:var(--fg);font-size:13px">{{brandName}}</b><svg viewBox="0 0 24 24" style="width:14px;height:14px;margin-left:auto;color:var(--fg4)"><use href="#updown"></use></svg></div>
+      <a href="#" onClick="{{goSearch}}" style="display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:var(--r-ctrl);text-decoration:none;color:{{navSearchFg}};background:{{navSearchBg}};font-size:12.5px;min-height:26px;cursor:pointer" style-hover="background:var(--hover);color:var(--fg)"><svg viewBox="0 0 24 24" style="width:14px;height:14px;color:var(--fg3)"><use href="#s"></use></svg>Search <span style="margin-left:auto;font-family:var(--mono);font-size:10px;padding:1px 4px;border-radius:4px;background:var(--sunken);color:var(--fg3);box-shadow:inset 0 -1px 0 var(--line-strong)">⌘K</span></a>
+      <a href="#" onClick="{{goHome}}" style="display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:var(--r-ctrl);text-decoration:none;color:{{navHomeFg}};background:{{navHomeBg}};font-size:12.5px;min-height:26px;cursor:pointer" style-hover="background:var(--hover);color:var(--fg)"><svg viewBox="0 0 24 24" style="width:14px;height:14px;color:var(--fg3)"><use href="#inbox"></use></svg>Inbox <span style="margin-left:auto;font-size:11px;color:var(--fg4);font-family:var(--mono)">{{inboxN}}</span></a>
+      <a href="#" onClick="{{goHome}}" style="display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:var(--r-ctrl);text-decoration:none;color:{{navHomeFg}};background:{{navHomeBg}};font-size:12.5px;min-height:26px;cursor:pointer" style-hover="background:var(--hover);color:var(--fg)"><svg viewBox="0 0 24 24" style="width:14px;height:14px;color:var(--fg3)"><use href="#home"></use></svg>Home</a>
+      <a href="#" onClick="{{goAsk}}" style="display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:var(--r-ctrl);text-decoration:none;color:{{navAskFg}};background:{{navAskBg}};font-size:12.5px;min-height:26px;cursor:pointer" style-hover="background:var(--hover);color:var(--fg)"><svg viewBox="0 0 24 24" style="width:14px;height:14px;color:var(--fg3)"><use href="#spark"></use></svg>Ask <span style="margin-left:auto;font-family:var(--mono);font-size:10px;padding:1px 4px;border-radius:4px;background:var(--sunken);color:var(--fg3);box-shadow:inset 0 -1px 0 var(--line-strong)">⌘J</span></a>
+      <div style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--fg4);padding:14px 8px 4px;font-weight:500"><svg viewBox="0 0 24 24" style="width:10px;height:10px"><use href="#chev"></use></svg>Finance</div>
+      <a href="#" onClick="{{goLibrary}}" style="display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:var(--r-ctrl);text-decoration:none;color:{{navLibFg}};background:{{navLibBg}};font-size:12.5px;min-height:26px;cursor:pointer" style-hover="background:var(--hover);color:var(--fg)"><svg viewBox="0 0 24 24" style="width:14px;height:14px;color:var(--fg3)"><use href="#folder"></use></svg>Files</a>
+      <a href="#" onClick="{{goLibrary}}" style="display:flex;align-items:center;gap:8px;padding:5px 8px 5px 20px;border-radius:var(--r-ctrl);text-decoration:none;color:var(--fg2);font-size:12.5px;min-height:26px;cursor:pointer" style-hover="background:var(--hover);color:var(--fg)"><span style="width:7px;height:7px;border-radius:50%;background:var(--c-conf);margin:0 3px 0 1px"></span>Contracts <span style="margin-left:auto;font-size:11px;color:var(--fg4);font-family:var(--mono)">9</span></a>
+      <a href="#" onClick="{{nyi}}" style="display:flex;align-items:center;gap:8px;padding:5px 8px 5px 20px;border-radius:var(--r-ctrl);text-decoration:none;color:var(--fg2);font-size:12.5px;min-height:26px;cursor:pointer" style-hover="background:var(--hover);color:var(--fg)"><span style="width:7px;height:7px;border-radius:50%;background:var(--c-int);margin:0 3px 0 1px"></span>Invoices</a>
+      <a href="#" onClick="{{nyi}}" style="display:flex;align-items:center;gap:8px;padding:5px 8px 5px 20px;border-radius:var(--r-ctrl);text-decoration:none;color:var(--fg2);font-size:12.5px;min-height:26px;cursor:pointer" style-hover="background:var(--hover);color:var(--fg)"><span style="width:7px;height:7px;border-radius:50%;background:var(--c-hconf);margin:0 3px 0 1px"></span>Board pack</a>
+      <a href="#" onClick="{{nyi}}" style="display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:var(--r-ctrl);text-decoration:none;color:var(--fg2);font-size:12.5px;min-height:26px;cursor:pointer" style-hover="background:var(--hover);color:var(--fg)"><svg viewBox="0 0 24 24" style="width:14px;height:14px;color:var(--fg3)"><use href="#list"></use></svg>Lists</a>
+      <a href="#" onClick="{{nyi}}" style="display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:var(--r-ctrl);text-decoration:none;color:var(--fg2);font-size:12.5px;min-height:26px;cursor:pointer" style-hover="background:var(--hover);color:var(--fg)"><svg viewBox="0 0 24 24" style="width:14px;height:14px;color:var(--fg3)"><use href="#page"></use></svg>Pages</a>
+      <a href="#" onClick="{{nyi}}" style="display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:var(--r-ctrl);text-decoration:none;color:var(--fg2);font-size:12.5px;min-height:26px;cursor:pointer" style-hover="background:var(--hover);color:var(--fg)"><svg viewBox="0 0 24 24" style="width:14px;height:14px;color:var(--fg3)"><use href="#act"></use></svg>Activity</a>
+      <div style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--fg4);padding:14px 8px 4px;font-weight:500"><svg viewBox="0 0 24 24" style="width:10px;height:10px"><use href="#chev"></use></svg>Personal</div>
+      <a href="#" onClick="{{nyi}}" style="display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:var(--r-ctrl);text-decoration:none;color:var(--fg2);font-size:12.5px;min-height:26px;cursor:pointer" style-hover="background:var(--hover);color:var(--fg)"><svg viewBox="0 0 24 24" style="width:14px;height:14px;color:var(--fg3)"><use href="#star"></use></svg>Favorites</a>
+      <a href="#" onClick="{{nyi}}" style="display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:var(--r-ctrl);text-decoration:none;color:var(--fg2);font-size:12.5px;min-height:26px;cursor:pointer" style-hover="background:var(--hover);color:var(--fg)"><svg viewBox="0 0 24 24" style="width:14px;height:14px;color:var(--fg3)"><use href="#share"></use></svg>Shared with me</a>
+      <a href="#" onClick="{{nyi}}" style="display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:var(--r-ctrl);text-decoration:none;color:var(--fg2);font-size:12.5px;min-height:26px;cursor:pointer" style-hover="background:var(--hover);color:var(--fg)"><svg viewBox="0 0 24 24" style="width:14px;height:14px;color:var(--fg3)"><use href="#trash"></use></svg>Trash</a>
+    </sc-if>
+    <sc-if value="{{isAdmin}}" hint-placeholder-val="{{false}}">
+      <div style="display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:var(--r-ctrl);cursor:pointer;margin-bottom:8px"><svg viewBox="0 0 48 48" style="width:18px;height:18px;color:var(--accent);flex:none"><use href="#logo"></use></svg><b style="font-weight:500;color:var(--fg);font-size:13px">{{brandName}}</b></div>
+      <a href="#" onClick="{{goLibrary}}" style="display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:var(--r-ctrl);text-decoration:none;color:var(--fg2);font-size:12.5px;min-height:26px;cursor:pointer" style-hover="background:var(--hover);color:var(--fg)"><svg viewBox="0 0 24 24" style="width:14px;height:14px;color:var(--fg3);transform:rotate(90deg)"><use href="#chev"></use></svg>Back to workspace</a>
+      <div style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--fg4);padding:14px 8px 4px;font-weight:500">Admin</div>
+      <a href="#" onClick="{{nyi}}" style="display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:var(--r-ctrl);text-decoration:none;color:var(--fg2);font-size:12.5px;min-height:26px;cursor:pointer" style-hover="background:var(--hover);color:var(--fg)"><svg viewBox="0 0 24 24" style="width:14px;height:14px;color:var(--fg3)"><use href="#home"></use></svg>Overview</a>
+      <a href="#" onClick="{{nyi}}" style="display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:var(--r-ctrl);text-decoration:none;color:var(--fg2);font-size:12.5px;min-height:26px;cursor:pointer" style-hover="background:var(--hover);color:var(--fg)"><svg viewBox="0 0 24 24" style="width:14px;height:14px;color:var(--fg3)"><use href="#user"></use></svg>People</a>
+      <a href="#" onClick="{{nyi}}" style="display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:var(--r-ctrl);text-decoration:none;color:var(--fg2);font-size:12.5px;min-height:26px;cursor:pointer" style-hover="background:var(--hover);color:var(--fg)"><svg viewBox="0 0 24 24" style="width:14px;height:14px;color:var(--fg3)"><use href="#folder"></use></svg>Workspaces</a>
+      <a href="#" style="display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:var(--r-ctrl);text-decoration:none;color:var(--fg);background:var(--selected);font-size:12.5px;min-height:26px;cursor:pointer"><svg viewBox="0 0 24 24" style="width:14px;height:14px;color:var(--fg)"><use href="#shield"></use></svg>Security</a>
+      <a href="#" onClick="{{nyi}}" style="display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:var(--r-ctrl);text-decoration:none;color:var(--fg2);font-size:12.5px;min-height:26px;cursor:pointer" style-hover="background:var(--hover);color:var(--fg)"><svg viewBox="0 0 24 24" style="width:14px;height:14px;color:var(--fg3)"><use href="#clock"></use></svg>Compliance</a>
+      <a href="#" onClick="{{nyi}}" style="display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:var(--r-ctrl);text-decoration:none;color:var(--fg2);font-size:12.5px;min-height:26px;cursor:pointer" style-hover="background:var(--hover);color:var(--fg)"><svg viewBox="0 0 24 24" style="width:14px;height:14px;color:var(--fg3)"><use href="#s"></use></svg>Search &amp; AI</a>
+      <a href="#" onClick="{{nyi}}" style="display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:var(--r-ctrl);text-decoration:none;color:var(--fg2);font-size:12.5px;min-height:26px;cursor:pointer" style-hover="background:var(--hover);color:var(--fg)"><svg viewBox="0 0 24 24" style="width:14px;height:14px;color:var(--fg3)"><use href="#globe"></use></svg>Infrastructure</a>
+      <a href="#" onClick="{{nyi}}" style="display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:var(--r-ctrl);text-decoration:none;color:var(--fg2);font-size:12.5px;min-height:26px;cursor:pointer" style-hover="background:var(--hover);color:var(--fg)"><svg viewBox="0 0 24 24" style="width:14px;height:14px;color:var(--fg3)"><use href="#spark"></use></svg>Branding</a>
+      <a href="#" onClick="{{nyi}}" style="display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:var(--r-ctrl);text-decoration:none;color:var(--fg2);font-size:12.5px;min-height:26px;cursor:pointer" style-hover="background:var(--hover);color:var(--fg)"><svg viewBox="0 0 24 24" style="width:14px;height:14px;color:var(--fg3)"><use href="#act"></use></svg>Audit log</a>
+    </sc-if>
+    <div style="margin-top:auto;padding-top:8px;display:flex;flex-direction:column;gap:6px">
+      <sc-if value="{{isAdmin}}" hint-placeholder-val="{{false}}">
+        <span style="display:inline-flex;align-items:center;gap:5px;height:18px;padding:0 8px;border-radius:999px;font-size:11px;font-weight:500;background:color-mix(in srgb,var(--ok) 12%,transparent);color:var(--ok);align-self:flex-start;margin-left:8px"><svg viewBox="0 0 24 24" style="width:11px;height:11px"><use href="#shield"></use></svg>MFA verified · 4 min</span>
+      </sc-if>
+      <sc-if value="{{notAdmin}}" hint-placeholder-val="{{true}}">
+        <a href="#" onClick="{{goAdmin}}" style="display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:var(--r-ctrl);text-decoration:none;color:var(--fg2);font-size:12px;min-height:26px;cursor:pointer" style-hover="background:var(--hover);color:var(--fg)"><svg viewBox="0 0 24 24" style="width:14px;height:14px;color:var(--fg3)"><use href="#gear"></use></svg>Admin</a>
+      </sc-if>
+      <a href="#" onClick="{{signOut}}" title="Sign out" style="display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:var(--r-ctrl);text-decoration:none;color:var(--fg2);font-size:12px;min-height:26px;cursor:pointer" style-hover="background:var(--hover);color:var(--fg)"><span style="width:20px;height:20px;border-radius:50%;background:var(--av-a-bg);color:var(--av-a-fg);display:inline-flex;align-items:center;justify-content:center;font-size:9.5px;font-weight:600">PN</span>Priya Nair <span style="margin-left:auto;font-size:11px;color:var(--fg4);font-family:var(--mono)">Finance</span></a>
+      <div style="display:flex;align-items:center;gap:6px;padding:2px 8px 0">
+        <span style="display:inline-flex;gap:2px;background:var(--sunken);padding:2px;border-radius:999px">
+          <button onClick="{{setLight}}" style="border:0;font:inherit;font-size:11px;color:{{segLightFg}};padding:2px 8px;border-radius:999px;cursor:pointer;background:{{segLightBg}};box-shadow:{{segLightSh}}">Light</button>
+          <button onClick="{{setDark}}" style="border:0;font:inherit;font-size:11px;color:{{segDarkFg}};padding:2px 8px;border-radius:999px;cursor:pointer;background:{{segDarkBg}};box-shadow:{{segDarkSh}}">Dark</button>
+        </span>
+        <span style="display:inline-flex;gap:4px;margin-left:auto">
+          <button onClick="{{setHarbor}}" title="Default brand" style="width:16px;height:16px;border-radius:50%;border:0;cursor:pointer;background:#4F46E5;box-shadow:{{brHarborSh}}"></button>
+          <button onClick="{{setNorthwind}}" title="Northwind" style="width:16px;height:16px;border-radius:50%;border:0;cursor:pointer;background:#0F766E;box-shadow:{{brNorthSh}}"></button>
+          <button onClick="{{setMeridian}}" title="Meridian" style="width:16px;height:16px;border-radius:50%;border:0;cursor:pointer;background:#111827;box-shadow:{{brMeriSh}}"></button>
+        </span>
+      </div>
+    </div>
+  </aside>
+
+  <div style="margin:8px 8px 8px 0;background:var(--sheet);border-radius:var(--r-sheet);box-shadow:var(--el1);display:flex;flex-direction:column;min-width:0;overflow:hidden;position:relative">
+
+  <sc-if value="{{isHome}}" hint-placeholder-val="{{false}}">
+    <div data-screen-label="Home" style="flex:1;overflow:auto;padding:28px 32px 40px">
+      <div style="max-width:860px;margin:0 auto;display:flex;flex-direction:column;gap:28px">
+        <div style="animation:encIn .25s both">
+          <h2 style="margin:0;font-family:var(--tight);font-size:24px;font-weight:600;letter-spacing:-.022em">{{greeting}}, Priya</h2>
+          <p style="margin:4px 0 0;color:var(--fg3);font-size:12.5px">Thursday, August 20 · Finance workspace · 3 things need your attention</p>
+        </div>
+        <div style="animation:encIn .25s .05s both">
+          <h4 style="margin:0 0 10px;font-size:11px;font-weight:500;color:var(--fg3);text-transform:uppercase;letter-spacing:.06em">Needs your attention</h4>
+          <div style="display:flex;flex-direction:column;gap:8px">
+            <sc-for list="{{attn}}" as="a" hint-placeholder-count="2">
+              <div style="display:flex;align-items:center;gap:10px;padding:12px 14px;border-radius:var(--r-surf);box-shadow:var(--hairline);background:var(--sheet)">
+                <span style="width:26px;height:26px;border-radius:50%;background:{{a.avBg}};color:{{a.avFg}};display:inline-flex;align-items:center;justify-content:center;font-size:11px;font-weight:600;flex:none">{{a.avT}}</span>
+                <div style="flex:1;min-width:0"><div style="font-weight:500;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{a.title}}</div><div style="color:var(--fg3);font-size:12px">{{a.sub}}</div></div>
+                <button onClick="{{a.approve}}" style="display:inline-flex;align-items:center;height:28px;padding:0 10px;border-radius:var(--r-ctrl);border:0;font:inherit;font-size:12.5px;font-weight:500;cursor:pointer;background:var(--accent);color:#fff" style-hover="filter:brightness(1.08)">{{a.cta}}</button>
+                <button onClick="{{a.dismiss}}" style="display:inline-flex;align-items:center;height:28px;padding:0 10px;border-radius:var(--r-ctrl);border:0;font:inherit;font-size:12.5px;font-weight:500;cursor:pointer;background:transparent;color:var(--fg2)" style-hover="background:var(--hover);color:var(--fg)">Dismiss</button>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+        <div style="animation:encIn .25s .1s both">
+          <h4 style="margin:0 0 6px;font-size:11px;font-weight:500;color:var(--fg3);text-transform:uppercase;letter-spacing:.06em">Continue working</h4>
+          <div style="border-radius:var(--r-surf);box-shadow:var(--hairline);overflow:hidden">
+            <sc-for list="{{recents}}" as="r" hint-placeholder-count="3">
+              <div onClick="{{r.open}}" style="display:flex;align-items:center;gap:10px;padding:10px 14px;cursor:pointer;box-shadow:inset 0 -1px 0 var(--line);background:var(--sheet)" style-hover="background:var(--hover)">
+                <svg viewBox="0 0 24 24" style="width:16px;height:16px;flex:none;color:{{r.ic}}"><use href="#file"></use></svg>
+                <span style="font-weight:450;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{r.title}}<span style="color:var(--fg4);font-size:12px">{{r.ext}}</span></span>
+                <span style="display:inline-flex;align-items:center;gap:6px;height:20px;padding:0 8px 0 7px;border-radius:999px;font-size:11px;font-weight:500;background:{{r.clsBg}};color:{{r.clsFg}};flex:none"><span style="width:6px;height:6px;border-radius:50%;background:{{r.clsDot}}"></span>{{r.clsLabel}}</span>
+                <span style="margin-left:auto;color:var(--fg4);font-size:11.5px;font-family:var(--mono);flex:none">{{r.when}}</span>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+        <div style="animation:encIn .25s .15s both">
+          <h4 style="margin:0 0 6px;font-size:11px;font-weight:500;color:var(--fg3);text-transform:uppercase;letter-spacing:.06em">Recent asks</h4>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <sc-for list="{{recentAsks}}" as="q" hint-placeholder-count="3">
+              <button onClick="{{q.open}}" style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 12px;border-radius:999px;border:0;font:inherit;font-size:12.5px;cursor:pointer;background:var(--sheet);color:var(--fg2);box-shadow:var(--hairline)" style-hover="background:var(--sunken);color:var(--fg)"><svg viewBox="0 0 24 24" style="width:12px;height:12px;color:var(--accent)"><use href="#spark"></use></svg>{{q.label}}</button>
+            </sc-for>
+          </div>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{isLibrary}}" hint-placeholder-val="{{true}}">
+    <div data-screen-label="Library" style="display:flex;flex-direction:column;flex:1;min-height:0">
+      <div style="display:flex;align-items:center;gap:6px;padding:10px 14px 0 16px;color:var(--fg3);font-size:12.5px;min-height:38px">Finance <span style="color:var(--fg4);margin:0 2px">/</span> Contracts <span style="color:var(--fg4);margin:0 2px">/</span> <b style="color:var(--fg);font-weight:500">2026</b>
+        <span style="display:inline-flex;align-items:center;gap:6px;height:20px;padding:0 8px 0 7px;border-radius:999px;font-size:11px;font-weight:500;background:color-mix(in srgb,var(--c-conf) 11%,transparent);color:color-mix(in srgb,var(--c-conf) 82%,var(--fg));margin-left:6px"><span style="width:6px;height:6px;border-radius:50%;background:var(--c-conf)"></span>Confidential</span>
+        <div style="margin-left:auto;display:flex;align-items:center;gap:4px">
+          <span style="display:inline-flex"><span style="width:20px;height:20px;border-radius:50%;background:var(--av-a-bg);color:var(--av-a-fg);display:inline-flex;align-items:center;justify-content:center;font-size:9.5px;font-weight:600;box-shadow:0 0 0 2px var(--sheet)">PN</span><span style="width:20px;height:20px;border-radius:50%;background:var(--av-b-bg);color:var(--av-b-fg);display:inline-flex;align-items:center;justify-content:center;font-size:9.5px;font-weight:600;margin-left:-6px;box-shadow:0 0 0 2px var(--sheet)">AK</span><span style="width:20px;height:20px;border-radius:50%;background:var(--av-c-bg);color:var(--av-c-fg);display:inline-flex;align-items:center;justify-content:center;font-size:9.5px;font-weight:600;margin-left:-6px;box-shadow:0 0 0 2px var(--sheet)">RS</span></span>
+          <button onClick="{{nyi}}" style="display:inline-flex;align-items:center;height:24px;padding:0 8px;border-radius:var(--r-ctrl);border:0;font:inherit;font-size:12px;font-weight:500;cursor:pointer;background:transparent;color:var(--fg2)" style-hover="background:var(--hover);color:var(--fg)">Share</button>
+          <button onClick="{{togglePeek}}" aria-label="Toggle details" style="width:26px;height:26px;display:inline-flex;align-items:center;justify-content:center;border-radius:var(--r-ctrl);border:0;background:transparent;color:var(--fg3);cursor:pointer" style-hover="background:var(--hover);color:var(--fg)"><svg viewBox="0 0 24 24" style="width:14px;height:14px"><use href="#side"></use></svg></button>
+          <button onClick="{{nyi}}" aria-label="More" style="width:26px;height:26px;display:inline-flex;align-items:center;justify-content:center;border-radius:var(--r-ctrl);border:0;background:transparent;color:var(--fg3);cursor:pointer" style-hover="background:var(--hover);color:var(--fg)"><svg viewBox="0 0 24 24" style="width:14px;height:14px"><use href="#more"></use></svg></button>
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;padding:8px 12px 8px 14px">
+        <div style="display:inline-flex;gap:2px">
+          <sc-for list="{{tabs}}" as="t" hint-placeholder-count="4">
+            <button onClick="{{t.pick}}" style="border:0;background:{{t.bg}};font:inherit;font-size:12.5px;color:{{t.fg}};padding:4px 9px;border-radius:999px;cursor:pointer;display:inline-flex;align-items:center;gap:6px;font-weight:500" style-hover="background:var(--sunken);color:var(--fg)">{{t.label}} <span style="font-size:10.5px;color:var(--fg4);font-family:var(--mono)">{{t.n}}</span></button>
+          </sc-for>
+        </div>
+        <div style="margin-left:auto;display:flex;align-items:center;gap:4px">
+          <button onClick="{{nyi}}" style="display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 10px;border-radius:var(--r-ctrl);border:0;font:inherit;font-size:12px;font-weight:500;cursor:pointer;background:transparent;color:var(--fg2)" style-hover="background:var(--hover);color:var(--fg)"><svg viewBox="0 0 24 24" style="width:14px;height:14px"><use href="#filter"></use></svg>Filter</button>
+          <button onClick="{{nyi}}" style="display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 10px;border-radius:var(--r-ctrl);border:0;font:inherit;font-size:12px;font-weight:500;cursor:pointer;background:transparent;color:var(--fg2)" style-hover="background:var(--hover);color:var(--fg)"><svg viewBox="0 0 24 24" style="width:14px;height:14px"><use href="#sliders"></use></svg>Display</button>
+          <button onClick="{{startUpload}}" style="display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 10px;border-radius:var(--r-ctrl);border:0;font:inherit;font-size:12px;font-weight:500;cursor:pointer;background:transparent;color:var(--fg2)" style-hover="background:var(--hover);color:var(--fg)"><svg viewBox="0 0 24 24" style="width:14px;height:14px"><use href="#up"></use></svg>Upload</button>
+          <button onClick="{{startUpload}}" style="display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 8px;border-radius:var(--r-ctrl);border:0;font:inherit;font-size:12px;font-weight:500;cursor:pointer;background:var(--accent);color:#fff" style-hover="filter:brightness(1.08)"><svg viewBox="0 0 24 24" style="width:12px;height:12px"><use href="#plus"></use></svg>New</button>
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;padding:0 16px 8px;flex-wrap:wrap">
+        <span style="display:inline-flex;align-items:center;height:24px;border-radius:var(--r-ctrl);box-shadow:var(--hairline);font-size:12px;overflow:hidden"><span style="padding:0 7px;color:var(--fg3);box-shadow:inset -1px 0 0 var(--line)">Type</span><span style="padding:0 7px;color:var(--fg);font-weight:500;box-shadow:inset -1px 0 0 var(--line)">is PDF, Word</span><span onClick="{{nyi}}" style="color:var(--fg4);padding:0 6px;cursor:pointer">×</span></span>
+        <span style="display:inline-flex;align-items:center;height:24px;border-radius:var(--r-ctrl);box-shadow:var(--hairline);font-size:12px;overflow:hidden"><span style="padding:0 7px;color:var(--fg3);box-shadow:inset -1px 0 0 var(--line)">Modified</span><span style="padding:0 7px;color:var(--fg);font-weight:500;box-shadow:inset -1px 0 0 var(--line)">last 30 days</span><span onClick="{{nyi}}" style="color:var(--fg4);padding:0 6px;cursor:pointer">×</span></span>
+        <span style="color:var(--fg4);font-size:12px;margin-left:4px">Group by <b style="color:var(--fg2);font-weight:500">Vendor</b> · Sort <b style="color:var(--fg2);font-weight:500">Modified ↓</b></span>
+      </div>
+      <div style="display:grid;grid-template-columns:{{bodyCols}};flex:1;min-height:0">
+        <div style="overflow:auto;position:relative">
+          <div style="min-width:680px">
+          <div style="display:grid;grid-template-columns:32px minmax(0,1fr) 128px 116px 108px 64px 32px;align-items:center;height:30px;padding:0 6px 0 10px;font-size:11px;color:var(--fg4);font-weight:500;position:sticky;top:0;background:var(--sheet);z-index:2;gap:8px"><span></span><span>Name</span><span>Modified</span><span>Classification</span><span>Status</span><span style="text-align:right">Size</span><span></span></div>
+          <sc-for list="{{groups}}" as="g" hint-placeholder-count="3">
+            <div>
+              <div onClick="{{g.toggle}}" style="height:28px;display:flex;align-items:center;gap:8px;padding:0 16px;font-size:11.5px;color:var(--fg3);font-weight:500;background:var(--sheet);cursor:pointer" style-hover="color:var(--fg)"><svg viewBox="0 0 24 24" style="width:10px;height:10px;color:var(--fg4);transform:{{g.chevRot}}"><use href="#chev"></use></svg>{{g.name}} <span style="font-family:var(--mono);color:var(--fg4);font-size:10.5px">{{g.cnt}}</span></div>
+              <sc-if value="{{g.open}}" hint-placeholder-val="{{true}}">
+                <div>
+                <sc-for list="{{g.rows}}" as="row" hint-placeholder-count="3">
+                  <div onClick="{{row.open}}" style="display:grid;grid-template-columns:32px minmax(0,1fr) 128px 116px 108px 64px 32px;align-items:center;height:36px;padding:0 6px 0 10px;gap:8px;position:relative;cursor:default;font-size:13px;background:{{row.bg}};animation:encIn .22s {{row.delay}} cubic-bezier(.2,.7,.3,1) both" style-hover="background:var(--hover)">
+                    <sc-if value="{{row.sel}}" hint-placeholder-val="{{false}}"><span style="position:absolute;left:0;top:6px;bottom:6px;width:2px;border-radius:2px;background:var(--accent)"></span></sc-if>
+                    <div style="display:flex;justify-content:center"><span onClick="{{row.toggle}}" style="width:14px;height:14px;border-radius:4px;cursor:pointer;flex:none;background:{{row.chkBg}};box-shadow:{{row.chkSh}};background-image:{{row.chkImg}};background-size:10px;background-position:center;background-repeat:no-repeat;opacity:{{row.chkOp}}" style-hover="opacity:1"></span></div>
+                    <div style="display:flex;align-items:center;gap:9px;font-weight:450;color:var(--fg);min-width:0;overflow:hidden;opacity:{{row.dimOp}}"><svg viewBox="0 0 24 24" style="width:16px;height:16px;flex:none;color:{{row.ic}}"><use href="#file"></use></svg><span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{row.title}}<span style="color:var(--fg4);font-weight:400;font-size:12px">{{row.ext}}</span></span></div>
+                    <div style="color:var(--fg3);font-size:12.5px;display:flex;align-items:center;gap:6px;min-width:0;overflow:hidden;white-space:nowrap;opacity:{{row.dimOp}}"><sc-if value="{{row.hasAv}}" hint-placeholder-val="{{true}}"><span style="width:20px;height:20px;border-radius:50%;background:{{row.avBg}};color:{{row.avFg}};display:inline-flex;align-items:center;justify-content:center;font-size:9.5px;font-weight:600;flex:none">{{row.avT}}</span></sc-if>{{row.when}}</div>
+                    <div style="min-width:0;overflow:hidden;opacity:{{row.dimOp}}"><span style="display:inline-flex;align-items:center;gap:6px;height:20px;padding:0 8px 0 7px;border-radius:999px;font-size:11px;font-weight:500;white-space:nowrap;background:{{row.clsBg}};color:{{row.clsFg}};box-shadow:{{row.clsSh}}"><sc-if value="{{row.hasDot}}" hint-placeholder-val="{{true}}"><span style="width:6px;height:6px;border-radius:50%;background:{{row.clsDot}};flex:none"></span></sc-if>{{row.clsLabel}}</span></div>
+                    <div style="min-width:0;overflow:hidden">
+                      <sc-if value="{{row.uploading}}" hint-placeholder-val="{{false}}">
+                        <span style="display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--fg3)">
+                          <sc-for list="{{row.steps}}" as="st" hint-placeholder-count="3">
+                            <span style="display:inline-flex;align-items:center;gap:4px;color:{{st.fg}};font-weight:{{st.w}}"><span style="width:6px;height:6px;border-radius:50%;background:{{st.dot}};box-shadow:{{st.ring}}"></span>{{st.l}}</span>
+                          </sc-for>
+                        </span>
+                      </sc-if>
+                      <sc-if value="{{row.hasPill}}" hint-placeholder-val="{{false}}">
+                        <span style="display:inline-flex;align-items:center;gap:5px;height:20px;padding:0 8px;border-radius:999px;font-size:11px;font-weight:500;white-space:nowrap;background:{{row.pillBg}};color:{{row.pillFg}}"><sc-if value="{{row.hasPillIcon}}" hint-placeholder-val="{{false}}"><svg viewBox="0 0 24 24" style="width:11px;height:11px"><use href="#block"></use></svg></sc-if>{{row.pillL}}</span>
+                      </sc-if>
+                    </div>
+                    <div style="color:var(--fg3);font-size:12.5px;text-align:right;white-space:nowrap;opacity:{{row.dimOp}}">{{row.size}}</div>
+                    <button onClick="{{nyi}}" style="width:26px;height:26px;display:inline-flex;align-items:center;justify-content:center;border-radius:var(--r-ctrl);border:0;background:transparent;color:var(--fg3);cursor:pointer;opacity:0" style-hover="opacity:1;background:var(--hover);color:var(--fg)"><svg viewBox="0 0 24 24" style="width:14px;height:14px"><use href="#more"></use></svg></button>
+                  </div>
+                </sc-for>
+                </div>
+              </sc-if>
+            </div>
+          </sc-for>
+          <div style="height:28px;display:flex;align-items:center;gap:8px;padding:0 16px;font-size:11.5px;color:var(--fg4);font-weight:400"><svg viewBox="0 0 24 24" style="width:10px;height:10px"><use href="#chevr"></use></svg>Archive <span style="font-family:var(--mono);font-size:10.5px">96</span></div>
+          </div>
+        </div>
+        <sc-if value="{{peekOpen}}" hint-placeholder-val="{{false}}">
+          <aside aria-label="Details" style="box-shadow:-1px 0 0 var(--line);display:flex;flex-direction:column;min-width:0;overflow:hidden;background:var(--sheet);animation:encPeek .18s ease-out both">
+            <div style="display:flex;align-items:center;gap:4px;padding:8px 8px 0 12px;color:var(--fg3)"><span style="font-family:var(--mono);font-size:10px;padding:1px 4px;border-radius:4px;background:var(--sunken);color:var(--fg3);box-shadow:inset 0 -1px 0 var(--line-strong)">Esc</span><span style="font-size:11.5px">to close</span>
+              <div style="margin-left:auto;display:flex">
+                <button onClick="{{peekPrev}}" style="width:26px;height:26px;display:inline-flex;align-items:center;justify-content:center;border-radius:var(--r-ctrl);border:0;background:transparent;color:var(--fg3);cursor:pointer" style-hover="background:var(--hover);color:var(--fg)"><svg viewBox="0 0 24 24" style="width:14px;height:14px;transform:rotate(180deg)"><use href="#chev"></use></svg></button>
+                <button onClick="{{peekNext}}" style="width:26px;height:26px;display:inline-flex;align-items:center;justify-content:center;border-radius:var(--r-ctrl);border:0;background:transparent;color:var(--fg3);cursor:pointer" style-hover="background:var(--hover);color:var(--fg)"><svg viewBox="0 0 24 24" style="width:14px;height:14px"><use href="#chev"></use></svg></button>
+                <button onClick="{{nyi}}" style="width:26px;height:26px;display:inline-flex;align-items:center;justify-content:center;border-radius:var(--r-ctrl);border:0;background:transparent;color:var(--fg3);cursor:pointer" style-hover="background:var(--hover);color:var(--fg)"><svg viewBox="0 0 24 24" style="width:14px;height:14px"><use href="#ext"></use></svg></button>
+                <button onClick="{{closePeek}}" style="width:26px;height:26px;display:inline-flex;align-items:center;justify-content:center;border-radius:var(--r-ctrl);border:0;background:transparent;color:var(--fg3);cursor:pointer" style-hover="background:var(--hover);color:var(--fg)"><svg viewBox="0 0 24 24" style="width:14px;height:14px"><use href="#x"></use></svg></button>
+              </div>
+            </div>
+            <div style="padding:8px 16px 0"><h3 style="margin:0;font-size:14px;line-height:1.35;font-weight:500;letter-spacing:-.012em">{{peek.full}}</h3><div style="color:var(--fg3);font-size:12px;margin-top:2px">{{peek.meta}}</div></div>
+            <div style="display:flex;flex-wrap:wrap;gap:5px;padding:10px 16px 8px">
+              <span style="display:inline-flex;align-items:center;gap:6px;height:20px;padding:0 8px 0 7px;border-radius:999px;font-size:11px;font-weight:500;background:{{peek.clsBg}};color:{{peek.clsFg}}"><span style="width:6px;height:6px;border-radius:50%;background:{{peek.clsDot}}"></span>{{peek.clsLabel}}</span>
+              <sc-for list="{{peek.pills}}" as="p" hint-placeholder-count="2">
+                <span style="display:inline-flex;align-items:center;gap:5px;height:20px;padding:0 8px;border-radius:999px;font-size:11px;font-weight:500;background:{{p.bg}};color:{{p.fg}}">{{p.l}}</span>
+              </sc-for>
+            </div>
+            <div style="display:inline-flex;gap:2px;padding:0 12px 6px;box-shadow:inset 0 -1px 0 var(--line)">
+              <sc-for list="{{peekTabs}}" as="pt" hint-placeholder-count="5">
+                <button onClick="{{pt.pick}}" style="border:0;background:{{pt.bg}};font:inherit;font-size:12.5px;color:{{pt.fg}};padding:4px 9px;border-radius:999px;cursor:pointer;font-weight:500" style-hover="background:var(--hover);color:var(--fg)">{{pt.l}}</button>
+              </sc-for>
+            </div>
+            <div style="padding:12px 16px;overflow:auto;flex:1;display:flex;flex-direction:column;gap:14px">
+              <div style="flex:none;height:170px;border-radius:var(--r-surf);background:var(--sunken);position:relative;overflow:hidden;display:flex;align-items:center;justify-content:center">
+                <div style="width:56%;height:82%;background:var(--sheet);box-shadow:var(--el2);padding:12px 10px;display:flex;flex-direction:column;gap:5px;border-radius:2px">
+                  <i style="height:4px;width:50%;background:var(--g300);display:block;border-radius:1px"></i><i style="height:2px;background:var(--g200);display:block;border-radius:1px"></i><i style="height:2px;background:var(--g200);display:block;border-radius:1px"></i><i style="height:2px;background:var(--g200);display:block;border-radius:1px"></i><i style="height:2px;width:70%;background:var(--g200);display:block;border-radius:1px"></i><i style="height:2px;background:var(--g200);display:block;border-radius:1px"></i><i style="height:2px;background:var(--g200);display:block;border-radius:1px"></i><i style="height:2px;background:var(--g200);display:block;border-radius:1px"></i><i style="height:2px;width:40%;background:var(--g200);display:block;border-radius:1px"></i>
+                </div>
+                <sc-if value="{{peek.wm}}" hint-placeholder-val="{{false}}">
+                  <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none;font-family:var(--mono);font-size:9px;color:rgba(194,39,58,.28);transform:rotate(-22deg);line-height:2.8;text-align:center;white-space:nowrap">priya.nair@northwind · 20 Aug 2026 14:07<br>RESTRICTED · f7c2…9a1e<br>priya.nair@northwind · 20 Aug 2026 14:07</div>
+                </sc-if>
+                <button onClick="{{nyi}}" style="position:absolute;right:8px;bottom:8px;display:inline-flex;align-items:center;height:24px;padding:0 8px;border-radius:var(--r-ctrl);border:0;font:inherit;font-size:12px;font-weight:500;cursor:pointer;background:var(--sheet);color:var(--fg);box-shadow:var(--hairline)" style-hover="background:var(--sunken)">Open preview</button>
+              </div>
+              <sc-if value="{{peek.wm}}" hint-placeholder-val="{{false}}">
+                <div style="display:flex;gap:10px;padding:10px 12px;border-radius:var(--r-ctrl);font-size:12.5px;line-height:1.45;background:color-mix(in srgb,var(--warn) 9%,transparent)"><svg viewBox="0 0 24 24" style="width:15px;height:15px;flex:none;margin-top:1px;color:var(--warn)"><use href="#info"></use></svg><div>Preview only off-network. <a href="#" style="color:var(--fg2)">Why?</a></div></div>
+              </sc-if>
+              <dl style="display:grid;grid-template-columns:100px 1fr;gap:7px 10px;font-size:12.5px;align-items:center;margin:0">
+                <sc-for list="{{peek.kv}}" as="kv" hint-placeholder-count="4">
+                  <dt style="color:var(--fg3)">{{kv.k}}</dt><dd style="margin:0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{kv.v}}</dd>
+                </sc-for>
+              </dl>
+              <div style="display:flex;flex-direction:column;gap:8px;font-size:12.5px">
+                <h4 style="margin:0 0 2px;font-size:11px;font-weight:500;color:var(--fg3);text-transform:uppercase;letter-spacing:.06em">Activity</h4>
+                <div style="display:flex;align-items:center;gap:8px"><span style="width:20px;height:20px;border-radius:50%;background:var(--av-a-bg);color:var(--av-a-fg);display:inline-flex;align-items:center;justify-content:center;font-size:9.5px;font-weight:600">PN</span><span style="font-weight:500">Priya</span> previewed <span style="margin-left:auto;color:var(--fg4);font-size:11px;font-family:var(--mono)">2h</span></div>
+                <div style="display:flex;align-items:center;gap:8px"><span style="width:20px;height:20px;border-radius:50%;background:var(--av-b-bg);color:var(--av-b-fg);display:inline-flex;align-items:center;justify-content:center;font-size:9.5px;font-weight:600">AK</span><span style="font-weight:500">Anita</span> uploaded a version <span style="margin-left:auto;color:var(--fg4);font-size:11px;font-family:var(--mono)">2h</span></div>
+                <div style="display:flex;align-items:center;gap:8px"><span style="width:20px;height:20px;border-radius:50%;background:color-mix(in srgb,var(--danger) 14%,transparent);color:var(--danger);display:inline-flex;align-items:center;justify-content:center;font-size:9.5px;font-weight:600">!</span><span style="font-weight:500">Policy</span> blocked download · off-network <span style="margin-left:auto;color:var(--fg4);font-size:11px;font-family:var(--mono)">3h</span></div>
+                <div style="display:flex;align-items:center;gap:8px"><span style="width:20px;height:20px;border-radius:50%;background:var(--accent-soft);color:var(--accent);display:inline-flex;align-items:center;justify-content:center"><svg viewBox="0 0 24 24" style="width:11px;height:11px"><use href="#bot"></use></svg></span><span style="font-weight:500">Claude</span> <span style="color:var(--fg3)">via MCP</span> read outline <span style="margin-left:auto;color:var(--fg4);font-size:11px;font-family:var(--mono)">Mon</span></div>
+              </div>
+            </div>
+            <div style="margin-top:auto;padding:10px 12px 12px;box-shadow:inset 0 1px 0 var(--line)">
+              <div style="display:flex;flex-direction:column;gap:6px;border-radius:var(--r-surf);box-shadow:var(--hairline);padding:8px 8px 6px 10px;background:var(--sheet)">
+                <input onKeyDown="{{peekAskKey}}" placeholder="Ask about this file…" style="border:0;background:transparent;font:inherit;font-size:12.5px;color:var(--fg);outline:0;width:100%">
+                <div style="display:flex;align-items:center;gap:4px"><span style="display:inline-flex;align-items:center;gap:5px;height:20px;padding:0 8px;border-radius:999px;font-size:11px;font-weight:500;background:transparent;box-shadow:var(--hairline);color:var(--fg2)"><svg viewBox="0 0 24 24" style="width:11px;height:11px"><use href="#file"></use></svg>This file</span><span style="flex:1"></span><span style="font-family:var(--mono);font-size:10px;padding:1px 4px;border-radius:4px;background:var(--sunken);color:var(--fg3);box-shadow:inset 0 -1px 0 var(--line-strong)">⏎</span><button onClick="{{peekAskGo}}" style="width:24px;height:24px;border-radius:7px;background:var(--accent);color:#fff;border:0;display:inline-flex;align-items:center;justify-content:center;cursor:pointer"><svg viewBox="0 0 24 24" style="width:12px;height:12px"><use href="#move"></use></svg></button></div>
+              </div>
+            </div>
+          </aside>
+        </sc-if>
+      </div>
+      <sc-if value="{{hasSel}}" hint-placeholder-val="{{false}}">
+        <div role="toolbar" aria-label="Selection actions" style="position:absolute;left:50%;bottom:22px;transform:translateX(-50%);display:flex;align-items:center;gap:2px;padding:6px 6px 6px 12px;background:var(--selbar-bg);color:var(--selbar-fg);border-radius:12px;box-shadow:var(--el3);font-size:12.5px;z-index:5;white-space:nowrap;max-width:calc(100% - 24px);overflow-x:auto;animation:encPop .16s ease-out both">
+          <span style="font-weight:500;margin-right:8px;display:flex;align-items:center;gap:8px">{{selCnt}} selected <i style="width:1px;height:16px;background:var(--selbar-i);display:inline-block"></i></span>
+          <button onClick="{{selShare}}" style="border:0;background:transparent;color:inherit;font:inherit;font-size:12.5px;padding:0 9px;height:26px;border-radius:7px;display:inline-flex;align-items:center;gap:6px;cursor:pointer;opacity:.9" style-hover="background:var(--selbar-hov)"><svg viewBox="0 0 24 24" style="width:14px;height:14px"><use href="#share"></use></svg>Share <span style="font-family:var(--mono);font-size:10px;padding:1px 4px;border-radius:4px;background:var(--selbar-kbd)">S</span></button>
+          <button aria-disabled="true" title="Downloading is restricted outside the corporate network" style="border:0;background:transparent;color:inherit;font:inherit;font-size:12.5px;padding:0 9px;height:26px;border-radius:7px;display:inline-flex;align-items:center;gap:6px;cursor:not-allowed;opacity:.4"><svg viewBox="0 0 24 24" style="width:14px;height:14px"><use href="#down"></use></svg>Download</button>
+          <button onClick="{{selMove}}" style="border:0;background:transparent;color:inherit;font:inherit;font-size:12.5px;padding:0 9px;height:26px;border-radius:7px;display:inline-flex;align-items:center;gap:6px;cursor:pointer;opacity:.9" style-hover="background:var(--selbar-hov)"><svg viewBox="0 0 24 24" style="width:14px;height:14px"><use href="#move"></use></svg>Move <span style="font-family:var(--mono);font-size:10px;padding:1px 4px;border-radius:4px;background:var(--selbar-kbd)">M</span></button>
+          <button onClick="{{nyi}}" style="border:0;background:transparent;color:inherit;font:inherit;font-size:12.5px;padding:0 9px;height:26px;border-radius:7px;cursor:pointer;opacity:.9" style-hover="background:var(--selbar-hov)">Label</button>
+          <button onClick="{{nyi}}" style="border:0;background:transparent;color:inherit;font:inherit;font-size:12.5px;padding:0 9px;height:26px;border-radius:7px;cursor:pointer;opacity:.9" style-hover="background:var(--selbar-hov)">Retention</button>
+          <button onClick="{{nyi}}" style="border:0;background:transparent;color:inherit;font:inherit;font-size:12.5px;padding:0 9px;height:26px;border-radius:7px;display:inline-flex;align-items:center;cursor:pointer;opacity:.9" style-hover="background:var(--selbar-hov)"><svg viewBox="0 0 24 24" style="width:14px;height:14px"><use href="#more"></use></svg></button>
+          <button onClick="{{clearSel}}" aria-label="Clear selection" style="border:0;background:transparent;color:inherit;font:inherit;padding:0 9px;height:26px;border-radius:7px;display:inline-flex;align-items:center;cursor:pointer;opacity:.6;margin-left:4px" style-hover="background:var(--selbar-hov);opacity:1"><svg viewBox="0 0 24 24" style="width:14px;height:14px"><use href="#x"></use></svg></button>
+        </div>
+      </sc-if>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{isSearch}}" hint-placeholder-val="{{false}}">
+    <div data-screen-label="Search" style="display:flex;flex-direction:column;flex:1;min-height:0">
+      <div style="display:flex;align-items:center;gap:10px;padding:14px 16px;box-shadow:inset 0 -1px 0 var(--line)">
+        <svg viewBox="0 0 24 24" style="width:16px;height:16px;color:var(--fg3)"><use href="#s"></use></svg>
+        <input value="{{searchQ}}" onChange="{{setSearchQ}}" placeholder="Search files, people, metadata — or ask a question…" style="border:0;background:transparent;font:inherit;font-size:14px;color:var(--fg);outline:0;flex:1">
+        <span style="display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 8px;border-radius:999px;font-size:11px;font-weight:500;box-shadow:var(--hairline);color:var(--fg2)"><svg viewBox="0 0 24 24" style="width:11px;height:11px"><use href="#folder"></use></svg>All of Finance</span>
+        <span style="font-family:var(--mono);font-size:10px;padding:1px 4px;border-radius:4px;background:var(--sunken);color:var(--fg3);box-shadow:inset 0 -1px 0 var(--line-strong)">Esc</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;padding:10px 16px 4px">
+        <span style="display:inline-flex;align-items:center;height:24px;border-radius:var(--r-ctrl);box-shadow:var(--hairline);font-size:12px;overflow:hidden"><span style="padding:0 7px;color:var(--fg3);box-shadow:inset -1px 0 0 var(--line)">Type</span><span style="padding:0 7px;color:var(--fg);font-weight:500">Any</span></span>
+        <span style="display:inline-flex;align-items:center;height:24px;border-radius:var(--r-ctrl);box-shadow:var(--hairline);font-size:12px;overflow:hidden"><span style="padding:0 7px;color:var(--fg3);box-shadow:inset -1px 0 0 var(--line)">Classification</span><span style="padding:0 7px;color:var(--fg);font-weight:500">Any</span></span>
+        <span style="display:inline-flex;align-items:center;height:24px;border-radius:var(--r-ctrl);box-shadow:var(--hairline);font-size:12px;overflow:hidden"><span style="padding:0 7px;color:var(--fg3);box-shadow:inset -1px 0 0 var(--line)">Modified</span><span style="padding:0 7px;color:var(--fg);font-weight:500">Any time</span></span>
+        <span style="margin-left:auto;color:var(--fg4);font-size:11.5px">{{searchMeta}}</span>
+      </div>
+      <div style="overflow:auto;flex:1;padding:4px 8px 20px">
+        <sc-for list="{{searchResults}}" as="sr" hint-placeholder-count="4">
+          <div onClick="{{sr.open}}" style="display:flex;flex-direction:column;gap:3px;padding:10px 10px;border-radius:var(--r-surf);cursor:pointer;animation:encIn .2s {{sr.delay}} both" style-hover="background:var(--hover)">
+            <div style="display:flex;align-items:center;gap:9px;min-width:0">
+              <svg viewBox="0 0 24 24" style="width:16px;height:16px;flex:none;color:{{sr.ic}}"><use href="#file"></use></svg>
+              <span style="font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{sr.title}}<span style="color:var(--fg4);font-weight:400;font-size:12px">{{sr.ext}}</span></span>
+              <span style="width:7px;height:7px;border-radius:50%;background:{{sr.clsDot}};flex:none" title="{{sr.clsLabel}}"></span>
+              <span style="margin-left:auto;color:var(--fg4);font-family:var(--mono);font-size:10.5px;flex:none">{{sr.loc}}</span>
+            </div>
+            <div style="color:var(--fg4);font-size:11.5px;padding-left:25px">Finance / Contracts / 2026 · {{sr.who}} · {{sr.when}}</div>
+            <div style="color:var(--fg2);font-size:12.5px;line-height:1.45;padding-left:25px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{sr.exc}}</div>
+          </div>
+        </sc-for>
+        <sc-if value="{{searchEmpty}}" hint-placeholder-val="{{false}}">
+          <div style="padding:48px 0;text-align:center;color:var(--fg3);font-size:13px">No files match “{{searchQ}}”.<div style="margin-top:8px"><button onClick="{{clearSearch}}" style="display:inline-flex;align-items:center;height:28px;padding:0 10px;border-radius:var(--r-ctrl);border:0;font:inherit;font-size:12.5px;font-weight:500;cursor:pointer;background:var(--sheet);color:var(--fg);box-shadow:var(--hairline)" style-hover="background:var(--sunken)">Clear search</button></div></div>
+        </sc-if>
+      </div>
+      <div style="display:flex;align-items:center;gap:12px;padding:8px 16px;box-shadow:inset 0 1px 0 var(--line);color:var(--fg4);font-size:11.5px"><span><span style="font-family:var(--mono);font-size:10px;padding:1px 4px;border-radius:4px;background:var(--sunken);box-shadow:inset 0 -1px 0 var(--line-strong)">↑↓</span> navigate</span><span><span style="font-family:var(--mono);font-size:10px;padding:1px 4px;border-radius:4px;background:var(--sunken);box-shadow:inset 0 -1px 0 var(--line-strong)">⏎</span> open</span><span><span style="font-family:var(--mono);font-size:10px;padding:1px 4px;border-radius:4px;background:var(--sunken);box-shadow:inset 0 -1px 0 var(--line-strong)">Space</span> peek</span><span style="margin-left:auto">Results respect your access</span></div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{isAsk}}" hint-placeholder-val="{{false}}">
+    <div data-screen-label="Ask" style="display:grid;grid-template-columns:{{askCols}};grid-template-rows:auto 1fr;flex:1;min-height:0">
+      <div style="grid-column:1/-1;display:flex;align-items:center;gap:6px;padding:10px 14px 0 16px;color:var(--fg3);font-size:12.5px;min-height:38px">Ask <span style="color:var(--fg4);margin:0 2px">/</span> <b style="color:var(--fg);font-weight:500">{{askTitle}}</b>
+        <div style="margin-left:auto;display:flex;align-items:center;gap:4px"><span style="display:inline-flex;align-items:center;gap:5px;height:20px;padding:0 8px;border-radius:999px;font-size:11px;font-weight:500;box-shadow:var(--hairline);color:var(--fg2)"><svg viewBox="0 0 24 24" style="width:11px;height:11px"><use href="#folder"></use></svg>Scope: Contracts</span><button onClick="{{nyi}}" style="display:inline-flex;align-items:center;height:24px;padding:0 8px;border-radius:var(--r-ctrl);border:0;font:inherit;font-size:12px;font-weight:500;cursor:pointer;background:transparent;color:var(--fg2)" style-hover="background:var(--hover);color:var(--fg)">Share thread</button></div>
+      </div>
+      <div style="padding:20px 28px 20px;overflow:auto;display:flex;flex-direction:column;gap:22px;min-width:0;box-shadow:{{askDivider}}">
+        <sc-if value="{{askIdle}}" hint-placeholder-val="{{true}}">
+          <div style="margin:auto;text-align:center;max-width:420px;animation:encIn .25s both">
+            <span style="width:40px;height:40px;border-radius:12px;background:var(--accent-soft);color:var(--accent);display:inline-flex;align-items:center;justify-content:center;margin-bottom:14px"><svg viewBox="0 0 24 24" style="width:18px;height:18px"><use href="#spark"></use></svg></span>
+            <h3 style="margin:0 0 6px;font-family:var(--tight);font-size:18px;font-weight:600;letter-spacing:-.02em">Ask across Contracts</h3>
+            <p style="margin:0 0 18px;color:var(--fg3);font-size:12.5px;line-height:1.5">Answers come only from documents you can open, with sources you can verify. Every ask is audited.</p>
+            <div style="display:flex;flex-direction:column;gap:6px">
+              <sc-for list="{{askSuggestions}}" as="sg" hint-placeholder-count="3">
+                <button onClick="{{sg.go}}" style="display:flex;align-items:center;gap:8px;padding:9px 12px;border-radius:var(--r-surf);border:0;font:inherit;font-size:12.5px;cursor:pointer;background:var(--sheet);color:var(--fg2);box-shadow:var(--hairline);text-align:left" style-hover="background:var(--sunken);color:var(--fg)"><svg viewBox="0 0 24 24" style="width:12px;height:12px;color:var(--accent);flex:none"><use href="#spark"></use></svg>{{sg.q}}</button>
+              </sc-for>
+            </div>
+          </div>
+        </sc-if>
+        <sc-if value="{{askStarted}}" hint-placeholder-val="{{false}}">
+          <div style="font-size:13px;line-height:1.55;animation:encIn .2s both"><div style="color:var(--fg3);font-size:12px;margin-bottom:6px;display:flex;align-items:center;gap:6px"><span style="width:20px;height:20px;border-radius:50%;background:var(--av-a-bg);color:var(--av-a-fg);display:inline-flex;align-items:center;justify-content:center;font-size:9.5px;font-weight:600">PN</span>{{askQ}}</div></div>
+          <div style="font-size:13px;line-height:1.55;max-width:62ch;position:relative">
+            <div style="color:var(--fg3);font-size:12px;margin-bottom:6px;display:flex;align-items:center;gap:6px"><span style="width:20px;height:20px;border-radius:50%;background:var(--accent-soft);color:var(--accent);display:inline-flex;align-items:center;justify-content:center"><svg viewBox="0 0 24 24" style="width:11px;height:11px"><use href="#spark"></use></svg></span>{{askStatus}}</div>
+            <sc-if value="{{askThinking}}" hint-placeholder-val="{{false}}">
+              <div style="display:flex;flex-direction:column;gap:6px;width:70%;margin-top:6px">
+                <div style="background:linear-gradient(90deg,var(--sunken) 25%,var(--g150) 50%,var(--sunken) 75%);background-size:200% 100%;animation:encSh 1.4s infinite;border-radius:4px;height:10px;width:90%"></div>
+                <div style="background:linear-gradient(90deg,var(--sunken) 25%,var(--g150) 50%,var(--sunken) 75%);background-size:200% 100%;animation:encSh 1.4s infinite;border-radius:4px;height:10px;width:70%"></div>
+                <div style="background:linear-gradient(90deg,var(--sunken) 25%,var(--g150) 50%,var(--sunken) 75%);background-size:200% 100%;animation:encSh 1.4s infinite;border-radius:4px;height:10px;width:45%"></div>
+              </div>
+            </sc-if>
+            <sc-if value="{{askP1}}" hint-placeholder-val="{{false}}">
+              <p style="margin:0;animation:encFade .35s both">Either party may terminate the master agreement for convenience with <b>90 days&rsquo; written notice</b><sup onMouseEnter="{{citeOn}}" onMouseLeave="{{citeOff}}" style="display:inline-flex;align-items:center;justify-content:center;min-width:16px;height:16px;padding:0 4px;border-radius:5px;background:var(--sunken);color:var(--fg2);font-size:10px;font-weight:600;font-family:var(--mono);vertical-align:1px;margin-left:1px;cursor:pointer;box-shadow:var(--hairline)" style-hover="background:var(--accent-soft);color:var(--accent)">1</sup>. Amendment 01 shortens that to <b>60 days</b>, but only for the Warehousing Schedule<sup style="display:inline-flex;align-items:center;justify-content:center;min-width:16px;height:16px;padding:0 4px;border-radius:5px;background:var(--sunken);color:var(--fg2);font-size:10px;font-weight:600;font-family:var(--mono);vertical-align:1px;margin-left:1px;cursor:pointer;box-shadow:var(--hairline)" style-hover="background:var(--accent-soft);color:var(--accent)">2</sup>; all other schedules keep 90 days. Termination for material breach still requires a 30-day cure period after written notice<sup style="display:inline-flex;align-items:center;justify-content:center;min-width:16px;height:16px;padding:0 4px;border-radius:5px;background:var(--sunken);color:var(--fg2);font-size:10px;font-weight:600;font-family:var(--mono);vertical-align:1px;margin-left:1px;cursor:pointer;box-shadow:var(--hairline)" style-hover="background:var(--accent-soft);color:var(--accent)">1</sup>.</p>
+            </sc-if>
+            <sc-if value="{{askP2}}" hint-placeholder-val="{{false}}">
+              <p style="margin:8px 0 0;color:var(--fg2);animation:encFade .35s both">Nothing in either document changes the notice <em>method</em> — written notice to the registered address remains required<sup style="display:inline-flex;align-items:center;justify-content:center;min-width:16px;height:16px;padding:0 4px;border-radius:5px;background:var(--sunken);color:var(--fg2);font-size:10px;font-weight:600;font-family:var(--mono);vertical-align:1px;margin-left:1px;cursor:pointer;box-shadow:var(--hairline)" style-hover="background:var(--accent-soft);color:var(--accent)">1</sup>.</p>
+            </sc-if>
+            <sc-if value="{{askDone}}" hint-placeholder-val="{{false}}">
+              <div style="display:flex;flex-direction:column;gap:4px;margin-top:10px;animation:encFade .35s both">
+                <a href="#" onClick="{{openSource1}}" style="display:flex;align-items:center;gap:8px;text-decoration:none;font-size:12px;color:var(--fg2);padding:5px 8px;border-radius:var(--r-ctrl)" style-hover="background:var(--hover)"><span style="font-family:var(--mono);color:var(--fg4);font-size:10.5px">1</span><svg viewBox="0 0 24 24" style="width:14px;height:14px;color:#D0453A"><use href="#file"></use></svg>Vendor master agreement — Helios Logistics.pdf<span style="width:7px;height:7px;border-radius:50%;background:var(--c-restr)"></span><span style="margin-left:auto;color:var(--fg4);font-family:var(--mono);font-size:10.5px">p.14 · §18.2</span></a>
+                <a href="#" onClick="{{openSource2}}" style="display:flex;align-items:center;gap:8px;text-decoration:none;font-size:12px;color:var(--fg2);padding:5px 8px;border-radius:var(--r-ctrl)" style-hover="background:var(--hover)"><span style="font-family:var(--mono);color:var(--fg4);font-size:10.5px">2</span><svg viewBox="0 0 24 24" style="width:14px;height:14px;color:#3B6FD4"><use href="#file"></use></svg>Amendment 01 — Helios Logistics.docx<span style="width:7px;height:7px;border-radius:50%;background:var(--c-conf)"></span><span style="margin-left:auto;color:var(--fg4);font-family:var(--mono);font-size:10.5px">§3</span></a>
+              </div>
+              <div style="display:flex;align-items:center;gap:6px;margin-top:8px;color:var(--fg4);font-size:11px;animation:encFade .35s both"><svg viewBox="0 0 24 24" style="width:12px;height:12px"><use href="#shield"></use></svg>Answered inside your access · Restricted content stays preview-only · <a href="#" style="color:var(--fg3)">Audit entry</a></div>
+            </sc-if>
+            <sc-if value="{{citeShown}}" hint-placeholder-val="{{false}}">
+              <div style="position:absolute;left:34px;top:52px;z-index:6;background:var(--sheet);border-radius:var(--r-surf);box-shadow:var(--el2);padding:10px 12px;width:280px;font-size:12px;animation:encFade .15s both">
+                <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px"><svg viewBox="0 0 24 24" style="width:14px;height:14px;color:#D0453A"><use href="#file"></use></svg><b style="font-weight:500">Vendor master agreement</b><span style="margin-left:auto;color:var(--fg4);font-family:var(--mono);font-size:10.5px">p.14 §18.2</span></div>
+                <blockquote style="margin:0;padding:6px 8px;background:var(--sunken);border-radius:6px;color:var(--fg2);line-height:1.45;font-size:11.5px">&ldquo;…either Party may terminate this Agreement for convenience upon <b>ninety (90) days&rsquo;</b> prior written notice to the other Party…&rdquo;</blockquote>
+                <div style="display:flex;align-items:center;margin-top:8px;gap:6px"><button onClick="{{openSource1}}" style="display:inline-flex;align-items:center;height:24px;padding:0 8px;border-radius:var(--r-ctrl);border:0;font:inherit;font-size:12px;font-weight:500;cursor:pointer;background:var(--sheet);color:var(--fg);box-shadow:var(--hairline)" style-hover="background:var(--sunken)">Open at passage</button><span style="margin-left:auto;display:inline-flex;align-items:center;gap:5px;height:20px;padding:0 8px;border-radius:999px;font-size:11px;font-weight:500;background:color-mix(in srgb,var(--warn) 14%,transparent);color:var(--warn)">Preview only</span></div>
+              </div>
+            </sc-if>
+          </div>
+        </sc-if>
+        <div style="margin-top:auto">
+          <div style="display:flex;flex-direction:column;gap:6px;border-radius:var(--r-surf);box-shadow:var(--hairline);padding:8px 8px 6px 10px;background:var(--sheet)" style-focus="box-shadow:0 0 0 1px var(--accent),0 0 0 4px var(--accent-ring)">
+            <input value="{{askInput}}" onChange="{{setAskInput}}" onKeyDown="{{askKey}}" placeholder="{{askPlaceholder}}" style="border:0;background:transparent;font:inherit;font-size:12.5px;color:var(--fg);outline:0;width:100%">
+            <div style="display:flex;align-items:center;gap:4px"><span style="display:inline-flex;align-items:center;gap:5px;height:20px;padding:0 8px;border-radius:999px;font-size:11px;font-weight:500;box-shadow:var(--hairline);color:var(--fg2)"><svg viewBox="0 0 24 24" style="width:11px;height:11px"><use href="#folder"></use></svg>Contracts</span><span style="display:inline-flex;align-items:center;height:20px;padding:0 8px;border-radius:999px;font-size:11px;font-weight:500;box-shadow:var(--hairline);color:var(--fg2)">Last 12 months</span><span style="flex:1"></span><span style="color:var(--fg4);font-size:11px">Hybrid retrieval · sources always shown</span><button onClick="{{askSend}}" style="width:24px;height:24px;border-radius:7px;background:var(--accent);color:#fff;border:0;display:inline-flex;align-items:center;justify-content:center;cursor:pointer"><svg viewBox="0 0 24 24" style="width:12px;height:12px"><use href="#move"></use></svg></button></div>
+          </div>
+        </div>
+      </div>
+      <sc-if value="{{askDone}}" hint-placeholder-val="{{false}}">
+        <div style="display:flex;flex-direction:column;min-width:0;overflow:hidden;animation:encPeek .2s ease-out both">
+          <div style="display:flex;align-items:center;padding:8px 8px 0 14px;color:var(--fg3);font-size:11.5px">Source 1 of 2<span style="flex:1"></span><button onClick="{{openSource1}}" style="width:26px;height:26px;display:inline-flex;align-items:center;justify-content:center;border-radius:var(--r-ctrl);border:0;background:transparent;color:var(--fg3);cursor:pointer" style-hover="background:var(--hover);color:var(--fg)"><svg viewBox="0 0 24 24" style="width:14px;height:14px"><use href="#ext"></use></svg></button></div>
+          <div style="padding:6px 14px 0"><h3 style="margin:0;font-size:13.5px;font-weight:500">Vendor master agreement — Helios Logistics.pdf</h3><div style="color:var(--fg3);font-size:12px;margin-top:2px">Page 14 · §18.2 Termination</div></div>
+          <div style="display:flex;flex-wrap:wrap;gap:5px;padding:8px 14px">
+            <span style="display:inline-flex;align-items:center;gap:6px;height:20px;padding:0 8px 0 7px;border-radius:999px;font-size:11px;font-weight:500;background:color-mix(in srgb,var(--c-restr) 11%,transparent);color:color-mix(in srgb,var(--c-restr) 82%,var(--fg))"><span style="width:6px;height:6px;border-radius:50%;background:var(--c-restr)"></span>Restricted</span>
+            <span style="display:inline-flex;align-items:center;gap:5px;height:20px;padding:0 8px;border-radius:999px;font-size:11px;font-weight:500;background:color-mix(in srgb,var(--warn) 14%,transparent);color:var(--warn)">No download</span>
+            <span style="display:inline-flex;align-items:center;gap:5px;height:20px;padding:0 8px;border-radius:999px;font-size:11px;font-weight:500;background:var(--sunken);color:var(--fg2)">Watermarked</span>
+          </div>
+          <div style="margin:0 14px 14px;flex:1;border-radius:var(--r-surf);background:var(--sunken);position:relative;overflow:hidden;display:flex;align-items:flex-start;justify-content:center;padding-top:18px">
+            <div style="width:78%;background:var(--sheet);box-shadow:var(--el2);padding:22px 20px;display:flex;flex-direction:column;gap:7px;border-radius:2px">
+              <i style="height:4px;width:38%;background:var(--g300);display:block;border-radius:1px"></i><i style="height:2px;width:100%;background:var(--g200);display:block"></i><i style="height:2px;width:96%;background:var(--g200);display:block"></i><i style="height:2px;width:70%;background:var(--g200);display:block"></i>
+              <div style="margin:6px -6px;padding:6px;background:color-mix(in srgb,var(--accent) 12%,transparent);border-radius:4px;border-left:2px solid var(--accent);display:flex;flex-direction:column;gap:6px"><i style="height:2px;width:100%;background:var(--g300);display:block"></i><i style="height:2px;width:92%;background:var(--g300);display:block"></i><i style="height:2px;width:60%;background:var(--g300);display:block"></i></div>
+              <i style="height:2px;width:100%;background:var(--g200);display:block"></i><i style="height:2px;width:88%;background:var(--g200);display:block"></i><i style="height:2px;width:94%;background:var(--g200);display:block"></i><i style="height:2px;width:50%;background:var(--g200);display:block"></i>
+            </div>
+            <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:9px;color:rgba(194,39,58,.25);transform:rotate(-22deg);line-height:3;text-align:center;white-space:nowrap;pointer-events:none">priya.nair@northwind · RESTRICTED · f7c2…9a1e<br>priya.nair@northwind · RESTRICTED · f7c2…9a1e</div>
+          </div>
+        </div>
+      </sc-if>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{isAdmin}}" hint-placeholder-val="{{false}}">
+    <div data-screen-label="Admin — DLP policy" style="display:grid;grid-template-columns:200px 1fr;flex:1;min-height:0">
+      <nav style="padding:14px 8px 14px 12px;color:var(--fg2);font-size:12.5px;overflow:auto">
+        <div style="font-size:11px;color:var(--fg4);padding:0 8px 4px;font-weight:500">Security</div>
+        <a href="#" style="display:block;padding:5px 8px;border-radius:var(--r-ctrl);text-decoration:none;color:var(--fg);background:var(--selected)">Data loss prevention</a>
+        <a href="#" onClick="{{nyi}}" style="display:block;padding:5px 8px;border-radius:var(--r-ctrl);text-decoration:none;color:var(--fg2);cursor:pointer" style-hover="background:var(--hover);color:var(--fg)">Conditional access</a>
+        <a href="#" onClick="{{nyi}}" style="display:block;padding:5px 8px;border-radius:var(--r-ctrl);text-decoration:none;color:var(--fg2);cursor:pointer" style-hover="background:var(--hover);color:var(--fg)">Classification</a>
+        <a href="#" onClick="{{nyi}}" style="display:block;padding:5px 8px;border-radius:var(--r-ctrl);text-decoration:none;color:var(--fg2);cursor:pointer" style-hover="background:var(--hover);color:var(--fg)">Information barriers</a>
+        <a href="#" onClick="{{nyi}}" style="display:block;padding:5px 8px;border-radius:var(--r-ctrl);text-decoration:none;color:var(--fg2);cursor:pointer" style-hover="background:var(--hover);color:var(--fg)">Incidents <span style="float:right;font-family:var(--mono);color:var(--fg4);font-size:11px">3</span></a>
+        <div style="font-size:11px;color:var(--fg4);padding:12px 8px 4px;font-weight:500">Detectors</div>
+        <a href="#" onClick="{{nyi}}" style="display:block;padding:5px 8px;border-radius:var(--r-ctrl);text-decoration:none;color:var(--fg2);cursor:pointer" style-hover="background:var(--hover);color:var(--fg)">Built-in</a>
+        <a href="#" onClick="{{nyi}}" style="display:block;padding:5px 8px;border-radius:var(--r-ctrl);text-decoration:none;color:var(--fg2);cursor:pointer" style-hover="background:var(--hover);color:var(--fg)">Custom</a>
+      </nav>
+      <div style="padding:20px 28px 28px;overflow:auto;min-width:0">
+        <div style="color:var(--fg3);font-size:12.5px;padding:0 0 4px">Security <span style="color:var(--fg4);margin:0 2px">/</span> DLP <span style="color:var(--fg4);margin:0 2px">/</span> <b style="color:var(--fg);font-weight:500">New policy</b></div>
+        <div style="display:flex;align-items:center;gap:8px;margin:6px 0 18px"><h2 style="margin:0;font-family:var(--tight);font-size:20px;font-weight:600;letter-spacing:-.02em">Block restricted external sharing</h2><span style="display:inline-flex;align-items:center;height:20px;padding:0 8px;border-radius:999px;font-size:11px;font-weight:500;background:color-mix(in srgb,var(--warn) 14%,transparent);color:var(--warn)">Simulation</span><span style="flex:1"></span><button onClick="{{nyi}}" style="display:inline-flex;align-items:center;height:28px;padding:0 10px;border-radius:var(--r-ctrl);border:0;font:inherit;font-size:12.5px;font-weight:500;cursor:pointer;background:var(--sheet);color:var(--fg);box-shadow:var(--hairline)" style-hover="background:var(--sunken)">Save draft</button><button onClick="{{enforcePolicy}}" style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:var(--r-ctrl);border:0;font:inherit;font-size:12.5px;font-weight:500;cursor:pointer;background:var(--accent);color:#fff" style-hover="filter:brightness(1.08)">Enable · Enforce <span style="font-family:var(--mono);font-size:10px;padding:1px 4px;border-radius:4px;background:rgba(255,255,255,.2)">⌘⏎</span></button></div>
+        <div style="border-radius:var(--r-surf);box-shadow:var(--hairline);overflow:hidden">
+          <div style="display:flex;align-items:center;gap:8px;padding:10px 14px;font-size:11px;font-weight:500;color:var(--fg3);text-transform:uppercase;letter-spacing:.06em;background:var(--sunken)">When <span style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--fg4)">all of these are true</span></div>
+          <div style="display:flex;align-items:center;flex-wrap:wrap;gap:6px;padding:12px 14px;font-size:13px;line-height:1.5">
+            <span style="display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 9px;border-radius:7px;box-shadow:var(--hairline);background:var(--sheet);font-weight:500;cursor:pointer" style-hover="background:var(--sunken)">Classification <svg viewBox="0 0 24 24" style="width:12px;height:12px;color:var(--fg4)"><use href="#chev"></use></svg></span><span style="color:var(--fg3)">is at least</span>
+            <span style="display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 4px 0 6px;border-radius:7px;box-shadow:var(--hairline);background:var(--sheet);cursor:pointer" style-hover="background:var(--sunken)"><span style="display:inline-flex;align-items:center;gap:6px;height:18px;padding:0 8px 0 7px;border-radius:999px;font-size:11px;font-weight:500;background:color-mix(in srgb,var(--c-restr) 11%,transparent);color:color-mix(in srgb,var(--c-restr) 82%,var(--fg))"><span style="width:6px;height:6px;border-radius:50%;background:var(--c-restr)"></span>Restricted</span><span style="width:18px;height:18px;border-radius:5px;display:inline-flex;align-items:center;justify-content:center;color:var(--fg4)">×</span></span>
+            <span style="color:var(--fg3)">and</span>
+            <span style="display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 9px;border-radius:7px;box-shadow:var(--hairline);background:var(--sheet);font-weight:500;cursor:pointer" style-hover="background:var(--sunken)">Detected data <svg viewBox="0 0 24 24" style="width:12px;height:12px;color:var(--fg4)"><use href="#chev"></use></svg></span><span style="color:var(--fg3)">includes any of</span>
+            <span style="display:inline-flex;align-items:center;gap:4px;height:26px;padding:0 4px 0 9px;border-radius:7px;box-shadow:var(--hairline);background:var(--sheet);font-weight:500;cursor:pointer" style-hover="background:var(--sunken)">Payment card<span style="width:18px;height:18px;border-radius:5px;display:inline-flex;align-items:center;justify-content:center;color:var(--fg4)">×</span></span>
+            <span style="display:inline-flex;align-items:center;gap:4px;height:26px;padding:0 4px 0 9px;border-radius:7px;box-shadow:var(--hairline);background:var(--sheet);font-weight:500;cursor:pointer" style-hover="background:var(--sunken)">Aadhaar<span style="width:18px;height:18px;border-radius:5px;display:inline-flex;align-items:center;justify-content:center;color:var(--fg4)">×</span></span>
+            <span style="display:inline-flex;align-items:center;gap:4px;height:26px;padding:0 4px 0 9px;border-radius:7px;box-shadow:var(--hairline);background:var(--sheet);font-weight:500;cursor:pointer" style-hover="background:var(--sunken)">API key<span style="width:18px;height:18px;border-radius:5px;display:inline-flex;align-items:center;justify-content:center;color:var(--fg4)">×</span></span>
+            <span style="color:var(--fg3)">and</span>
+            <span style="display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 9px;border-radius:7px;box-shadow:var(--hairline);background:var(--sheet);font-weight:500;cursor:pointer" style-hover="background:var(--sunken)">Action <svg viewBox="0 0 24 24" style="width:12px;height:12px;color:var(--fg4)"><use href="#chev"></use></svg></span><span style="color:var(--fg3)">is</span>
+            <span style="display:inline-flex;align-items:center;gap:4px;height:26px;padding:0 4px 0 9px;border-radius:7px;box-shadow:var(--hairline);background:var(--sheet);font-weight:500;cursor:pointer" style-hover="background:var(--sunken)">Share externally<span style="width:18px;height:18px;border-radius:5px;display:inline-flex;align-items:center;justify-content:center;color:var(--fg4)">×</span></span>
+            <span style="color:var(--fg3)">or</span>
+            <span style="display:inline-flex;align-items:center;gap:4px;height:26px;padding:0 4px 0 9px;border-radius:7px;box-shadow:var(--hairline);background:var(--sheet);font-weight:500;cursor:pointer" style-hover="background:var(--sunken)">Create public link<span style="width:18px;height:18px;border-radius:5px;display:inline-flex;align-items:center;justify-content:center;color:var(--fg4)">×</span></span>
+            <span onClick="{{nyi}}" style="display:inline-flex;align-items:center;gap:5px;height:26px;padding:0 9px;border-radius:7px;color:var(--fg3);font-size:12.5px;cursor:pointer" style-hover="background:var(--hover);color:var(--fg)"><svg viewBox="0 0 24 24" style="width:12px;height:12px"><use href="#plus"></use></svg>condition</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;padding:10px 14px;font-size:11px;font-weight:500;color:var(--fg3);text-transform:uppercase;letter-spacing:.06em;background:var(--sunken)">Then</div>
+          <div style="display:flex;align-items:center;flex-wrap:wrap;gap:6px;padding:12px 14px;font-size:13px;line-height:1.5">
+            <span style="display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 6px;border-radius:7px;box-shadow:var(--hairline);background:var(--sheet);cursor:pointer" style-hover="background:var(--sunken)"><span style="display:inline-flex;align-items:center;gap:5px;height:18px;padding:0 8px;border-radius:999px;font-size:11px;font-weight:500;background:color-mix(in srgb,var(--danger) 12%,transparent);color:var(--danger)"><svg viewBox="0 0 24 24" style="width:11px;height:11px"><use href="#block"></use></svg>Block</span><svg viewBox="0 0 24 24" style="width:12px;height:12px;color:var(--fg4)"><use href="#chev"></use></svg></span>
+            <span style="color:var(--fg3)">and show</span>
+            <span style="display:inline-flex;align-items:center;gap:4px;height:26px;padding:0 4px 0 9px;border-radius:7px;box-shadow:var(--hairline);background:var(--sheet);font-weight:400;color:var(--fg2);cursor:pointer" style-hover="background:var(--sunken)">&ldquo;Sharing this file outside the organisation isn&rsquo;t permitted.&rdquo;<span style="width:18px;height:18px;border-radius:5px;display:inline-flex;align-items:center;justify-content:center;color:var(--fg4)">✎</span></span>
+            <span style="color:var(--fg3)">, then</span>
+            <span style="display:inline-flex;align-items:center;gap:4px;height:26px;padding:0 4px 0 9px;border-radius:7px;box-shadow:var(--hairline);background:var(--sheet);font-weight:500;cursor:pointer" style-hover="background:var(--sunken)">Notify security<span style="width:18px;height:18px;border-radius:5px;display:inline-flex;align-items:center;justify-content:center;color:var(--fg4)">×</span></span>
+            <span style="display:inline-flex;align-items:center;gap:4px;height:26px;padding:0 4px 0 9px;border-radius:7px;box-shadow:var(--hairline);background:var(--sheet);font-weight:500;cursor:pointer" style-hover="background:var(--sunken)">Open incident · Critical<span style="width:18px;height:18px;border-radius:5px;display:inline-flex;align-items:center;justify-content:center;color:var(--fg4)">×</span></span>
+            <span onClick="{{nyi}}" style="display:inline-flex;align-items:center;gap:5px;height:26px;padding:0 9px;border-radius:7px;color:var(--fg3);font-size:12.5px;cursor:pointer" style-hover="background:var(--hover);color:var(--fg)"><svg viewBox="0 0 24 24" style="width:12px;height:12px"><use href="#plus"></use></svg>action</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;padding:10px 14px;font-size:11px;font-weight:500;color:var(--fg3);text-transform:uppercase;letter-spacing:.06em;background:var(--sunken)">Where</div>
+          <div style="display:flex;align-items:center;flex-wrap:wrap;gap:6px;padding:12px 14px;font-size:13px;line-height:1.5">
+            <span style="display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 9px;border-radius:7px;box-shadow:var(--hairline);background:var(--sheet);font-weight:500;cursor:pointer" style-hover="background:var(--sunken)">Whole tenant <svg viewBox="0 0 24 24" style="width:12px;height:12px;color:var(--fg4)"><use href="#chev"></use></svg></span>
+            <span style="color:var(--fg3)">except</span>
+            <span style="display:inline-flex;align-items:center;gap:4px;height:26px;padding:0 4px 0 9px;border-radius:7px;box-shadow:var(--hairline);background:var(--sheet);font-weight:500;cursor:pointer" style-hover="background:var(--sunken)">Legal / Deal room<span style="width:18px;height:18px;border-radius:5px;display:inline-flex;align-items:center;justify-content:center;color:var(--fg4)">×</span></span>
+            <span onClick="{{nyi}}" style="display:inline-flex;align-items:center;gap:5px;height:26px;padding:0 9px;border-radius:7px;color:var(--fg3);font-size:12.5px;cursor:pointer" style-hover="background:var(--hover);color:var(--fg)"><svg viewBox="0 0 24 24" style="width:12px;height:12px"><use href="#plus"></use></svg>exception</span>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;margin:20px 0 10px"><h4 style="margin:0;font-size:11px;font-weight:500;color:var(--fg3);text-transform:uppercase;letter-spacing:.06em">Simulation · last 30 days</h4><span style="flex:1"></span><button onClick="{{rerunSim}}" style="border:0;background:transparent;font:inherit;color:var(--fg4);font-size:11.5px;cursor:pointer" style-hover="color:var(--fg2)">Re-run</button><button onClick="{{nyi}}" style="border:0;background:transparent;font:inherit;color:var(--fg4);font-size:11.5px;cursor:pointer" style-hover="color:var(--fg2)">Export</button></div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px">
+          <sc-for list="{{simStats}}" as="ss" hint-placeholder-count="4">
+            <div style="border-radius:var(--r-surf);box-shadow:var(--hairline);padding:12px 14px;animation:encIn .25s {{ss.delay}} both"><b style="display:block;font-family:var(--tight);font-size:22px;font-weight:600;letter-spacing:-.02em;line-height:1.1">{{ss.v}}</b><span style="color:var(--fg3);font-size:11.5px">{{ss.l}}</span></div>
+          </sc-for>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:12px">
+          <div style="background:var(--sheet);border-radius:var(--r-surf);box-shadow:var(--hairline);padding:14px">
+            <h4 style="margin:0 0 10px;font-size:11px;font-weight:500;color:var(--fg3);text-transform:uppercase;letter-spacing:.06em">Would block, by workspace</h4>
+            <div style="display:flex;flex-direction:column;gap:6px;font-size:12px">
+              <sc-for list="{{simBars}}" as="sb" hint-placeholder-count="4">
+                <div style="display:grid;grid-template-columns:110px 1fr 28px;align-items:center;gap:10px"><span>{{sb.l}}</span><i style="height:6px;border-radius:3px;background:var(--fg2);display:block;opacity:.7;width:{{sb.w}};transition:width .5s cubic-bezier(.2,.7,.3,1)"></i><span style="text-align:right;color:var(--fg4);font-family:var(--mono);font-size:11px">{{sb.n}}</span></div>
+              </sc-for>
+            </div>
+          </div>
+          <div style="background:var(--sheet);border-radius:var(--r-surf);box-shadow:var(--hairline);padding:14px">
+            <h4 style="margin:0 0 10px;font-size:11px;font-weight:500;color:var(--fg3);text-transform:uppercase;letter-spacing:.06em">Sample events</h4>
+            <div style="display:flex;flex-direction:column;gap:8px;font-size:12.5px">
+              <div style="display:flex;align-items:center;gap:8px"><span style="width:20px;height:20px;border-radius:50%;background:var(--av-a-bg);color:var(--av-a-fg);display:inline-flex;align-items:center;justify-content:center;font-size:9.5px;font-weight:600">PN</span><span style="font-weight:500">Priya</span> public link · Helios MSA <span style="margin-left:auto;color:var(--fg4);font-size:11px;font-family:var(--mono)">Aug 15</span></div>
+              <div style="display:flex;align-items:center;gap:8px"><span style="width:20px;height:20px;border-radius:50%;background:var(--av-c-bg);color:var(--av-c-fg);display:inline-flex;align-items:center;justify-content:center;font-size:9.5px;font-weight:600">RS</span><span style="font-weight:500">Rahul</span> external share · Board pack <span style="margin-left:auto;color:var(--fg4);font-size:11px;font-family:var(--mono)">Aug 12</span></div>
+              <div style="display:flex;align-items:center;gap:8px"><span style="width:20px;height:20px;border-radius:50%;background:var(--av-b-bg);color:var(--av-b-fg);display:inline-flex;align-items:center;justify-content:center;font-size:9.5px;font-weight:600">AK</span><span style="font-weight:500">Anita</span> external share · Rate card <span style="margin-left:auto;color:var(--fg4);font-size:11px;font-family:var(--mono)">Aug 9</span></div>
+            </div>
+          </div>
+        </div>
+        <p style="color:var(--fg4);font-size:11.5px;margin-top:14px">Enabling in Enforce needs recent MFA and writes an audit entry. <a href="#" style="color:var(--fg3)">View as JSON</a> (read-only).</p>
+      </div>
+    </div>
+  </sc-if>
+
+  </div>
+</div>
+</sc-if>
+
+<sc-if value="{{booting}}" hint-placeholder-val="{{false}}">
+  <div style="position:absolute;inset:0;z-index:60;background:var(--canvas);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px;animation:encFade .15s both">
+    <svg viewBox="0 0 48 48" style="width:56px;height:56px;color:var(--accent)">
+      <rect x="7" y="8" width="34" height="9.5" rx="4.75" fill="currentColor" style="transform-origin:7px 12.75px;animation:encStrata 1.5s cubic-bezier(.4,0,.2,1) infinite"></rect>
+      <rect x="7" y="19.25" width="22" height="9.5" rx="4.75" fill="currentColor" opacity=".55" style="transform-origin:7px 24px;animation:encStrata 1.5s cubic-bezier(.4,0,.2,1) .18s infinite"></rect>
+      <rect x="7" y="30.5" width="34" height="9.5" rx="4.75" fill="currentColor" style="transform-origin:7px 35.25px;animation:encStrata 1.5s cubic-bezier(.4,0,.2,1) .36s infinite"></rect>
+    </svg>
+    <div style="color:var(--fg3);font-size:11.5px;font-family:var(--mono)">Checking your access…</div>
+  </div>
+</sc-if>
+<sc-if value="{{toastShown}}" hint-placeholder-val="{{false}}">
+  <div style="position:absolute;left:24px;bottom:24px;z-index:40;display:inline-flex;align-items:center;gap:10px;background:var(--selbar-bg);color:var(--selbar-fg);padding:8px 8px 8px 12px;border-radius:10px;box-shadow:var(--el3);font-size:12.5px;animation:encToast .18s ease-out both">
+    <svg viewBox="0 0 24 24" style="width:14px;height:14px;color:#7DDBA3"><use href="#check"></use></svg>{{toastMsg}}
+    <sc-if value="{{toastHasAct}}" hint-placeholder-val="{{false}}"><button onClick="{{toastAct}}" style="height:24px;border:0;border-radius:7px;background:var(--selbar-hov);color:inherit;font:inherit;font-size:12px;padding:0 8px;cursor:pointer">{{toastActL}}</button></sc-if>
+  </div>
+</sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;light&quot;,&quot;dark&quot;],&quot;default&quot;:&quot;dark&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Appearance&quot;},&quot;brand&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;northwind&quot;,&quot;harbor&quot;,&quot;meridian&quot;],&quot;default&quot;:&quot;northwind&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Appearance&quot;},&quot;startScreen&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;signin&quot;,&quot;home&quot;,&quot;library&quot;,&quot;ask&quot;,&quot;search&quot;,&quot;admin&quot;],&quot;default&quot;:&quot;admin&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Prototype&quot;}}">
+class Component extends DCLogic {
+  state = { screen: null, theme: null, brand: null, sel: [], peek: null, tab: 'all', collapsed: [], peekTab: 'Preview',
+    upStage: -1, upDone: false, toast: null, askPhase: 0, askQ: '', askInput: '', cite: false,
+    searchQ: 'helios', attn: ['a1', 'a2'], simSeed: 0, srcPanel: true };
+  timers = [];
+  later(ms, fn) { this.timers.push(setTimeout(fn, ms)); }
+  componentDidMount() {
+    this.keyH = (e) => {
+      if (e.key === 'Escape') {
+        if (this.state.peek) this.setState({ peek: null });
+        else if (this.state.sel.length) this.setState({ sel: [] });
+      }
+    };
+    window.addEventListener('keydown', this.keyH);
+  }
+  componentWillUnmount() { window.removeEventListener('keydown', this.keyH); this.timers.forEach(clearTimeout); }
+  toast(msg, actL, act) {
+    clearTimeout(this._tt);
+    this.setState({ toast: { msg, actL, act } });
+    this._tt = setTimeout(() => this.setState({ toast: null }), 3000);
+  }
+  ask(q) {
+    this.timers.forEach(clearTimeout); this.timers = [];
+    this.setState({ screen: 'ask', askPhase: 1, askQ: q, askInput: '', cite: false });
+    this.later(900, () => this.setState({ askPhase: 2 }));
+    this.later(1700, () => this.setState({ askPhase: 3 }));
+    this.later(2400, () => this.setState({ askPhase: 4 }));
+  }
+  startUpload() {
+    if (this.state.upStage >= 0 && !this.state.upDone) return;
+    if (this.state.upDone) { this.toast('Rate card FY27 draft.xlsx is already in this library'); return; }
+    this.setState({ upStage: 0 });
+    const stages = ['Uploading', 'Scanning', 'Processing', 'Indexing'];
+    stages.forEach((s, i) => this.later(1100 * (i + 1), () => {
+      if (i === stages.length - 1) { this.setState({ upStage: -1, upDone: true }); this.toast('Rate card FY27 draft.xlsx is ready — scanned and indexed'); }
+      else this.setState({ upStage: i + 1 });
+    }));
+  }
+  renderVals() {
+    const s = this.state;
+    const theme = s.theme ?? this.props.theme ?? 'light';
+    const brand = s.brand ?? this.props.brand ?? 'northwind';
+    const screen = s.screen ?? this.props.startScreen ?? 'signin';
+    const BRANDS = { harbor: ['Workspace', 'W'], northwind: ['Northwind', 'N'], meridian: ['Meridian', 'M'] };
+    const CLS = { pub: ['Public', '--c-pub'], int: ['Internal', '--c-int'], conf: ['Confidential', '--c-conf'], hconf: ['Highly conf.', '--c-hconf'], restr: ['Restricted', '--c-restr'] };
+    const AV = { a: ['var(--av-a-bg)', 'var(--av-a-fg)'], b: ['var(--av-b-bg)', 'var(--av-b-fg)'], c: ['var(--av-c-bg)', 'var(--av-c-fg)'], d: ['var(--av-d-bg)', 'var(--av-d-fg)'] };
+    const PILL = {
+      warn: ['color-mix(in srgb,var(--warn) 14%,transparent)', 'var(--warn)'],
+      danger: ['color-mix(in srgb,var(--danger) 12%,transparent)', 'var(--danger)'],
+      ok: ['color-mix(in srgb,var(--ok) 12%,transparent)', 'var(--ok)'],
+      plain: ['var(--sunken)', 'var(--fg2)'] };
+    const FILES = [
+      { id: 'f1', g: 0, title: 'Vendor master agreement — Helios Logistics', ext: '.pdf', ic: '#D0453A', av: 'a', avT: 'PN', who: 'Priya Nair', when: '2 h ago', cls: 'restr', pill: { t: 'warn', i: '#block', l: 'No download' }, size: '4.2 MB', tabs: ['exp', 'restr'], ver: 'v3.2', loc: 'p.14 · §18.2', exc: '…either Party may terminate this Agreement for convenience upon ninety (90) days’ prior written notice…' },
+      { id: 'f2', g: 0, title: 'SOW #2026-031 Helios', ext: '.docx', ic: '#3B6FD4', av: 'b', avT: 'AK', who: 'Anita Kale', when: 'Aug 9', cls: 'conf', pill: { t: 'ok', l: 'Approved' }, size: '210 KB', tabs: ['appr'], ver: 'v1.4', loc: '§2 Scope', exc: 'Statement of work for Helios logistics services covering FY27 warehousing and last-mile delivery…' },
+      { id: 'f3', g: 0, title: 'Amendment 01 — Helios', ext: '.docx', ic: '#3B6FD4', av: 'c', avT: 'RS', who: 'Rahul Shah', when: 'Yesterday', cls: 'conf', pill: { t: 'plain', l: 'Checked out · AK' }, size: '96 KB', tabs: [], ver: 'v2.0', loc: '§3', exc: 'This Amendment shortens the termination notice to sixty (60) days for the Warehousing Schedule only…' },
+      { id: 'f4', g: 1, title: 'NDA — Orion Analytics (signed)', ext: '.pdf', ic: '#D0453A', av: 'd', avT: 'LB', who: 'Lena Borg', when: 'Aug 11', cls: 'conf', pill: { t: 'plain', l: 'Retain 7y' }, size: '640 KB', tabs: ['exp'], ver: 'v1.0', loc: 'p.2 · §4', exc: 'Mutual non-disclosure agreement, term of three (3) years from the Effective Date…' },
+      { id: 'f5', g: 1, title: 'Board pack — pricing strategy', ext: '.pptx', ic: '#D2591C', av: 'c', avT: 'RS', who: 'Rahul Shah', when: 'Fri', cls: 'hconf', pill: { t: 'danger', l: 'Legal hold' }, size: '9.8 MB', tabs: ['restr'], ver: 'v6', loc: 'slide 12', exc: 'FY27 pricing strategy scenarios and Helios logistics cost sensitivities for board review…' },
+      { id: 'f6', g: 2, title: 'MSA template v7', ext: '.docx', ic: '#3B6FD4', av: 'b', avT: 'AK', who: 'Anita Kale', when: 'Mon', cls: 'conf', pill: null, size: '312 KB', tabs: [], ver: 'v7', loc: '§18', exc: 'Standard master services agreement template with 90-day convenience termination…' },
+      { id: 'f7', g: 2, title: 'Negotiation notes', ext: '.md', ic: 'var(--fg3)', av: 'a', avT: 'PN', who: 'Priya Nair', when: 'Thu', cls: 'int', pill: null, size: '14 KB', tabs: [], ver: 'v12', loc: '—', exc: 'Helios pushed back on the 90-day notice; we agreed to revisit for warehousing only…' },
+      { id: 'f8', g: 2, title: 'Supplier code of conduct', ext: '.pdf', ic: '#D0453A', av: null, avT: '', who: 'Comms', when: 'Jul 12 · Comms', cls: 'pub', pill: null, size: '1.9 MB', tabs: [], ver: 'v3', loc: 'p.1', exc: 'Applies to all suppliers and logistics partners including Helios…' },
+    ];
+    const GROUPS = ['Helios Logistics', 'Orion Analytics', 'Templates & notes'];
+    const nav = (sc) => (e) => { if (e && e.preventDefault) e.preventDefault(); this.setState({ screen: sc }); };
+    const q = (fn) => (e) => { if (e && e.preventDefault) e.preventDefault(); fn(); };
+    const clsBits = (k) => {
+      const c = CLS[k];
+      return { clsLabel: c[0], clsDot: `var(${c[1]})`, clsBg: `color-mix(in srgb,var(${c[1]}) 11%,transparent)`, clsFg: `color-mix(in srgb,var(${c[1]}) 82%,var(--fg))` };
+    };
+    // upload synthetic row
+    const upRow = (s.upStage >= 0 || s.upDone) ? {
+      id: 'f9', g: 0, title: 'Rate card FY27 draft', ext: '.xlsx', ic: '#2E8B57', av: null, avT: '', who: 'You', when: 'Just now · You',
+      cls: null, pill: s.upDone ? { t: 'ok', l: 'Scanned' } : null, size: '1.1 MB', tabs: [], ver: 'v1', loc: '—', exc: '', uploading: !s.upDone,
+    } : null;
+    let all = FILES.slice();
+    if (upRow) all.push(upRow);
+    const tabbed = all.filter(f => s.tab === 'all' || (f.tabs || []).includes(s.tab));
+    const mkRow = (f, i) => {
+      const sel = s.sel.includes(f.id);
+      const cb = f.cls ? clsBits(f.cls) : { clsLabel: 'Unclassified', clsDot: '', clsBg: 'transparent', clsFg: 'var(--fg2)' };
+      const stageMap = [0, 1, 1, 2];
+      const cur = stageMap[Math.min(s.upStage < 0 ? 0 : s.upStage, 3)];
+      const steps = f.uploading ? ['Up', 'Scan', 'Index'].map((l, j) => ({
+        l, fg: j < cur ? 'var(--fg2)' : j === cur ? 'var(--fg)' : 'var(--fg4)', w: j === cur ? '500' : '400',
+        dot: j < cur ? 'var(--ok)' : j === cur ? 'var(--accent)' : 'var(--g300)', ring: j === cur ? '0 0 0 3px var(--accent-soft)' : 'none',
+      })) : [];
+      return {
+        ...f, sel, bg: sel ? 'var(--selected)' : 'transparent',
+        hasAv: !!f.av, avBg: f.av ? AV[f.av][0] : '', avFg: f.av ? AV[f.av][1] : '',
+        ...cb, hasDot: !!f.cls, clsSh: f.cls ? 'none' : 'var(--hairline)',
+        hasPill: !!f.pill && !f.uploading, hasPillIcon: !!(f.pill && f.pill.i), pillHref: f.pill && f.pill.i ? f.pill.i : '#check',
+        pillBg: f.pill ? PILL[f.pill.t || 'plain'][0] : '', pillFg: f.pill ? PILL[f.pill.t || 'plain'][1] : '', pillL: f.pill ? f.pill.l : '',
+        uploading: !!f.uploading, steps, dimOp: f.uploading ? '.5' : '1',
+        chkBg: sel ? 'var(--accent)' : 'var(--sheet)', chkSh: sel ? 'none' : 'inset 0 0 0 1.5px var(--line-strong)',
+        chkImg: sel ? `url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='3.2'><path d='m5 12 5 5L20 7'/></svg>")` : 'none',
+        chkOp: sel ? '1' : '0.35', delay: `${Math.min(i, 12) * 0.02}s`,
+        open: q(() => { if (!f.uploading) this.setState({ peek: f.id }); }),
+        toggle: (e) => { e.stopPropagation(); if (f.uploading) return; this.setState({ sel: sel ? s.sel.filter(x => x !== f.id) : [...s.sel, f.id] }); },
+      };
+    };
+    const groups = GROUPS.map((name, gi) => {
+      const rows = tabbed.filter(f => f.g === gi).map(mkRow);
+      const open = !s.collapsed.includes(gi);
+      return { name, cnt: rows.length, open, chevRot: open ? 'none' : 'rotate(-90deg)', rows,
+        toggle: q(() => this.setState({ collapsed: open ? [...s.collapsed, gi] : s.collapsed.filter(x => x !== gi) })) };
+    }).filter(g => g.cnt > 0);
+    const visible = tabbed.filter(f => !s.collapsed.includes(f.g) && !f.uploading);
+    const peekFile = all.find(f => f.id === s.peek) || null;
+    const peekIdx = peekFile ? visible.findIndex(f => f.id === peekFile.id) : -1;
+    let peek = null;
+    if (peekFile) {
+      const cb = peekFile.cls ? clsBits(peekFile.cls) : { clsLabel: 'Unclassified', clsDot: 'var(--g300)', clsBg: 'var(--sunken)', clsFg: 'var(--fg2)' };
+      const pills = [];
+      if (peekFile.pill) pills.push({ l: peekFile.pill.l, bg: PILL[peekFile.pill.t || 'plain'][0], fg: PILL[peekFile.pill.t || 'plain'][1] });
+      if (peekFile.cls === 'restr') { pills.push({ l: 'Watermarked', bg: 'var(--sunken)', fg: 'var(--fg2)' }); pills.push({ l: 'Retain 7y', bg: 'var(--sunken)', fg: 'var(--fg2)' }); }
+      const kv = peekFile.id === 'f1' ? [
+        { k: 'Vendor', v: 'Helios Logistics Pvt Ltd' }, { k: 'Value', v: '₹ 4.8 Cr' }, { k: 'Expires', v: '31 Mar 2027 · 223 d' },
+        { k: 'Owner', v: peekFile.who }, { k: 'Indexed', v: 'Ready · 41 chunks' },
+      ] : [
+        { k: 'Owner', v: peekFile.who }, { k: 'Modified', v: peekFile.when }, { k: 'Size', v: peekFile.size }, { k: 'Indexed', v: 'Ready' },
+      ];
+      peek = { full: peekFile.title + peekFile.ext, meta: `${peekFile.ver} · ${peekFile.size} · ${peekFile.who} · ${peekFile.when}`, ...cb, pills, kv, wm: peekFile.cls === 'restr' };
+    }
+    const TABS = [['all', 'All', all.length], ['exp', 'Expiring', 2], ['appr', 'Needs approval', 1], ['restr', 'Restricted', 2]];
+    const tabs = TABS.map(([id, label, n]) => ({ label, n, bg: s.tab === id ? 'var(--sunken)' : 'transparent', fg: s.tab === id ? 'var(--fg)' : 'var(--fg3)', pick: q(() => this.setState({ tab: id })) }));
+    const peekTabs = ['Preview', 'Details', 'Access', 'Versions', 'Activity'].map(l => ({ l, bg: s.peekTab === l ? 'var(--sunken)' : 'transparent', fg: s.peekTab === l ? 'var(--fg)' : 'var(--fg3)', pick: q(() => this.setState({ peekTab: l })) }));
+    // search
+    const sq = (s.searchQ || '').toLowerCase();
+    const searchResults = FILES.filter(f => !sq || (f.title + ' ' + f.exc).toLowerCase().includes(sq)).map((f, i) => ({
+      ...f, ...clsBits(f.cls), delay: `${i * 0.03}s`,
+      open: q(() => this.setState({ screen: 'library', peek: f.id, tab: 'all' })),
+    }));
+    // home
+    const attnAll = [
+      { id: 'a1', avT: 'AK', av: 'b', title: 'SOW #2026-031 Helios — approval requested', sub: 'Anita Kale · Contracts / 2026 · waiting 1 day', cta: 'Review' },
+      { id: 'a2', avT: 'DP', av: 'd', title: 'Dev Patel requests access to Board pack', sub: 'Viewer · expires in 30 days unless renewed', cta: 'Approve' },
+    ];
+    const attn = attnAll.filter(a => s.attn.includes(a.id)).map(a => ({
+      ...a, avBg: AV[a.av][0], avFg: AV[a.av][1],
+      approve: q(() => { this.setState({ attn: s.attn.filter(x => x !== a.id) }); this.toast(a.id === 'a1' ? 'Approved — Anita has been notified' : 'Access granted for 30 days · audit entry written'); }),
+      dismiss: q(() => this.setState({ attn: s.attn.filter(x => x !== a.id) })),
+    }));
+    const recents = FILES.slice(0, 3).map(f => ({ ...f, ...clsBits(f.cls), open: q(() => this.setState({ screen: 'library', peek: f.id, tab: 'all' })) }));
+    const recentAsks = ['Helios termination terms', 'Which NDAs expire in Q4?', 'Rate card changes FY26→27'].map(label => ({ label, open: q(() => this.ask(label)) }));
+    const askSuggestions = ['What are the termination terms with Helios, and did the amendment change them?', 'Which contracts expire in the next 90 days?', 'Summarise the Orion NDA obligations'].map(qq => ({ q: qq, go: q(() => this.ask(qq)) }));
+    const hour = new Date().getHours();
+    const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
+    const seg = (on) => on ? ['var(--fg)', 'var(--sheet)', 'var(--el1)'] : ['var(--fg2)', 'transparent', 'none'];
+    const [lFg, lBg, lSh] = seg(theme === 'light'); const [dFg, dBg, dSh] = seg(theme === 'dark');
+    const brSh = (b) => brand === b ? '0 0 0 2px var(--sheet),0 0 0 3.5px var(--fg3)' : 'var(--hairline)';
+    const simBase = [['1,284', 'events evaluated'], ['37', 'would be blocked'], ['0.6%', 'est. false positives'], ['5', 'people affected']];
+    const simAlt = [['1,291', 'events evaluated'], ['38', 'would be blocked'], ['0.6%', 'est. false positives'], ['5', 'people affected']];
+    const simStats = (s.simSeed % 2 ? simAlt : simBase).map(([v, l], i) => ({ v, l, delay: `${i * 0.05}s` }));
+    const simBars = [['Finance', '100%', 22], ['Legal', '41%', 9], ['Sales', '23%', 5], ['People ops', '5%', 1]].map(([l, w, n]) => ({ l, w, n }));
+    const navPair = (sc) => screen === sc ? ['var(--fg)', 'var(--selected)'] : ['var(--fg2)', 'transparent'];
+    const [hFg, hBg] = navPair('home'); const [libFg, libBg] = navPair('library'); const [aFg, aBg] = navPair('ask'); const [seFg, seBg] = navPair('search');
+    return {
+      themeAttr: theme, brandAttr: brand, brandName: BRANDS[brand][0], brandMark: BRANDS[brand][1],
+      isSignin: screen === 'signin', isApp: screen !== 'signin',
+      isHome: screen === 'home', isLibrary: screen === 'library', isAsk: screen === 'ask', isSearch: screen === 'search', isAdmin: screen === 'admin', notAdmin: screen !== 'admin',
+      signinSub: 'Use your work account. Passkeys are fastest.',
+      signIn: q(() => { this.setState({ booting: true }); this.later(1600, () => { this.setState({ screen: 'home', booting: false }); this.toast('Welcome back, Priya — signed in with passkey'); }); }),
+      booting: !!s.booting,
+      signOut: q(() => this.setState({ screen: 'signin', sel: [], peek: null })),
+      goHome: nav('home'), goLibrary: nav('library'), goAsk: nav('ask'), goSearch: nav('search'), goAdmin: nav('admin'),
+      navHomeFg: hFg, navHomeBg: hBg, navLibFg: libFg, navLibBg: libBg, navAskFg: aFg, navAskBg: aBg, navSearchFg: seFg, navSearchBg: seBg,
+      inboxN: String(s.attn.length),
+      nyi: q(() => this.toast('Not wired in this prototype yet')),
+      setLight: q(() => this.setState({ theme: 'light' })), setDark: q(() => this.setState({ theme: 'dark' })),
+      segLightFg: lFg, segLightBg: lBg, segLightSh: lSh, segDarkFg: dFg, segDarkBg: dBg, segDarkSh: dSh,
+      setHarbor: q(() => this.setState({ brand: 'harbor' })), setNorthwind: q(() => this.setState({ brand: 'northwind' })), setMeridian: q(() => this.setState({ brand: 'meridian' })),
+      brHarborSh: brSh('harbor'), brNorthSh: brSh('northwind'), brMeriSh: brSh('meridian'),
+      greeting, attn, recents, recentAsks,
+      tabs, groups, peekTabs, peek, peekOpen: !!peek,
+      bodyCols: peek ? 'minmax(0,1fr) minmax(320px,372px)' : '1fr',
+      hasSel: s.sel.length > 0, selCnt: String(s.sel.length),
+      clearSel: q(() => this.setState({ sel: [] })),
+      selShare: q(() => this.toast(`Share link created for ${s.sel.length} file${s.sel.length > 1 ? 's' : ''} · expires in 7 days`)),
+      selMove: q(() => { const n = s.sel.length; this.setState({ sel: [] }); this.toast(`Moved ${n} file${n > 1 ? 's' : ''} to Contracts / Archive`, 'Undo', () => this.toast('Move undone')); }),
+      togglePeek: q(() => this.setState({ peek: peek ? null : (visible[0] ? visible[0].id : 'f1') })),
+      closePeek: q(() => this.setState({ peek: null })),
+      peekPrev: q(() => { if (peekIdx > 0) this.setState({ peek: visible[peekIdx - 1].id }); }),
+      peekNext: q(() => { if (peekIdx >= 0 && peekIdx < visible.length - 1) this.setState({ peek: visible[peekIdx + 1].id }); }),
+      peekAskKey: (e) => { if (e.key === 'Enter') this.ask(e.target.value || `Summarise ${peekFile ? peekFile.title : 'this file'}`); },
+      peekAskGo: q(() => this.ask(`Summarise ${peekFile ? peekFile.title : 'this file'}`)),
+      startUpload: q(() => this.startUpload()),
+      // search
+      searchQ: s.searchQ, setSearchQ: (e) => this.setState({ searchQ: e.target.value }),
+      clearSearch: q(() => this.setState({ searchQ: '' })),
+      searchResults, searchEmpty: searchResults.length === 0,
+      searchMeta: `${searchResults.length} result${searchResults.length === 1 ? '' : 's'} · 118 ms · hybrid`,
+      // ask
+      askCols: s.askPhase >= 4 ? '1fr 440px' : '1fr', askDivider: s.askPhase >= 4 ? '1px 0 0 var(--line)' : 'none',
+      askTitle: s.askPhase > 0 ? (s.askQ.length > 42 ? s.askQ.slice(0, 42) + '…' : s.askQ) : 'New thread',
+      askIdle: s.askPhase === 0, askStarted: s.askPhase > 0, askThinking: s.askPhase === 1,
+      askP1: s.askPhase >= 2, askP2: s.askPhase >= 3, askDone: s.askPhase >= 4,
+      askStatus: s.askPhase === 1 ? 'Searching Contracts — hybrid retrieval, your access only…' : 'Answer · from 2 documents you can open',
+      askQ: s.askQ, askSuggestions,
+      askInput: s.askInput, setAskInput: (e) => this.setState({ askInput: e.target.value }),
+      askKey: (e) => { if (e.key === 'Enter' && (s.askInput || '').trim()) this.ask(s.askInput.trim()); },
+      askSend: q(() => this.ask((s.askInput || '').trim() || 'What are the termination terms with Helios, and did the amendment change them?')),
+      askPlaceholder: s.askPhase > 0 ? 'Ask a follow-up…' : 'Ask across Contracts…',
+      citeOn: () => this.setState({ cite: true }), citeOff: () => this.setState({ cite: false }), citeShown: s.cite,
+      openSource1: q(() => this.setState({ screen: 'library', peek: 'f1', tab: 'all' })),
+      openSource2: q(() => this.setState({ screen: 'library', peek: 'f3', tab: 'all' })),
+      // admin
+      enforcePolicy: q(() => this.toast('Recent MFA required — approve on your device to enable Enforce')),
+      rerunSim: q(() => { this.setState({ simSeed: s.simSeed + 1 }); this.toast('Simulation re-run against the last 30 days'); }),
+      simStats, simBars,
+      // toast
+      toastShown: !!s.toast, toastMsg: s.toast ? s.toast.msg : '', toastHasAct: !!(s.toast && s.toast.actL), toastActL: s.toast ? (s.toast.actL || '') : '',
+      toastAct: q(() => { const t = s.toast; this.setState({ toast: null }); if (t && t.act) t.act(); }),
+    };
+  }
+}
+</script>
+</body>
+</html>

@@ -10,6 +10,143 @@ use anyhow::Context as _;
 use enclave_api::{metrics_listener, router, unconfigured_stages, ApiState, Delivery, Edge};
 use enclave_core::PolicyEngine;
 
+/// The object store this deployment's `storage.s3` names, or `None` when it names none.
+///
+/// Identical to `crates/worker`'s function of the same name and deliberately so: two binaries
+/// reading one configuration section through two code paths is how they come to disagree about what
+/// it means. `connect_and_verify` proves the bucket is reachable *now* — an unreachable bucket is a
+/// start-up failure rather than a download that fails for a user who cannot know why.
+async fn object_store(
+    config: &enclave_config::Config,
+    registry: &enclave_config::SecretRegistry,
+) -> anyhow::Result<Option<enclave_storage::S3BlobStore>> {
+    let Some(section) = config.storage.s3.as_ref() else { return Ok(None) };
+
+    let store = enclave_storage::S3BlobStore::connect_and_verify(
+        enclave_storage::S3Config::from_operator_config(section),
+        registry,
+    )
+    .await
+    .with_context(|| {
+        format!(
+            "connect to the object store named by `storage.s3` (bucket `{}`, region `{}`)",
+            section.bucket, section.region
+        )
+    })?;
+    Ok(Some(store))
+}
+
+/// The rendition pipeline, over the store this deployment configured (`ENC-798`).
+///
+/// This function used to return `UnconfiguredPipeline` — the only `PreviewPipeline` in the
+/// workspace — so `preview`, `thumbnail` and `export` refused whatever `storage.s3` said. That is
+/// `ENC-770`'s shape one crate along: the route *takes* its dependency, so the gap would be a
+/// compile error, but the value passed was a constant rather than a build. A dependency that is
+/// always absent is not a dependency; it is a stub with a type signature.
+///
+/// The three parts come from `crates/preview`, and each is the narrow one:
+///
+/// * `RasterRenderer` decodes PNG, JPEG and WebP into `thumb`, `page-png-1x` and `page-png-2x`, on
+///   a blocking thread, inside `RenderBudget::DEFAULT`. Every other media type is refused — the
+///   document parsers belong in `plans/M2-ACCESS-DELIVERY.md` D17's out-of-process worker, and a
+///   half-built one would report "preview available" for a format whose sanitizer nobody has
+///   written.
+/// * `BlobSource` is the only holder of a `BlobStore` on the rendition path, and it reads one key
+///   it is handed by a `ReadableVersion`. The handlers hold none: they cannot name an object key,
+///   so they cannot ask for an original (`CLAUDE.md` rule 6).
+/// * `NoRenditionSink` keeps nothing, so every request renders again. Said out loud rather than
+///   left to be discovered, because a deployment that re-renders each preview and one serving a
+///   cache look identical from the outside until the load arrives (`ENC-802`).
+fn rendition_pipeline(
+    store: &Arc<dyn enclave_storage::BlobStore>,
+) -> Arc<dyn enclave_preview::PreviewPipeline> {
+    let budget = enclave_preview::RenderBudget::DEFAULT;
+    tracing::info!(
+        wall_clock_secs = budget.wall_clock.as_secs(),
+        max_input_bytes = budget.max_input_bytes,
+        max_output_bytes = budget.max_output_bytes,
+        "renditions are generated in process for image/png, image/jpeg and image/webp; every other \
+         media type is refused, and nothing is cached — `BlobStore` has no server-side write verb, \
+         so each request renders again (ENC-802)"
+    );
+    Arc::new(enclave_preview::RenditionService::new(
+        enclave_preview::RasterRenderer,
+        enclave_preview::BlobSource::new(Arc::clone(store), budget),
+        enclave_preview::NoRenditionSink,
+        budget,
+    ))
+}
+
+/// What a privileged administrative action demands, from `security.mfa`.
+///
+/// # Why this refuses to start rather than warning
+///
+/// `security.mfa.admins_required` defaults to `true` and, until `ENC-771`, was read by nothing:
+/// `require_step_up` compared against a hard-coded constant. So every `/admin/**` mutation demanded
+/// a second factor, the binary wired an `MfaVerifier` that refuses every code, and **no principal in
+/// any deployment could satisfy it**. A tenant administrator got `403 STEP_UP_REQUIRED` naming a
+/// factor they had no way to present, on the surface that configures the product's own controls.
+///
+/// The reachability smoke test found it on its first run, which is the argument for that test: five
+/// routes were registered, reached the policy chain, passed every unit test, and could not be used.
+///
+/// A requirement nobody can satisfy is not a stricter control — it is a surface that does not
+/// exist, announced as a permissions error. So the pairing is refused at start-up rather than
+/// discovered by an operator: either configure a verifier, or say in configuration that
+/// administrators do not need one. Both are defensible; the silent third state is not.
+fn step_up_policy(
+    config: &enclave_config::Config,
+    mfa_verifier_configured: bool,
+) -> anyhow::Result<enclave_api::state::StepUpPolicy> {
+    use enclave_api::state::StepUpPolicy;
+
+    if !config.security.mfa.admins_required {
+        tracing::warn!(
+            "security.mfa.admins_required is false: an administrative action needs only the \
+             session that signed in, and a stolen admin session is a policy change"
+        );
+        return Ok(StepUpPolicy::NotRequired);
+    }
+
+    anyhow::ensure!(
+        mfa_verifier_configured,
+        "security.mfa.admins_required is true and no MFA verifier is configured, so every \
+         /api/v1/admin/** mutation would answer 403 STEP_UP_REQUIRED to every caller including a \
+         tenant administrator, with no way for anyone to satisfy it. Configure a verifier, or set \
+         security.mfa.admins_required: false to say that administrators do not need one (ENC-771)"
+    );
+
+    let max_age_secs =
+        i64::try_from(config.security.mfa.step_up_max_age.as_secs()).unwrap_or(i64::MAX);
+    Ok(StepUpPolicy::Required { max_age_secs })
+}
+
+/// The `iss` this deployment mints and the `iss` it verifies — one value, one source.
+///
+/// # Why this is a function rather than two expressions
+///
+/// It was two. `auth_surface` derived the issuer from `auth.access_token.issuer`, falling back to
+/// `server.public_url`; `ApiState::new` was handed `auth.access_token.issuer` with **no fallback**.
+/// `docs/08` tells an operator to leave the issuer unset because it is taken from `public_url`, so
+/// on the documented configuration the minter stamped `http://…/` and the verifier expected `""`.
+///
+/// Every token this deployment issued was rejected by the deployment that issued it. Login returned
+/// `200` with a valid signature, and every authenticated request answered `403` — which reads as a
+/// permissions problem, so that is where anyone looks. The whole test suite passed throughout,
+/// because no test both minted and verified through the composition in this file.
+///
+/// `ENC-533` is the precedent: the collection's dense width and the model's agreed *by convention*
+/// across two crates until one function compared them. Same fix, same reason.
+fn access_token_issuer(config: &enclave_config::Config) -> String {
+    config
+        .auth
+        .access_token
+        .issuer
+        .clone()
+        .or_else(|| config.server.public_url.as_ref().map(ToString::to_string))
+        .unwrap_or_default()
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let loaded = enclave_config::ConfigLoader::new()
@@ -55,7 +192,24 @@ async fn main() -> anyhow::Result<()> {
     let db = enclave_db::DbPool::connect(&db_config).await.context("connect to PostgreSQL")?;
     enclave_db::run_migrations(&db_config).await.context("apply migrations")?;
 
-    let keys = enclave_auth::KeySet::new(std::iter::empty());
+    // Signing keys, and with them the deployment's ability to sign anyone in at all (`ENC-687`).
+    // This used to be `KeySet::new(std::iter::empty())` — a verifier that rejects every token and a
+    // service that can mint none — which is why every `/api/v1/auth/*` route answered `503` in this
+    // binary while the whole suite passed. `SigningKeys::choose` below is where the decision is
+    // taken and argued.
+    let key_source = SigningKeys::choose(
+        config.auth.signing_keys.key_ref.is_some(),
+        config.profile,
+        config.server.bind,
+    );
+    let key_provider = build_key_provider(key_source, config, &secrets)?;
+    let keys = match &key_provider {
+        Some(provider) => enclave_auth::KeySet::new(
+            provider.verification_keys().await.context("read the verification key set")?,
+        ),
+        None => enclave_auth::KeySet::default(),
+    };
+
     let audit =
         Arc::new(enclave_audit::PgAuditSink::new(db.clone(), enclave_audit::ChainMode::Enabled));
 
@@ -144,12 +298,21 @@ async fn main() -> anyhow::Result<()> {
     //
     // `AdminAuthorization` **wraps** it rather than replacing it: an `Action::Admin` is decided from
     // the caller's administrative grants and every other action is still the inner service's to
-    // answer, which is what keeps `GET /api/v1/me` working and leaves `ENC-126` a single line to
-    // change when ACL resolution is wired. Grants come from `users.is_admin` — the tenant's global
-    // administrator — and what that can and cannot yet express is in `crates/authorization/src/admin.rs`.
+    // answer. Grants come from `users.is_admin` — the tenant's global administrator — and what that
+    // can and cannot yet express is in `crates/authorization/src/admin.rs`.
+    //
+    // The inner service is `PgAclAuthorization` (`ENC-126`, the single line that comment promised).
+    // It resolves an entry against `acl_entries` with inheritance and deny-wins, which is what makes
+    // every content route answer with data rather than `403`. Until this line, the binary wired
+    // `SelfServiceAuthorization` — a principal could read *itself* and nothing else, so a valid token
+    // reached the chain, authenticated correctly, and was refused at authorization on every route but
+    // `/me`. Authentication working and authorization unwired look identical from the outside: a
+    // `403` on a request whose token was perfectly good.
     let authorization = enclave_authorization::AdminAuthorization::new(
         Arc::new(enclave_authorization::PgAdminRoles::new(db.clone())),
-        Arc::new(enclave_authorization::SelfServiceAuthorization),
+        Arc::new(enclave_authorization::SelfServiceOr::new(
+            enclave_authorization::PgAclAuthorization::new(db.clone()),
+        )),
     );
 
     let policy = PolicyEngine::new(
@@ -177,12 +340,49 @@ async fn main() -> anyhow::Result<()> {
 
     let mut state = ApiState::new(
         policy,
-        db,
-        config.auth.access_token.issuer.as_deref().unwrap_or_default(),
+        db.clone(),
+        &access_token_issuer(config),
         config.auth.access_token.audience.as_str(),
         keys,
     )
-    .with_edge(edge);
+    .with_edge(edge)
+    // `false`: this binary constructs no `MfaVerifier` at all — `AuthSurface` is built below with
+    // its own `UnavailableMfa`, which refuses every code (`ENC-688`). The day a verifier is wired,
+    // this argument becomes the question of whether one was, and nothing else here changes.
+    .with_step_up(step_up_policy(config, false)?);
+
+    // The authentication surface (`ENC-687`). `ApiState::new` leaves `AuthSurface::unconfigured` in
+    // place, which registers every route and refuses every one of them with `503` — the shape
+    // `Delivery` has, and the reason it is a builder step rather than a constructor argument.
+    //
+    // A `None` here is therefore a deployment that runs, serves everything else, and cannot sign
+    // anyone in. That is the honest state for a deployment with no signing key, and it is
+    // deliberately not a start-up failure of *this* process for the reason `SigningKeys::choose`
+    // gives: the refusal that matters is the one before it, and it is scoped to the configurations
+    // that must not run at all.
+    match build_auth_surface(key_provider, config, &db) {
+        Ok(Some(surface)) => {
+            tracing::info!(
+                issuer = config.auth.access_token.issuer.as_deref().unwrap_or_default(),
+                audience = config.auth.access_token.audience.as_str(),
+                "the authentication surface is wired; /api/v1/auth/* can issue tokens"
+            );
+            state = state.with_auth(surface);
+        }
+        Ok(None) => tracing::warn!(
+            "no signing key is configured: every /api/v1/auth/* route will answer 503 \
+             DEPENDENCY_UNAVAILABLE and nobody can sign in. Set auth.signing_keys.key_ref to a \
+             secret reference (vault://…, env://…), or run the community profile on a loopback \
+             address to have a development key generated"
+        ),
+        // A configuration this binary cannot build a token service from is a start-up failure
+        // rather than a warning, and the difference from the `None` arm is the difference between
+        // "nothing was supplied" and "what was supplied does not work". The second is always an
+        // operator error and always silent otherwise: the surface would refuse with the same `503`
+        // as an unconfigured one, and the operator who set the key would have no way to tell that
+        // their key was the problem.
+        Err(error) => return Err(error.context("wire the authentication surface")),
+    }
 
     // Present only when the configured mode evaluates: `DisabledDlp` reads no rules and has no
     // cache to forget. Not required for correctness in any case — the TTL is the bound and this is
@@ -197,7 +397,28 @@ async fn main() -> anyhow::Result<()> {
     // while every integration test passed. It now takes them, so the gap would be a compile error —
     // and what a deployment without them gets is a documented refusal it was warned about, rather
     // than an error nobody can explain.
-    let delivery = Delivery::unconfigured();
+    // `ENC-770`: this was `Delivery::unconfigured()` unconditionally. The `storage:` section was
+    // never read, so a deployment that fully specified a bucket still got a store that refuses
+    // every byte, and `POST /uploads` answered `500` on correct configuration. That is `ENC-170`'s
+    // shape one layer up — the route takes its dependency, so the *gap* is a compile error, but the
+    // value passed was a constant instead of a build. A dependency that is always absent is not a
+    // dependency; it is a stub with a type signature.
+    //
+    // The store is built the same way `crates/worker` builds it, from the same section, so the two
+    // binaries cannot disagree about what `storage.s3` means. `connect_and_verify` refuses at
+    // start-up rather than at first use, because an unreachable bucket discovered on a user's
+    // download is a bucket nobody notices is unreachable.
+    let delivery = match object_store(config, &registry).await? {
+        Some(store) => {
+            // One `Arc`, two capabilities: the download path gets the store, and the rendition
+            // pipeline gets a `BlobSource` wrapped around the same handle. Sharing it is the point
+            // — a second store built from the same section is a second place for the two to come
+            // to disagree about which bucket the product is using.
+            let store: Arc<dyn enclave_storage::BlobStore> = Arc::new(store);
+            Delivery { preview: rendition_pipeline(&store), store }
+        }
+        None => Delivery::unconfigured(),
+    };
     for capability in delivery.unconfigured_capabilities() {
         tracing::warn!(capability, "delivery capability is not configured");
     }
@@ -237,11 +458,248 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Where this deployment's signing key comes from.
+///
+/// A three-valued answer rather than an `Option`, because "no key and that is fine" and "no key and
+/// that is a fault" are the two cases the whole mechanism turns on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SigningKeys {
+    /// `auth.signing_keys.key_ref` names material. The only source a real deployment has.
+    Configured,
+    /// Nothing is configured and the deployment is a development one, so a key is generated on
+    /// disk. See [`SigningKeys::choose`] for what "a development one" is allowed to mean.
+    Development,
+    /// Nothing is configured and this deployment may not have a generated one. The process refuses
+    /// to start, carrying this sentence.
+    Refused(&'static str),
+}
+
+impl SigningKeys {
+    /// Decides where the key comes from, from three facts and nothing else.
+    ///
+    /// # The mechanism, and its limit, stated exactly
+    ///
+    /// `docs/12-TESTING.md` and this repository's habit both say that "the operator should set it"
+    /// is not a mechanism. So the development key is not reachable by *policy*, it is reachable
+    /// only through a branch that requires **two** conditions, and a deployment that serves anyone
+    /// other than the person sitting at the machine fails the second:
+    ///
+    /// 1. `profile: community` — the default, so this alone closes nothing;
+    /// 2. `server.bind` is a **loopback** address.
+    ///
+    /// The second is the load-bearing one. `ServerConfig::bind` defaults to `127.0.0.1` precisely
+    /// so that "a service should be exposed deliberately, not by forgetting to set a field", and a
+    /// deployment that is reachable by a browser on another host has necessarily changed it — to
+    /// `0.0.0.0`, or to a routable address. There is no branch in this function that hands a
+    /// generated key to such a process. It is not a warning it can ignore and not a profile it can
+    /// omit; it is the absence of a code path.
+    ///
+    /// **What it does not close.** A container that publishes a port while the process inside binds
+    /// `127.0.0.1` cannot be reached at all, so that arrangement is not a hole. What remains is a
+    /// single-host deployment behind a reverse proxy on the same machine, running `community`,
+    /// serving real users through `localhost`. That configuration gets a generated key and a
+    /// warning, and it is the narrowest form of the problem this can be reduced to without
+    /// inventing a signal that a process cannot observe about itself.
+    ///
+    /// # Why the refusal is here and not in the loader
+    ///
+    /// `ENC-661` put a configuration refusal in `ConfigLoader` and made *every binary in the
+    /// workspace* fail to start, because the loader reads the whole environment and every process
+    /// loads the whole document. A signing key is meaningless to `enclave-worker`, which mints no
+    /// tokens; a refusal there would stop indexing because the API's key was missing. So it lives
+    /// in this binary's own composition, where the only process it can stop is the one that needed
+    /// the key.
+    const fn choose(
+        key_ref_present: bool,
+        profile: enclave_config::DeploymentProfile,
+        bind: std::net::IpAddr,
+    ) -> Self {
+        if key_ref_present {
+            return Self::Configured;
+        }
+        if !matches!(profile, enclave_config::DeploymentProfile::Community) {
+            return Self::Refused(
+                "auth.signing_keys.key_ref is required outside the `community` profile. The \
+                 development key provider generates its own key on disk and is not reachable from \
+                 this profile at all - set a secret reference (vault://..., env://...) to the \
+                 base64 PKCS#8 of an Ed25519 key",
+            );
+        }
+        if !bind.is_loopback() {
+            return Self::Refused(
+                "auth.signing_keys.key_ref is required for a deployment that binds a non-loopback \
+                 address. A generated development key is reachable only when server.bind is \
+                 loopback, because a process anyone but this host can reach is not a development \
+                 process - set a secret reference, or bind 127.0.0.1",
+            );
+        }
+        Self::Development
+    }
+}
+
+/// Builds the key provider the decision names, or refuses to start.
+///
+/// Returns `None` for a deployment that has no key and is permitted not to have one — which today
+/// is no deployment at all, since [`SigningKeys::choose`] answers `Configured`, `Development` or a
+/// refusal. The `Option` is in the signature so that a future posture with no auth surface (a
+/// read-only replica, say) has somewhere to go that is not a fourth variant nobody wired.
+fn build_key_provider(
+    source: SigningKeys,
+    config: &enclave_config::Config,
+    secrets: &enclave_config::ResolvedSecrets,
+) -> anyhow::Result<Option<Arc<dyn enclave_auth::KeyProvider>>> {
+    match source {
+        SigningKeys::Refused(reason) => anyhow::bail!("{reason}"),
+        SigningKeys::Configured => {
+            let material = secrets
+                .get("auth.signing_keys.key_ref")
+                .context(
+                    "auth.signing_keys.key_ref did not resolve; the reference names a secret this \
+                     deployment's providers could not read",
+                )?
+                .expose_str()
+                .context("auth.signing_keys.key_ref did not resolve to text")?;
+            let provider = enclave_auth::ConfiguredKeyProvider::from_base64_pkcs8(
+                material,
+                chrono::Utc::now(),
+            )
+            // The adapter's error carries nothing derived from the material and this
+            // context adds nothing either: what an operator needs is the field name and the
+            // expected encoding, and anything more specific describes the key.
+            .context(
+                "auth.signing_keys.key_ref resolved to something that is not the base64 of \
+                         an Ed25519 PKCS#8 document",
+            )?;
+            // A `kid` is public information — it names a key and authorises nothing — so it is the
+            // one thing about the key that may be logged, and logging it is what lets an operator
+            // confirm which key a replica picked up after a rotation.
+            tracing::info!(
+                kid = provider.kid().as_str(),
+                "signing with the configured key from auth.signing_keys.key_ref"
+            );
+            Ok(Some(Arc::new(provider)))
+        }
+        SigningKeys::Development => {
+            let directory = &config.auth.signing_keys.directory;
+            tracing::warn!(
+                directory = %directory.display(),
+                "no signing key is configured: generating a development key on disk. This is \
+                 reachable only from the community profile on a loopback bind, and the private \
+                 half sits in a plaintext file — never run a deployment anyone else can reach this \
+                 way"
+            );
+            Ok(Some(Arc::new(enclave_auth::LocalFileKeyProvider::new(directory))))
+        }
+    }
+}
+
+/// Assembles the `/api/v1/auth/*` surface over the PostgreSQL stores.
+///
+/// # Every collaborator here is real except one, and the one is announced
+///
+/// The token service is `EnclaveTokenService` over `PgRefreshTokenStore`, `PgDenylist` and
+/// `PgSessionFacts` — rotation, reuse detection, family revocation and the re-resolved
+/// `token_epoch` all against the authoritative store (`ENC-687`).
+///
+/// The exception is [`enclave_auth::UnrestrictedRefreshGuard`], which permits every refresh.
+/// `docs/03-LLD.md §5.3` rule 3 wants conditional access re-evaluated at rotation, and that needs a
+/// `RequestContext` built from a refresh row — which needs an action and a resource for "refresh a
+/// session", and `enclave_core` has neither. That is `ENC-689`'s absence, so the guard is `ENC-709`
+/// and the honest thing to do here is to announce it in the start-up banner rather than invent a
+/// policy vocabulary in a composition function.
+///
+/// The MFA verifier is likewise the surface's own `UnavailableMfa`, which refuses every code
+/// (`ENC-688`). It is not a hole: an account with an enrolled factor cannot complete a login at
+/// all, which is the fail-closed direction.
+fn build_auth_surface(
+    provider: Option<Arc<dyn enclave_auth::KeyProvider>>,
+    config: &enclave_config::Config,
+    db: &enclave_db::DbPool,
+) -> anyhow::Result<Option<enclave_api::routes::auth::AuthSurface>> {
+    let Some(provider) = provider else { return Ok(None) };
+
+    let issuer = access_token_issuer(config);
+
+    let refresh = &config.auth.refresh_token;
+    let auth_config = enclave_auth::AuthConfig {
+        access_token: enclave_auth::AccessTokenConfig {
+            issuer,
+            audience: config.auth.access_token.audience.clone(),
+            ttl_secs: seconds(config.auth.access_token.ttl),
+            privileged_ttl_secs: seconds(config.auth.access_token.privileged_ttl),
+        },
+        refresh_token: enclave_auth::RefreshTokenConfig {
+            idle_ttl_secs: seconds(refresh.idle_ttl),
+            absolute_ttl_secs: seconds(refresh.absolute_ttl),
+        },
+        // Assembled here rather than through an accessor on `PasswordConfig`, because the
+        // accessor would put an `enclave-config` -> `enclave-auth` edge in the crate graph to save
+        // six lines in one composition function. The clamps are the same refusal
+        // `AuthConfig::validate` makes, applied before the cast rather than after it.
+        password: enclave_auth::PasswordPolicy {
+            min_length: config.security.password.min_length as usize,
+            max_length: config.security.password.max_length as usize,
+            argon2: enclave_auth::Argon2Params {
+                memory_kib: config.security.password.argon2.memory_kib,
+                iterations: config.security.password.argon2.iterations,
+                parallelism: config.security.password.argon2.parallelism,
+            },
+        },
+    };
+
+    let absolute_ttl = chrono::Duration::seconds(auth_config.refresh_token.absolute_ttl_secs);
+    let password_policy = auth_config.password;
+    let service = enclave_auth::EnclaveTokenService::new(
+        auth_config,
+        provider,
+        enclave_db::PgRefreshTokenStore::new(db.clone()),
+        enclave_db::PgDenylist::new(db.clone()),
+        enclave_auth::UnrestrictedRefreshGuard,
+        // The same lifetime the issuer above uses, and it has to be: `absolute_expires_at` is
+        // written as `auth_time + absolute_ttl`, and this is the divisor that recovers `auth_time`
+        // from it. Two different values would report an authentication time that never happened.
+        enclave_db::PgSessionFacts::new(db.clone(), absolute_ttl),
+    )
+    .context("the auth configuration is not usable")?;
+
+    let cookie = enclave_auth::RefreshCookieConfig {
+        name: config.auth.refresh_token.cookie.name.clone(),
+        path: config.auth.refresh_token.cookie.path.clone(),
+    };
+    cookie.validate().context("auth.refresh_token.cookie is not usable")?;
+
+    let hasher = enclave_auth::PasswordHasher::new(password_policy)
+        .context("security.password is not a usable Argon2 configuration")?;
+
+    Ok(Some(enclave_api::routes::auth::AuthSurface::new(
+        Arc::new(service),
+        hasher,
+        cookie,
+        chrono::Duration::seconds(seconds(config.auth.refresh_token.idle_ttl)),
+    )))
+}
+
+/// A configured duration as whole seconds, saturating rather than wrapping.
+///
+/// `HumanDuration` is unsigned and `AuthConfig` is signed, and a cast that wrapped would turn an
+/// absurd configured lifetime into a negative one — which `AuthConfig::validate` reads as "TTL must
+/// be positive" and refuses, but only by luck. Saturating makes the refusal the intended one.
+fn seconds(duration: enclave_config::HumanDuration) -> i64 {
+    i64::try_from(duration.as_secs()).unwrap_or(i64::MAX)
+}
+
 /// The prefix of [`unconfigured_stages`]'s entry for the stage `ENC-590` wired.
 const CONDITIONAL_ACCESS_STAGE: &str = "conditional_access";
 
 /// The prefix of [`unconfigured_stages`]'s entry for the stage `ENC-594` wired.
 const DLP_STAGE: &str = "dlp";
+
+/// The banner entry for the refresh-time conditional-access re-evaluation, which is not wired.
+///
+/// Not in [`unconfigured_stages`], because that list describes the stages `ApiState` finds and this
+/// is a collaborator of the token service. It is computed here for the same reason the DLP entry is:
+/// the value is a property of what this binary wired, not of what the crate offers.
+const REFRESH_GUARD_STAGE: &str = "refresh_guard";
 
 /// The policy stages still permitting everything **after this binary's wiring**.
 ///
@@ -295,6 +753,21 @@ fn unenforcing_stages(dlp_mode: enclave_dlp::DlpMode) -> Vec<String> {
             if dlp_mode.evaluates() { "evaluates, refuses nothing" } else { "inspects nothing" };
         stages.push(format!("{DLP_STAGE} ({dlp_mode} — {posture})"));
     }
+
+    // Not a policy *stage*, and announced here anyway (`ENC-687`). `docs/03-LLD.md §5.3` rule 3
+    // makes refresh the point at which conditional access is re-evaluated — it is what bounds "a
+    // user who moves outside an allowed network zone loses access within one access-token
+    // lifetime" — and this binary wires `UnrestrictedRefreshGuard`, which permits every refresh.
+    //
+    // An operator reading a banner that lists `conditional_access` as wired and says nothing here
+    // would reasonably conclude that a network rule applies for the whole life of a session. It
+    // applies to each request and not to the rotation, and that difference is a fourteen-day window
+    // rather than a ten-minute one. `ENC-709` closes it, behind `ENC-689`.
+    stages.push(format!(
+        "{REFRESH_GUARD_STAGE} (every refresh is permitted — a session outlives the \
+         network rule that allowed it, up to the refresh lifetime)"
+    ));
+
     stages
 }
 
@@ -312,8 +785,36 @@ fn db_config_from(
         .expose_str()
         .context("database.url is not valid UTF-8")?;
 
-    Ok(enclave_db::DbConfig::new(enclave_db::ConnectionUrl::new(url))
-        .with_max_connections(config.database.max_connections))
+    let mut db_config = enclave_db::DbConfig::new(enclave_db::ConnectionUrl::new(url))
+        .with_max_connections(config.database.max_connections)
+        // The role row-level security applies to. Omitting it left the pool connecting as whatever
+        // the DSN named — the cluster superuser, in the development stack — which bypasses RLS
+        // entirely. `migrations/0003` exists because of exactly that discovery (`ENC-124`), and a
+        // binary that does not set this is a binary running with layer 2 switched off.
+        .with_application_role(config.database.application_role.clone());
+
+    // `POST /api/v1/auth/login` cannot resolve its tenant without this. `resolve_routed_tenant`
+    // reads `tenants`, which carries no `tenant_id` and therefore has no policy — so migration
+    // `0002` gives `enclave_app` no privilege on it at all and grants `SELECT` to `enclave_platform`
+    // instead. With no platform DSN the lookup fails with `PlatformNotConfigured`, every host
+    // resolves to nothing, and every login answers `404`. It was never wired here, which is one of
+    // the two reasons the binary could not sign anyone in (`ENC-687`).
+    //
+    // Absent is still a supported deployment and still fails loudly rather than quietly: the same
+    // `Option` the `db` crate documents, and the paths that need the role refuse instead of falling
+    // back to a connection RLS would return zero rows through.
+    if let Some(platform) = secrets.get("database.platform_url") {
+        let platform = platform.expose_str().context("database.platform_url is not valid UTF-8")?;
+        db_config = db_config.with_platform_url(enclave_db::ConnectionUrl::new(platform));
+    } else {
+        tracing::warn!(
+            "database.platform_url is unset: POST /api/v1/auth/login cannot resolve a tenant from \
+             its host and will answer 404 for every request, and no refresh family can be revoked. \
+             Set database.platform_url_env or database.platform_url to a DSN for the enclave_platform role"
+        );
+    }
+
+    Ok(db_config)
 }
 
 /// Waits for SIGTERM or Ctrl-C.
@@ -421,5 +922,117 @@ mod tests {
             .find(|stage| stage.starts_with(DLP_STAGE))
             .expect("DISABLED inspects nothing and must be announced");
         assert!(entry.contains("inspects nothing"), "{entry}");
+    }
+
+    /// The refresh guard is announced in every mode, because it is a property of the wiring rather
+    /// than of the DLP posture (`ENC-687`).
+    ///
+    /// It is asserted for all five modes and not just one, because the entry is pushed after the
+    /// DLP branch and a future edit that moved it inside one arm would leave four postures silent.
+    #[test]
+    fn the_unwired_refresh_guard_is_announced_whatever_dlp_is_doing() {
+        for mode in [
+            DlpMode::Disabled,
+            DlpMode::Monitor,
+            DlpMode::Simulation,
+            DlpMode::Warn,
+            DlpMode::Enforce,
+        ] {
+            let stages = unenforcing_stages(mode);
+            let entry = stages
+                .iter()
+                .find(|stage| stage.starts_with(REFRESH_GUARD_STAGE))
+                .unwrap_or_else(|| panic!("{mode}: every refresh is permitted and must be said"));
+            assert!(entry.contains("permitted"), "{entry}");
+        }
+    }
+
+    // -------------------------------------------------------------------------------------------
+    // `SigningKeys::choose` — the mechanism, not the policy (`ENC-687`)
+    // -------------------------------------------------------------------------------------------
+
+    use enclave_config::DeploymentProfile;
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+    const LOOPBACK: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    const ROUTABLE: IpAddr = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 7));
+    const ANY: IpAddr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
+
+    /// A configured reference is the only source a deployment ever needs, and it is accepted from
+    /// every profile and every bind — including the development one.
+    ///
+    /// The last part matters: if `Configured` were reachable only from the strict profiles, a
+    /// developer testing against a real key would be running a code path production does not.
+    #[test]
+    fn a_configured_reference_is_the_source_from_every_profile_and_every_bind() {
+        for profile in [
+            DeploymentProfile::Community,
+            DeploymentProfile::Production,
+            DeploymentProfile::Enterprise,
+        ] {
+            for bind in [LOOPBACK, ROUTABLE, ANY] {
+                assert_eq!(
+                    SigningKeys::choose(true, profile, bind),
+                    SigningKeys::Configured,
+                    "{profile:?} on {bind}"
+                );
+            }
+        }
+    }
+
+    /// **The mechanism.** A deployment anyone but this host can reach cannot obtain a generated
+    /// key, whatever profile it names.
+    ///
+    /// `docs/12-TESTING.md`: an assertion about an absence passes for free. "It is not
+    /// `Development`" would hold against a function that returned `Configured` for everything, so
+    /// the refusal is asserted *and* the one combination that is allowed to produce a development
+    /// key is asserted in the same test. Remove either half and the other stops meaning anything.
+    #[test]
+    fn a_generated_key_is_unreachable_for_anything_but_a_loopback_community_deployment() {
+        // Every way of being reachable from another host.
+        for bind in [ROUTABLE, ANY, IpAddr::V6(Ipv6Addr::UNSPECIFIED)] {
+            assert!(
+                matches!(SigningKeys::choose(false, DeploymentProfile::Community, bind), SigningKeys::Refused(_)),
+                "a community deployment bound to {bind} is reachable from another host and must                  not be handed a generated key"
+            );
+        }
+        // Every profile that is not development, even on loopback.
+        for profile in [DeploymentProfile::Production, DeploymentProfile::Enterprise] {
+            assert!(
+                matches!(SigningKeys::choose(false, profile, LOOPBACK), SigningKeys::Refused(_)),
+                "{profile:?} must not be handed a generated key even on loopback"
+            );
+        }
+        // And the combination that survives, which is what makes the six refusals above meaningful
+        // rather than a function that refuses everything.
+        assert_eq!(
+            SigningKeys::choose(false, DeploymentProfile::Community, LOOPBACK),
+            SigningKeys::Development,
+            "`cargo run` on a laptop has to work, or the mechanism is a wall rather than a door"
+        );
+        assert_eq!(
+            SigningKeys::choose(
+                false,
+                DeploymentProfile::Community,
+                IpAddr::V6(Ipv6Addr::LOCALHOST)
+            ),
+            SigningKeys::Development,
+            "an IPv6 loopback bind is the same deployment as an IPv4 one"
+        );
+    }
+
+    /// A refusal has to tell the operator which field to set, because a process that dies naming
+    /// nothing is a process somebody restarts.
+    #[test]
+    fn a_refusal_names_the_field_that_would_fix_it() {
+        let SigningKeys::Refused(reason) =
+            SigningKeys::choose(false, DeploymentProfile::Enterprise, LOOPBACK)
+        else {
+            panic!("the enterprise profile has no development key")
+        };
+        assert!(reason.contains("auth.signing_keys.key_ref"), "{reason}");
+        assert!(reason.contains("vault://"), "the reference form has to be shown: {reason}");
+        // Rule 11 in miniature: the message explains the *encoding* and never carries material.
+        assert!(reason.contains("base64 PKCS#8"), "{reason}");
     }
 }

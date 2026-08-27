@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!--
+      The three Latin faces an English page actually renders, preloaded. The
+      other seventeen are declared in src/styles/fonts.css with a unicode-range
+      and are never fetched unless a glyph reaches into them (ENC-135).
+    -->
+    <link rel="preload" href="/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin />
+    <link
+      rel="preload"
+      href="/fonts/inter-tight-latin.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <!--
+      The product name is tenant-configurable (docs/09 §18) and is set from the
+      branding response once there is one. This is the untenanted default, and
+      it lives here rather than in the i18n catalog because a document title is
+      not reachable from React before the first paint.
+    -->
+    <title>Enclave</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

@@ -1,10 +1,19 @@
 /* Enclave design tokens.
  *
- * Extracted from `web/design-system/design-system-v2.html`, which is the visual reference and the
- * source of truth for these values. Change them there first, then re-extract — a token edited only
- * here drifts from the reference nobody re-reads afterwards.
+ * Extracted from `web/design-system/enclave-client-prototype.html`, which is the
+ * primary reference and the source of truth for these values. Change them there
+ * first, then re-extract — a token edited only here drifts from the reference
+ * nobody re-reads afterwards.
  *
- * Three groups, with different rules:
+ * Re-extracted from the prototype rather than from `design-system-v2.html`
+ * (`ENC-678`). The earlier hand-extraction was missing the whole dark accent
+ * ladder, both `--selbar-*` sets and all eight `--av-*` pairs, so a dark-mode
+ * page rendered the light accent on a near-black sheet and every avatar kept
+ * its light-theme tint. A token missing from an extract reads as a token that
+ * does not exist, which is why this file is now generated from the reference in
+ * one block instead of copied rule by rule.
+ *
+ * Four groups, with different rules:
  *
  *   Neutrals and elevation  — structural. Not tenant-editable.
  *   Classification          — LOCKED. `--c-pub` through `--c-restr` are not brandable. A tenant
@@ -13,20 +22,20 @@
  *                             carrier anyway (docs/09 §15: badges carry text too).
  *   Brand accent and radii  — tenant-editable via the branding API (docs/09 §18), which is why
  *                             they are the only values a `[data-brand]` block overrides.
+ *   Pairs                   — `--av-*` and `--selbar-*` are foreground/background pairs that flip
+ *                             together. Never take one half from one theme and one from the other;
+ *                             that is how a legible chip becomes an illegible one.
  *
  * Every colour is validated for contrast in both themes at configuration time; a tenant cannot
- * save a brand colour that fails AA against its own background (docs/09 §17).
+ * save a brand colour that fails AA against its own background (docs/09 §17). The accent's own
+ * label is a derived pair, not a constant `#fff` — see `--on-accent` below.
  */
 
 :root{
-  /* warm neutrals (Linear/Vercel-style) */
-  --g0:#fff;--g25:#FCFCFB;--g50:#F7F7F5;--g100:#F0F0ED;--g150:#E8E8E4;--g200:#DEDEDA;--g300:#C8C8C3;--g400:#A6A6A0;--g500:#7A7A74;--g600:#5B5B56;--g700:#3F3F3B;--g800:#2A2A27;--g900:#1A1A18;--ink:#141412;
+  --g0:#fff;--g25:#FCFCFB;--g50:#F7F7F5;--g100:#F0F0ED;--g150:#E8E8E4;--g200:#DEDEDA;--g300:#C8C8C3;--g400:#8A8A84;--g500:#72726C;--g600:#5B5B56;--g700:#3F3F3B;--g800:#2A2A27;--g900:#1A1A18;--ink:#141412;
   --ok:#1D8A55;--warn:#B7791F;--danger:#C0392B;--info:#2F6FDB;
-  /* classification — locked */
   --c-pub:#8A97A6;--c-int:#2F6FDB;--c-conf:#B7791F;--c-hconf:#D2591C;--c-restr:#C2273A;
-  /* brand (tenant editable) */
   --accent:#4F46E5;--accent-soft:rgba(79,70,229,.10);--accent-ring:rgba(79,70,229,.35);--r-ctrl:6px;--r-surf:10px;--r-sheet:14px;
-  /* semantic */
   --canvas:var(--g50);--sheet:var(--g0);--sunken:var(--g100);--hover:rgba(20,20,18,.045);--selected:rgba(20,20,18,.06);
   --line:rgba(20,20,18,.07);--line-strong:rgba(20,20,18,.13);--hairline:0 0 0 1px var(--line);
   --fg:var(--ink);--fg2:var(--g600);--fg3:var(--g500);--fg4:var(--g400);
@@ -34,15 +43,21 @@
   --el2:0 0 0 1px rgba(20,20,18,.06),0 4px 12px -2px rgba(20,20,18,.10),0 12px 32px -8px rgba(20,20,18,.10);
   --el3:0 0 0 1px rgba(20,20,18,.08),0 16px 48px -12px rgba(20,20,18,.24),0 32px 80px -24px rgba(20,20,18,.20);
   --sans:'Inter',system-ui,-apple-system,sans-serif;--tight:'Inter Tight','Inter',system-ui,sans-serif;--mono:'JetBrains Mono',ui-monospace,SFMono-Regular,monospace;
+  --selbar-bg:var(--ink);--selbar-fg:#fff;--selbar-hov:rgba(255,255,255,.12);--selbar-kbd:rgba(255,255,255,.14);--selbar-i:rgba(255,255,255,.18);
+  --av-a-bg:#E0E7FF;--av-a-fg:#3730A3;--av-b-bg:#FDE7DE;--av-b-fg:#9A3412;--av-c-bg:#DCFCE7;--av-c-fg:#166534;--av-d-bg:#FEF3C7;--av-d-fg:#92400E;
 }
-
-/* Dark theme. Only the tokens whose role changes are redefined. */
-[data-theme="dark"]{--canvas:#0F0F0E;--sheet:#161615;--sunken:#1D1D1B;--hover:rgba(255,255,255,.05);--selected:rgba(255,255,255,.07);--line:rgba(255,255,255,.08);--line-strong:rgba(255,255,255,.14);--fg:#F2F2EF;--fg2:#B5B5AF;--fg3:#8A8A84;--fg4:#5E5E59;--el1:0 0 0 1px rgba(255,255,255,.06),0 1px 2px rgba(0,0,0,.4);--el2:0 0 0 1px rgba(255,255,255,.07),0 8px 24px -4px rgba(0,0,0,.6);--el3:0 0 0 1px rgba(255,255,255,.08),0 24px 64px -12px rgba(0,0,0,.8);--g100:#1D1D1B;--g150:#232321;--g200:#2B2B28}
-
-/* Brand accents, dark. */
-[data-theme="dark"][data-brand="northwind"]{--accent:#2DD4BF}
-[data-theme="dark"][data-brand="meridian"]{--accent:#E5E7EB}
-
-/* Brand accents, light. */
 [data-brand="northwind"]{--accent:#0F766E;--accent-soft:rgba(15,118,110,.10);--accent-ring:rgba(15,118,110,.35);--r-ctrl:8px;--r-surf:12px;--r-sheet:18px}
 [data-brand="meridian"]{--accent:#111827;--accent-soft:rgba(17,24,39,.08);--accent-ring:rgba(17,24,39,.30);--r-ctrl:4px;--r-surf:6px;--r-sheet:8px}
+[data-theme="dark"]{--canvas:#0F0F0E;--sheet:#161615;--sunken:#1D1D1B;--hover:rgba(255,255,255,.05);--selected:rgba(255,255,255,.07);--line:rgba(255,255,255,.08);--line-strong:rgba(255,255,255,.14);--fg:#F2F2EF;--fg2:#B5B5AF;--fg3:#8A8A84;--fg4:#5E5E59;--el1:0 0 0 1px rgba(255,255,255,.06),0 1px 2px rgba(0,0,0,.4);--el2:0 0 0 1px rgba(255,255,255,.07),0 8px 24px -4px rgba(0,0,0,.6);--el3:0 0 0 1px rgba(255,255,255,.08),0 24px 64px -12px rgba(0,0,0,.8);--g100:#1D1D1B;--g150:#232321;--g200:#2B2B28;--accent:#8B85FF;--accent-soft:rgba(139,133,255,.14);--accent-ring:rgba(139,133,255,.4);--selbar-bg:#F2F2EF;--selbar-fg:#141412;--selbar-hov:rgba(0,0,0,.08);--selbar-kbd:rgba(0,0,0,.1);--selbar-i:rgba(0,0,0,.14);--av-a-bg:#2E2B6B;--av-a-fg:#C7D2FE;--av-b-bg:#5A2A1A;--av-b-fg:#FED7C3;--av-c-bg:#14442A;--av-c-fg:#BBF7D0;--av-d-bg:#4A3410;--av-d-fg:#FDE68A}
+[data-theme="dark"][data-brand="northwind"]{--accent:#2DD4BF;--accent-soft:rgba(45,212,191,.13);--accent-ring:rgba(45,212,191,.38)}
+[data-theme="dark"][data-brand="meridian"]{--accent:#E5E7EB;--accent-soft:rgba(229,231,235,.1);--accent-ring:rgba(229,231,235,.3)}
+
+/* The contrast-safe label on the accent (`docs/09 §18`'s "derived contrast-safe
+ * foreground pairs").
+ *
+ * The reference writes `color:#fff` on every accent-filled control, which is
+ * correct for the three light-theme accents and wrong for all three dark ones:
+ * they are *light* (#8B85FF, #2DD4BF, #E5E7EB), and white on #8B85FF is 3.04:1.
+ * axe failed on it. Derived by theme here so no component has to remember. */
+:root{--on-accent:#fff}
+[data-theme="dark"]{--on-accent:var(--ink)}

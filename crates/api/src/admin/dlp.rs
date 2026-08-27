@@ -75,8 +75,8 @@ use axum::response::{IntoResponse as _, Response};
 use axum::Json;
 use enclave_core::Exposure;
 use enclave_core::{
-    Action, Actor, AdminAction, AuthStrength, Error, RequestContext, RequestId, ResourceRef,
-    TenantId, UserId, ValidationCode,
+    Action, Actor, AdminAction, Error, RequestContext, RequestId, ResourceRef, TenantId, UserId,
+    ValidationCode,
 };
 use enclave_db::{DbError, DlpRuleId, DlpRuleRow};
 use enclave_dlp::{decode_rule, encode_rule, DlpRule, DlpRuleError, TenantDlp};
@@ -86,18 +86,7 @@ use crate::auth::Authenticated;
 use crate::error::{ApiError, Envelope, NO_STORE};
 use crate::refusal::{none_dischargeable, Refused};
 use crate::state::ApiState;
-
-/// How recently a privileged mutation's caller must have authenticated.
-///
-/// `docs/06 §22` lists *disabling or weakening DLP* among the operations needing recent MFA plus
-/// audit, and writing a rule is the same surface: the rule that is not written is the refusal that
-/// does not happen. Fifteen minutes is `docs/05-API.md §14`'s documented default.
-///
-/// A second constant rather than one shared with [`super::conditional_access`], deliberately kept
-/// where a reader of either module meets it: the value is the same and the *reason* is per-surface,
-/// and `ENC-620` moves both into the conditional-access stage where they can be audited as the
-/// denials they are.
-const STEP_UP_MAX_AGE_SECS: i64 = 15 * 60;
+use crate::state::StepUpPolicy;
 
 /// The action every write on this surface is authorized as.
 ///
@@ -300,7 +289,7 @@ pub async fn create_rule(
 ) -> Result<Response, ApiError> {
     let request_id = ctx.request_id;
     enforce(&state, &ctx, WRITE_ACTION).await?;
-    if let Err(envelope) = require_step_up(&ctx) {
+    if let Err(envelope) = require_step_up(&ctx, state.step_up) {
         return Ok(envelope.into_response(request_id));
     }
     let author = match author(&ctx) {
@@ -374,7 +363,7 @@ pub async fn withdraw_rule(
 ) -> Result<Response, ApiError> {
     let request_id = ctx.request_id;
     enforce(&state, &ctx, WRITE_ACTION).await?;
-    if let Err(envelope) = require_step_up(&ctx) {
+    if let Err(envelope) = require_step_up(&ctx, state.step_up) {
         return Ok(envelope.into_response(request_id));
     }
 
@@ -448,10 +437,12 @@ async fn enforce(state: &ApiState, ctx: &RequestContext, action: Action) -> Resu
 /// the cost of that ordering is the one [`super::conditional_access::require_step_up`] records:
 /// the engine has already written an *allow* row when this refuses. `ENC-620` is the row for moving
 /// it into the conditional-access stage, where it would be audited as the denial it is.
-fn require_step_up(ctx: &RequestContext) -> Result<(), Envelope> {
-    if ctx.auth_strength.meets(AuthStrength::MultiFactor)
-        && ctx.auth_age(chrono::Utc::now()).num_seconds() <= STEP_UP_MAX_AGE_SECS
-    {
+fn require_step_up(ctx: &RequestContext, policy: StepUpPolicy) -> Result<(), Envelope> {
+    // `policy` rather than a constant: `security.mfa.admins_required` existed, was documented, and
+    // was read by nothing, so this demanded a second factor the binary's `MfaVerifier` could never
+    // check. A tenant administrator was refused their own policy surface for want of a factor they
+    // had no way to present (`ENC-771`).
+    if policy.satisfied_by(ctx.auth_strength, ctx.auth_age(chrono::Utc::now()).num_seconds()) {
         return Ok(());
     }
 
@@ -469,7 +460,7 @@ fn require_step_up(ctx: &RequestContext) -> Result<(), Envelope> {
     )
     .with_details(vec![serde_json::json!({
         "acr": "mfa",
-        "maxAge": STEP_UP_MAX_AGE_SECS,
+        "maxAge": policy.max_age_secs(),
     })]))
 }
 
@@ -820,7 +811,7 @@ mod tests {
     // Assertions are the point of a test; the workspace warns on these in non-test code.
     #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
-    use enclave_core::{ClientType, FileAction, ServiceAccountId, TenantId, UserId};
+    use enclave_core::{AuthStrength, ClientType, FileAction, ServiceAccountId, TenantId, UserId};
     use enclave_dlp::{ActionScope, Condition, DlpAction};
 
     use super::*;
@@ -1116,17 +1107,21 @@ mod tests {
     #[test]
     fn a_privileged_mutation_needs_a_second_factor_and_a_recent_one() {
         let tenant = TenantId::new_v7();
-        assert!(require_step_up(&admin(tenant)).is_ok(), "the control: an MFA session just now");
+        assert!(
+            require_step_up(&admin(tenant), StepUpPolicy::Required { max_age_secs: 900 }).is_ok(),
+            "the control: an MFA session just now"
+        );
 
         let mut single = admin(tenant);
         single.auth_strength = AuthStrength::SingleFactor;
-        let refusal = require_step_up(&single).expect_err("one factor is not recent MFA");
+        let refusal = require_step_up(&single, StepUpPolicy::Required { max_age_secs: 900 })
+            .expect_err("one factor is not recent MFA");
         assert_eq!(refusal.status(), StatusCode::FORBIDDEN);
         assert_eq!(refusal.code(), "STEP_UP_REQUIRED");
 
         let mut stale = admin(tenant);
         stale.auth_time = chrono::Utc::now() - chrono::TimeDelta::minutes(16);
-        assert!(require_step_up(&stale).is_err());
+        assert!(require_step_up(&stale, StepUpPolicy::Required { max_age_secs: 900 }).is_err());
     }
 
     /// A rule is attributed to a person, because the column is `NOT NULL` onto `users`.

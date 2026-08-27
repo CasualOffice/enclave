@@ -1,0 +1,335 @@
+/* The sign-in screen.
+ *
+ * Values are lifted from `web/design-system/enclave-client-prototype.html`'s
+ * `data-screen-label="Sign in"` block, which is authoritative for appearance:
+ * the 360 px sheet, 16 px radius, `--el2`, the 22 px dotted field masked to an
+ * ellipse, 36 px controls, 12.5 px body copy.
+ *
+ * Every *property name* is logical. The prototype is physical throughout
+ * (`inset:0` aside, it uses `left`, `margin-left:auto`, `text-align:right`) and
+ * `en-XB` mirrors direction in CI, so this copies its values and none of its
+ * property names (`docs/17 §8`, `plans/M5-MVP-GA.md` D35.6).
+ *
+ * No z-index is set anywhere in this file. The screen is a single stacking
+ * context with a backdrop behind one card; the scale at the top of
+ * `shared/ui/primitives.css` is for things that float over other things, and
+ * nothing here does.
+ */
+
+.sgn {
+  position: relative;
+  flex: 1;
+  min-block-size: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: var(--canvas);
+  overflow: hidden;
+}
+
+/* The dotted field, masked to an ellipse so it fades before it reaches an edge.
+ * Decorative and inert: it must never intercept a click meant for the card. */
+.sgn-backdrop {
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(var(--line-strong) 1px, transparent 1px);
+  background-size: 22px 22px;
+  -webkit-mask-image: radial-gradient(ellipse at center, #000 30%, transparent 72%);
+  mask-image: radial-gradient(ellipse at center, #000 30%, transparent 72%);
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+.sgn-card {
+  position: relative;
+  inline-size: 360px;
+  max-inline-size: 100%;
+  padding: 28px 28px 22px;
+  border-radius: 16px;
+  background: var(--sheet);
+  box-shadow: var(--el2);
+}
+
+.sgn-mark {
+  color: var(--accent);
+  margin-block-end: 18px;
+  display: block;
+}
+
+.sgn-title {
+  margin: 0 0 4px;
+  font-family: var(--tight);
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+/* `--fg2`, not the prototype's `--fg3`.
+ *
+ * The prototype sets this line to `--fg3`, which is `#7A7A74` and computes to
+ * **4.31:1** on the white sheet at 12.5px — axe fails it, and `docs/09 §15`
+ * commits to 4.5:1 for text in every brand theme. Appearance is the design's to
+ * decide (D35 rule 3) but contrast is a tested commitment, so this is one of the
+ * places the prototype loses. Every muted value on this screen was re-derived
+ * the same way; the run that found them is in the report for this change. */
+.sgn-sub {
+  margin: 0 0 18px;
+  color: var(--fg2);
+  font-size: 12.5px;
+}
+
+/* ------------------------------------------------------------------- form */
+
+.sgn-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.sgn-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+/* The label sits **above** the input and stays there. A placeholder is not a
+ * label: it vanishes the moment a user starts typing, which is exactly when
+ * they are most likely to need it, and it is invisible to a voice-control user
+ * naming the control. */
+.sgn-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--fg2);
+}
+
+.sgn-input {
+  block-size: 36px;
+  padding-inline: 9px;
+  border: 0;
+  border-radius: var(--r-ctrl);
+  background: var(--sheet);
+  box-shadow: var(--hairline);
+  color: var(--fg);
+  font: inherit;
+  font-size: 12.5px;
+  inline-size: 100%;
+  transition: box-shadow 120ms ease;
+}
+
+/* `--fg4` in the prototype: 2.44:1 on white. A placeholder is text a user has
+ * to read, so it is held to the same 4.5:1 as any other. It stays clearly
+ * distinct from a typed value, which renders at `--fg`. */
+.sgn-input::placeholder {
+  color: var(--fg2);
+}
+
+.sgn-input:focus {
+  outline: 0;
+  box-shadow:
+    0 0 0 1px var(--accent),
+    0 0 0 4px var(--accent-ring);
+}
+
+.sgn-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-block-start: 2px;
+}
+
+/* The primary control is full width and 36 px tall, matching the prototype's
+ * button row. `<Button size="lg">` supplies the height and radius; the width is
+ * this layout's business, not the primitive's. */
+.sgn-actions .ui-btn {
+  inline-size: 100%;
+}
+
+.sgn-or {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--fg2);
+  font-size: 11px;
+  margin-block: 6px;
+}
+
+.sgn-or::before,
+.sgn-or::after {
+  content: '';
+  flex: 1;
+  block-size: 1px;
+  background: var(--line);
+}
+
+/* ---------------------------------------------------- the unbuilt affordance
+ *
+ * `plans/M5-MVP-GA.md` D33 and `docs/17 §6`. Passkey has no backend until M6,
+ * so it is **unbuilt, never denied**, and the two treatments may not share a
+ * class or a colour. `.ui-btn[data-state='unbuilt']` in `primitives.css` does
+ * the control; this only lays out the neutral release note beside it.
+ *
+ * The note is deliberately untinted. The denial treatment is a
+ * `--danger` inset ring, and if this were tinted at all a user would start
+ * reading "we haven't built it" and "policy refused you" as the same signal —
+ * which is the erosion D33 names as the whole cost of the decision.
+ */
+.sgn-later {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sgn-later .ui-btn {
+  flex: 1;
+}
+
+.sgn-later-note {
+  margin: 0;
+  color: var(--fg2);
+  font-size: 11.5px;
+}
+
+/* ----------------------------------------------------------- the answer slot
+ *
+ * One live region, always mounted, holding whichever of the three answers
+ * applies. Always mounted because a region that appears at the moment it gains
+ * content is a region some screen readers never announce.
+ */
+
+.sgn-answer:empty {
+  display: none;
+}
+
+.sgn-note {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: var(--r-surf);
+  font-size: 12.5px;
+  margin-block-end: 12px;
+}
+
+.sgn-note p {
+  margin: 0;
+}
+
+/* A refusal and a policy denial share the refusing tone — both are answers, and
+ * `docs/09 §11` keeps them out of the error state. Neither carries a retry. */
+.sgn-note[data-kind='refused'],
+.sgn-note[data-kind='denied'] {
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+  color: color-mix(in srgb, var(--danger) 74%, var(--fg));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 22%, transparent);
+}
+
+.sgn-note[data-kind='denied'] .sgn-note-remedy {
+  color: var(--fg2);
+}
+
+/* A request that did not complete is a different thing and looks like one:
+ * neutral, because nothing has been refused and nothing is the user's fault. */
+.sgn-note[data-kind='failed'] {
+  background: var(--sunken);
+  color: var(--fg);
+  box-shadow: var(--hairline);
+}
+
+.sgn-note-body {
+  color: var(--fg2);
+}
+
+.sgn-note-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-block-start: 2px;
+}
+
+.sgn-request-id {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--fg2);
+  margin-block-start: 2px;
+}
+
+.sgn-request-id code {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--fg2);
+  /* Selectable with a mouse as well as copyable with the button: support asks
+   * for this string over the phone as often as through a form. */
+  user-select: all;
+}
+
+/* --------------------------------------------------------- loading, success */
+
+/* The mark's own loading motion, paired with "Checking your access…" — which is
+ * literally what the policy chain is doing behind `/auth/login`: tenant
+ * isolation, auth, conditional access, authorization. `docs/09 §14` prefers a
+ * wait that says *why* over one that says *wait*.
+ *
+ * It sits below the form rather than replacing it, so nothing unmounts while a
+ * request is in flight and the focused control keeps focus.
+ */
+.sgn-loading {
+  display: flex;
+  min-block-size: 92px;
+  margin-block-start: 12px;
+}
+
+.sgn-success {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 8px;
+  padding-block: 22px 10px;
+}
+
+.sgn-success-mark {
+  color: var(--ok);
+}
+
+.sgn-success-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.sgn-success-body {
+  margin: 0;
+  color: var(--fg2);
+  font-size: 12.5px;
+}
+
+/* ----------------------------------------------------------------- footer */
+
+.sgn-legal {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  font-size: 11px;
+  color: var(--fg2);
+  margin-block-start: 16px;
+}
+
+.sgn-legal a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.sgn-legal a:hover {
+  color: var(--fg);
+  text-decoration: underline;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sgn-input {
+    transition: none;
+  }
+}

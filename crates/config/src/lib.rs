@@ -57,7 +57,7 @@ pub use model::{
     MfaConfig, MilvusSettings, NetworkZoneConfig, OcrMounts, PasswordConfig, RedisConfig,
     RefreshTokenConfig, ReuseDetection, S3Flavor, S3StorageConfig, SameSite, SearchConfig,
     SearchProvider, SecurityConfig, ServerConfig, SigningAlgorithm, SigningKeysConfig,
-    StorageConfig, StorageProvider, TrustedProxy, UnavailablePolicy,
+    StorageConfig, StorageProvider, TrustedProxy, UnavailablePolicy, UnsupportedPolicy,
 };
 pub use secret::{
     EnvSecretProvider, FileSecretProvider, ProviderHealth, SecretError, SecretProvider,

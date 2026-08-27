@@ -20,7 +20,8 @@
 use core::fmt;
 
 use chrono::{DateTime, Utc};
-use enclave_core::{UnknownVariant, VersionId};
+use enclave_core::{TenantId, UnknownVariant, VersionId};
+use enclave_storage::{KeyError, ObjectKey};
 
 /// Generates a closed vocabulary that mirrors a database `CHECK` constraint.
 ///
@@ -163,6 +164,98 @@ impl RenditionKey {
     }
 }
 
+/// The single artefact name under a rendition's profile prefix.
+///
+/// Fixed rather than derived from anything about the request, because [`ObjectKey::rendition`]
+/// treats this segment as the one place a `../` could reach the key space, and a constant cannot
+/// carry one. Multi-artefact profiles — a page-per-file pyramid — will name pages by index here,
+/// which is still not caller-controlled.
+const ARTIFACT: &str = "base";
+
+/// The object a base rendition's bytes live at, and the only thing the pipeline's store port
+/// accepts.
+///
+/// # Why this is a type rather than a `&str`
+///
+/// `CLAUDE.md` rule 6: never issue an original object-storage URL on a preview path, and — the same
+/// rule read from the other side — never let the preview path *reach* an original at all. The
+/// pipeline holds a store port, so it holds the capability the handler above it was deliberately
+/// denied ([`crate::service::PreviewPipeline`] explains why the handler holds none). This newtype
+/// is what keeps that capability narrow: both constructors produce a key in the
+/// `tenant/{t}/renditions/…` layout, so a version's key cannot be expressed. A rendition write
+/// cannot clobber an original, and a rendition read cannot fetch one, because there is no value of
+/// this type that names one.
+///
+/// [`Self::parse`] is the half that matters at run time: the object key on a `renditions` row is
+/// data, and data can be wrong — a bad migration, a restored backup, a tenant-crossing edit. It is
+/// re-validated against the layout *and* against the reading tenant before a byte is fetched, so a
+/// row that named `tenant/{other}/files/…` would be refused rather than served as a preview.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenditionObject(ObjectKey);
+
+impl RenditionObject {
+    /// The key this tenant's rendition of `version` under `profile` is written to.
+    ///
+    /// Deliberately not keyed by the generator, matching `renditions`' primary key: an upgraded
+    /// pipeline overwrites the artefact it replaces rather than leaving the old one unreachable
+    /// with nothing to evict it (`migrations/0007_renditions.sql`).
+    ///
+    /// # Errors
+    ///
+    /// [`KeyError`] if the profile's stored form is not a usable key segment, which no member of
+    /// the closed vocabulary is — the fallibility comes from [`ObjectKey::rendition`], whose
+    /// segments are checked because *other* callers can supply arbitrary ones.
+    pub fn new(
+        tenant: TenantId,
+        version: VersionId,
+        profile: RenditionProfile,
+    ) -> Result<Self, KeyError> {
+        ObjectKey::rendition(tenant, version, profile.as_str(), ARTIFACT).map(Self)
+    }
+
+    /// Re-validates a key that came back from a row.
+    ///
+    /// # Errors
+    ///
+    /// [`KeyError::Malformed`] when the key is not canonical, does not name a rendition, or names
+    /// another tenant's. All three are the same answer on purpose: each means the row cannot be
+    /// trusted to say where a rendition of *this* version for *this* tenant lives, and the
+    /// difference between them is of interest to whoever is reading the logs, not to the caller.
+    pub fn parse(raw: &str, tenant: TenantId) -> Result<Self, KeyError> {
+        let key = ObjectKey::parse(raw)?;
+        let malformed = || KeyError::Malformed { key: raw.to_owned() };
+
+        if !key.belongs_to(tenant) {
+            return Err(malformed());
+        }
+        // `ObjectKey::parse` accepts both canonical layouts and does not report which one it
+        // matched, so the discriminating segment is checked here. A version key reaching this
+        // function is the case the whole type exists for.
+        if key.as_str().split('/').nth(2) != Some(RENDITIONS_SEGMENT) {
+            return Err(malformed());
+        }
+        Ok(Self(key))
+    }
+
+    /// The key as the store sees it.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+impl fmt::Display for RenditionObject {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// The segment `docs/02-HLD.md §7` puts between the tenant and the version in a rendition key.
+///
+/// Spelled here rather than imported because `enclave_storage` keeps it private; the test below
+/// asserts it against a key that crate built, so the two cannot drift silently.
+const RENDITIONS_SEGMENT: &str = "renditions";
+
 /// A stored base rendition — one row of `renditions`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rendition {
@@ -227,6 +320,66 @@ mod tests {
             assert_eq!(RenditionProfile::from_str(profile.as_str()), Ok(*profile));
         }
         assert!(RenditionProfile::from_str("page-png-3x").is_err());
+    }
+
+    /// The store port cannot be handed a key that names an original — the rule 6 half that is
+    /// about *reaching* originals rather than about publishing URLs to them.
+    ///
+    /// The positive control is the last assertion: a genuine rendition key of the reading tenant
+    /// parses. Without it every refusal below would hold against a function that refused
+    /// everything, which is `docs/12-TESTING.md §1.2`'s recurring shape.
+    #[test]
+    fn no_value_of_this_type_can_name_an_original() {
+        let tenant = TenantId::new_v7();
+        let other = TenantId::new_v7();
+        let file = enclave_core::FileId::new_v7();
+        let version = VersionId::new_v7();
+
+        let original = ObjectKey::version(tenant, file, version);
+        assert!(
+            RenditionObject::parse(original.as_str(), tenant).is_err(),
+            "a version's key parsed as a rendition object, so a tampered row could make the \
+             preview path fetch the original bytes and serve them as a preview"
+        );
+
+        // Another tenant's rendition, which row-level security should never have produced and
+        // which is refused here anyway: object storage has no RLS, so this is where the equivalent
+        // check happens.
+        let theirs = RenditionObject::new(other, version, RenditionProfile::Thumb).expect("key");
+        assert!(RenditionObject::parse(theirs.as_str(), tenant).is_err());
+
+        assert!(RenditionObject::parse("../../etc/passwd", tenant).is_err());
+        assert!(RenditionObject::parse("", tenant).is_err());
+
+        let mine = RenditionObject::new(tenant, version, RenditionProfile::Thumb).expect("key");
+        assert_eq!(
+            RenditionObject::parse(mine.as_str(), tenant).expect("this tenant's own rendition"),
+            mine
+        );
+    }
+
+    /// The key names the version and the profile, and nothing that could identify a viewer.
+    ///
+    /// `docs/06 §5.1` again, one layer out from [`RenditionKey`]: a cache key with nowhere to put a
+    /// principal is only half the guarantee if the *object* it names can carry one.
+    #[test]
+    fn the_object_key_names_the_version_and_the_profile_and_nothing_else() {
+        let tenant = TenantId::new_v7();
+        let version = VersionId::new_v7();
+        let object = RenditionObject::new(tenant, version, RenditionProfile::PagePng1x)
+            .expect("a profile's stored form is always a usable segment");
+
+        assert_eq!(
+            object.as_str(),
+            format!("tenant/{tenant}/renditions/{version}/page-png-1x/base"),
+            "the layout is `docs/02-HLD.md §7`'s, and the segment `parse` discriminates on"
+        );
+        for profile in RenditionProfile::all() {
+            assert!(
+                RenditionObject::new(tenant, version, *profile).is_ok(),
+                "`{profile}` cannot be written to an object key, so it could never be cached"
+            );
+        }
     }
 
     #[test]

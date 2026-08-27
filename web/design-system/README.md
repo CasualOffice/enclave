@@ -80,3 +80,28 @@ The files are upstream's own subsets, taken as-is. Cutting them further by glyph
 
 `tokens.css` names the families and does not fetch them, so it needed no change; the SPA will point
 its own `@font-face` at the same directory.
+
+## `enclave-client-prototype.html` — the built client, and the primary reference
+
+**Read this before writing a component.** It is the complete client prototype from Claude Design:
+the full layout, every screen, the icon sprite, the interaction patterns and the motion. Where it and
+`design-system-v2.html` overlap, this is the one that shows how the pieces actually assemble.
+
+It is here because it could not be read otherwise. The project lives in Claude Design and only the
+coordinating session can reach it, so a build session asked to "follow the prototype" would have been
+guessing. It is vendored so that the reference and the code sit in one tree.
+
+### The mark
+
+`Strata` — an abstract E built from three policy layers, the middle one held back like a redaction.
+The letterform of the product and the policy chain in one shape. `web/public/logo.svg`, drawn with
+`currentColor` so it takes whatever accent the brand sets — the customization is the mark's, not a
+variant per brand.
+
+Three optical cuts, because the bars thicken and widen as the mark shrinks rather than scaling
+uniformly: `logo-lg.svg` (≥48 px), `logo.svg` (~20 px), `logo-sm.svg` (≤16 px). `favicon.svg` is the
+enclosed form on an accent plate.
+
+`logo-loader.css` carries the motion: the three layers scan in 180 ms apart, paired in the prototype
+with *"Checking your access…"* — which is what the policy chain is doing while it plays. The loader
+is the mark explaining itself, not decoration.

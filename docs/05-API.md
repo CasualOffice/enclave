@@ -1,6 +1,6 @@
 # 05 — API Surface
 
-> **Status:** Draft · **Version:** 1.4 · **Owner:** Platform Engineering · **Last updated:** 2026-08-22
+> **Status:** Draft · **Version:** 1.5 · **Owner:** Platform Engineering · **Last updated:** 2026-08-28
 > **Authoritative for:** REST contracts, error model, pagination, idempotency, versioning, rate limits.
 
 ## 1. Principles
@@ -211,6 +211,95 @@ will reject:
 
 `capabilities` is computed by the same policy engine that will enforce the action — it is a UI hint
 derived from the real decision, not a parallel implementation.
+
+### 7.1 Navigation — workspaces and libraries
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/workspaces` | The workspaces this caller can see; cursor-paged |
+| `GET` | `/workspaces/{workspaceId}` | One workspace + this caller's capabilities |
+| `GET` | `/workspaces/{workspaceId}/libraries` | The libraries in it; cursor-paged |
+| `GET` | `/libraries/{libraryId}` | One library, its settings + this caller's capabilities |
+
+**Why this section exists.** `§7` above documents how to browse a library, `§12` documents
+sub-resources of workspaces and libraries, and `§14` documents `/admin/workspaces` and
+`/admin/libraries` — and until `ENC-791` none of them said how a client *finds* a workspace or a
+library. The consequence was concrete: the web shell could open a library only if the id already sat
+in its URL, and drew its library picker as unbuilt.
+
+These four are reads. Creating, renaming and trashing a container are administrative operations and
+live under `/admin/**` (`§14`); nothing here mutates.
+
+```json
+{
+  "items": [
+    {
+      "id": "01937fb0-…",
+      "name": "Engineering",
+      "slug": "engineering",
+      "description": "Platform and infrastructure",
+      "visibility": "PRIVATE",
+      "revision": 4,
+      "capabilities": {
+        "read": true, "create": true, "update": false,
+        "delete": false, "manageMembers": false, "managePermissions": false
+      },
+      "obligations": { "watermark": false, "justificationRequired": [], "approvalRequired": [] },
+      "createdAt": "2026-01-04T09:12:00Z",
+      "updatedAt": "2026-08-19T14:02:11Z"
+    }
+  ],
+  "page": { "hasMore": false, "limit": 50 }
+}
+```
+
+A library row adds `workspaceId` and a `settings` object:
+
+```json
+{
+  "id": "01937fb1-…",
+  "workspaceId": "01937fb0-…",
+  "name": "Specifications",
+  "slug": "specifications",
+  "revision": 2,
+  "settings": {
+    "versioningMode": "MAJOR_MINOR",
+    "versionLimit": 50,
+    "requireCheckout": true,
+    "requireApproval": false,
+    "allowedExtensions": ["pdf", "docx"],
+    "maxFileSizeBytes": 5368709120,
+    "externalSharing": "EXISTING_GUESTS",
+    "aiIndexingEnabled": true,
+    "mcpVisible": false,
+    "syncEnabled": true
+  },
+  "capabilities": { "read": true, "create": true, "update": false, "delete": false,
+                    "manageMembers": false, "managePermissions": false },
+  "obligations": { "watermark": false, "justificationRequired": [], "approvalRequired": [] },
+  "createdAt": "2026-01-04T09:14:00Z",
+  "updatedAt": "2026-06-02T11:40:00Z"
+}
+```
+
+Rules, each of which the implementation is held to by a test:
+
+- **A listing is trimmed by the same chain that would refuse each row.** A workspace or library the
+  caller may not see is **absent**, never `403` — and a `GET` of it is `404`, indistinguishable from
+  an id that never existed and from another tenant's (`§5`, `CLAUDE.md` rule 7). A caller who cannot
+  read a workspace cannot learn how many libraries it holds: `GET /workspaces/{id}/libraries` is
+  `404`, not an empty page.
+- **A page may be shorter than `limit` while `hasMore` is `true`**, and carries no total, for the
+  reasons `§6` gives. Clients page until `hasMore` is false, never until a short page arrives.
+- **`capabilities` is per row and is the same six `container.*` answers `/admin/**` will enforce**,
+  computed by the policy engine rather than derived by the client. `read` is `true` on every row
+  returned: a row the caller could not read would not be there.
+- **`settings` are ceilings and modes, never grants.** `externalSharing: "ANYONE"` says what the
+  library permits at most; whether *this* caller may share externally is `file.share_external` on the
+  file. `defaultClassificationId`, `storageProfileId`, `retentionPolicyId` and `inheritPermissions`
+  are **not** on the wire — the first three are internal references (a navigation response is not
+  where a client learns which bucket content lands in), and the fourth describes the shape of the ACL
+  rather than the caller's position in it, which `capabilities` already answers.
 
 ## 8. Upload
 

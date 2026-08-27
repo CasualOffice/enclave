@@ -86,6 +86,7 @@
 //! See `plans/M0-FOUNDATIONS.md` D3 for the decision record behind [`TenantScoped`], and
 //! `docs/02-HLD.md §4` for where this crate sits.
 
+pub mod auth_tokens;
 pub mod classifications;
 pub mod conditional_access;
 pub mod config;
@@ -97,10 +98,12 @@ pub mod migrate;
 pub mod normalize;
 pub mod pool;
 pub mod quota;
+pub mod routing;
 pub mod security_facts;
 pub mod tenant;
 pub mod tenants;
 
+pub use auth_tokens::{PgDenylist, PgEpochs, PgRefreshTokenStore, PgSessionFacts};
 pub use classifications::{
     assign_classification, define_classification, effective_classification,
     effective_classification_on, withdraw_classification, MAX_CHAIN_DEPTH,
@@ -121,6 +124,7 @@ pub use quota::{
     release_storage, storage_quota, Admitted, Charged, Corrected, Enforcement, Observation,
     Refused, Released, StorageQuota, StorageReconciliation,
 };
+pub use routing::resolve_routed_tenant;
 pub use security_facts::{external_exposure, load_facts, record_facts, resolve_content};
 pub use tenant::TenantScoped;
 pub use tenants::active_tenants;

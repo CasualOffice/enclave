@@ -1,0 +1,780 @@
+/* The search screen.
+ *
+ * Every value is lifted from `web/design-system/enclave-client-prototype.html`'s
+ * `data-screen-label="Search"` block — 14/16 px bar padding, 24 px chips, the
+ * 11.5 px meta line, `--r-surf` on a hovered row. Every *property name* is
+ * logical, which the prototype's inline styles are not: it writes `left:50%`,
+ * `margin-left:auto`, `padding-left:25px` and `text-align:center` throughout,
+ * and `en-XB` mirrors direction in CI (`docs/17 §8`). Copy its values, never its
+ * property names.
+ *
+ * z-index, from the scale documented at the top of `shared/ui/primitives.css`:
+ * the filter menus are `20` (popovers and menus). Nothing else here stacks.
+ */
+
+.esr {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-block-size: 0;
+}
+
+/* ------------------------------------------------------------- search bar */
+
+.esr-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  box-shadow: inset 0 -1px 0 var(--line);
+  flex: none;
+}
+
+.esr-bar-icon {
+  color: var(--fg3);
+}
+
+.esr-input {
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 14px;
+  color: var(--fg);
+  outline: 0;
+  flex: 1;
+  min-inline-size: 0;
+  /* A query can be RTL while the interface is not. */
+  unicode-bidi: isolate;
+}
+
+.esr-input::placeholder {
+  color: var(--fg2);
+}
+
+.esr-input:focus-visible {
+  outline: 0;
+}
+
+.esr-bar:focus-within {
+  box-shadow:
+    inset 0 -1px 0 var(--line),
+    inset 0 0 0 1px var(--accent-ring);
+}
+
+.esr-bar-kbd {
+  flex: none;
+}
+
+/* ----------------------------------------------------------------- chips */
+
+.esr-filters {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 16px 6px;
+  flex: none;
+}
+
+.esr-chip-holder {
+  position: relative;
+}
+
+.esr-chip {
+  display: inline-flex;
+  align-items: center;
+  block-size: 24px;
+  border-radius: var(--r-ctrl);
+  box-shadow: var(--hairline);
+  font-size: 12px;
+  overflow: hidden;
+  background: var(--sheet);
+}
+
+.esr-chip[data-active] {
+  box-shadow:
+    var(--hairline),
+    inset 0 0 0 1px var(--accent-ring);
+}
+
+.esr-chip-open {
+  display: inline-flex;
+  align-items: center;
+  block-size: 24px;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+  color: var(--fg);
+}
+
+.esr-chip-key {
+  padding-inline: 7px;
+  color: var(--fg2);
+  box-shadow: inset -1px 0 0 var(--line);
+}
+
+/* The divider is a physical inset shadow in the prototype; mirrored here so it
+ * stays on the trailing edge of the key half in an RTL interface. */
+:dir(rtl) .esr-chip-key {
+  box-shadow: inset 1px 0 0 var(--line);
+}
+
+.esr-chip-value {
+  padding-inline: 7px;
+  color: var(--fg);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.esr-chip-open:hover {
+  background: var(--hover);
+}
+
+.esr-chip-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* 24 px square, not the 20 the chip would like: WCAG 2.2 SC 2.5.8 sets 24×24
+   * as the minimum target and axe checks it. */
+  inline-size: 24px;
+  block-size: 24px;
+  border: 0;
+  background: transparent;
+  color: var(--fg2);
+  cursor: pointer;
+  padding: 0;
+  box-shadow: inset 1px 0 0 var(--line);
+}
+
+:dir(rtl) .esr-chip-clear {
+  box-shadow: inset -1px 0 0 var(--line);
+}
+
+.esr-chip-clear:hover {
+  background: var(--hover);
+  color: var(--fg);
+}
+
+.esr-chip-menu {
+  position: absolute;
+  inset-block-start: calc(100% + 4px);
+  inset-inline-start: 0;
+  z-index: 20;
+  min-inline-size: 168px;
+  padding: 4px;
+  border-radius: var(--r-surf);
+  background: var(--sheet);
+  box-shadow: var(--el2);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.esr-chip-menuitem {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  block-size: 26px;
+  padding-inline: 6px;
+  border: 0;
+  border-radius: var(--r-ctrl);
+  background: transparent;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--fg);
+  cursor: pointer;
+  text-align: start;
+}
+
+.esr-chip-menuitem:hover {
+  background: var(--hover);
+}
+
+.esr-chip-tick {
+  inline-size: 10px;
+  display: inline-flex;
+  flex: none;
+  color: var(--accent);
+}
+
+.esr-count {
+  margin-inline-start: auto;
+  color: var(--fg2);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------ answer slot */
+
+/* `docs/17 §6`: the unbuilt treatment. Neutral, no remedy, out of the tab order,
+ * and it may never share a class or a colour with the denial treatment — the
+ * whole point being that a user who learns dimmed means "not written yet" stops
+ * reading the one place it means "DLP refused this". */
+.esr-answer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 16px 0;
+  padding: 8px 10px;
+  border-radius: var(--r-surf);
+  box-shadow: var(--hairline);
+  background: var(--sheet);
+  color: var(--fg2);
+  font-size: 12.5px;
+  cursor: default;
+  flex: none;
+}
+
+.esr-answer-icon {
+  display: inline-flex;
+  color: var(--fg3);
+}
+
+.esr-answer-text {
+  min-inline-size: 0;
+}
+
+/* ------------------------------------------------- the degraded-search header */
+
+/* Neutral by construction. `--sunken` on a hairline is the weight of a keyboard
+ * hint, which is the register this belongs in: a fact about how the search ran,
+ * not an alarm. Explicitly **not** `--warn` — amber is this product's DLP and
+ * restriction language ("No download", "Preview only") and borrowing it here
+ * would say something about the user's access is wrong, which is false. And
+ * explicitly not `--danger`, which is the error state's. */
+.esr-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin: 6px 16px 2px;
+  padding: 9px 11px;
+  border-radius: var(--r-surf);
+  background: var(--sunken);
+  box-shadow: var(--hairline);
+  flex: none;
+}
+
+.esr-notice-icon {
+  display: inline-flex;
+  color: var(--fg3);
+  /* Optically centred on the heading's cap height rather than on its line box. */
+  margin-block-start: 2px;
+  flex: none;
+}
+
+.esr-notice-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-inline-size: 0;
+}
+
+.esr-notice-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: -0.006em;
+  color: var(--fg);
+}
+
+.esr-notice-body {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--fg2);
+  max-inline-size: 78ch;
+}
+
+/* Both body lines are `--fg2`, and the second is deliberately *not* recessed to
+ * `--fg3`.
+ *
+ * It reads as the quieter of the two — it is second, and the heading above it
+ * carries the emphasis — but the colour step below `--fg2` is not available for
+ * text in the light theme: `--fg3` (#7A7A74) is 4.31:1 on the sheet and 3.78:1
+ * on `--sunken`, both short of `docs/09 §15`'s 4.5:1. `ENC-680` in
+ * `features/libraries/list/grouped-list.css` records the same finding, and axe
+ * caught this exact rule at 3.78. Hierarchy here is order and weight, not
+ * colour. */
+
+/* -------------------------------------------------------------- result list */
+
+.esr-scroller {
+  position: relative;
+  overflow: auto;
+  flex: 1;
+  min-block-size: 0;
+  padding-inline: 8px;
+}
+
+.esr-spacer {
+  inline-size: 1px;
+  flex: none;
+}
+
+.esr-window {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline-start: 8px;
+  inset-inline-end: 8px;
+  will-change: transform;
+}
+
+.esr-row {
+  block-size: 80px;
+  display: flex;
+}
+
+.esr-hit,
+.esr-skeleton-hit {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  inline-size: 100%;
+  padding: 9px 10px;
+  border-radius: var(--r-surf);
+  text-decoration: none;
+  color: inherit;
+  min-inline-size: 0;
+}
+
+.esr-hit:hover {
+  background: var(--hover);
+}
+
+/* `docs/09 §15`: visible focus at 3:1 against adjacent colours. The ring is the
+ * accent ring the rest of the product uses, not a browser default. */
+.esr-hit:focus-visible {
+  outline: 0;
+  background: var(--hover);
+  box-shadow:
+    0 0 0 1px var(--accent),
+    0 0 0 4px var(--accent-ring);
+}
+
+.esr-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-inline-size: 0;
+}
+
+.esr-line-title {
+  block-size: 20px;
+}
+
+.esr-line-meta {
+  block-size: 15px;
+  /* The prototype indents the meta and excerpt lines past the icon with
+   * `padding-left:25px`. Same measure, logical property. */
+  padding-inline-start: 24px;
+  color: var(--fg2);
+  font-size: 11.5px;
+}
+
+.esr-line-excerpt {
+  block-size: 17px;
+  padding-inline-start: 24px;
+  color: var(--fg);
+  font-size: 12.5px;
+  line-height: 1.35;
+}
+
+.esr-icon {
+  inline-size: 16px;
+  block-size: 16px;
+  flex: none;
+  color: var(--fg3);
+}
+
+.esr-icon[data-kind='pdf'] {
+  color: #d0453a;
+}
+.esr-icon[data-kind='doc'] {
+  color: #3b6fd4;
+}
+.esr-icon[data-kind='xls'] {
+  color: #2e8b57;
+}
+.esr-icon[data-kind='ppt'] {
+  color: #d2591c;
+}
+
+.esr-title {
+  font-weight: 500;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-inline-size: 0;
+}
+
+.esr-location {
+  margin-inline-start: auto;
+  color: var(--fg2);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  white-space: nowrap;
+  flex: none;
+}
+
+.esr-workspace {
+  color: var(--fg2);
+  font-weight: 500;
+  white-space: nowrap;
+  flex: none;
+}
+
+.esr-path,
+.esr-ownername {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-inline-size: 0;
+}
+
+.esr-sep {
+  inline-size: 2px;
+  block-size: 2px;
+  border-radius: 50%;
+  background: var(--fg4);
+  flex: none;
+}
+
+.esr-owner {
+  inline-size: 15px;
+  block-size: 15px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 8px;
+  font-weight: 600;
+  flex: none;
+}
+
+.esr-owner[data-tone='a'] {
+  background: var(--av-a-bg);
+  color: var(--av-a-fg);
+}
+.esr-owner[data-tone='b'] {
+  background: var(--av-b-bg);
+  color: var(--av-b-fg);
+}
+.esr-owner[data-tone='c'] {
+  background: var(--av-c-bg);
+  color: var(--av-c-fg);
+}
+.esr-owner[data-tone='d'] {
+  background: var(--av-d-bg);
+  color: var(--av-d-fg);
+}
+
+.esr-when {
+  white-space: nowrap;
+  flex: none;
+}
+
+/* The excerpt, isolated.
+ *
+ * `<bdi>` already carries `unicode-bidi: isolate` in the UA stylesheet; it is
+ * repeated here because this is the one declaration in the file that must not be
+ * lost to a refactor. `docs/14 §7`: an excerpt is a window cut from the middle
+ * of a document, so an unterminated U+202E arrives open and would otherwise
+ * reverse the rest of this row and every row beneath it. */
+.esr-excerpt {
+  unicode-bidi: isolate;
+  display: block;
+  inline-size: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.esr-no-excerpt {
+  color: var(--fg2);
+  font-style: italic;
+}
+
+.esr-match {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--fg);
+  border-radius: 2px;
+  padding-inline: 1px;
+  font-weight: 500;
+}
+
+/* ---------------------------------------------------- classification badge */
+
+/* The palette is locked (`docs/09 §16a`) and the recipe is
+ * `features/libraries/list/grouped-list.css`'s `.egl-classification`, copied
+ * exactly: a 11% tint and text mixed at **70%** against `--fg`. Not the
+ * prototype's 82%, which is 3.68:1 and fails WCAG AA — axe catches it. */
+.esr-classification {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  block-size: 18px;
+  padding-inline: 6px 7px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0;
+  white-space: nowrap;
+  flex: none;
+  background: color-mix(in srgb, var(--cc) 11%, transparent);
+  color: color-mix(in srgb, var(--cc) 70%, var(--fg));
+}
+
+.esr-classification::before {
+  content: '';
+  inline-size: 5px;
+  block-size: 5px;
+  border-radius: 50%;
+  background: var(--cc);
+  flex: none;
+}
+
+.esr-classification[data-level='public'] {
+  --cc: var(--c-pub);
+}
+.esr-classification[data-level='internal'] {
+  --cc: var(--c-int);
+}
+.esr-classification[data-level='confidential'] {
+  --cc: var(--c-conf);
+}
+.esr-classification[data-level='highlyConfidential'] {
+  --cc: var(--c-hconf);
+}
+.esr-classification[data-level='restricted'] {
+  --cc: var(--c-restr);
+}
+
+.esr-classification[data-level='unclassified'] {
+  background: transparent;
+  box-shadow: var(--hairline);
+  color: var(--fg2);
+}
+
+.esr-classification[data-level='unclassified']::before {
+  display: none;
+}
+
+/* ------------------------------------------------------------- four states */
+
+.esr-loading {
+  flex: 1;
+  min-block-size: 0;
+  overflow: hidden;
+  padding-inline: 8px;
+}
+
+.esr-skeleton {
+  block-size: 10px;
+  border-radius: 4px;
+  background: linear-gradient(90deg, var(--sunken) 25%, var(--g150) 50%, var(--sunken) 75%);
+  background-size: 200% 100%;
+  animation: esr-shimmer 1.4s linear infinite;
+}
+
+.esr-skeleton-icon {
+  inline-size: 16px;
+  block-size: 16px;
+  border-radius: 4px;
+  flex: none;
+}
+
+@keyframes esr-shimmer {
+  to {
+    background-position: -200% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .esr-skeleton {
+    animation: none;
+  }
+}
+
+.esr-state {
+  flex: 1;
+  min-block-size: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding-inline: 32px;
+  text-align: center;
+  background: var(--sheet);
+}
+
+/* The mark's own construction at rest: a bounded field with a window inside it.
+ * Drawn from tokens, not shipped as a raster — an empty state that carries an
+ * image is an empty state nobody re-themes. */
+.esr-state-figure {
+  inline-size: 44px;
+  block-size: 44px;
+  border-radius: 11px;
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+  position: relative;
+  margin-block-end: 4px;
+  color: var(--fg4);
+}
+
+.esr-state-figure::after {
+  content: '';
+  position: absolute;
+  inset-block-start: 13.75px;
+  inset-inline-start: 13.75px;
+  inline-size: 22px;
+  block-size: 22px;
+  border-radius: 0 5.5px 5.5px 5.5px;
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+}
+
+:dir(rtl) .esr-state-figure::after {
+  border-radius: 5.5px 0 5.5px 5.5px;
+}
+
+.esr-state[data-tone='error'] .esr-state-figure,
+.esr-state[data-tone='error'] .esr-state-figure::after {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 34%, transparent);
+}
+
+.esr-state-title {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  margin: 0;
+  max-inline-size: 46ch;
+}
+
+.esr-state-body {
+  color: var(--fg2);
+  font-size: 12.5px;
+  max-inline-size: 52ch;
+  margin: 0;
+}
+
+.esr-state-filters {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+  margin: 2px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.esr-state-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-block-start: 6px;
+}
+
+.esr-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  block-size: 28px;
+  padding-inline: 10px;
+  border-radius: var(--r-ctrl);
+  border: 0;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  background: var(--sheet);
+  color: var(--fg);
+  box-shadow: var(--hairline);
+  white-space: nowrap;
+  letter-spacing: -0.006em;
+  transition:
+    transform 120ms cubic-bezier(0.32, 0.72, 0, 1),
+    background-color 120ms ease;
+}
+
+.esr-btn:hover {
+  background: var(--sunken);
+}
+
+.esr-btn:active {
+  transform: translateY(1px);
+}
+
+.esr-btn[data-variant='primary'] {
+  background: var(--accent);
+  /* `--on-accent`, not `#fff`: all three dark accents are light and white on
+   * #8B85FF is 3.04:1 (`tokens.css`). */
+  color: var(--on-accent);
+  box-shadow: none;
+}
+
+.esr-btn[data-variant='primary']:hover {
+  filter: brightness(1.08);
+}
+
+.esr-request-id {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-block-start: 12px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--fg2);
+}
+
+.esr-request-id code {
+  background: var(--sunken);
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: var(--fg2);
+  /* An opaque token, not prose: it must not reorder next to an RTL interface. */
+  unicode-bidi: isolate;
+  direction: ltr;
+}
+
+/* -------------------------------------------------------------------- foot */
+
+.esr-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  box-shadow: inset 0 1px 0 var(--line);
+  color: var(--fg2);
+  font-size: 11.5px;
+  flex: none;
+}
+
+.esr-foot span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.esr-foot-end {
+  margin-inline-start: auto;
+}
+
+/* `docs/09 §16`: mobile is functional, not vestigial, and search is named as one
+ * of the flows that must work on a phone. Below the tablet breakpoint the meta
+ * line loses the path — the workspace and the date are what disambiguate two
+ * files with the same name — and the location moves under the title. */
+@media (max-width: 720px) {
+  .esr-path,
+  .esr-ownername {
+    display: none;
+  }
+
+  .esr-notice-body {
+    max-inline-size: none;
+  }
+}
