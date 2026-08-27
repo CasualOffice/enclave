@@ -107,6 +107,34 @@ const COMMITTED_STATUS: VersionStatus = VersionStatus::Scanning;
 /// The antivirus verdict every freshly committed version is written with.
 const COMMITTED_AV_STATUS: AvStatus = AvStatus::Pending;
 
+/// The value [`NewVersion::storage_profile_id`] carries when the deployment has no profile to name.
+///
+/// # Why a constant and not a lookup
+///
+/// `file_versions.storage_profile_id` is `NOT NULL` (`migrations/0006`) and carries **no foreign
+/// key**, because the table it would reference does not exist: `docs/04-DATA-MODEL.md §4` describes
+/// `storage_profiles` and no migration creates it. `ENC-573` closed the other half of the same gap
+/// by deleting the `storage.profile` configuration key that named a row in it, and `docs/08 §15`
+/// now models a single deployment-wide `storage.s3` block instead. So at the moment a version is
+/// committed there is exactly one object store, it has no row, and there is nothing to look up.
+///
+/// The two alternatives were both worse:
+///
+/// * **Copy `libraries.storage_profile_id`.** That column is nullable, unenforced, and points at
+///   the same absent table — it is a dangling reference an operator can set to any UUID at all. It
+///   would make this column mean "whatever that library was configured with" for some rows and
+///   "the deployment default" for others, and the migration that eventually backfills real
+///   profiles would have no way to tell the two apart.
+/// * **Mint a fresh UUID per version.** Every row would then name a distinct profile that does not
+///   exist, which is unrecoverable rather than merely unresolved.
+///
+/// The nil UUID is chosen precisely because it can never collide with a generated
+/// [`enclave_core::Uuid`], so the backfill this is waiting for is one `WHERE storage_profile_id =
+/// '00000000-0000-0000-0000-000000000000'` statement. It means *"the one store this deployment is
+/// configured with"*, and it is honest about the fact that nothing has provisioned a profile — the
+/// direction `CLAUDE.md`'s working style asks a placeholder to be wrong in.
+pub const UNPROVISIONED_STORAGE_PROFILE: Uuid = Uuid::nil();
+
 /// The content of a new version: bytes that are already in object storage, described.
 ///
 /// Blob storage cannot join a SQL transaction (`docs/03-LLD.md §15`), so the bytes are staged and
@@ -114,6 +142,21 @@ const COMMITTED_AV_STATUS: AvStatus = AvStatus::Pending;
 /// already exists; nothing in this crate writes to object storage.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewVersion {
+    /// The id this version will carry.
+    ///
+    /// Supplied rather than minted inside the commit, for the reason [`NewVersion::object_key`] is
+    /// supplied: on the upload path the key **already names it**.
+    /// `enclave_uploads::StagedObject` allocates a [`VersionId`] when the session is created and
+    /// stages the bytes to `tenant/{t}/files/{f}/versions/{v}` (`docs/02-HLD.md §7`), precisely so
+    /// that a commit is an `INSERT` and not a copy. A row minted with a different id leaves an
+    /// object in the bucket whose path names a version that `SELECT … WHERE id = …` cannot find —
+    /// which is the same class of untruth `ENC-691` was, one layer down, and one an operator meets
+    /// while debugging rather than in a test.
+    ///
+    /// A caller with no key to honour passes [`VersionId::new_v7`]. A duplicate is a primary-key
+    /// violation and fails the transaction; it is not a case a caller can reach by accident,
+    /// because the only source of a *reserved* id is a session that can be completed once.
+    pub id: VersionId,
     /// The file this becomes a version of.
     pub file_id: FileId,
     /// The promoted object's key. Globally unique by `uq_version_object`.
@@ -257,6 +300,9 @@ impl VersionService {
         }
 
         let new = NewVersion {
+            // A restore's bytes are a fresh copy under a key the caller invented, so there is no
+            // reserved id to honour and nothing that could name one.
+            id: VersionId::new_v7(),
             file_id: request.file_id,
             object_key: request.object_key.clone(),
             // Copied from the source rather than taken from the caller: the restored version *is*
@@ -288,7 +334,7 @@ impl VersionService {
         restored_from: Option<VersionId>,
     ) -> Result<CommittedVersion> {
         let tenant = ctx.tenant_id;
-        let id = VersionId::new_v7();
+        let id = new.id;
 
         // 1. The file. First, for the row lock — see the module documentation. Also the existence
         //    check: the foreign key would catch a missing file, but not one that is in the trash,
@@ -605,6 +651,24 @@ mod tests {
         assert!(!BUMP_FILE.contains("'AVAILABLE'"));
     }
 
+    /// The placeholder profile has to stay findable, because a backfill is what ends it.
+    ///
+    /// Nil rather than a generated UUID: `Uuid::new_v7` and `Uuid::new_v4` can never produce it —
+    /// both set a version nibble — so a row carrying this value cannot be confused with a row that
+    /// names a real profile, and `WHERE storage_profile_id = <nil>` selects exactly the rows the
+    /// migration has to rewrite. A per-version UUID would be unrecoverable instead of merely
+    /// unresolved.
+    #[test]
+    fn the_unprovisioned_storage_profile_is_a_value_a_backfill_can_find() {
+        assert_eq!(UNPROVISIONED_STORAGE_PROFILE, Uuid::nil());
+        assert_ne!(UNPROVISIONED_STORAGE_PROFILE, Uuid::new_v4());
+        assert_ne!(UNPROVISIONED_STORAGE_PROFILE, Uuid::now_v7());
+        assert_eq!(
+            UNPROVISIONED_STORAGE_PROFILE.to_string(),
+            "00000000-0000-0000-0000-000000000000"
+        );
+    }
+
     #[test]
     fn a_trashed_file_cannot_receive_a_version() {
         assert!(BUMP_FILE.contains("deleted_at IS NULL"));
@@ -616,6 +680,40 @@ mod tests {
         // optimistic-concurrency key every mutation checks (`docs/03-LLD.md §14`).
         assert!(BUMP_FILE.contains("revision           = revision + 1"));
         assert!(BUMP_FILE.contains("RETURNING revision"));
+    }
+
+    /// The id in the row is the caller's, and nothing in `write` may mint one.
+    ///
+    /// Behaviourally invisible — a version numbered `1.0` with a different id looks identical from
+    /// every query that does not already know the id — so it is asserted against the source, the
+    /// way the charge's position is. What it protects is the upload path: the bytes are already at
+    /// `…/versions/{v}` and the key cannot be rewritten without copying them, so a `new_v7()` here
+    /// puts an object in the bucket whose path names a row that does not exist. `restore` mints one
+    /// deliberately, and is the only place that may.
+    #[test]
+    fn the_committed_version_carries_the_id_its_caller_chose() {
+        let source = include_str!("commit.rs");
+        let body = source.split("async fn write(").nth(1).expect("write exists");
+        let body = body.split("async fn charge(").next().expect("write has an end");
+        let mint = format!("VersionId::{}()", "new_v7");
+
+        assert!(
+            body.contains("let id = new.id;"),
+            "`write` no longer takes the version id from its caller"
+        );
+        assert!(
+            !body.contains(mint.as_str()),
+            "`write` mints a version id of its own. The upload path stages bytes under a key that \
+             already names the version, so a minted id leaves an object whose path resolves to \
+             nothing (ENC-691)"
+        );
+        // The positive control: a restore has no reserved id and must still mint one, so the
+        // absence above is about `write` rather than about a crate that has stopped minting ids.
+        assert!(
+            source.contains(mint.as_str()),
+            "nothing in this module mints a version id any more, so the assertion above holds \
+             vacuously"
+        );
     }
 
     #[test]

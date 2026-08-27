@@ -66,7 +66,11 @@
 //!
 //! **`storage_profile_id` is a bare `Uuid`.** `enclave_core::id` has no `StorageProfileId` newtype,
 //! and defining one here would collide with the real one the day the storage crate defines it.
-//! `crates/libraries` and `crates/workspaces` carry the same column the same way.
+//! `crates/libraries` and `crates/workspaces` carry the same column the same way. It has no
+//! foreign key either, because `docs/04 §4`'s `storage_profiles` table is not created by any
+//! migration — a caller with no profile to name passes
+//! [`UNPROVISIONED_STORAGE_PROFILE`](commit::UNPROVISIONED_STORAGE_PROFILE), which documents the
+//! absence and is greppable by the backfill that will end it (`ENC-573`, `ENC-691`).
 //!
 //! **`docs/04-DATA-MODEL.md §8` does not spell out foreign keys for `upload_sessions` and
 //! `file_locks`.** Migration 0006 adds them, because §3.3 requires composite keys including
@@ -80,7 +84,9 @@ pub mod repo;
 
 mod row;
 
-pub use commit::{CommittedVersion, NewVersion, RestoreVersion, VersionService};
+pub use commit::{
+    CommittedVersion, NewVersion, RestoreVersion, VersionService, UNPROVISIONED_STORAGE_PROFILE,
+};
 pub use error::{classify_write, Result, VersionsError};
 pub use model::{
     ApprovalState, AvScan, AvStatus, FileVersion, VersionBump, VersionNumber, VersionStatus,

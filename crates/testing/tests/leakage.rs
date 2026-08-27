@@ -1030,6 +1030,7 @@ async fn commit_version(
     created_by: UserId,
 ) -> VersionId {
     let new = NewVersion {
+        id: VersionId::new_v7(),
         file_id: file,
         // Globally unique by `uq_version_object`, so it cannot be a constant.
         object_key: format!("{}/{}", ctx.tenant_id, Uuid::now_v7()),

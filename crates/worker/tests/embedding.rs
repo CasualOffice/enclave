@@ -262,6 +262,7 @@ async fn a_committed_document(
     }
 
     let new = NewVersion {
+        id: VersionId::new_v7(),
         file_id: spine.file,
         object_key: format!("{tenant}/{}", Uuid::now_v7()),
         storage_profile_id: Uuid::now_v7(),

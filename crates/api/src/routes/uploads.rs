@@ -17,9 +17,11 @@
 //! [`enclave_core::Actor`] — and it is safe only because the ENC-110 routing lint proves the caller
 //! ran `PolicyEngine::enforce` first.
 //!
-//! Nothing in this module reads a quota, writes a version row, or moves a state the service does
-//! not move for it. That is not modesty; each of those has a single owner elsewhere and a second
-//! one here would be a second answer.
+//! Nothing in this module reads a quota, computes a version number, decides a version's status or
+//! writes a row a domain crate could write for it. [`promote`] calls two crates and adds nothing:
+//! `enclave_files` inserts the node, `enclave_versions` charges the quota, numbers the version and
+//! writes it. That is not modesty; each of those has a single owner elsewhere and a second one here
+//! would be a second answer.
 //!
 //! # Rule 9, and where it is actually kept
 //!
@@ -35,21 +37,38 @@
 //! spelling of a readable state appears in this module at all — because the first half only holds
 //! while the wire value keeps coming from the type.
 //!
-//! # Where a completed upload goes next, which is nowhere yet
+//! # Where a completed upload goes next
 //!
 //! `ENC-691`. [`enclave_uploads::ScanHandoff`] is described by its own crate as *the entire
 //! interface between an accepted upload and everything that has to happen before anyone can read
-//! it*, and **no crate consumes one**. `crates/worker`'s antivirus pass queues on
-//! `file_versions.av_status`, and a completed session has no version row; the reaper's
-//! `holds_staged_bytes` excludes `SCANNING`, so it will not collect the session either.
+//! it*, and until this row closed **no crate consumed one**. A completed session left a row in
+//! `SCANNING`, no `files` row and no `file_versions` row — so `crates/worker`'s antivirus pass,
+//! which queues on `file_versions.av_status`, had nothing to find, and the reaper's
+//! `holds_staged_bytes` excludes `SCANNING`, so the staged bytes were never released either. The
+//! response named a `fileId` and a `versionId` for rows that did not exist.
 //!
-//! [`complete`] therefore reports the identifiers the staged key already carries and stops. It does
-//! **not** commit the version, and that is a decision rather than an omission:
-//! `enclave_versions::VersionService::commit` needs a `files` row that does not exist for a
-//! new-file upload, and a `storage_profile_id` for which `ENC-573` established there is no table
-//! and therefore no honest source at the HTTP edge. Committing from here would also mean this
-//! handler owning the quota charge (`ENC-589`) and the index enqueue (`ENC-643`) that live inside
-//! that call — which is exactly the duplication that must not happen.
+//! [`promote`] is the consumer. It takes the handoff **by value**, so the `#[must_use]` that made
+//! dropping one visible is now a move: the completion path has no branch that can hold a handoff
+//! and not commit it. It creates the `files` row when the upload creates a file, and then calls
+//! [`enclave_versions::VersionService::commit`], which owns the quota charge (`ENC-589`), the
+//! index manifest (`ENC-643`), the outbox row and the audit row. Nothing of that is re-implemented
+//! here; this module decides and delegates, as every other handler in it does.
+//!
+//! **One transaction, and the session's state is inside it.** [`UploadService::complete`]'s write
+//! to `SCANNING`, the `files` insert and everything `VersionService::commit` does share the
+//! transaction [`complete`] opened. A session that says `SCANNING` while no version exists is the
+//! stranded state this row is about, and putting the two writes in one transaction is what makes
+//! it unrepresentable rather than merely unlikely. A refused *commit* — no quota headroom, a name
+//! already taken — therefore rolls the session back to the state it was in, which is retryable;
+//! a refused *completion* is still persisted as `FAILED`, because wrong bytes are not retryable.
+//!
+//! The two blockers recorded on `ENC-691` were both answerable. A new-file upload has no `files`
+//! row because nothing had ever created one — [`enclave_files::NewFile`] now carries the id, which
+//! it must, since `enclave_uploads::StagedObject` spent that id staging the bytes. And
+//! `storage_profile_id` has no source because `ENC-573` established there is no
+//! `storage_profiles` table: the honest value is
+//! [`enclave_versions::UNPROVISIONED_STORAGE_PROFILE`], which says so and stays findable by the
+//! backfill that will end it.
 
 use core::str::FromStr as _;
 use std::sync::Arc;
@@ -60,15 +79,21 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse as _, Response};
 use axum::{Extension, Json};
 use chrono::{DateTime, Duration, Utc};
+use enclave_audit::ChainMode;
 use enclave_core::{
-    Action, Actor, ContainerAction, Error, FileAction, FileId, LibraryId, ReasonCode,
+    Action, Actor, ContainerAction, Error, FieldError, FileAction, FileId, LibraryId, ReasonCode,
     RequestContext, RequestId, ResourceKind, ResourceRef, TenantId, UserId, ValidationCode,
 };
+use enclave_db::TenantScoped;
+use enclave_files::{FileRepository, NewFile, Parent};
 use enclave_libraries::LibraryRepository;
 use enclave_storage::{BlobStore, CompletedPart, UploadTarget};
 use enclave_uploads::{
-    Completion, IssuedUpload, LoadedSession, NewUpload, ReportedContent, UploadIntent,
+    Completion, IssuedUpload, LoadedSession, NewUpload, ReportedContent, ScanHandoff, UploadIntent,
     UploadLimits, UploadService, UploadSessionId,
+};
+use enclave_versions::{
+    CommittedVersion, NewVersion, VersionBump, VersionService, UNPROVISIONED_STORAGE_PROFILE,
 };
 use serde::{Deserialize, Serialize};
 
@@ -97,6 +122,16 @@ const SESSION_TTL: Duration = Duration::hours(24);
 /// deployment that has configured nothing still accepts exactly the upload the product claims to
 /// support and refuses the one it does not.
 const TENANT_DEFAULT_MAX_FILE_BYTES: u64 = 5 * 1024 * 1024 * 1024;
+
+/// What a version records when the client declared no media type.
+///
+/// `files.mime_type` and `file_versions.mime_type` are both `NOT NULL`, and `mimeType` on
+/// `POST /uploads` is optional and advisory — nothing renders from it and nothing trusts it. RFC
+/// 2046 §4.5.1 makes this the value for *"unrecognised subtype of unrecognised type"*, which is
+/// exactly the state of knowledge at commit: the bytes went from the client to the object store and
+/// this process has never seen one of them. The content pipeline is what determines the real type
+/// (`ENC-132`), and guessing from the file name here would produce a value a reader would trust.
+const UNDECLARED_MIME_TYPE: &str = "application/octet-stream";
 
 // ---------------------------------------------------------------------------------------------
 // Wire types
@@ -224,14 +259,15 @@ pub struct CompleteUploadRequest {
 #[serde(rename_all = "camelCase")]
 struct HandedOffView {
     upload_id: String,
-    /// The file the content belongs to — the existing one for a new version, and the id the staged
-    /// key reserved for a new file.
+    /// The file the content belongs to — the existing one for a new version, and the one this
+    /// request created for a new file.
     file_id: String,
-    /// The version identifier the staged object carries.
+    /// The version this upload became.
     ///
-    /// Reserved when the session was created (`enclave_uploads::StagedObject`), which is what lets
-    /// the bytes be staged straight to the key the version will keep. **No `file_versions` row
-    /// exists yet** — see the module documentation and `ENC-691`.
+    /// Both identifiers are read off the committed row rather than off the staged key. They are the
+    /// same values — the key reserved them when the session was created
+    /// (`enclave_uploads::StagedObject`) — but reading them from the row is what makes the response
+    /// a statement about rows that exist. `ENC-691` was precisely a `202` naming two that did not.
     version_id: String,
     /// Always `SCANNING`, and rendered from the session's phase rather than written here.
     state: &'static str,
@@ -386,15 +422,17 @@ pub async fn progress(
 /// Handles `POST /api/v1/uploads/{id}/complete`.
 ///
 /// Verifies the size and SHA-256 against the declaration *and* against what the object store
-/// observed, then advances the session to `SCANNING` and answers `202`. See the module
-/// documentation for rule 9, and for why no version row is written here.
+/// observed, advances the session to `SCANNING`, commits the version behind it, and answers `202`.
+/// See the module documentation for rule 9 and for what [`promote`] does inside this transaction.
 ///
 /// # Errors
 ///
 /// [`ApiError`]: `404` for an unknown session or an unauthorized target; `400` naming `sizeBytes`
 /// or `sha256` when verification fails, which is a *persisted* refusal — the session is `FAILED`
 /// and retrying it cannot succeed; `409` when the session has moved on, or another request
-/// completed it first.
+/// completed it first; `400` naming `name` when a live sibling already holds it; `403`
+/// `QUOTA_EXCEEDED` when the tenant has no room for the bytes it has just staged. The last two
+/// roll the whole transaction back, session state included, so the client may retry.
 pub async fn complete(
     State(state): State<ApiState>,
     Extension(store): Extension<Arc<dyn BlobStore>>,
@@ -432,38 +470,152 @@ pub async fn complete(
             .await
             .map_err(|error| ApiError::new(error.into(), request_id))?;
 
-    // Committed on both arms. A refusal is a *persisted* outcome — the staged bytes are wrong and
-    // this session can never succeed — so rolling it back would invite the client to retry a
-    // completion that cannot work (`enclave_uploads::Completion`).
-    tx.commit().await.map_err(|error| ApiError::new(error.into(), request_id))?;
-
     match completion {
         Completion::Refused { session: _, reason } => {
+            // Committed, not rolled back. A refusal is a *persisted* outcome — the staged bytes are
+            // wrong and this session can never succeed — so rolling it back would invite the client
+            // to retry a completion that cannot work (`enclave_uploads::Completion`).
+            tx.commit().await.map_err(|error| ApiError::new(error.into(), request_id))?;
             Err(ApiError::new(reason.to_error(), request_id))
         }
         Completion::HandedOff { session, handoff } => {
-            // The handoff is `#[must_use]` because dropping it drops the only record that a scan is
-            // owed. It is consumed here for the identifiers the response carries; that nothing
-            // downstream consumes one is `ENC-691` rather than something this handler can fix, and
-            // the log line says so where an operator will meet it.
+            // The handoff is moved in. `#[must_use]` made dropping one visible; a move makes it
+            // impossible — there is no arm of this match that can hold a handoff and answer `202`
+            // without a version behind it, which is what `ENC-691` was.
+            let committed = match promote(&mut tx, &ctx, *handoff, now).await {
+                Ok(committed) => committed,
+                Err(error) => {
+                    // Everything this request wrote goes, the session's `SCANNING` included. A row
+                    // that says the bytes are being scanned while nothing exists to scan them is
+                    // the stranded state; a rollback leaves the session exactly where the client
+                    // can retry it from.
+                    let _rolled_back = tx.rollback().await;
+                    return Err(error);
+                }
+            };
+
+            tx.commit().await.map_err(|error| ApiError::new(error.into(), request_id))?;
+
             tracing::info!(
                 tenant_id = %ctx.tenant_id,
-                upload_session_id = %handoff.session_id,
-                file_id = %handoff.staged.file(),
-                version_id = %handoff.staged.version(),
-                "upload verified and handed off; no consumer commits the version yet (ENC-691)"
+                upload_session_id = %session.id(),
+                file_id = %committed.version.file_id,
+                version_id = %committed.version.id,
+                version = %committed.version.number,
+                "upload committed as a version, awaiting antivirus"
             );
 
             let body = HandedOffView {
                 upload_id: session.id().to_string(),
-                file_id: handoff.staged.file().to_string(),
-                version_id: handoff.staged.version().to_string(),
+                // From the committed row rather than from the staged key: these two identifiers
+                // are a promise that the rows exist, and reading them off the key is how the
+                // response came to name rows that did not.
+                file_id: committed.version.file_id.to_string(),
+                version_id: committed.version.id.to_string(),
                 // From the session's phase, never a literal. See the module documentation.
                 state: session.state().as_str(),
             };
             Ok((StatusCode::ACCEPTED, Json(body)).into_response())
         }
     }
+}
+
+/// Turns an accepted upload into a file version, in the caller's transaction.
+///
+/// # What it does, and what it refuses to do
+///
+/// Two calls, both to crates that own what they do:
+///
+/// 1. **The `files` row**, when the upload creates a file rather than versioning one. It carries
+///    [`enclave_uploads::StagedObject::file`] — the id the session spent when it staged the bytes
+///    under `tenant/{t}/files/{f}/versions/{v}` — because a node minted with any other id would
+///    leave the object key naming a file that does not exist. `enclave_files` writes it
+///    non-readable; nothing here chooses that status and nothing here could change it.
+/// 2. **The version**, through [`VersionService::commit`], which is a single transaction covering
+///    the quota charge, the version insert, the outbox row, the index manifest and the audit row.
+///    None of those is repeated here. The version is written `SCANNING`/`PENDING` by constants
+///    inside that function that take no argument, so rule 9 is not a comparison this function
+///    could get wrong.
+///
+/// # The two values that are decisions
+///
+/// `bump` is [`VersionBump::Major`], so the first version of a new file is `1.0` and each upload
+/// afterwards is the next published version. `libraries.versioning_mode` is the column that should
+/// eventually decide this and is read by nothing in the workspace (`ENC-784`); until it is,
+/// `Major` is the reading `docs/04 §7`'s default mode gives, and the alternative — minor bumps —
+/// would file every upload as a draft of a version nobody published.
+///
+/// `mime_type` falls back to [`UNDECLARED_MIME_TYPE`] because the column is `NOT NULL` while the
+/// client's declaration is optional and advisory. Sniffing belongs to the content pipeline, not to
+/// a transaction that has never seen the bytes.
+///
+/// # Errors
+///
+/// [`ApiError`]: `400` naming `name` when a live sibling already holds it, or `parentId` when the
+/// folder has gone; `403` `QUOTA_EXCEEDED` with the limit when the tenant has no room; `404` when
+/// the file being versioned was trashed or removed between the session and now; `409` when a
+/// concurrent commit took the version number. Every one of them leaves the caller's transaction
+/// for the caller to roll back.
+async fn promote(
+    tx: &mut TenantScoped,
+    ctx: &RequestContext,
+    handoff: ScanHandoff,
+    at: DateTime<Utc>,
+) -> Result<CommittedVersion, ApiError> {
+    let request_id = ctx.request_id;
+    let file_id = handoff.staged.file();
+    let mime_type = handoff.mime_type.clone().unwrap_or_else(|| UNDECLARED_MIME_TYPE.to_owned());
+
+    if handoff.existing_file_id.is_none() {
+        let parent = match handoff.parent_id {
+            Some(folder) => Parent::Folder(folder),
+            None => Parent::Library(handoff.library_id),
+        };
+        let node = NewFile {
+            id: file_id,
+            parent,
+            name: handoff.name.clone(),
+            mime_type: mime_type.clone(),
+            created_by: handoff.created_by,
+        };
+        FileRepository::create_file(tx, ctx.tenant_id, &node, at)
+            .await
+            .map_err(|error| ApiError::new(error.into(), request_id))?;
+    }
+
+    // The store's observation, not the client's declaration — `VerifiedContent` cannot be built
+    // without the two agreeing, and this is the number the quota is charged for.
+    let size_bytes = i64::try_from(handoff.content.size_bytes()).map_err(|_error| {
+        ApiError::new(
+            Error::Validation(vec![FieldError::new("sizeBytes", ValidationCode::OutOfRange)]),
+            request_id,
+        )
+    })?;
+
+    let new = NewVersion {
+        // Both ids come off the staged key rather than being minted here, because the bytes are
+        // already at `tenant/{t}/files/{f}/versions/{v}` and that path is not rewritable without
+        // copying them. A version whose row id differed from the one in its own object key would
+        // leave an operator's `WHERE id = …` answering nothing for an object that plainly exists.
+        id: handoff.staged.version(),
+        file_id,
+        // The staged key *is* the version key. Nothing is copied on commit; see
+        // `enclave_uploads::staged` for why, and for the 5 GB limit that settled it.
+        object_key: handoff.staged.as_str().to_owned(),
+        storage_profile_id: UNPROVISIONED_STORAGE_PROFILE,
+        size_bytes,
+        checksum_sha256: handoff.content.sha256_hex().to_owned(),
+        mime_type,
+        bump: VersionBump::Major,
+        created_by: handoff.created_by,
+        // `docs/05-API.md §8`'s completion body carries no check-in comment field, so there is
+        // nothing to record and a fabricated one would be words no user typed.
+        comment: None,
+    };
+
+    VersionService::commit(tx, ctx, ChainMode::Enabled, &new, at)
+        .await
+        .map_err(|error| ApiError::new(error.into(), request_id))
 }
 
 /// Handles `DELETE /api/v1/uploads/{id}` — abort and release the staged bytes.
@@ -820,6 +972,83 @@ mod tests {
         );
     }
 
+    /// Rule 9's *third* half, which `ENC-691` added: this module now writes a version row, and it
+    /// must still be unable to say what state that row is in.
+    ///
+    /// `VersionService::commit` picks the status and the antivirus verdict from two constants that
+    /// take no argument, so `SCANNING`/`PENDING` is a property of that statement. The way that could
+    /// be undone from here is a second write beside the commit — an `UPDATE file_versions`, a
+    /// `VersionStatus` this module chose, an `AvStatus` it converted. None of those names may
+    /// appear, and none of them does.
+    ///
+    /// Needles assembled at run time, for `the_completion_response_cannot_name_a_readable_state`'s
+    /// reason.
+    #[test]
+    fn nothing_here_can_choose_a_version_status_or_write_a_version_row_itself() {
+        let source = include_str!("uploads.rs");
+        let handlers = source.split("mod tests {").next().expect("the module has a body");
+
+        for needle in [
+            format!("{}Status::", "Version"),
+            format!("{}Status::", "Av"),
+            format!("UPDATE {}", "file_versions"),
+            format!("INSERT INTO {}", "file_versions"),
+            format!("{}::query", "sqlx"),
+        ] {
+            assert!(
+                !handlers.contains(&needle),
+                "`{needle}` appears in the upload routes. The version's status and its antivirus \
+                 verdict are decided by constants inside `VersionService::commit`, which take no \
+                 argument precisely so no caller can pass one (CLAUDE.md rule 9); and this module \
+                 runs no statement of its own (rule 1)."
+            );
+        }
+
+        // The positive control: the commit that owns those constants is still called from here.
+        // Without it the absences above hold of a handler that has stopped committing anything,
+        // which is the defect `ENC-691` was (`docs/12 §1.2`).
+        assert!(
+            handlers.contains("VersionService::commit("),
+            "the completion path no longer commits a version, so asserting that it does not choose \
+             a status proves nothing at all"
+        );
+    }
+
+    /// `ENC-691` in one assertion: the handoff is **moved** into the commit, and the identifiers on
+    /// the wire come out of the row that commit returned.
+    ///
+    /// The bug was not that the handoff was ignored — `#[must_use]` was satisfied, because the
+    /// handler read `handoff.staged` for the two identifiers it put on the wire. That is exactly
+    /// what a `202` naming rows that do not exist looks like from inside. So both halves are
+    /// asserted: `promote` receives the handoff by value, and the response reads `committed`.
+    #[test]
+    fn the_handoff_is_moved_into_the_commit_and_the_response_names_the_row_it_produced() {
+        let source = include_str!("uploads.rs");
+        let handlers = source.split("mod tests {").next().expect("the module has a body");
+
+        assert!(
+            handlers.contains("promote(&mut tx, &ctx, *handoff, now)"),
+            "the handoff is no longer moved into `promote`. A handoff that is borrowed, or read \
+             field by field, can be satisfied without a version ever being committed — which is \
+             what `#[must_use]` allowed and what ENC-691 was"
+        );
+
+        for field in ["file_id: committed.version.file_id", "version_id: committed.version.id"] {
+            assert!(
+                handlers.contains(field),
+                "`{field}` is not what the completion response carries. Both identifiers must come \
+                 from the committed row: read off the staged key they are a promise about rows \
+                 nothing has written"
+            );
+        }
+
+        // And nothing reads them back off the key for the response, which is the shape of the bug.
+        assert!(
+            !handlers.contains("handoff.staged.file().to_string()"),
+            "the response is naming the file id from the staged key again"
+        );
+    }
+
     /// The two intents are two separately deniable questions, and this is the table that says so.
     ///
     /// A regression that collapsed them would most likely do it in the permissive direction —
@@ -945,5 +1174,8 @@ mod tests {
         // M1's fifth exit criterion is 5 GB, and a library that configures no ceiling must not
         // refuse the upload the product claims to support.
         assert_eq!(TENANT_DEFAULT_MAX_FILE_BYTES, 5 * 1024 * 1024 * 1024);
+        // RFC 2046 §4.5.1. The one thing it must not be is a guess derived from the file name: a
+        // version whose recorded type came from an extension is a value a reader would trust.
+        assert_eq!(UNDECLARED_MIME_TYPE, "application/octet-stream");
     }
 }
