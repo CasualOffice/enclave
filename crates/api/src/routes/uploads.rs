@@ -71,6 +71,7 @@
 //! backfill that will end it.
 
 use core::str::FromStr as _;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use axum::body::Bytes;
@@ -213,8 +214,8 @@ struct IssuedUploadView {
     /// `ENC-821` is this fact learned the hard way for `content-type`, which was signed, documented
     /// nowhere, and cost the first client two attempts to diagnose as a `403`; `content-type`
     /// therefore appears here too rather than only in a paragraph of `docs/05-API.md`.
-    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    required_headers: std::collections::BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    required_headers: BTreeMap<String, String>,
     /// Every part in order, for `MULTIPART`.
     #[serde(skip_serializing_if = "Option::is_none")]
     urls: Option<Vec<PartView>>,
@@ -901,6 +902,15 @@ fn unreadable_body() -> Envelope {
     })])
 }
 
+/// The store's required headers, as the wire carries them.
+///
+/// A named function rather than an inline `collect` so that "this map is copied from the store and
+/// nothing is added to it" is a single testable statement. Every value here was signed into the
+/// URL; a value invented at this layer would not be, and the `PUT` would fail the signature check.
+fn header_map(headers: Vec<enclave_storage::RequiredHeader>) -> BTreeMap<String, String> {
+    headers.into_iter().map(|header| (header.name, header.value)).collect()
+}
+
 /// Renders an issued session onto the wire.
 fn view_of(issued: IssuedUpload) -> IssuedUploadView {
     let expires_at = issued.session.record().expires_at;
@@ -911,10 +921,7 @@ fn view_of(issued: IssuedUpload) -> IssuedUploadView {
             upload_id,
             method: "SINGLE",
             upload_url: Some(url.to_string()),
-            required_headers: required_headers
-                .into_iter()
-                .map(|header| (header.name, header.value))
-                .collect(),
+            required_headers: header_map(required_headers),
             urls: None,
             part_size: None,
             urls_expire_at: issued.urls_expire_at,
@@ -943,7 +950,7 @@ fn view_of(issued: IssuedUpload) -> IssuedUploadView {
                 // digest, and a store that cannot confirm one for an upload this size refuses
                 // before a URL exists. Left as an empty map rather than as an error arm because
                 // this function renders whatever the store issued and decides nothing.
-                required_headers: std::collections::BTreeMap::new(),
+                required_headers: BTreeMap::new(),
                 urls: Some(urls),
                 part_size,
                 urls_expire_at: issued.urls_expire_at,
@@ -1175,18 +1182,85 @@ mod tests {
 
     #[test]
     fn a_body_is_decoded_strictly_and_in_camel_case() {
-        let body = r#"{"libraryId":"01937fa0-0000-7000-8000-000000000001",
-                       "name":"Quarterly Plan.pdf","sizeBytes":64,"mimeType":"application/pdf"}"#;
-        let request: CreateUploadRequest = serde_json::from_str(body).expect("a well-formed body");
+        let digest = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        let body = format!(
+            r#"{{"libraryId":"01937fa0-0000-7000-8000-000000000001",
+                 "name":"Quarterly Plan.pdf","sizeBytes":64,"mimeType":"application/pdf",
+                 "sha256":"{digest}"}}"#
+        );
+        let request: CreateUploadRequest = serde_json::from_str(&body).expect("a well-formed body");
         assert_eq!(request.name, "Quarterly Plan.pdf");
         assert_eq!(request.size_bytes, 64);
+        assert_eq!(request.sha256, digest);
         assert!(request.file_id.is_none(), "no fileId means the upload creates a file");
 
         // `ENC-615`: a field this release does not know is refused rather than ignored, so a caller
         // cannot come to believe a setting applied.
-        let unknown = r#"{"libraryId":"01937fa0-0000-7000-8000-000000000001","name":"a.pdf",
-                          "sizeBytes":1,"overwrite":true}"#;
-        assert!(serde_json::from_str::<CreateUploadRequest>(unknown).is_err());
+        let unknown = format!(
+            r#"{{"libraryId":"01937fa0-0000-7000-8000-000000000001","name":"a.pdf",
+                 "sizeBytes":1,"sha256":"{digest}","overwrite":true}}"#
+        );
+        assert!(serde_json::from_str::<CreateUploadRequest>(&unknown).is_err());
+    }
+
+    /// `ENC-820`: a body with no `sha256` is refused at the decoder.
+    ///
+    /// The field carries no `#[serde(default)]`, so this is a property of the type rather than of a
+    /// check somebody could delete — an upload started without a digest is one the object store has
+    /// nothing to verify the body against, and `complete` would then be comparing the client's word
+    /// with itself.
+    #[test]
+    fn an_upload_cannot_be_started_without_a_digest_for_the_store_to_verify() {
+        let without = r#"{"libraryId":"01937fa0-0000-7000-8000-000000000001",
+                          "name":"a.pdf","sizeBytes":1}"#;
+        assert!(
+            serde_json::from_str::<CreateUploadRequest>(without).is_err(),
+            "an upload with no declared digest was accepted; nothing would verify what it stores"
+        );
+
+        // The positive control: the same body *with* a digest parses, so the refusal above is about
+        // the missing field and not about a decoder that rejects everything.
+        let with = r#"{"libraryId":"01937fa0-0000-7000-8000-000000000001","name":"a.pdf",
+                       "sizeBytes":1,
+                       "sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}"#;
+        assert!(serde_json::from_str::<CreateUploadRequest>(with).is_ok());
+    }
+
+    /// The headers the client must send are copied from what the store said it signed, and nothing
+    /// is invented beside them.
+    ///
+    /// A pre-signed URL commits to its `X-Amz-SignedHeaders`, so a response that omitted one leaves
+    /// the client with a URL it cannot use — `ENC-821` for `content-type` — and one that *invented*
+    /// a value would be worse: `x-amz-checksum-sha256` is what makes the provider verify the body,
+    /// and a digest this layer made up is not the digest that was signed.
+    ///
+    /// That the map reaches the wire at all is asserted end to end in `tests/uploads.rs`, against
+    /// the real router; this is only the mapping.
+    #[test]
+    fn the_required_headers_on_the_wire_are_the_ones_the_store_signed() {
+        let headers = header_map(vec![
+            enclave_storage::RequiredHeader {
+                name: "content-type".to_owned(),
+                value: "application/pdf".to_owned(),
+            },
+            enclave_storage::RequiredHeader {
+                name: "x-amz-checksum-sha256".to_owned(),
+                value: "47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=".to_owned(),
+            },
+        ]);
+
+        assert_eq!(
+            headers.get("x-amz-checksum-sha256").map(String::as_str),
+            Some("47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU="),
+            "the digest header the provider will verify against is not on the wire, so a client \
+             cannot send it and every PUT fails the signature check"
+        );
+        assert_eq!(headers.get("content-type").map(String::as_str), Some("application/pdf"));
+        assert_eq!(headers.len(), 2, "nothing was invented beside them");
+        assert!(
+            header_map(Vec::new()).is_empty(),
+            "and none is fabricated when the store sent none"
+        );
     }
 
     #[test]

@@ -530,13 +530,17 @@ mod tests {
     use crate::content::ReportedContent;
 
     const DIGEST_HEX: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    /// The same digest as an object store reports it. Not `None`: since `ENC-820` a
+    /// [`VerifiedContent`] cannot be built at all unless the provider computed the digest itself,
+    /// so a fixture that reported none would have no verified content to walk the states with.
+    const DIGEST_B64: &str = "47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=";
 
     fn verified(record: &SessionRecord, size: u64) -> VerifiedContent {
         let observed = ObjectMeta {
             key: record.staged.key().clone(),
             size_bytes: size,
             etag: None,
-            checksum_sha256: None,
+            checksum_sha256: Some(DIGEST_B64.to_owned()),
             content_type: None,
             last_modified: None,
             provider_version_id: None,

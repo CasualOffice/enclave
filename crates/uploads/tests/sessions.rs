@@ -200,10 +200,11 @@ impl BlobStore for RecordingStore {
             etag: Some("etag".to_owned()),
             // A real provider echoes the digest it was given once the body has matched it; an
             // override is how a test asks for the disagreeing case.
-            checksum_sha256: state
-                .reported_checksum
-                .clone()
-                .or_else(|| state.requested_checksum.clone()),
+            checksum_sha256: if state.unverifiable {
+                None
+            } else {
+                state.reported_checksum.clone().or_else(|| state.requested_checksum.clone())
+            },
             content_type: None,
             last_modified: Some(Utc::now()),
             provider_version_id: None,
