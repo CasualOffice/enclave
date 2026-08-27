@@ -668,23 +668,6 @@ jobs:
           --health-timeout 5s
           --health-retries 10
 
-      minio:
-        image: bitnami/minio:latest
-        env:
-          MINIO_ROOT_USER: enclave
-          MINIO_ROOT_PASSWORD: enclave-dev-secret
-          # The bucket `storage.s3.bucket` names. Created by the image at start-up, because
-          # `connect_and_verify` refuses a bucket that does not exist and would take the whole job
-          # down with an error about credentials rather than about a missing bucket.
-          MINIO_DEFAULT_BUCKETS: enclave-content
-        ports:
-          - 9000:9000
-        options: >-
-          --health-cmd "curl -sf http://localhost:9000/minio/health/live"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 20
-
     env:
       DATABASE_URL: postgres://enclave:enclave@localhost:5432/enclave
 
@@ -760,6 +743,23 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+
+      minio:
+        image: bitnami/minio:latest
+        env:
+          MINIO_ROOT_USER: enclave
+          MINIO_ROOT_PASSWORD: enclave-dev-secret
+          # The bucket `storage.s3.bucket` names. Created by the image at start-up, because
+          # `connect_and_verify` refuses a bucket that does not exist and would take the whole job
+          # down with an error about credentials rather than about a missing bucket.
+          MINIO_DEFAULT_BUCKETS: enclave-content
+        ports:
+          - 9000:9000
+        options: >-
+          --health-cmd "curl -sf http://localhost:9000/minio/health/live"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
 
     env:
       # The harness creates a throwaway database per test binary from this one, so it must point at
