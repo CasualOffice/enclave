@@ -315,16 +315,14 @@ const SPECS: &[Spec] = &[
             r#"{"libraryId":"{lib}","name":"smoke.txt","sizeBytes":11,"mimeType":"text/plain"}"#,
         ),
         credential: Credential::Bearer,
-        expect: Expect::Unreachable {
-            status: 500,
-            tracker: "ENC-770",
-            why:
-                "`crates/api/src/main.rs` composes `Delivery::unconfigured()` unconditionally and \
-                  never reads the `storage:` section of enclave.yaml, so the handler asks an \
-                  `UnconfiguredBlobStore` to stage a part and is told `no object storage is \
-                  configured`. The whole write path is dead in the shipped binary, and it answers \
-                  `500 INTERNAL` rather than a refusal that names the cause",
-        },
+        // Was `Expect::Unreachable { status: 500, tracker: "ENC-770" }` — the binary bound
+        // `Delivery::unconfigured()` unconditionally and never read the `storage:` section, so the
+        // whole write path answered `500 INTERNAL` on a fully specified S3 deployment. `080c689`
+        // composes the real store from `storage.s3`, and this probe now answers `201` with a signed
+        // `PutObject` URL. The quarantine's own instruction was to delete the entry when the wiring
+        // was fixed rather than keep asserting a status that had stopped being true, and this is
+        // that deletion — the entry did exactly what a quarantine is for.
+        expect: Expect::Served,
     },
     Spec {
         method: "POST",
@@ -1017,8 +1015,20 @@ impl Server {
             // 2am.
             .env("REDIS_URL", "redis://127.0.0.1:6379")
             .env("NATS_URL", "nats://127.0.0.1:4222")
-            .env("S3_ACCESS_KEY_ID", "reachability")
-            .env("S3_SECRET_ACCESS_KEY", "reachability")
+            // **Inherited, not invented** (`ENC-796`). These were the literals `"reachability"`,
+            // which was correct while `main.rs` bound `Delivery::unconfigured()` and never touched
+            // object storage. `ENC-770` made it compose the real store from `storage.s3` *and*
+            // self-check the bucket at start-up, so the binary now refuses to start with
+            // `InvalidAccessKeyId` and this test fails before it reads a single route — which is
+            // the right behaviour from `main.rs` and a stale fixture here.
+            //
+            // Taking them from the test process's own environment is what keeps
+            // `Server::start`'s promise above true: the recipe in `README.md` §"Running the server"
+            // and the one exercised here are now literally the same two variables. No value is
+            // written down (`CLAUDE.md` rule 11); an unset variable falls back to a placeholder,
+            // which fails loudly at start-up with the log attached rather than silently.
+            .env("S3_ACCESS_KEY_ID", inherited("S3_ACCESS_KEY_ID"))
+            .env("S3_SECRET_ACCESS_KEY", inherited("S3_SECRET_ACCESS_KEY"))
             .env("RUST_LOG", "info")
             .stdout(log.try_clone().expect("clone the log handle"))
             .stderr(log)
@@ -1061,6 +1071,16 @@ impl Drop for Server {
         let _ignored = self.child.wait();
         let _ignored = std::fs::remove_dir_all(&self.directory);
     }
+}
+
+/// One environment variable, passed through to the child, or a placeholder that will fail loudly.
+///
+/// The placeholder is deliberately not a plausible credential: if the variable is unset, the child
+/// refuses to start and `wait_until_ready` prints its log, which names the variable in the S3
+/// error. A default that happened to work on one machine would make the test's requirement
+/// invisible everywhere else.
+fn inherited(name: &str) -> String {
+    std::env::var(name).unwrap_or_else(|_| format!("unset-{name}"))
 }
 
 /// A port nothing is listening on, released immediately before the child is told to bind it.
