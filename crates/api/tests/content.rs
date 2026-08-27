@@ -270,7 +270,66 @@ struct Harness {
     authz: Arc<PgAclAuthorization>,
 }
 
+/// A preview pipeline that renders whatever it is handed.
+///
+/// It exists so that a served preview is a **`200` carrying bytes** rather than merely "not a
+/// `404`". `UnconfiguredPipeline` answers `503` for a readable version and `404` for an unreadable
+/// one, so an agreement test written against not-404 does pass with it — and it passes while
+/// nothing has ever rendered, which makes the interesting half of the assertion untested. Checked
+/// rather than assumed: composing the unconfigured pipeline here was tried, and the version of this
+/// test that only distinguished `404` from everything else went green against it.
+///
+/// Nothing here decides readability. The pipeline is only reached through
+/// `enclave_preview::ReadableVersion`, whose one constructor applies the predicate — so a stub that
+/// renders everything still cannot render an unscanned version, and rule 9 is what this test
+/// observes rather than something it has to arrange.
+#[derive(Debug)]
+struct AlwaysRenders;
+
+#[async_trait::async_trait]
+impl enclave_preview::PreviewPipeline for AlwaysRenders {
+    async fn deliver(
+        &self,
+        _conn: &mut sqlx::PgConnection,
+        _tenant: TenantId,
+        _version: &enclave_preview::ReadableVersion,
+        _profile: enclave_preview::RenditionProfile,
+        _now: DateTime<Utc>,
+    ) -> enclave_preview::Result<enclave_preview::Delivery> {
+        let canvas = image::RgbaImage::from_pixel(64, 64, image::Rgba([255, 255, 255, 255]));
+        let mut bytes = Vec::new();
+        image::DynamicImage::ImageRgba8(canvas)
+            .write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Png)
+            .expect("encode the stub rendition");
+        Ok(enclave_preview::Delivery::Available {
+            bytes,
+            media_type: "image/png".to_owned(),
+            page_count: Some(1),
+        })
+    }
+}
+
 async fn harness(db: &TestDb) -> Harness {
+    build(db, enclave_api::Delivery::unconfigured()).await
+}
+
+/// The same app with a pipeline that can actually answer, for the tests that compare this module's
+/// answers against a delivery route's.
+///
+/// The blob store stays unconfigured: the preview handler never touches one — the pipeline holds
+/// it — so composing a real store here would add a dependency the path under test does not have.
+async fn harness_that_renders(db: &TestDb) -> Harness {
+    build(
+        db,
+        enclave_api::Delivery {
+            store: Arc::new(enclave_storage::UnconfiguredBlobStore),
+            preview: Arc::new(AlwaysRenders),
+        },
+    )
+    .await
+}
+
+async fn build(db: &TestDb, delivery: enclave_api::Delivery) -> Harness {
     let key = PrivateSigningKey::generate(Utc::now()).expect("generate signing key");
 
     // Three pools rather than one. Each is deliberately tiny (`TestDb::pool` caps at two, so that
@@ -297,8 +356,27 @@ async fn harness(db: &TestDb) -> Harness {
 
     let state =
         ApiState::new(policy, state_pool, ISSUER, AUDIENCE, KeySet::new([key.public().clone()]));
-    // Listings and metadata reach no delivery path.
-    Harness { app: router(state, enclave_api::Delivery::unconfigured()), key, authz }
+    Harness { app: router(state, delivery), key, authz }
+}
+
+/// Issues one `GET` and returns only the status.
+///
+/// Separate from [`get`] because a preview answers PNG bytes, and parsing those as JSON panics —
+/// which would report a *successful* render as a test harness failure.
+async fn status_of(harness: &Harness, tenant: TenantId, user: UserId, uri: &str) -> StatusCode {
+    harness
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(uri)
+                .header("authorization", format!("Bearer {}", token(&harness.key, tenant, user)))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response")
+        .status()
 }
 
 /// Mints a real access token — signed, with the real claim set, verified by the real verifier.
@@ -1185,4 +1263,199 @@ fn urlencoding(value: &str) -> String {
         "a cursor grew a character that needs escaping: {value}"
     );
     value.to_owned()
+}
+
+// ---------------------------------------------------------------------------------------------
+// ENC-825 — the file response and the delivery routes must not disagree
+// ---------------------------------------------------------------------------------------------
+
+/// Every state a version can be in, as the `CHECK` constraints spell them.
+///
+/// Written out rather than derived from `VersionStatus::all()` so that the *test* names the
+/// vocabulary independently: a migration that added a status, and a Rust enumeration that grew a
+/// variant to match, would otherwise both change and this test would keep asserting over whatever
+/// the code happened to know about.
+const VERSION_STATES: [&str; 6] =
+    ["PENDING", "SCANNING", "PROCESSING", "AVAILABLE", "QUARANTINED", "FAILED"];
+const AV_STATES: [&str; 5] = ["PENDING", "CLEAN", "INFECTED", "SKIPPED", "ERROR"];
+
+/// **The assertion this pair of rows exists for** (`ENC-825`).
+///
+/// `GET /files/{id}` and `GET /files/{id}/preview` must agree, for every combination of `status`
+/// and `av_status`, about whether this file's content can be served. Before this change they did
+/// not: `currentVersion` carried `status` and nothing else, so `AVAILABLE`/`SKIPPED` — what a
+/// deployment with its antivirus engine disabled records (`ENC-828`) — was byte-for-byte identical
+/// on the wire to `AVAILABLE`/`CLEAN`, while the preview route answered `404` for the first and
+/// bytes for the second. A client had no way to tell them apart except by asking and being refused.
+///
+/// The cross-product rather than the two interesting cases, because the two interesting cases are
+/// only interesting *today*. Thirty combinations cost one request pair each and they pin the whole
+/// predicate, including the states — `SKIPPED`, `ERROR` and `PENDING` under an `AVAILABLE` status —
+/// where "published" and "scanned" come apart, and where every version of this bug has lived.
+///
+/// Two controls, because agreement between two endpoints is trivially satisfiable by both of them
+/// always saying no. The test asserts exactly how many combinations are served, and separately that
+/// `isReadable` is rule 9's predicate rather than merely *consistent* with whatever the preview
+/// route happens to do.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL; CI runs it with --include-ignored"]
+async fn the_file_response_and_the_preview_route_agree_about_every_version_state() {
+    let (db, fixtures, alpha, _beta) = setup().await;
+    let caller = fixtures.alpha.member;
+
+    let mut admin = db.connect().await.expect("admin connection");
+    // Preview is granted on the file, so a `404` from that route is never an authorization answer
+    // — it can only be rule 9. Without this the two endpoints would "agree" for the wrong reason.
+    grant(
+        &mut admin,
+        alpha.tenant,
+        "LIBRARY",
+        alpha.library.as_uuid(),
+        caller,
+        Action::File(FileAction::Preview),
+    )
+    .await;
+    let version = VersionId::new_v7();
+    insert_version(
+        &mut admin,
+        &alpha,
+        alpha.visible,
+        version,
+        1,
+        0,
+        "SCANNING",
+        "PENDING",
+        fixtures.alpha.owner,
+    )
+    .await;
+    set_current_version(&mut admin, alpha.visible, version).await;
+
+    let harness = harness_that_renders(&db).await;
+    let metadata = format!("/api/v1/files/{}", alpha.visible.as_uuid());
+    let preview = format!("/api/v1/files/{}/preview", alpha.visible.as_uuid());
+
+    let mut served = 0_usize;
+
+    for status in VERSION_STATES {
+        for av in AV_STATES {
+            sqlx::query("UPDATE file_versions SET status = $1, av_status = $2 WHERE id = $3")
+                .bind(status)
+                .bind(av)
+                .bind(version.as_uuid())
+                .execute(&mut admin)
+                .await
+                .expect("move the version");
+
+            let (code, body) = get(&harness, alpha.tenant, caller, &metadata).await;
+            assert_eq!(code, StatusCode::OK, "{status}/{av}");
+            let current = &body["currentVersion"];
+            assert_eq!(current["status"], status, "{status}/{av}: the wire lost the status");
+            assert_eq!(current["avStatus"], av, "{status}/{av}: the wire lost the verdict");
+            let claims_readable =
+                current["isReadable"].as_bool().expect("isReadable is a boolean on every response");
+
+            let answer = status_of(&harness, alpha.tenant, caller, &preview).await;
+            let would_serve = answer != StatusCode::NOT_FOUND;
+
+            // Not-404 is not good enough on its own: `503` is also not a `404`, and a delivery
+            // path that is simply broken would satisfy an agreement written that loosely. The
+            // route that gets past rule 9 must produce an actual rendition.
+            if would_serve {
+                assert_eq!(
+                    answer,
+                    StatusCode::OK,
+                    "{status}/{av}: the preview route got past rule 9 but did not serve — this                      test cannot tell 'agreed, and content flows' from 'agreed, and the delivery                      path is broken for everything'"
+                );
+            }
+
+            assert_eq!(
+                claims_readable, would_serve,
+                "{status}/{av}: GET /files/{{id}} says isReadable={claims_readable} and \
+                 GET /files/{{id}}/preview answered {answer}. The metadata endpoint and the \
+                 delivery route disagree about the same version, which is the whole of ENC-825 — a \
+                 client that believes the first draws a button the second refuses"
+            );
+
+            // The independent half. Agreement alone would still hold if both endpoints had adopted
+            // the *same wrong* rule, so `isReadable` is also checked against rule 9 as stated here,
+            // in the test, rather than against anything the code computes.
+            assert_eq!(
+                claims_readable,
+                status == "AVAILABLE" && av == "CLEAN",
+                "{status}/{av}: isReadable is not CLAUDE.md rule 9. AVAILABLE alone is not \
+                 servable — SKIPPED and ERROR are published-but-unscanned, and both delivery \
+                 routes refuse them"
+            );
+
+            if would_serve {
+                served += 1;
+            }
+        }
+    }
+
+    let _ignored = admin.close().await;
+
+    // The control. Without it the agreement above is satisfied by a preview route that is broken
+    // for every input and a metadata endpoint that reports nothing as readable — which is exactly
+    // what an `UnconfiguredPipeline` would have produced here, silently, forever.
+    assert_eq!(
+        served, 1,
+        "exactly one of the thirty combinations is servable — AVAILABLE/CLEAN — and if none is, \
+         this test agreed with itself about nothing"
+    );
+}
+
+/// The other endpoint's half (`ENC-826`): both describe a version in **one** shape.
+///
+/// `GET /uploads/{id}` renders the same type as `version`, so a client learns to read the object
+/// once. The upload path is driven end to end in `crates/api/tests/uploads.rs`; what is asserted
+/// here is the field set itself, because the way these two drift apart is somebody adding a field
+/// to one call site rather than to the type.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL; CI runs it with --include-ignored"]
+async fn the_upload_and_file_endpoints_describe_a_version_in_one_shape() {
+    let (db, fixtures, alpha, _beta) = setup().await;
+    let caller = fixtures.alpha.member;
+
+    let mut admin = db.connect().await.expect("admin connection");
+    let version = VersionId::new_v7();
+    insert_version(
+        &mut admin,
+        &alpha,
+        alpha.visible,
+        version,
+        1,
+        0,
+        "AVAILABLE",
+        "SKIPPED",
+        fixtures.alpha.owner,
+    )
+    .await;
+    set_current_version(&mut admin, alpha.visible, version).await;
+    let _ignored = admin.close().await;
+
+    let harness = harness(&db).await;
+    let (code, body) =
+        get(&harness, alpha.tenant, caller, &format!("/api/v1/files/{}", alpha.visible.as_uuid()))
+            .await;
+    assert_eq!(code, StatusCode::OK);
+
+    let current = body["currentVersion"].as_object().expect("currentVersion");
+    let mut fields: Vec<&str> = current.keys().map(String::as_str).collect();
+    fields.sort_unstable();
+    assert_eq!(
+        fields,
+        ["avStatus", "id", "isReadable", "major", "minor", "status"],
+        "the version object grew or lost a field. `GET /uploads/{{id}}` renders this same type as \
+         `version`, and the two are one shape on purpose (ENC-825, ENC-826)"
+    );
+
+    // And the state both rows were opened for: published, unscanned, not servable.
+    assert_eq!(current["status"], "AVAILABLE");
+    assert_eq!(current["avStatus"], "SKIPPED");
+    assert_eq!(
+        current["isReadable"], false,
+        "AVAILABLE without CLEAN is not readable, and reporting it as ready is what made a client \
+         draw a preview button over a 404"
+    );
 }

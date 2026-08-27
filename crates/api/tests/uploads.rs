@@ -1531,3 +1531,178 @@ async fn another_tenants_upload_session_is_indistinguishable_from_one_that_does_
     // Beta's session is untouched by everything alpha just tried.
     assert_eq!(stored_state(&db, &beta_session).await, "CREATED");
 }
+
+/// **`ENC-826`: the progress endpoint reports the end of an upload, not only its beginning.**
+///
+/// `GET /uploads/{id}` reported `SCANNING` from the moment `complete` returned until the session
+/// was reaped, because the session's phase machine ends there and everything afterwards happens to
+/// the *version*. A client polling the documented progress endpoint watched a file that had been
+/// published minutes earlier, and had no way from this response to reach the file at all: for a
+/// new-file upload `fileId` was never populated, so the only place it ever appeared was the
+/// `complete` response.
+///
+/// The session's own `state` is deliberately still `SCANNING` at every step below, and that is
+/// asserted rather than tolerated — it is a true, final statement about the session, and the fix
+/// was to name the version's state beside it rather than to overload one field across two rows
+/// with two owners and two lifetimes. See `ProgressView`'s documentation for why the antivirus pass
+/// does not write this column.
+///
+/// The version is moved by direct `UPDATE`, which is exactly what `crates/worker`'s antivirus pass
+/// does to it — this test is about what the *endpoint* reports for a given row, and composing the
+/// worker here would be testing the worker.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL; CI runs it with --include-ignored"]
+async fn progress_follows_the_version_after_the_session_has_stopped_moving() {
+    let (db, fixtures, pool, alpha_library, _beta) = setup().await;
+    let harness = harness(&db).await;
+    let alpha = fixtures.alpha.id;
+    set_quota(&pool, alpha, 1024 * 1024, Enforcement::Block).await;
+
+    let (status, issued) = call(
+        &harness,
+        alpha,
+        fixtures.alpha.member,
+        "POST",
+        "/api/v1/uploads",
+        Some(upload_body(alpha_library, "Quarterly Plan.pdf", 64)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{issued}");
+    let upload_id = issued["uploadId"].as_str().expect("uploadId").to_owned();
+
+    // Before the handoff there is no version, and the response must not invent one. The id is
+    // knowable from the staged key here — which is precisely why naming it would be a promise
+    // about a row nothing has written (`ENC-691`).
+    let (status, early) = call(
+        &harness,
+        alpha,
+        fixtures.alpha.member,
+        "GET",
+        &format!("/api/v1/uploads/{upload_id}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{early}");
+    assert_eq!(early["state"], "CREATED");
+    assert!(early.get("version").is_none(), "a version was reported before one was committed");
+    assert!(
+        early.get("fileId").is_none(),
+        "a fileId was reported for a file the commit has not created: {early}"
+    );
+
+    let (status, completed) = call(
+        &harness,
+        alpha,
+        fixtures.alpha.member,
+        "POST",
+        &format!("/api/v1/uploads/{upload_id}/complete"),
+        Some(serde_json::json!({ "sizeBytes": 64, "sha256": DIGEST_HEX })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{completed}");
+    let file_id = completed["fileId"].as_str().expect("fileId").to_owned();
+    let version_id = completed["versionId"].as_str().expect("versionId").to_owned();
+
+    // What the worker will do to this row, and what the endpoint must say at each step. The middle
+    // row is the one that matters: `AVAILABLE` is *published*, not *scanned*, and a client reading
+    // `status` alone would put a tick on a file both delivery routes refuse (`ENC-828`).
+    let steps: [(&str, &str, bool); 4] = [
+        ("SCANNING", "PENDING", false),
+        ("PROCESSING", "CLEAN", false),
+        ("AVAILABLE", "SKIPPED", false),
+        ("AVAILABLE", "CLEAN", true),
+    ];
+
+    let mut conn = db.connect().await.expect("admin connection");
+    for (status_value, av, readable) in steps {
+        sqlx::query("UPDATE file_versions SET status = $1, av_status = $2 WHERE id = $3::uuid")
+            .bind(status_value)
+            .bind(av)
+            .bind(&version_id)
+            .execute(&mut conn)
+            .await
+            .expect("move the version");
+
+        let (code, progress) = call(
+            &harness,
+            alpha,
+            fixtures.alpha.member,
+            "GET",
+            &format!("/api/v1/uploads/{upload_id}"),
+            None,
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK, "{progress}");
+
+        // The session has stopped moving, and says so honestly, at every step.
+        assert_eq!(
+            progress["state"], "SCANNING",
+            "the session's own state is terminal at SCANNING by construction; if this changed, \
+             something is writing `upload_sessions.state` after the handoff and the phase machine \
+             in `enclave_uploads::state` is no longer the only writer (CLAUDE.md rule 9)"
+        );
+
+        // And the version's state is what actually answers the client's question.
+        let version = &progress["version"];
+        assert_eq!(version["id"], version_id, "the progress view named a different version");
+        assert_eq!(version["status"], status_value);
+        assert_eq!(version["avStatus"], av);
+        assert_eq!(
+            version["isReadable"], readable,
+            "{status_value}/{av}: the upload progress endpoint disagrees with the predicate the \
+             delivery routes apply. This is the report a client polls to decide whether to show \
+             the file (ENC-826)"
+        );
+
+        // The way back to the file, which used to exist only in the `complete` response.
+        assert_eq!(
+            progress["fileId"], file_id,
+            "a client that lost the completion response has no route back to its own upload"
+        );
+    }
+
+    // The row this whole test exists for: `state` never changed, and the response did.
+    let (_, first) = call(
+        &harness,
+        alpha,
+        fixtures.alpha.member,
+        "GET",
+        &format!("/api/v1/uploads/{upload_id}"),
+        None,
+    )
+    .await;
+    assert_eq!(first["version"]["isReadable"], true);
+    assert_eq!(first["state"], "SCANNING");
+
+    // ---------------------------------------------------------------------------------------
+    // Cross-tenant, and **which layer this proves**
+    // ---------------------------------------------------------------------------------------
+    // This leg proves the **policy-chain layer**: `progress` runs `container.read` against the
+    // container the session lands in, and `authorize` renders an `ACCESS_DENIED` as `404`, so
+    // alpha's session is indistinguishable from one that never existed when beta asks for it.
+    //
+    // It does **not** prove the `tenant_id` predicate in any SQL statement — including the version
+    // lookup this row added. Row-level security holds that property on its own under the
+    // `enclave_app` role, so deleting a `tenant_id` from a `WHERE` clause leaves this test green.
+    // That has failed to fail nine times in this repository and it would fail to fail here too;
+    // saying so is the point, rather than implying a coverage this assertion does not have.
+    let (cross, body) = call(
+        &harness,
+        fixtures.beta.id,
+        fixtures.beta.member,
+        "GET",
+        &format!("/api/v1/uploads/{upload_id}"),
+        None,
+    )
+    .await;
+    assert_eq!(cross, StatusCode::NOT_FOUND, "{body}");
+    let rendered = body.to_string();
+    for leaked in [file_id.as_str(), version_id.as_str(), "isReadable", "avStatus"] {
+        assert!(
+            !rendered.contains(leaked),
+            "`{leaked}` reached another tenant through the refusal body: {rendered}"
+        );
+    }
+
+    drop(conn);
+}

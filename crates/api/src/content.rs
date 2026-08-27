@@ -102,6 +102,28 @@
 //! see that version 3.0 exists and was quarantined reports the file as silently corrupted. The
 //! listing is rows, not bytes; every content path goes back through
 //! `VersionRepository::find_readable`, which is where rule 9 lives.
+//!
+//! # Agreeing with the delivery routes about what is servable
+//!
+//! A metadata response and a delivery route must not disagree about the same version. Before
+//! `ENC-825` they did: `currentVersion` carried `{id, major, minor, status}`, and `status` is only
+//! *half* of rule 9's predicate. A deployment with its antivirus engine disabled records an
+//! admitted version `AVAILABLE` / `SKIPPED` (`ENC-828`), so this endpoint answered `AVAILABLE` —
+//! indistinguishable, field for field, from a version that previews — while
+//! `GET /files/{id}/preview` answered `404`. A correct client drew a button that could not work,
+//! and could only discover that by pressing it.
+//!
+//! [`VersionState`] closes it, and closes it *structurally* rather than by adding a field someone
+//! must remember to compute: `isReadable` is rendered from
+//! [`enclave_versions::FileVersion::is_readable`], which is the Rust twin of the
+//! [`enclave_versions::READABLE_PREDICATE`] the delivery routes' own query splices. The two cannot
+//! drift while both keep reading the one definition, which is why neither of them spells the rule
+//! out. `crates/api/tests/content.rs` asserts the agreement over the whole cross-product of
+//! `status` × `av_status` rather than over the two states that happen to be interesting today.
+//!
+//! Note what this does **not** change: nothing here decides readability, and no read path consults
+//! this struct. Rule 9 still lives in `VersionRepository::find_readable`. This module only reports
+//! the same answer that route will give, which is the whole of the fix.
 
 use axum::extract::{Path, Query, State};
 use axum::Json;
@@ -220,9 +242,11 @@ pub struct FileMetadata {
     parent_id: Option<String>,
     library_id: String,
     status: &'static str,
-    /// The version a read path would serve, or absent while the node has no servable content.
+    /// The version the file currently points at, or absent while the node has no version at all.
+    ///
+    /// Present is **not** the same as servable — `isReadable` on it is what says that (`ENC-825`).
     #[serde(skip_serializing_if = "Option::is_none")]
-    current_version: Option<CurrentVersion>,
+    current_version: Option<VersionState>,
     revision: i64,
     acl_revision: i64,
     /// What this caller may attempt, from the same engine that will enforce it.
@@ -233,14 +257,71 @@ pub struct FileMetadata {
     modified_at: chrono::DateTime<chrono::Utc>,
 }
 
-/// The pointer to the current version, as `docs/05-API.md §7` shapes it.
+/// The pointer to a version, as `docs/05-API.md §7` shapes it.
+///
+/// # Why `isReadable` is on the wire (`ENC-825`)
+///
+/// `status` alone cannot answer the only question a client actually has — *will the preview
+/// button work?* — because `AVAILABLE` does not mean servable. `CLAUDE.md` rule 9 is two
+/// conditions, and the delivery routes filter on both:
+/// [`enclave_versions::READABLE_PREDICATE`] is `status = 'AVAILABLE' AND av_status = 'CLEAN'`. A
+/// version admitted by a deployment whose antivirus engine is disabled is recorded `AVAILABLE` /
+/// `SKIPPED` (`docs/08-BYO-INFRA.md`, `ENC-828`), which is `AVAILABLE` and is *not* servable — so
+/// this response used to be byte-identical for a file that previews and one that answers `404`,
+/// and the only way to tell them apart was to try.
+///
+/// [`is_readable`](Self::is_readable) is therefore rendered from
+/// [`FileVersion::is_readable`](enclave_versions::FileVersion::is_readable) — the Rust twin of
+/// that predicate, and the *same* function the delivery routes' query is checked against — rather
+/// than recomputed here from `status` and `avStatus`. That identity is the point: a second
+/// implementation would be a second answer, and the two endpoints would drift the first time the
+/// predicate changed.
+///
+/// # Why `avStatus` is here too, and why it is not a leak
+///
+/// A boolean says *no* without saying *why*, and `docs/09-UX-WHITE-LABELING.md §8` requires
+/// truthful progress — `Uploading → Scanning → Processing → Indexing → Ready`, plus the
+/// `Quarantined` / `Failed` terminals. "Not readable" collapses six of those into one, so a client
+/// holding only the boolean can draw a spinner that never resolves and cannot tell it from a file
+/// that will never resolve. `status` and `avStatus` are what separate them.
+///
+/// It discloses nothing the caller has not already been told. Reaching this struct at all means
+/// the chain allowed `file.metadata_read` on the file, and `status` — which already carried
+/// `QUARANTINED`, the *most* sensitive of these values — has been on the wire since the endpoint
+/// existed. `CLAUDE.md` rule 7 is about existence, and existence was established before this field
+/// was rendered; a caller with no grant gets `404` and never sees the object at all. The one fact
+/// `avStatus` adds over `status` is whether this deployment's scanner ran, which is deployment
+/// configuration rather than anything about the file.
+///
+/// The same three fields appear on `VersionEntry` in the history listing and on `ProgressView` in
+/// `crate::routes::uploads`, from this one type. Sharing the type rather than the field names is
+/// what stops the three from drifting into shapes a client has to special-case — the argument the
+/// module documentation makes for [`Capabilities`], for the same reason.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct CurrentVersion {
+pub(crate) struct VersionState {
     id: String,
     major: i32,
     minor: i32,
     status: &'static str,
+    /// The antivirus verdict, so a client can say *why* rather than only *no*.
+    av_status: &'static str,
+    /// Whether a delivery route would serve this version. The predicate, not a paraphrase of it.
+    is_readable: bool,
+}
+
+impl From<&FileVersion> for VersionState {
+    fn from(version: &FileVersion) -> Self {
+        Self {
+            id: version.id.to_string(),
+            major: version.number.major,
+            minor: version.number.minor,
+            status: version.status.as_str(),
+            av_status: version.av.status.as_str(),
+            // Not `status == AVAILABLE && av == CLEAN` written out here. See the type's docs.
+            is_readable: version.is_readable(),
+        }
+    }
 }
 
 /// What the caller may do, one field per distinct exposure.
@@ -543,12 +624,7 @@ pub async fn file_metadata(
         parent_id: node.parent_id.map(|id| id.to_string()),
         library_id: node.library_id.to_string(),
         status: node.status.as_str(),
-        current_version: current.map(|version| CurrentVersion {
-            id: version.id.to_string(),
-            major: version.number.major,
-            minor: version.number.minor,
-            status: version.status.as_str(),
-        }),
+        current_version: current.as_ref().map(VersionState::from),
         revision: node.revision,
         acl_revision: node.acl_revision,
         capabilities,
@@ -1442,6 +1518,94 @@ mod tests {
             ["objectKey", "object_key", "storageProfileId", "encryptionKeyRef", "url", "signedUrl"]
         {
             assert!(!fields.contains_key(forbidden), "{forbidden} reached the wire");
+        }
+    }
+
+    /// `ENC-825`: the file response has to answer "will a preview work", and answer it in the
+    /// vocabulary `docs/09-UX-WHITE-LABELING.md §8` needs rather than as a bare boolean.
+    ///
+    /// A field-name assertion rather than a struct read, for the reason the test above gives: the
+    /// regression this guards against is somebody *removing* a field on the argument that `status`
+    /// already says enough — which is exactly the belief that made `AVAILABLE` / `SKIPPED`
+    /// indistinguishable from `AVAILABLE` / `CLEAN` on this endpoint.
+    #[test]
+    fn a_version_state_says_whether_a_delivery_route_would_serve_it_and_why() {
+        let state = VersionState {
+            id: "01937fa1-0000-7000-8000-000000000001".to_owned(),
+            major: 1,
+            minor: 0,
+            status: "AVAILABLE",
+            av_status: "SKIPPED",
+            is_readable: false,
+        };
+        let rendered = serde_json::to_value(&state).expect("serialize");
+        let fields = rendered.as_object().expect("object");
+
+        for required in ["status", "avStatus", "isReadable"] {
+            assert!(
+                fields.contains_key(required),
+                "`{required}` is gone from currentVersion. Without all three a client cannot tell \
+                 a file that is still being scanned from one that will never be servable, and \
+                 `status` alone reports this very version — AVAILABLE, SKIPPED, refused by every \
+                 delivery route — as though it were ready (ENC-825)"
+            );
+        }
+        // The state this row exists for: published, unscanned, and not servable.
+        assert_eq!(fields["status"], "AVAILABLE");
+        assert_eq!(fields["isReadable"], serde_json::Value::Bool(false));
+
+        // Rule 6 still holds of the new shape, not only of the history entry.
+        for forbidden in ["objectKey", "storageProfileId", "encryptionKeyRef", "url"] {
+            assert!(!fields.contains_key(forbidden), "{forbidden} reached the wire");
+        }
+    }
+
+    /// The half the assertion above cannot make: that `isReadable` is *the predicate*, not a
+    /// paraphrase of it.
+    ///
+    /// `FileVersion` is `#[non_exhaustive]`, so no test in this crate can build one and compare
+    /// the two answers directly — `crates/api/tests/content.rs` does that over real rows, across
+    /// the whole cross-product. What is checkable here is the thing that makes the cross-product
+    /// test stay true: both renderings call `is_readable()`, and neither writes rule 9 out.
+    ///
+    /// The needles are assembled at run time. `docs/12-TESTING.md §1.2`: a source-scanning test
+    /// whose needle appears in its own source fails against itself, and two tests in this
+    /// repository already have.
+    #[test]
+    fn readability_is_rendered_from_the_predicates_twin_and_never_recomputed_here() {
+        let source = include_str!("content.rs");
+        let all = source.split("mod tests {").next().expect("the module has a body");
+        // Comments are excluded, and deliberately: the documentation above *quotes* the predicate,
+        // which is how a reader learns what the code is refusing to restate. What must not exist
+        // is an executable copy.
+        let module: String = all
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        // Both places that put a readability answer on the wire read the one function.
+        assert_eq!(
+            module.matches("is_readable: version.is_readable()").count(),
+            2,
+            "`VersionState` and `VersionEntry` must both render readability from \
+             `FileVersion::is_readable` — the Rust twin of the predicate the delivery routes' \
+             query splices. A hand-written answer in either is a second implementation of rule 9, \
+             and the endpoints drift the first time the predicate moves"
+        );
+
+        // And rule 9 is not spelled out anywhere in this module, in either language.
+        for needle in [
+            format!("{}Status::Available", "Version"),
+            format!("{}Status::Clean", "Av"),
+            format!("status = '{}'", "AVAILABLE"),
+        ] {
+            assert!(
+                !module.contains(&needle),
+                "`{needle}` appears in this module. Whether a version may be served is decided in \
+                 `enclave_versions` and nowhere else (CLAUDE.md rule 9); a copy here is a copy \
+                 that can disagree with the route that actually refuses the request"
+            );
         }
     }
 }

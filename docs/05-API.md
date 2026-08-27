@@ -197,7 +197,10 @@ will reject:
   "mimeType": "application/pdf",
   "sizeBytes": 4210332,
   "classification": { "key": "CONFIDENTIAL", "label": "Confidential", "rank": 30 },
-  "currentVersion": { "id": "01937fa1-…", "major": 3, "minor": 0, "status": "AVAILABLE" },
+  "currentVersion": {
+    "id": "01937fa1-…", "major": 3, "minor": 0,
+    "status": "AVAILABLE", "avStatus": "CLEAN", "isReadable": true
+  },
   "revision": 12,
   "aclRevision": 4,
   "capabilities": {
@@ -211,6 +214,38 @@ will reject:
 
 `capabilities` is computed by the same policy engine that will enforce the action — it is a UI hint
 derived from the real decision, not a parallel implementation.
+
+**`currentVersion` says whether the content can actually be served, and why.** `status` alone cannot:
+`CLAUDE.md` rule 9 is *two* conditions, and a version is served only when `status` is `AVAILABLE`
+**and** `avStatus` is `CLEAN`. Those come apart in practice — a deployment whose antivirus engine is
+disabled records an admitted version `AVAILABLE` / `SKIPPED`, which is published and unscanned — so
+until `ENC-825` this object was byte-for-byte identical for a file that previews and a file for which
+every delivery route answers `404`.
+
+| Field | Meaning |
+|---|---|
+| `status` | Pipeline state: `PENDING`, `SCANNING`, `PROCESSING`, `AVAILABLE`, `QUARANTINED`, `FAILED` |
+| `avStatus` | Antivirus verdict: `PENDING`, `CLEAN`, `INFECTED`, `SKIPPED`, `ERROR` |
+| `isReadable` | Whether `GET /files/{id}/preview`, `POST /files/{id}/download` and every other content path would serve this version |
+
+- **`isReadable` is the field to branch on.** It is the server's own readable predicate, not a
+  restatement of it, and it is the contract that `isReadable: true` and a `404` from a delivery
+  route cannot both happen for the same version and caller. Never re-derive it from `status`:
+  `status === "AVAILABLE"` is the specific mistake this contract exists to prevent, because
+  `AVAILABLE` means *published*, not *scanned*.
+- **`status` and `avStatus` are for the message, not the decision.** They are what turns "not
+  readable" into `09-UX-WHITE-LABELING.md §8`'s ladder — `Scanning`, `Processing`, `Quarantined`,
+  `Failed` — instead of an unexplained spinner. `AVAILABLE` with an `avStatus` other than `CLEAN`
+  means no scanner has cleared these bytes and none will until one is configured; it is not a
+  transient state to keep polling.
+- **`currentVersion` present does not mean readable.** It is absent only when the file has no
+  version at all. A freshly completed upload has one immediately, and it is `SCANNING`.
+- Neither field is an enumeration oracle: reaching this object means the caller already passed
+  `file.metadata_read` on this file. A caller without that grant gets `404` and learns nothing
+  (`§5`, `CLAUDE.md` rule 7).
+
+The same object, with the same three fields, is what `GET /uploads/{id}` returns as `version`
+(`§8`). One shape, one meaning, so a client parses "is this content ready" once.
 
 ### 7.1 Navigation — workspaces and libraries
 
@@ -380,6 +415,9 @@ DELETE /api/v1/uploads/{id}                  → abort and release staged bytes
 - The API never proxies file bytes for large uploads; it issues scoped, short-lived signed URLs.
 - `POST /uploads` runs the full policy chain **before** issuing URLs, including quota and
   file-type checks, so a rejected upload never consumes bandwidth.
+- The pre-signed `PUT` covers `content-type`. Send exactly the `mimeType` declared at
+  `POST /uploads` or the store answers `403`, which reads as a permission failure and is a header
+  mismatch (`ENC-821`).
 - `complete` verifies size and SHA-256 against what was declared, then drives the state machine in
   `03-LLD.md §15`.
 - The response after `complete` is `202` with `state: "SCANNING"`. Clients poll or subscribe; a file
@@ -484,6 +522,74 @@ the bytes that were sent, so a value the store could not confirm is refused rath
 (`ENC-820`). It should be unreachable on a backend that honoured the signed checksum header; a
 BYO S3-compatible store that accepts the header and does not report the digest on `HeadObject` is
 what it catches.
+
+### 8.3 `GET /uploads/{id}` — progress, and how an upload ends
+
+```json
+{
+  "uploadId": "01937fc0-…",
+  "state": "SCANNING",
+  "libraryId": "01937fb1-…",
+  "fileId": "01937fa0-…",
+  "version": {
+    "id": "01937fa1-…", "major": 1, "minor": 0,
+    "status": "AVAILABLE", "avStatus": "CLEAN", "isReadable": true
+  },
+  "name": "FY26 Board Pack.pdf",
+  "declaredSize": 4210332,
+  "bytesReceived": 4210332,
+  "createdAt": "2026-08-28T09:12:00Z",
+  "updatedAt": "2026-08-28T09:12:31Z",
+  "expiresAt": "2026-08-29T09:12:00Z"
+}
+```
+
+**An upload is two rows, and this response reports both.** That is the whole of `ENC-826`, which is
+worth stating because the obvious reading of a single `state` field is wrong.
+
+- **`state` is the upload *session's* state** — `CREATED`, `UPLOADING`, `UPLOADED`, `SCANNING`, and
+  the terminal `ABORTED`, `EXPIRED`, `FAILED`. It is **terminal at `SCANNING`**: handing the staged
+  object to antivirus is the last transition the session makes, and everything after it happens to
+  the version. A client that polls `state` waiting for it to become "ready" waits forever, and did.
+- **`version` is what finishes the story.** It appears once `complete` has committed a version and
+  carries the same three fields as `currentVersion` on `GET /files/{id}` (`§7`), with the same
+  meanings. `isReadable` is the field to branch on; `status` and `avStatus` are what explain a
+  `false`.
+- **`fileId`** is the file this upload is for. For a new-version upload it is present from creation.
+  For a **new-file** upload the file does not exist until `complete` commits it, so `fileId` is
+  absent until then and appears alongside `version` — it is not a prediction. Both are absent, not
+  `null`.
+- `version` describes **this upload's** version, not whatever the file currently points at. A later
+  upload into the same file does not change what this session reports.
+
+Mapping to `09-UX-WHITE-LABELING.md §8`'s progress ladder:
+
+| Ladder rung | Condition |
+|---|---|
+| Queued / Uploading | `state` is `CREATED` or `UPLOADING` |
+| Scanning | `version` absent, or `version.status` is `PENDING` or `SCANNING` |
+| Processing · Indexing | `version.status` is `PROCESSING` |
+| **Ready** | `version.isReadable` is `true` — **and no other condition** |
+| Quarantined | `version.status` is `QUARANTINED` |
+| Failed | `state` is `FAILED`, or `version.status` is `FAILED` |
+| Aborted | `state` is `ABORTED` or `EXPIRED` |
+
+Two notes on that table. `Processing` and `Indexing` are one rung here because `file_versions.status`
+has one state covering both — text extraction, renditions and indexing all run under `PROCESSING`,
+and reporting a distinction the database does not record would be invention. And **`Ready` is
+`isReadable`, never `status === "AVAILABLE"`**: a version can be `AVAILABLE` with an `avStatus` of
+`SKIPPED` or `ERROR`, meaning published but never cleared by a scanner, and every delivery route
+answers `404` for it. That combination is a terminal state for the ladder's purposes, not a
+transient one to keep polling — it changes only when a scanning engine is configured and re-judges
+the version.
+
+The session's `state` is **not** advanced by the antivirus pass, deliberately. The version row owns
+the pipeline's state, `upload_sessions` is transient — reaped after `upload.session_ttl` — and a
+second writable copy of one fact is a copy that drifts. The response derives what it reports rather
+than reading a column somebody had to remember to write.
+
+`404` for a session in another tenant, a session that never existed, and a session whose target
+container this caller may not read — indistinguishable, as `§5` and `CLAUDE.md` rule 7 require.
 
 ## 9. Preview, download, export
 

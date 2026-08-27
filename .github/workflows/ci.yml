@@ -120,6 +120,16 @@ jobs:
       TEST_S3_ENDPOINT: http://localhost:9000
       TEST_S3_ACCESS_KEY_ID: enclave
       TEST_S3_SECRET_ACCESS_KEY: enclave-dev-secret
+      # The unprefixed pair, for `reachability.rs`, which runs in this job as well as its own and
+      # starts the real binary. It passes these to the child with `inherited(…)` rather than writing
+      # them into the generated `enclave.yaml`, because rule 11 refuses a literal credential in
+      # configuration — so an unset variable reaches the child as empty and `HeadBucket` fails
+      # signature verification. The bucket existed; the credentials did not.
+      #
+      # `TEST_S3_*` is the BlobStore suite's own prefix and cannot serve both: those tests read it
+      # directly, the binary reads `storage.s3.access_key_id: "env://S3_ACCESS_KEY_ID"`.
+      S3_ACCESS_KEY_ID: enclave
+      S3_SECRET_ACCESS_KEY: enclave-dev-secret
       # Debug info is the overwhelming majority of `target/`, and a hosted runner has ~14 GB free.
       # This workspace links one statically-linked test binary per test target — each carrying the
       # whole dependency graph, aws-lc-sys and ClamAV bindings included — and adding two more in
