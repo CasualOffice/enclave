@@ -144,7 +144,9 @@ places, and the fix is one shared type: `isReadable` rendered from the same pred
 query splices, so a metadata answer and a `404` from a delivery route can no longer both be true of
 one version. `ENC-828` is untouched and still open — this work makes that state *legible* rather
 than fixing it, which is the right order: a client can now say "published, never scanned" instead of
-showing a spinner. Three rows opened, none a P1: `ENC-845` (fixed here), `ENC-846`, `ENC-847`.
+showing a spinner. Four rows opened, none a P1: `ENC-845` (fixed here), `ENC-846`, `ENC-847`, and `ENC-848` — the client's
+two workarounds are now dead weight, and three of its comments assert server limitations that have
+stopped being true.
 
 `ENC-691` is `DONE` on `feat/enc-691-upload-becomes-version`, unmerged — **the first user journey now
 completes end to end**: sign in, upload, and the file is there as a `SCANNING` version the antivirus
@@ -555,6 +557,7 @@ tenant-scoped query → audit row — is demonstrated by `crates/api/tests/me.rs
 | ENC-845 | `docs/05-API.md`'s header carries **two `Version:` lines** from a merge | P2 | DONE | Found bumping the version for `ENC-825`. Lines 3 and 4 were `Version: 1.5` and `Version: 1.6`, both dated 2026-08-28, one above the other — an auto-resolver keeping both sides, the same shape as `ENC-797`'s conflict markers in `docs/12` and with the same consequence: the document's own version cannot be bumped honestly while there are two of them to bump. Repaired by keeping the later line and moving to 1.7. Logged rather than absorbed because it is evidence about *how* these documents are being merged, and one silent repair leaves the next reader thinking it happened once |
 | ENC-846 | `docs/05-API.md` has **no change-log section** to add a row to | P3 | TODO | `CLAUDE.md`'s documentation discipline says to "bump the doc's version line and add a change-log row when the change is substantive". `05` has a version line and has never had a change log, so half of that instruction has silently not applied to the most-edited document in `docs/`. `ENC-825` bumped the version and had nowhere to record what changed. Not invented here on purpose: a change-log table added mid-flight by one session, with one row, reads as though the document's history began today — and the honest version needs the earlier bumps reconstructed from git, which is a job rather than an aside. Worth checking which other documents in `docs/` are in the same state before writing one |
 | ENC-847 | The reachability suite fails without `S3_ACCESS_KEY_ID` in the environment, and says only that the server did not start | P3 | TODO | Hit running `cargo test --workspace` with only `DATABASE_URL` set, which is what `CLAUDE.md`'s "run before pushing" list implies is enough. `Server::start` inherits those two variables deliberately (`ENC-796`, so no credential is written down), the child then refuses to start because `storage.s3.access_key_id` is an unresolvable reference, and the test spends 60 seconds polling `/health/live` before failing. The failure message does print the child's log, which is what makes it diagnosable at all — but the 60-second wait plus a message about liveness reads as a flaky test rather than a missing variable. A pre-flight check that names the two variables before spawning would turn a minute into a sentence. Not this row's to fix; recorded because the next person will read it as a regression in whatever they were touching |
+| ENC-848 | The client's two workarounds for `ENC-825`/`ENC-826` are now dead weight, and three of its comments are false | P2 | TODO | Not fixed here: `web/**` was out of scope for the session that closed the server side, and a client change belongs with someone who can run the browser checks. Three things go stale the moment `ENC-825`/`ENC-826` merge. `entities/upload/store.ts` polls `GET /files/{id}/versions` and says in its own doc comment that it does so because `GET /uploads/{id}` "reports `SCANNING` and never changes" and `currentVersion` "carries no `isReadable`" — both now untrue, and the poll can move to `GET /uploads/{id}`, which is the endpoint that actually describes the upload and which now carries the `fileId` the store had to thread from the `complete` response. `features/libraries/peek/preview-tab.tsx` reads `versions` before asking for bytes for the same reason and can read `currentVersion.isReadable` from the detail it already has, removing a request per peek. `entities/upload/model.ts` carries the third comment. **The comments matter as much as the code**: each one explains a workaround by asserting a server limitation, and a false explanation of a correct workaround is how the next person concludes the workaround is still load-bearing. `CurrentVersion` in `entities/file/api-model.ts` is a `z.object`, not `z.strictObject`, so nothing breaks in the meantime — the new fields are stripped until the schema names them |
 | ENC-817a | Quarantined was rendering as merely unscanned | P2 | DONE | Found by driving the four real preview outcomes rather than by reading the code. A quarantined version on this stack also carries `avStatus: SKIPPED`, because the engine that refused it never inspected it — so testing `SKIPPED` before `status` gave the *softer* of the two sentences to the *more serious* of the two conditions. Status is now tested first |
 
 ## 4. Phase trackers
@@ -701,10 +704,10 @@ for work that does not exist is not.
 |---|---|---|---|---|---|---|
 | D — Specification | 2 | 17 | 4 | 0 | 20 | 3 |
 | 0 — Foundations | 2 | 13 | 4 | 0 | 19 | 0 |
-| 1 — MVP | 16 | 152 | 126 | 32 | 206 | 120 |
+| 1 — MVP | 16 | 152 | 127 | 32 | 206 | 121 |
 | 2 — Enterprise V1 | 1 | 17 | 2 | 0 | 0 | 20 |
 | 3 — Beyond V1 | 0 | 0 | 1 | 5 | 0 | 6 |
-| **Total** | **21** | **199** | **137** | **37** | **245** | **149** |
+| **Total** | **21** | **199** | **138** | **37** | **245** | **150** |
 
 Counts include completed items in their priority column. Update this table whenever a row's status or
 priority changes; a stale rollup is worse than none — this one read "Phase 1: 0 done" while
