@@ -46,8 +46,6 @@ pub(crate) enum Command {
     /// Check the database the way someone does when the stack "doesn't work". Read-only.
     Doctor,
 
-<<<<<<< HEAD
-=======
     /// Reclaim upload sessions stranded in `SCANNING` with no version behind them.
     ///
     /// The repair pass for `ENC-787`. A session left `SCANNING` by the pre-`ENC-691` completion
@@ -56,7 +54,6 @@ pub(crate) enum Command {
     /// staged object sits in the bucket, unmetered and unreadable, indefinitely.
     ReclaimUploads(ReclaimUploadsArgs),
 
->>>>>>> feat/enc-788-folders-and-reclaim
     /// Set an account's password, reading it from standard input.
     ///
     /// The command a deployment needs to get its first sign-in: `seed` writes users and nothing has
@@ -83,8 +80,6 @@ pub(crate) struct SetPasswordArgs {
     /// The account's email address. Normalised the way the login path normalises it.
     #[arg(long, value_name = "EMAIL")]
     pub(crate) email: String,
-<<<<<<< HEAD
-=======
 }
 
 /// Arguments for `reclaim-uploads`.
@@ -122,7 +117,6 @@ pub(crate) struct ReclaimUploadsArgs {
     /// the strong form of that: an operator can read the whole list before anything is destroyed.
     #[arg(long)]
     pub(crate) dry_run: bool,
->>>>>>> feat/enc-788-folders-and-reclaim
 }
 
 /// Arguments for `seed`.

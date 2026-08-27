@@ -481,6 +481,18 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # --------------------------------------------------------------------------
+  # Gate: no conflict markers — the cheapest gate here, and the one whose absence
+  # cost the most in a single day.
+  # --------------------------------------------------------------------------
+  no-conflict-markers:
+    name: 'RULE: no tracked file carries a merge-conflict marker'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: No unresolved conflict markers
+        run: python3 .github/scripts/no_conflict_markers.py
+
+  # --------------------------------------------------------------------------
   # Gate: no raw pool — enforceable today, purely static.
   # --------------------------------------------------------------------------
   no-raw-pool:
@@ -925,6 +937,7 @@ jobs:
     if: always()
     needs:
       - rls-coverage
+      - no-conflict-markers
       # Beside rls-coverage deliberately: the two are halves of one property. RLS says which rows a
       # role may see; grants say whether it can reach the table at all. PR #22 is what a schema
       # looks like with the first and not the second — fully green, and quietly bypassed because

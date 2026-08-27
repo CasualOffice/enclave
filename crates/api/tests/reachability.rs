@@ -306,8 +306,6 @@ const SPECS: &[Spec] = &[
         credential: Credential::Bearer,
         expect: Expect::Served,
     },
-<<<<<<< HEAD
-=======
     // Folder creation (docs/05-API.md §7, `ENC-788`). The name carries the fixture's `unknown`
     // uuid rather than a literal, because this table is probed against a database the smoke run
     // may re-enter: a fixed name would answer `201` on the first pass and `409 NAME_IN_USE` on the
@@ -322,7 +320,6 @@ const SPECS: &[Spec] = &[
         credential: Credential::Bearer,
         expect: Expect::Served,
     },
->>>>>>> feat/enc-788-folders-and-reclaim
     // Upload (docs/05-API.md §8).
     Spec {
         method: "POST",

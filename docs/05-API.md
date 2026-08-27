@@ -1,10 +1,7 @@
 # 05 — API Surface
 
-<<<<<<< HEAD
 > **Status:** Draft · **Version:** 1.5 · **Owner:** Platform Engineering · **Last updated:** 2026-08-28
-=======
 > **Status:** Draft · **Version:** 1.6 · **Owner:** Platform Engineering · **Last updated:** 2026-08-28
->>>>>>> feat/enc-788-folders-and-reclaim
 > **Authoritative for:** REST contracts, error model, pagination, idempotency, versioning, rate limits.
 
 ## 1. Principles
@@ -305,8 +302,6 @@ Rules, each of which the implementation is held to by a test:
   where a client learns which bucket content lands in), and the fourth describes the shape of the ACL
   rather than the caller's position in it, which `capabilities` already answers.
 
-<<<<<<< HEAD
-=======
 ### 7.2 Creating a folder
 
 `POST /libraries/{libraryId}/folders` appears in `§7`'s table above as four words — "Create folder" —
@@ -373,7 +368,6 @@ Rules, each of which the implementation is held to by a test:
   a folder is a node of the file tree (`04-DATA-MODEL.md §8`). There is no `/folders/{id}` resource.
   Listing a folder's children is `GET /libraries/{id}/items?parentId=`.
 
->>>>>>> feat/enc-788-folders-and-reclaim
 ## 8. Upload
 
 ```text
