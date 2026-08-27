@@ -37,6 +37,9 @@ enclave-testing = { workspace = true }
 # The integration tests stand a recording `BlobStore` up in place of MinIO; the trait is
 # `#[async_trait]`, so implementing it needs the same attribute.
 async-trait = { workspace = true }
+# The recording store echoes the digest it was asked to verify, the way a real provider does once
+# the header is signed into the URL — which means converting hex to base64 as the S3 store does.
+base64 = { workspace = true }
 tokio = { workspace = true }
 
 [lints]

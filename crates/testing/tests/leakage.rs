@@ -1219,7 +1219,11 @@ fn upload(
         name: name.to_owned(),
         declared_size,
         declared_mime: Some("application/pdf".to_owned()),
-        declared_sha256: None,
+        // Required since `ENC-820`: the digest is what the object store is made to verify the body
+        // against, so a session cannot be created without one. The value is a well-formed
+        // lowercase-hex SHA-256 and nothing here uploads bytes for it to describe.
+        declared_sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            .to_owned(),
         created_by,
     }
 }
@@ -1304,6 +1308,7 @@ impl BlobStore for RecordingStore {
             content_length: request.content_length,
             target: UploadTarget::Single {
                 url: Url::parse("https://store.invalid/put").expect("url"),
+                required_headers: Vec::new(),
             },
             expires_at: Utc::now() + Duration::minutes(15),
             completed_parts: Vec::new(),

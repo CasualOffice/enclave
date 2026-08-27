@@ -27,15 +27,27 @@
 //!
 //! # The checksum the provider did not compute
 //!
-//! S3-compatible backends only return `x-amz-checksum-sha256` for objects uploaded with a checksum
-//! header. When the provider has no digest of its own, the reported one is *unconfirmed*: nothing
-//! has yet compared it against the bytes. That is recorded in [`ChecksumEvidence`] rather than
-//! quietly treated as verified, and it is carried through to the antivirus stage — which streams
-//! every byte anyway and is therefore the cheapest honest place to confirm it.
+//! S3-compatible backends only return `x-amz-checksum-sha256` for objects uploaded *with* a
+//! checksum header, so whether there is a provider digest to compare against is decided long before
+//! this module runs — at `POST /uploads`, where
+//! [`BlobStore::create_upload`](enclave_storage::BlobStore::create_upload) signs the header into the
+//! URL and thereby obliges the client to send it.
+//!
+//! When the provider has no digest of its own anyway, [`VerifiedContent::verify`] **refuses**
+//! ([`FailureReason::ChecksumUnconfirmed`]). It used to record the client's value and mark it
+//! unconfirmed with a `ChecksumEvidence` enum that nothing outside this module read except one log
+//! field — which is `ENC-820`: a client could declare a digest of all zeroes over a real object and
+//! get `202`, with the zeroes persisted on an immutable column that a later integrity check reads as
+//! evidence. A digest nobody verified is worse than an absent one, because absent reads as unknown
+//! and stored reads as proof.
+//!
+//! So there is no longer any evidence level to carry. [`VerifiedContent`] exists **only** when the
+//! object store computed the digest itself and it matched, and that is now a fact about the type
+//! rather than a field on it.
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
-use enclave_core::{Error as CoreError, FieldError, ValidationCode};
+use enclave_core::{Dependency, Error as CoreError, FieldError, ValidationCode};
 use enclave_storage::ObjectMeta;
 
 /// The number of hex characters in a SHA-256.
@@ -54,29 +66,6 @@ pub struct ReportedContent {
     pub size_bytes: u64,
     /// Lowercase hex SHA-256 the client says the object has.
     pub sha256_hex: String,
-}
-
-/// Who computed the checksum that is about to be recorded.
-///
-/// Not cosmetic. A version row's `checksum_sha256` is immutable once written
-/// (`plans/M1-CONTENT-CORE.md` D12), so recording a digest nobody verified would make an unchecked
-/// client claim permanent. Carrying the distinction lets the antivirus stage — which reads every
-/// byte regardless — confirm the ones that arrived unconfirmed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ChecksumEvidence {
-    /// The object store computed a SHA-256 and it matched what the client reported.
-    ProviderConfirmed,
-    /// The provider computed no digest. The value is the client's, and is not yet evidence of
-    /// anything.
-    ClientDeclared,
-}
-
-impl ChecksumEvidence {
-    /// Whether something other than the client has attested to this digest.
-    #[must_use]
-    pub const fn is_confirmed(&self) -> bool {
-        matches!(self, Self::ProviderConfirmed)
-    }
 }
 
 /// Why a completion was refused.
@@ -100,6 +89,21 @@ pub enum FailureReason {
     #[error("the stored object's SHA-256 is not the one the client reported")]
     ChecksumMismatch,
 
+    /// The object store holds no SHA-256 of its own, so nothing has checked the reported one.
+    ///
+    /// Not reachable through a session this crate created against a store that honoured
+    /// `UploadRequest::checksum_sha256` — the header is signed into the pre-signed URL, so a `PUT`
+    /// that omitted it never succeeded. What it catches is the deployment where that stopped being
+    /// true: a BYO S3-compatible backend that accepts the header and does not report the digest, or
+    /// a session whose bytes arrived by some other route.
+    ///
+    /// Refusing is the only honest answer available. `file_versions.checksum_sha256` is `NOT NULL`
+    /// and immutable once written (`plans/M1-CONTENT-CORE.md` D12), so there is no way to record
+    /// *"this digest is the client's word"* on the row — the choice is between a verified digest and
+    /// no version at all, and `ENC-820` is what choosing the third, unavailable option looked like.
+    #[error("the object store computed no SHA-256, so the reported one is unverified")]
+    ChecksumUnconfirmed,
+
     /// The reported checksum is not 64 lowercase hex characters.
     #[error("the reported checksum is not a lowercase hex SHA-256")]
     MalformedChecksum,
@@ -120,6 +124,7 @@ impl FailureReason {
             Self::SizeDiffersFromDeclaration => "SIZE_DIFFERS_FROM_DECLARATION",
             Self::SizeDiffersFromStore => "SIZE_DIFFERS_FROM_STORE",
             Self::ChecksumMismatch => "CHECKSUM_MISMATCH",
+            Self::ChecksumUnconfirmed => "CHECKSUM_UNCONFIRMED",
             Self::MalformedChecksum => "MALFORMED_CHECKSUM",
             Self::NoDeclaredSize => "NO_DECLARED_SIZE",
         }
@@ -127,15 +132,26 @@ impl FailureReason {
 
     /// The canonical error a handler returns for this failure.
     ///
-    /// All five are `400`s naming the field the client got wrong, because all five *are* client
-    /// mistakes: the platform's own numbers came from the object store.
+    /// Five of the six are `400`s naming the field the client got wrong, because five of the six
+    /// *are* client mistakes: the platform's own numbers came from the object store.
+    ///
+    /// [`FailureReason::ChecksumUnconfirmed`] is the exception and is a `503`. Nothing the client
+    /// sent is wrong — the deployment's object store did not produce a digest it was asked for — and
+    /// answering `400 sha256` would tell a user their file was corrupt when what is actually broken
+    /// is the backend behind them. The session is still persisted `FAILED`, because retrying against
+    /// the same store cannot succeed.
     #[must_use]
     pub fn to_error(self) -> CoreError {
+        if matches!(self, Self::ChecksumUnconfirmed) {
+            return CoreError::Upstream { dependency: Dependency::ObjectStorage, retryable: false };
+        }
         let field = match self {
             Self::SizeDiffersFromDeclaration
             | Self::SizeDiffersFromStore
             | Self::NoDeclaredSize => "sizeBytes",
-            Self::ChecksumMismatch | Self::MalformedChecksum => "sha256",
+            Self::ChecksumMismatch | Self::ChecksumUnconfirmed | Self::MalformedChecksum => {
+                "sha256"
+            }
         };
         let code = match self {
             Self::MalformedChecksum => ValidationCode::InvalidFormat,
@@ -150,11 +166,16 @@ impl FailureReason {
 /// Constructible only through [`VerifiedContent::verify`]. The fields are private so that a caller
 /// cannot assemble one from a client's numbers and hand it to the state machine as though it had
 /// been checked.
+///
+/// **Its existence is the guarantee.** One of these means the object store computed this digest
+/// over the bytes it holds and it matched what the client reported — not that the value was
+/// plausible, and not that it was the client's word marked as such. There is no unconfirmed
+/// variant to check for, and therefore none for a caller to forget to check for, which is exactly
+/// what `ENC-820` was: the distinction existed, was correct, and was read by one log field.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedContent {
     size_bytes: u64,
     sha256_hex: String,
-    checksum: ChecksumEvidence,
 }
 
 impl VerifiedContent {
@@ -187,19 +208,16 @@ impl VerifiedContent {
             return Err(FailureReason::SizeDiffersFromStore);
         }
 
-        let checksum = match observed.checksum_sha256.as_deref().and_then(decode_provider_sha256) {
-            Some(provider_hex) if provider_hex == reported.sha256_hex => {
-                ChecksumEvidence::ProviderConfirmed
-            }
+        match observed.checksum_sha256.as_deref().and_then(decode_provider_sha256) {
+            Some(provider_hex) if provider_hex == reported.sha256_hex => {}
             Some(_) => return Err(FailureReason::ChecksumMismatch),
-            None => ChecksumEvidence::ClientDeclared,
-        };
+            // The provider has no digest of its own, so nothing has compared the reported one
+            // against the bytes. Refused rather than recorded — see the module documentation and
+            // `FailureReason::ChecksumUnconfirmed`.
+            None => return Err(FailureReason::ChecksumUnconfirmed),
+        }
 
-        Ok(Self {
-            size_bytes: reported.size_bytes,
-            sha256_hex: reported.sha256_hex.clone(),
-            checksum,
-        })
+        Ok(Self { size_bytes: reported.size_bytes, sha256_hex: reported.sha256_hex.clone() })
     }
 
     /// The verified size, in bytes.
@@ -208,25 +226,27 @@ impl VerifiedContent {
         self.size_bytes
     }
 
-    /// The lowercase hex SHA-256.
+    /// The lowercase hex SHA-256, as the object store computed it and the client reported it.
     #[must_use]
     pub fn sha256_hex(&self) -> &str {
         &self.sha256_hex
-    }
-
-    /// Who attested to the checksum.
-    #[must_use]
-    pub const fn checksum_evidence(&self) -> ChecksumEvidence {
-        self.checksum
     }
 }
 
 /// Turns a provider's base64 SHA-256 into the lowercase hex the platform records.
 ///
+/// The inverse of `enclave_storage`'s hex-to-base64 conversion, which is what puts the digest on
+/// the pre-signed `PUT` in the first place; both are tested against the same vector.
+///
 /// Returns `None` when the provider sent no usable digest — absent, not base64, or not 32 bytes.
-/// A malformed provider digest is a provider defect and is downgraded to "unverified" rather than
-/// failing the upload: refusing here would make a backend's misbehaviour look like a client's
-/// corrupted transfer, and the antivirus stage still confirms the digest from the bytes.
+/// A malformed provider digest is treated exactly as an absent one: the caller refuses the
+/// completion either way, so it is not classified as a mismatch, which would tell the client its
+/// bytes were wrong when what is wrong is the backend.
+///
+/// A composite multipart checksum (`…=-4`) lands here too and fails to decode, which is the safe
+/// reading: it is a checksum of part checksums and is *not* the whole-object SHA-256 being
+/// compared. `enclave_storage` refuses to issue a checksum-bearing multipart session at all, so
+/// this is a second line rather than the only one.
 fn decode_provider_sha256(value: &str) -> Option<String> {
     let raw = STANDARD.decode(value).ok()?;
     if raw.len() != SHA256_BYTES {
@@ -298,21 +318,49 @@ mod tests {
         assert_eq!(decode_provider_sha256(DIGEST_B64).as_deref(), Some(DIGEST_HEX));
     }
 
+    /// The positive control for every refusal below: a digest the provider confirmed is accepted,
+    /// so "refused" is not the only answer this function knows.
     #[test]
-    fn a_provider_confirmed_digest_is_marked_as_such() {
+    fn a_provider_confirmed_digest_is_the_only_way_to_build_verified_content() {
         let verified =
             VerifiedContent::verify(Some(10), &reported(10), &observed(10, Some(DIGEST_B64)))
                 .unwrap();
         assert_eq!(verified.size_bytes(), 10);
         assert_eq!(verified.sha256_hex(), DIGEST_HEX);
-        assert!(verified.checksum_evidence().is_confirmed());
     }
 
+    /// `ENC-820`. This is the case that used to return `Ok` with the client's word attached.
+    ///
+    /// MinIO returns no `ChecksumSHA256` for an ordinary pre-signed `PUT`, so this arm was the
+    /// *ordinary* path rather than an edge: every upload on the shipped stack took it, and every
+    /// digest it produced was the client's unverified claim recorded on an immutable column.
     #[test]
-    fn a_provider_that_computed_no_digest_leaves_the_checksum_unconfirmed() {
-        let verified =
-            VerifiedContent::verify(Some(10), &reported(10), &observed(10, None)).unwrap();
-        assert_eq!(verified.checksum_evidence(), ChecksumEvidence::ClientDeclared);
+    fn a_provider_that_computed_no_digest_is_refused_rather_than_recorded() {
+        assert_eq!(
+            VerifiedContent::verify(Some(10), &reported(10), &observed(10, None)).unwrap_err(),
+            FailureReason::ChecksumUnconfirmed
+        );
+    }
+
+    /// And the refusal is not a `400` blaming the client, because the client did nothing wrong.
+    #[test]
+    fn an_unconfirmable_digest_reports_the_backend_and_not_the_clients_field() {
+        let error = FailureReason::ChecksumUnconfirmed.to_error();
+        assert_eq!(error.status_code(), 503, "a backend that cannot confirm is not a bad request");
+        assert!(
+            !matches!(error, CoreError::Validation(_)),
+            "the client's `sha256` was not the problem"
+        );
+        // Every other reason stays the `400` naming a field that `to_error` promises.
+        for reason in [
+            FailureReason::SizeDiffersFromDeclaration,
+            FailureReason::SizeDiffersFromStore,
+            FailureReason::ChecksumMismatch,
+            FailureReason::MalformedChecksum,
+            FailureReason::NoDeclaredSize,
+        ] {
+            assert_eq!(reason.to_error().status_code(), 400, "{reason}");
+        }
     }
 
     #[test]
@@ -326,15 +374,18 @@ mod tests {
 
     #[test]
     fn all_three_sizes_must_agree() {
-        // Declared 10, reported 5.
+        // Declared 10, reported 5. The store's digest is present and correct throughout, so a size
+        // failure is what is being asserted rather than the checksum refusal beneath it.
         assert_eq!(
-            VerifiedContent::verify(Some(10), &reported(5), &observed(5, None)).unwrap_err(),
+            VerifiedContent::verify(Some(10), &reported(5), &observed(5, Some(DIGEST_B64)))
+                .unwrap_err(),
             FailureReason::SizeDiffersFromDeclaration
         );
         // Declared 10, reported 10, store holds 11 — the case that catches a truncated multipart
         // upload the client believes succeeded.
         assert_eq!(
-            VerifiedContent::verify(Some(10), &reported(10), &observed(11, None)).unwrap_err(),
+            VerifiedContent::verify(Some(10), &reported(10), &observed(11, Some(DIGEST_B64)))
+                .unwrap_err(),
             FailureReason::SizeDiffersFromStore
         );
     }
@@ -342,11 +393,13 @@ mod tests {
     #[test]
     fn a_missing_or_impossible_declaration_refuses_rather_than_guesses() {
         assert_eq!(
-            VerifiedContent::verify(None, &reported(10), &observed(10, None)).unwrap_err(),
+            VerifiedContent::verify(None, &reported(10), &observed(10, Some(DIGEST_B64)))
+                .unwrap_err(),
             FailureReason::NoDeclaredSize
         );
         assert_eq!(
-            VerifiedContent::verify(Some(-1), &reported(10), &observed(10, None)).unwrap_err(),
+            VerifiedContent::verify(Some(-1), &reported(10), &observed(10, Some(DIGEST_B64)))
+                .unwrap_err(),
             FailureReason::NoDeclaredSize
         );
     }
@@ -363,31 +416,42 @@ mod tests {
         ] {
             let report = ReportedContent { size_bytes: 10, sha256_hex: (*bad).to_owned() };
             assert_eq!(
-                VerifiedContent::verify(Some(10), &report, &observed(10, None)).unwrap_err(),
+                VerifiedContent::verify(Some(10), &report, &observed(10, Some(DIGEST_B64)))
+                    .unwrap_err(),
                 FailureReason::MalformedChecksum,
                 "`{bad}` was accepted as a SHA-256"
             );
         }
     }
 
+    /// A provider digest this code cannot read is treated as no digest at all — and therefore
+    /// refused, not accepted. The three shapes are the ones a real backend produces: a truncated
+    /// value, something that is not base64, and a *composite* multipart checksum, whose `-N` suffix
+    /// is the provider saying "this is a checksum of checksums, not of your object".
     #[test]
-    fn a_provider_digest_of_the_wrong_length_is_treated_as_absent() {
-        let meta = observed(10, Some(&STANDARD.encode([0_u8; 16])));
-        let verified = VerifiedContent::verify(Some(10), &reported(10), &meta).unwrap();
-        assert_eq!(verified.checksum_evidence(), ChecksumEvidence::ClientDeclared);
+    fn a_provider_digest_this_code_cannot_read_is_refused_and_not_waved_through() {
+        for unreadable in
+            [STANDARD.encode([0_u8; 16]), "not base64 at all".to_owned(), format!("{DIGEST_B64}-4")]
+        {
+            let meta = observed(10, Some(&unreadable));
+            assert_eq!(
+                VerifiedContent::verify(Some(10), &reported(10), &meta).unwrap_err(),
+                FailureReason::ChecksumUnconfirmed,
+                "`{unreadable}` was accepted as evidence"
+            );
+        }
     }
 
     #[test]
-    fn every_failure_reason_renders_a_client_error_naming_a_field() {
+    fn no_failure_reason_puts_a_digest_or_a_byte_count_in_the_message() {
         for reason in [
             FailureReason::SizeDiffersFromDeclaration,
             FailureReason::SizeDiffersFromStore,
             FailureReason::ChecksumMismatch,
+            FailureReason::ChecksumUnconfirmed,
             FailureReason::MalformedChecksum,
             FailureReason::NoDeclaredSize,
         ] {
-            let error = reason.to_error();
-            assert_eq!(error.status_code(), 400, "{reason}");
             assert!(!reason.as_str().is_empty());
             // No digest and no byte count in the message the client can see.
             let rendered = reason.to_string();

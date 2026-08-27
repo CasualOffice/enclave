@@ -165,10 +165,18 @@ pub struct CreateUploadRequest {
     /// The declared media type. Advisory — nothing renders from it.
     #[serde(default)]
     mime_type: Option<String>,
-    /// A lowercase hex SHA-256 the client declares up front, so the provider can refuse a
-    /// corrupted transfer at the edge rather than storing it.
-    #[serde(default)]
-    sha256: Option<String>,
+    /// A lowercase hex SHA-256 of the whole object, declared before a URL exists.
+    ///
+    /// **Required**, and not advisory. It is signed into the pre-signed `PUT` as
+    /// `x-amz-checksum-sha256` — returned in [`IssuedUploadView::required_headers`] — so the
+    /// provider hashes the body it receives and refuses it if the two disagree. A client that
+    /// declares one digest and sends other bytes gets a failed `PUT`, and `complete` never sees the
+    /// object at all.
+    ///
+    /// It was optional and, worse, dropped by the S3 store even when supplied: the provider
+    /// computed nothing, `complete` had nothing to compare against, and a digest of all zeroes over
+    /// a real object answered `202` (`ENC-820`).
+    sha256: String,
 }
 
 /// One part of a multipart upload, as `docs/05-API.md §8`'s `urls` array.
@@ -194,6 +202,19 @@ struct IssuedUploadView {
     /// The one `PUT` target, for `SINGLE`.
     #[serde(skip_serializing_if = "Option::is_none")]
     upload_url: Option<String>,
+    /// Headers the `PUT` **must** carry, exactly as given.
+    ///
+    /// Not optional decoration and not a hint. The URL is signed over these headers, so a `PUT`
+    /// that omits one or alters its value fails the signature check outright — which is what makes
+    /// `x-amz-checksum-sha256` an integrity control rather than a courtesy: a client cannot decline
+    /// to be checked without also failing to upload.
+    ///
+    /// On the wire because the process that signs the URL is not the process that sends the bytes.
+    /// `ENC-821` is this fact learned the hard way for `content-type`, which was signed, documented
+    /// nowhere, and cost the first client two attempts to diagnose as a `403`; `content-type`
+    /// therefore appears here too rather than only in a paragraph of `docs/05-API.md`.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    required_headers: std::collections::BTreeMap<String, String>,
     /// Every part in order, for `MULTIPART`.
     #[serde(skip_serializing_if = "Option::is_none")]
     urls: Option<Vec<PartView>>,
@@ -289,7 +310,10 @@ struct HandedOffView {
 ///
 /// [`ApiError`]: `404` when the library is another tenant's, absent, or not granted to this caller;
 /// the denial's own status for any other refusal; `400` for a name, extension or checksum the
-/// library will not accept; `403` `QUOTA_EXCEEDED` when the declared size already cannot fit.
+/// library will not accept — including an absent or malformed `sha256`, which is required because
+/// it is what the provider is made to verify; `403` `QUOTA_EXCEEDED` when the declared size already
+/// cannot fit, or when it is above the largest upload this deployment's object store can have the
+/// provider confirm a digest for.
 pub async fn create(
     State(state): State<ApiState>,
     Extension(store): Extension<Arc<dyn BlobStore>>,
@@ -359,6 +383,8 @@ pub async fn create(
         name: request.name,
         declared_size: request.size_bytes,
         declared_mime: request.mime_type,
+        // Required by the wire type, so there is no arm here that can create a session with no
+        // digest for the provider to verify against (`ENC-820`).
         declared_sha256: request.sha256,
         created_by,
     };
@@ -881,10 +907,14 @@ fn view_of(issued: IssuedUpload) -> IssuedUploadView {
     let upload_id = issued.session.id().to_string();
 
     match issued.target {
-        UploadTarget::Single { url } => IssuedUploadView {
+        UploadTarget::Single { url, required_headers } => IssuedUploadView {
             upload_id,
             method: "SINGLE",
             upload_url: Some(url.to_string()),
+            required_headers: required_headers
+                .into_iter()
+                .map(|header| (header.name, header.value))
+                .collect(),
             urls: None,
             part_size: None,
             urls_expire_at: issued.urls_expire_at,
@@ -909,6 +939,11 @@ fn view_of(issued: IssuedUpload) -> IssuedUploadView {
                 upload_id,
                 method: "MULTIPART",
                 upload_url: None,
+                // Empty, and unreachable in practice: `UploadService::create` always declares a
+                // digest, and a store that cannot confirm one for an upload this size refuses
+                // before a URL exists. Left as an empty map rather than as an error arm because
+                // this function renders whatever the store issued and decides nothing.
+                required_headers: std::collections::BTreeMap::new(),
                 urls: Some(urls),
                 part_size,
                 urls_expire_at: issued.urls_expire_at,

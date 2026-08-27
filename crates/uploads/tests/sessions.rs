@@ -57,11 +57,37 @@ const DIGEST_HEX: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca49599
 /// The same digest in base64, as an object store reports it.
 const DIGEST_B64: &str = "47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=";
 
+/// Lowercase hex to base64, the conversion `enclave_storage` performs on the way to the provider.
+///
+/// Present so the recording store can echo a digest the way a real one does. Panics on a malformed
+/// input, which in a test is the right answer: it means the fixture is wrong.
+fn base64_of_hex(hex: &str) -> String {
+    use base64::Engine as _;
+
+    let raw: Vec<u8> = hex
+        .as_bytes()
+        .chunks(2)
+        .map(|pair| {
+            u8::from_str_radix(core::str::from_utf8(pair).expect("ascii"), 16)
+                .expect("a lowercase hex digest")
+        })
+        .collect();
+    base64::engine::general_purpose::STANDARD.encode(raw)
+}
+
 // ---------------------------------------------------------------------------------------------
 // A recording object store.
 // ---------------------------------------------------------------------------------------------
 
 /// An in-memory `BlobStore` that remembers what it was asked to do.
+///
+/// It models a backend that *can* have the provider confirm a whole-object digest, single-shot or
+/// multipart — which the [`BlobStore`] contract permits and `S3BlobStore` against MinIO cannot do
+/// for the multipart half. That difference is deliberate rather than sloppy: this suite is about
+/// what the upload service does with a store's answers, and the answers a real S3 backend actually
+/// gives are asserted where they can be observed, in `crates/storage/tests/minio.rs`, against a
+/// running MinIO. [`RecordingStore::compute_no_checksum`] is how a test here asks for the other
+/// behaviour.
 #[derive(Debug, Default)]
 struct RecordingStore {
     state: Mutex<StoreState>,
@@ -73,8 +99,17 @@ struct StoreState {
     deleted: Vec<String>,
     /// The size `complete_upload` reports, or `None` to echo the session's declared length.
     reported_size: Option<u64>,
-    /// The base64 SHA-256 `complete_upload` reports.
+    /// The base64 SHA-256 `complete_upload` reports, overriding the digest the session asked for.
+    ///
+    /// `None` means *behave like a real provider*: echo back the digest `create_upload` was given,
+    /// because that is exactly what S3 and MinIO do once `x-amz-checksum-sha256` is signed into
+    /// the URL and the body has matched it. Before `ENC-820` the default was to report nothing,
+    /// which made the stub a faithful model of the bug rather than of a store.
     reported_checksum: Option<String>,
+    /// The digest `create_upload` was asked to have the provider verify, base64.
+    requested_checksum: Option<String>,
+    /// Whether `create_upload` should behave like a store that cannot confirm a digest.
+    unverifiable: bool,
     /// Whether `delete` should fail, for the reaper's deferral path.
     delete_fails: bool,
 }
@@ -96,6 +131,14 @@ impl RecordingStore {
         self.state.lock().expect("lock").reported_checksum = Some(base64.to_owned());
     }
 
+    /// Makes the store behave like one that computes no digest of its own — a BYO S3-compatible
+    /// backend that accepts the checksum header and never reports it back.
+    fn compute_no_checksum(&self) {
+        let mut state = self.state.lock().expect("lock");
+        state.reported_checksum = None;
+        state.unverifiable = true;
+    }
+
     fn fail_deletes(&self) {
         self.state.lock().expect("lock").delete_fails = true;
     }
@@ -111,14 +154,33 @@ impl PublicAccessCheck for RecordingStore {
 #[async_trait]
 impl BlobStore for RecordingStore {
     async fn create_upload(&self, request: UploadRequest) -> StorageResult<UploadSession> {
-        self.state.lock().expect("lock").created.push(request.key.as_str().to_owned());
+        let mut state = self.state.lock().expect("lock");
 
         // Over 8 MiB is multipart, which is enough to exercise the multipart columns without
         // pretending to be any particular provider's threshold.
-        let target = if request.content_length > 8 * 1024 * 1024 {
+        let multipart = request.content_length > 8 * 1024 * 1024;
+
+        // The contract `BlobStore::create_upload` states since `ENC-820`: a declared digest is
+        // binding, and a store that cannot arrange for the provider to verify it says so instead of
+        // issuing a session. Modelled here so the stub cannot be more permissive than the real one
+        // — and refused *before* `created` is recorded, so `store.created().is_empty()` still means
+        // "no URL was minted for this request".
+        if request.checksum_sha256.is_some() && state.unverifiable {
+            return Err(enclave_storage::StorageError::ChecksumUnverifiable {
+                content_length: request.content_length,
+                threshold: 8 * 1024 * 1024,
+            });
+        }
+        state.created.push(request.key.as_str().to_owned());
+        state.requested_checksum = request.checksum_sha256.as_deref().map(base64_of_hex);
+
+        let target = if multipart {
             UploadTarget::Multipart { upload_id: "test-multipart".to_owned(), parts: Vec::new() }
         } else {
-            UploadTarget::Single { url: Url::parse("https://store.invalid/put").expect("url") }
+            UploadTarget::Single {
+                url: Url::parse("https://store.invalid/put").expect("url"),
+                required_headers: Vec::new(),
+            }
         };
 
         Ok(UploadSession {
@@ -136,7 +198,12 @@ impl BlobStore for RecordingStore {
             key: session.key.clone(),
             size_bytes: state.reported_size.unwrap_or(session.content_length),
             etag: Some("etag".to_owned()),
-            checksum_sha256: state.reported_checksum.clone(),
+            // A real provider echoes the digest it was given once the body has matched it; an
+            // override is how a test asks for the disagreeing case.
+            checksum_sha256: state
+                .reported_checksum
+                .clone()
+                .or_else(|| state.requested_checksum.clone()),
             content_type: None,
             last_modified: Some(Utc::now()),
             provider_version_id: None,
@@ -425,7 +492,9 @@ fn upload(library_id: LibraryId, owner: UserId, name: &str, size: u64) -> NewUpl
         name: name.to_owned(),
         declared_size: size,
         declared_mime: Some("application/pdf".to_owned()),
-        declared_sha256: None,
+        // Required since `ENC-820`, and the same digest the client reports at completion — which is
+        // what a client that computed the digest of the bytes it sent would do.
+        declared_sha256: DIGEST_HEX.to_owned(),
         created_by: owner,
     }
 }
@@ -566,10 +635,6 @@ async fn a_verified_completion_stops_at_scanning_in_the_row() {
     assert_eq!(session.state(), UploadState::Scanning);
     assert_eq!(handoff.content.size_bytes(), 64);
     assert_eq!(handoff.content.sha256_hex(), DIGEST_HEX);
-    assert!(
-        !handoff.content.checksum_evidence().is_confirmed(),
-        "the stub reported no digest, so the client's is not yet evidence of anything"
-    );
     assert_eq!(handoff.staged.version(), issued.session.record().staged.version());
 
     // The row, read without going through this crate's decoder. `CLAUDE.md` rule 9: completion
@@ -952,9 +1017,11 @@ async fn a_digest_the_store_computed_is_believed_only_when_it_matches() {
     let Completion::HandedOff { handoff, .. } = completion else {
         panic!("a digest the store agrees with must be accepted");
     };
-    assert!(
-        handoff.content.checksum_evidence().is_confirmed(),
-        "the provider computed this digest, so it is evidence and must be recorded as such"
+    assert_eq!(
+        handoff.content.sha256_hex(),
+        DIGEST_HEX,
+        "the provider computed this digest and it matched, which is the only way a completion \
+         reaches a handoff at all"
     );
 
     // Now the same store, disagreeing: it holds a digest of 32 zero bytes.
@@ -990,6 +1057,149 @@ async fn a_digest_the_store_computed_is_believed_only_when_it_matches() {
 
     let mut conn = db.connect().await.expect("connect");
     assert_eq!(stored_state(&mut conn, &disagreeing.session.id().to_string()).await, "FAILED");
+
+    pool.close().await;
+    drop(db);
+}
+
+/// `ENC-820`, through the whole service rather than through `VerifiedContent` alone.
+///
+/// The bug was not that the comparison was wrong — it was that *no comparison happened* and the
+/// completion succeeded anyway, persisting the client's word on an immutable column. So the
+/// assertion has to be about the outcome of `complete`, and it needs the positive control beside
+/// it: the same service, the same digest, a store that confirms it, accepted. Without that pair,
+/// "refused" is indistinguishable from a completion path that refuses everything.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL and migration 0006 (upload_sessions); CI runs it with --include-ignored"]
+async fn a_completion_the_store_did_not_confirm_is_refused_and_the_session_fails() {
+    let (db, fixtures, pool) = start().await;
+    let alpha = fixtures.alpha.id;
+    let store = RecordingStore::default();
+
+    let mut tx = TenantScoped::begin(&pool, alpha).await.expect("begin");
+    let (_workspace, library_id) =
+        library(&mut tx, alpha, fixtures.alpha.owner, "contracts", None).await;
+    let limits = UploadLimits::unrestricted_up_to(1024);
+
+    // The control. The store echoes the digest it was asked to verify, as a real provider does
+    // once the header is signed into the URL, and the completion is accepted.
+    let confirmed = UploadService::create(
+        &mut tx,
+        &store,
+        alpha,
+        &upload(library_id, fixtures.alpha.owner, "confirmed.pdf", 64),
+        &limits,
+        Duration::hours(24),
+        Utc::now(),
+    )
+    .await
+    .expect("create");
+    let completion = UploadService::complete(
+        &mut tx,
+        &store,
+        alpha,
+        confirmed.session.id(),
+        &reported(64),
+        Vec::new(),
+        Utc::now(),
+    )
+    .await
+    .expect("complete");
+    assert!(
+        matches!(completion, Completion::HandedOff { .. }),
+        "a provider-confirmed digest must still be accepted, or the refusal below proves nothing"
+    );
+
+    // And the defect. A store that computed no digest of its own leaves nothing to compare the
+    // reported one against — which is exactly what MinIO does for an ordinary pre-signed `PUT`,
+    // and is therefore what every upload on the shipped stack used to look like.
+    store.compute_no_checksum();
+    let session_id = confirmed.session.id();
+    let unconfirmed = UploadService::create(
+        &mut tx,
+        &store,
+        alpha,
+        &upload(library_id, fixtures.alpha.owner, "unconfirmed.pdf", 64),
+        &limits,
+        Duration::hours(24),
+        Utc::now(),
+    )
+    .await;
+
+    // The refusal comes at `create` on this store, because it declares up front that it cannot
+    // confirm — the client is told before it spends a byte, which is `docs/05-API.md §8`.
+    let refused = unconfirmed.expect_err("a store that cannot confirm must not issue a session");
+    assert!(matches!(refused, UploadError::ChecksumUnverifiable { .. }), "got: {refused:?}");
+    assert_eq!(
+        store.created().len(),
+        1,
+        "a session was staged for an upload whose digest nothing can confirm"
+    );
+
+    tx.commit().await.expect("commit");
+    let mut conn = db.connect().await.expect("connect");
+    assert_eq!(stored_state(&mut conn, &session_id.to_string()).await, "SCANNING");
+
+    pool.close().await;
+    drop(db);
+}
+
+/// The other half: a store that issued a session and then reported no digest at completion.
+///
+/// Reachable when a backend's behaviour differs between the two calls — a BYO S3-compatible store
+/// that accepts `x-amz-checksum-sha256` and does not return it on `HeadObject`. The completion is
+/// refused and the session is written `FAILED`, because retrying it against the same store cannot
+/// succeed and the alternative is to record an unverified digest forever.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL and migration 0006 (upload_sessions); CI runs it with --include-ignored"]
+async fn a_store_that_reports_no_digest_at_completion_fails_the_session() {
+    let (db, fixtures, pool) = start().await;
+    let alpha = fixtures.alpha.id;
+    let store = RecordingStore::default();
+
+    let mut tx = TenantScoped::begin(&pool, alpha).await.expect("begin");
+    let (_workspace, library_id) =
+        library(&mut tx, alpha, fixtures.alpha.owner, "contracts", None).await;
+
+    let issued = UploadService::create(
+        &mut tx,
+        &store,
+        alpha,
+        &upload(library_id, fixtures.alpha.owner, "silent.pdf", 64),
+        &UploadLimits::unrestricted_up_to(1024),
+        Duration::hours(24),
+        Utc::now(),
+    )
+    .await
+    .expect("create");
+
+    // The session exists; the store goes quiet between `create_upload` and `complete_upload`.
+    store.compute_no_checksum();
+    let completion = UploadService::complete(
+        &mut tx,
+        &store,
+        alpha,
+        issued.session.id(),
+        &reported(64),
+        Vec::new(),
+        Utc::now(),
+    )
+    .await
+    .expect("an unconfirmable digest is a persisted outcome, not an error");
+    tx.commit().await.expect("commit");
+
+    let Completion::Refused { reason, .. } = completion else {
+        panic!(
+            "a digest the store did not confirm was accepted. This is ENC-820: the value goes on \
+             an immutable column that a later integrity check reads as evidence"
+        );
+    };
+    assert_eq!(reason.as_str(), "CHECKSUM_UNCONFIRMED");
+    // Not a `400` blaming the client's `sha256`: nothing the client sent was wrong.
+    assert_eq!(reason.to_error().status_code(), 503);
+
+    let mut conn = db.connect().await.expect("connect");
+    assert_eq!(stored_state(&mut conn, &issued.session.id().to_string()).await, "FAILED");
 
     pool.close().await;
     drop(db);

@@ -104,11 +104,23 @@ impl PublicAccessCheck for RecordingStore {
 impl BlobStore for RecordingStore {
     async fn create_upload(&self, request: UploadRequest) -> StorageResult<UploadSession> {
         self.state.lock().expect("lock").created.push(request.key.as_str().to_owned());
+        // The header the client must send back, reported the way a real store reports it — this is
+        // what `POST /uploads` puts in `requiredHeaders` (`ENC-820`, `ENC-821`).
+        let required_headers = request
+            .checksum_sha256
+            .map(|_| {
+                vec![enclave_storage::RequiredHeader {
+                    name: "x-amz-checksum-sha256".to_owned(),
+                    value: DIGEST_B64.to_owned(),
+                }]
+            })
+            .unwrap_or_default();
         Ok(UploadSession {
             key: request.key,
             content_length: request.content_length,
             target: UploadTarget::Single {
                 url: Url::parse("https://store.invalid/put").expect("url"),
+                required_headers,
             },
             expires_at: Utc::now() + Duration::minutes(15),
             completed_parts: Vec::new(),

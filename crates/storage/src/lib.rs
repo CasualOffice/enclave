@@ -35,6 +35,11 @@
 //!    [`SecretRef`](enclave_config::SecretRef)s, and `aws-config` is deliberately not a dependency,
 //!    so this process has no ambient AWS identity to fall back on if a reference fails to resolve
 //!    (`CLAUDE.md` rule 11).
+//! 4. **A declared digest is a promise the store keeps or refuses.**
+//!    [`UploadRequest::checksum_sha256`] obliges the implementation to make the provider compute
+//!    and compare the digest of the bytes it receives; an implementation that cannot arrange it for
+//!    a given request returns [`StorageError::ChecksumUnverifiable`] instead of issuing a session
+//!    nothing will check. `ENC-820` is what the field being merely advisory cost.
 //!
 //! # Dependencies pinned here rather than in the workspace
 //!
@@ -56,7 +61,7 @@ pub use blob_store::BlobStore;
 pub use error::{Result, StorageError};
 pub use key::{KeyError, ObjectKey};
 pub use model::{
-    ByteRange, ByteStream, CompletedPart, MultipartLimits, ObjectMeta, PartTarget,
+    ByteRange, ByteStream, CompletedPart, MultipartLimits, ObjectMeta, PartTarget, RequiredHeader,
     StoreCapabilities, Support, UploadRequest, UploadSession, UploadTarget,
 };
 pub use public_access::{

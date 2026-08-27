@@ -63,8 +63,16 @@ aws-smithy-types       = "1.6"
 
 bytes = "1"
 
+# The hex/base64 boundary for `x-amz-checksum-sha256`: the platform speaks lowercase hex
+# (`file_versions.checksum_sha256`, `docs/05-API.md §8`) and the header carries base64, so one of
+# the two conversions has to live at this edge (ENC-820).
+base64 = { workspace = true }
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+# The MinIO suite computes real digests over real bodies; a fixture digest would only assert that
+# the fixture agreed with itself.
+sha2 = { workspace = true }
 
 [lints]
 workspace = true

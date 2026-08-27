@@ -39,7 +39,7 @@
 use chrono::{DateTime, Duration, Utc};
 use enclave_core::{FileId, LibraryId, TenantId, UserId};
 use enclave_db::TenantScoped;
-use enclave_storage::{BlobStore, CompletedPart, UploadRequest, UploadTarget};
+use enclave_storage::{BlobStore, CompletedPart, StorageError, UploadRequest, UploadTarget};
 use sqlx::PgConnection;
 
 use crate::content::{is_lowercase_sha256_hex, FailureReason, ReportedContent, VerifiedContent};
@@ -82,12 +82,21 @@ pub struct NewUpload {
     /// The declared media type. Advisory: the platform's own detection is authoritative and
     /// nothing renders from this.
     pub declared_mime: Option<String>,
-    /// A lowercase hex SHA-256 the client declares up front, if it has one.
+    /// A lowercase hex SHA-256 of the whole object, declared up front.
     ///
-    /// Passed to the provider so a corrupted transfer is refused at the edge rather than stored.
+    /// **Required, and that is the control.** It is signed into the pre-signed `PUT` as
+    /// `x-amz-checksum-sha256`, which obliges the provider to hash the body it receives and refuse
+    /// it if the two disagree — so a client that lies about its content gets a failed `PUT` rather
+    /// than a stored object with a false digest beside it. Without it there is nothing for the
+    /// provider to compare against, `complete` has no digest of the store's own to verify the
+    /// reported one with, and the completion is refused there instead
+    /// ([`FailureReason::ChecksumUnconfirmed`](crate::FailureReason::ChecksumUnconfirmed)) — after
+    /// the client has spent its bandwidth. It was `Option<String>` and skipped by the S3 store
+    /// entirely, which is `ENC-820`.
+    ///
     /// It is not persisted — `upload_sessions` has no column for it (`docs/04-DATA-MODEL.md §8`) —
     /// so completion verifies the digest the client repeats there against the store's own.
-    pub declared_sha256: Option<String>,
+    pub declared_sha256: String,
     /// Who is uploading.
     pub created_by: UserId,
 }
@@ -152,7 +161,9 @@ impl UploadService {
     /// [`UploadError::ExtensionNotAllowed`], [`UploadError::FileTooLarge`],
     /// [`UploadError::InvalidName`], [`UploadError::InvalidDeclaredChecksum`] and
     /// [`UploadError::StorageQuotaExceeded`] — all of them *before* the object store is contacted —
-    /// plus storage and database failures after it.
+    /// plus [`UploadError::ChecksumUnverifiable`] and other storage and database failures after it.
+    /// `ChecksumUnverifiable` still costs the client no bandwidth: the store decides it from the
+    /// declared size, before it signs anything.
     pub async fn create(
         tx: &mut TenantScoped,
         blob: &dyn BlobStore,
@@ -165,10 +176,8 @@ impl UploadService {
         // Every refusal that can be decided from the request happens here, above the store call.
         // Moving any of it below would spend the client's bandwidth to reach the same answer.
         limits.check(&request.name, request.declared_size)?;
-        if let Some(declared) = &request.declared_sha256 {
-            if !is_lowercase_sha256_hex(declared) {
-                return Err(UploadError::InvalidDeclaredChecksum);
-            }
+        if !is_lowercase_sha256_hex(&request.declared_sha256) {
+            return Err(UploadError::InvalidDeclaredChecksum);
         }
         // The quota read is last of the four, because it is the only one that costs a round trip
         // and the other three refuse from the request alone. It is still above the store call,
@@ -183,14 +192,22 @@ impl UploadService {
         };
         let staged = StagedObject::allocate(tenant, file_id);
 
-        let mut upload = UploadRequest::new(staged.key().clone(), request.declared_size);
+        let mut upload = UploadRequest::new(staged.key().clone(), request.declared_size)
+            .with_checksum_sha256(request.declared_sha256.clone());
         if let Some(mime) = &request.declared_mime {
             upload = upload.with_content_type(mime.clone());
         }
-        if let Some(digest) = &request.declared_sha256 {
-            upload = upload.with_checksum_sha256(digest.clone());
-        }
-        let issued = blob.create_upload(upload).await?;
+        // A store that cannot have the provider confirm a digest for an upload this size refuses
+        // here rather than issuing a session whose checksum nothing will check. Reported as the
+        // per-file ceiling it is: above that number this deployment cannot accept an upload at all,
+        // and a client shown the limit can act on it (`ENC-829`).
+        let issued = match blob.create_upload(upload).await {
+            Ok(issued) => issued,
+            Err(StorageError::ChecksumUnverifiable { threshold, .. }) => {
+                return Err(UploadError::ChecksumUnverifiable { limit_bytes: threshold })
+            }
+            Err(other) => return Err(other.into()),
+        };
 
         let multipart_id = match &issued.target {
             UploadTarget::Single { .. } => None,
@@ -349,7 +366,11 @@ impl UploadService {
             upload_session_id = %id,
             version_id = %handoff.staged.version(),
             size_bytes = handoff.content.size_bytes(),
-            checksum_confirmed_by_provider = handoff.content.checksum_evidence().is_confirmed(),
+            // No `checksum_confirmed_by_provider` field, and its absence is the point. It used to
+            // be the *only* consumer of the evidence level in the whole workspace, which meant an
+            // unconfirmed digest was recorded as a log line and as a permanent column. Confirmation
+            // is now a precondition of `VerifiedContent` existing, so there is nothing left to
+            // report (`ENC-820`).
             "upload verified and handed to antivirus"
         );
 
