@@ -593,6 +593,11 @@ async fn promote(
     })?;
 
     let new = NewVersion {
+        // Both ids come off the staged key rather than being minted here, because the bytes are
+        // already at `tenant/{t}/files/{f}/versions/{v}` and that path is not rewritable without
+        // copying them. A version whose row id differed from the one in its own object key would
+        // leave an operator's `WHERE id = …` answering nothing for an object that plainly exists.
+        id: handoff.staged.version(),
         file_id,
         // The staged key *is* the version key. Nothing is copied on commit; see
         // `enclave_uploads::staged` for why, and for the 5 GB limit that settled it.
@@ -967,6 +972,83 @@ mod tests {
         );
     }
 
+    /// Rule 9's *third* half, which `ENC-691` added: this module now writes a version row, and it
+    /// must still be unable to say what state that row is in.
+    ///
+    /// `VersionService::commit` picks the status and the antivirus verdict from two constants that
+    /// take no argument, so `SCANNING`/`PENDING` is a property of that statement. The way that could
+    /// be undone from here is a second write beside the commit — an `UPDATE file_versions`, a
+    /// `VersionStatus` this module chose, an `AvStatus` it converted. None of those names may
+    /// appear, and none of them does.
+    ///
+    /// Needles assembled at run time, for `the_completion_response_cannot_name_a_readable_state`'s
+    /// reason.
+    #[test]
+    fn nothing_here_can_choose_a_version_status_or_write_a_version_row_itself() {
+        let source = include_str!("uploads.rs");
+        let handlers = source.split("mod tests {").next().expect("the module has a body");
+
+        for needle in [
+            format!("{}Status::", "Version"),
+            format!("{}Status::", "Av"),
+            format!("UPDATE {}", "file_versions"),
+            format!("INSERT INTO {}", "file_versions"),
+            format!("{}::query", "sqlx"),
+        ] {
+            assert!(
+                !handlers.contains(&needle),
+                "`{needle}` appears in the upload routes. The version's status and its antivirus \
+                 verdict are decided by constants inside `VersionService::commit`, which take no \
+                 argument precisely so no caller can pass one (CLAUDE.md rule 9); and this module \
+                 runs no statement of its own (rule 1)."
+            );
+        }
+
+        // The positive control: the commit that owns those constants is still called from here.
+        // Without it the absences above hold of a handler that has stopped committing anything,
+        // which is the defect `ENC-691` was (`docs/12 §1.2`).
+        assert!(
+            handlers.contains("VersionService::commit("),
+            "the completion path no longer commits a version, so asserting that it does not choose \
+             a status proves nothing at all"
+        );
+    }
+
+    /// `ENC-691` in one assertion: the handoff is **moved** into the commit, and the identifiers on
+    /// the wire come out of the row that commit returned.
+    ///
+    /// The bug was not that the handoff was ignored — `#[must_use]` was satisfied, because the
+    /// handler read `handoff.staged` for the two identifiers it put on the wire. That is exactly
+    /// what a `202` naming rows that do not exist looks like from inside. So both halves are
+    /// asserted: `promote` receives the handoff by value, and the response reads `committed`.
+    #[test]
+    fn the_handoff_is_moved_into_the_commit_and_the_response_names_the_row_it_produced() {
+        let source = include_str!("uploads.rs");
+        let handlers = source.split("mod tests {").next().expect("the module has a body");
+
+        assert!(
+            handlers.contains("promote(&mut tx, &ctx, *handoff, now)"),
+            "the handoff is no longer moved into `promote`. A handoff that is borrowed, or read \
+             field by field, can be satisfied without a version ever being committed — which is \
+             what `#[must_use]` allowed and what ENC-691 was"
+        );
+
+        for field in ["file_id: committed.version.file_id", "version_id: committed.version.id"] {
+            assert!(
+                handlers.contains(field),
+                "`{field}` is not what the completion response carries. Both identifiers must come \
+                 from the committed row: read off the staged key they are a promise about rows \
+                 nothing has written"
+            );
+        }
+
+        // And nothing reads them back off the key for the response, which is the shape of the bug.
+        assert!(
+            !handlers.contains("handoff.staged.file().to_string()"),
+            "the response is naming the file id from the staged key again"
+        );
+    }
+
     /// The two intents are two separately deniable questions, and this is the table that says so.
     ///
     /// A regression that collapsed them would most likely do it in the permissive direction —
@@ -1092,5 +1174,8 @@ mod tests {
         // M1's fifth exit criterion is 5 GB, and a library that configures no ceiling must not
         // refuse the upload the product claims to support.
         assert_eq!(TENANT_DEFAULT_MAX_FILE_BYTES, 5 * 1024 * 1024 * 1024);
+        // RFC 2046 §4.5.1. The one thing it must not be is a guess derived from the file name: a
+        // version whose recorded type came from an extension is a value a reader would trust.
+        assert_eq!(UNDECLARED_MIME_TYPE, "application/octet-stream");
     }
 }

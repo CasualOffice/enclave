@@ -142,6 +142,21 @@ pub const UNPROVISIONED_STORAGE_PROFILE: Uuid = Uuid::nil();
 /// already exists; nothing in this crate writes to object storage.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewVersion {
+    /// The id this version will carry.
+    ///
+    /// Supplied rather than minted inside the commit, for the reason [`NewVersion::object_key`] is
+    /// supplied: on the upload path the key **already names it**.
+    /// `enclave_uploads::StagedObject` allocates a [`VersionId`] when the session is created and
+    /// stages the bytes to `tenant/{t}/files/{f}/versions/{v}` (`docs/02-HLD.md §7`), precisely so
+    /// that a commit is an `INSERT` and not a copy. A row minted with a different id leaves an
+    /// object in the bucket whose path names a version that `SELECT … WHERE id = …` cannot find —
+    /// which is the same class of untruth `ENC-691` was, one layer down, and one an operator meets
+    /// while debugging rather than in a test.
+    ///
+    /// A caller with no key to honour passes [`VersionId::new_v7`]. A duplicate is a primary-key
+    /// violation and fails the transaction; it is not a case a caller can reach by accident,
+    /// because the only source of a *reserved* id is a session that can be completed once.
+    pub id: VersionId,
     /// The file this becomes a version of.
     pub file_id: FileId,
     /// The promoted object's key. Globally unique by `uq_version_object`.
@@ -285,6 +300,9 @@ impl VersionService {
         }
 
         let new = NewVersion {
+            // A restore's bytes are a fresh copy under a key the caller invented, so there is no
+            // reserved id to honour and nothing that could name one.
+            id: VersionId::new_v7(),
             file_id: request.file_id,
             object_key: request.object_key.clone(),
             // Copied from the source rather than taken from the caller: the restored version *is*
@@ -316,7 +334,7 @@ impl VersionService {
         restored_from: Option<VersionId>,
     ) -> Result<CommittedVersion> {
         let tenant = ctx.tenant_id;
-        let id = VersionId::new_v7();
+        let id = new.id;
 
         // 1. The file. First, for the row lock — see the module documentation. Also the existence
         //    check: the foreign key would catch a missing file, but not one that is in the trash,
@@ -662,6 +680,40 @@ mod tests {
         // optimistic-concurrency key every mutation checks (`docs/03-LLD.md §14`).
         assert!(BUMP_FILE.contains("revision           = revision + 1"));
         assert!(BUMP_FILE.contains("RETURNING revision"));
+    }
+
+    /// The id in the row is the caller's, and nothing in `write` may mint one.
+    ///
+    /// Behaviourally invisible — a version numbered `1.0` with a different id looks identical from
+    /// every query that does not already know the id — so it is asserted against the source, the
+    /// way the charge's position is. What it protects is the upload path: the bytes are already at
+    /// `…/versions/{v}` and the key cannot be rewritten without copying them, so a `new_v7()` here
+    /// puts an object in the bucket whose path names a row that does not exist. `restore` mints one
+    /// deliberately, and is the only place that may.
+    #[test]
+    fn the_committed_version_carries_the_id_its_caller_chose() {
+        let source = include_str!("commit.rs");
+        let body = source.split("async fn write(").nth(1).expect("write exists");
+        let body = body.split("async fn charge(").next().expect("write has an end");
+        let mint = format!("VersionId::{}()", "new_v7");
+
+        assert!(
+            body.contains("let id = new.id;"),
+            "`write` no longer takes the version id from its caller"
+        );
+        assert!(
+            !body.contains(mint.as_str()),
+            "`write` mints a version id of its own. The upload path stages bytes under a key that \
+             already names the version, so a minted id leaves an object whose path resolves to \
+             nothing (ENC-691)"
+        );
+        // The positive control: a restore has no reserved id and must still mint one, so the
+        // absence above is about `write` rather than about a crate that has stopped minting ids.
+        assert!(
+            source.contains(mint.as_str()),
+            "nothing in this module mints a version id any more, so the assertion above holds \
+             vacuously"
+        );
     }
 
     #[test]

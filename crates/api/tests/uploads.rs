@@ -34,6 +34,7 @@ use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use chrono::{Duration, Utc};
+use enclave_antivirus::{NoScanningPerformed, ScanPolicy};
 use enclave_api::{router, ApiState, Delivery};
 use enclave_auth::{AccessTokenIssuer, Acr, AuthMethod, KeySet, PrivateSigningKey, TokenTemplate};
 use enclave_authorization::PgAclAuthorization;
@@ -44,11 +45,13 @@ use enclave_db::{configure_storage_quota, sql, DbPool, Enforcement, TenantScoped
 use enclave_libraries::{ExternalSharing, LibraryRepository, LibrarySettings, VersioningMode};
 use enclave_storage::{
     BlobStore, ByteRange, ByteStream, MultipartLimits, ObjectMeta, PublicAccessCheck,
-    PublicAccessError, PublicAccessReport, Result as StorageResult, StoreCapabilities, Support,
-    UploadRequest, UploadSession, UploadTarget,
+    PublicAccessError, PublicAccessReport, Result as StorageResult, StorageError,
+    StoreCapabilities, Support, UploadRequest, UploadSession, UploadTarget,
 };
 use enclave_testing::{Fixtures, TestDb};
-use sqlx::PgConnection;
+use enclave_worker::antivirus::{av_pass, AvCursor};
+use enclave_worker::Stop;
+use sqlx::{PgConnection, Row as _};
 use tower::ServiceExt as _;
 use url::Url;
 
@@ -164,6 +167,81 @@ impl BlobStore for RecordingStore {
             server_side_encryption: Support::Unknown,
             range_reads: false,
             server_side_copy: true,
+        }
+    }
+}
+
+/// A store that serves one object's bytes, for the antivirus leg only.
+///
+/// Separate from [`RecordingStore`] rather than a relaxation of it. That store's `read_range`
+/// panics on purpose — content must never travel through the API process on an upload — and the
+/// panic is an assertion this file should keep. The worker is a different process with a different
+/// rule: it reads objects, so the leg that runs the worker's pass gets a store that lets it.
+#[derive(Debug)]
+struct ServingStore {
+    key: String,
+    body: Vec<u8>,
+}
+
+impl ServingStore {
+    fn holding(key: &str, body: Vec<u8>) -> Self {
+        Self { key: key.to_owned(), body }
+    }
+}
+
+#[async_trait]
+impl PublicAccessCheck for ServingStore {
+    async fn verify_not_public(&self) -> Result<PublicAccessReport, PublicAccessError> {
+        Ok(PublicAccessReport { bucket: "test".to_owned(), endpoint: None, probes: Vec::new() })
+    }
+}
+
+#[async_trait]
+impl BlobStore for ServingStore {
+    async fn create_upload(&self, _request: UploadRequest) -> StorageResult<UploadSession> {
+        panic!("the antivirus pass does not stage uploads")
+    }
+
+    async fn complete_upload(&self, _session: &UploadSession) -> StorageResult<ObjectMeta> {
+        panic!("the antivirus pass does not complete uploads")
+    }
+
+    async fn signed_download(&self, _key: &str, _ttl: StdDuration) -> StorageResult<Url> {
+        panic!("the antivirus pass mints no URLs")
+    }
+
+    async fn read_range(&self, key: &str, _range: ByteRange) -> StorageResult<ByteStream> {
+        if key != self.key {
+            return Err(StorageError::NotFound { key: key.to_owned() });
+        }
+        let body = self.body.clone();
+        let length = body.len() as u64;
+        Ok(ByteStream::new(
+            futures::stream::once(async move { Ok(bytes::Bytes::from(body)) }),
+            Some(length),
+        ))
+    }
+
+    async fn copy(&self, _from: &str, _to: &str) -> StorageResult<()> {
+        panic!("nothing on this path copies")
+    }
+
+    async fn delete(&self, _key: &str) -> StorageResult<()> {
+        panic!("the antivirus pass deletes nothing")
+    }
+
+    fn capabilities(&self) -> StoreCapabilities {
+        StoreCapabilities {
+            backend: "serving-stub",
+            multipart: None,
+            signed_urls: false,
+            single_use_signed_urls: false,
+            max_signed_url_ttl: StdDuration::from_secs(900),
+            versioning: Support::Unknown,
+            object_lock: Support::Unknown,
+            server_side_encryption: Support::Unknown,
+            range_reads: true,
+            server_side_copy: false,
         }
     }
 }
@@ -401,6 +479,93 @@ async fn content_rows(db: &TestDb, tenant: TenantId) -> (i64, i64) {
             .await
             .expect("count versions");
     (files, versions)
+}
+
+/// The one version row a tenant holds, straight out of its columns.
+///
+/// Every value a reader would act on, read from the table rather than from the response: a `202`
+/// that named identifiers off the staged key is exactly what `ENC-691` was, so a test that trusted
+/// the body would have passed against the defect.
+struct VersionRow {
+    id: String,
+    file_id: String,
+    object_key: String,
+    storage_profile_id: String,
+    size_bytes: i64,
+    checksum_sha256: String,
+    mime_type: String,
+    major: i32,
+    minor: i32,
+    status: String,
+    av_status: String,
+}
+
+async fn only_version(db: &TestDb, tenant: TenantId) -> VersionRow {
+    let mut conn = db.connect().await.expect("connect");
+    let row = sqlx::query(
+        "SELECT id, file_id, object_key, storage_profile_id, size_bytes, checksum_sha256, \
+         mime_type, major, minor, status, av_status \
+           FROM file_versions WHERE tenant_id = $1",
+    )
+    .bind(sql(tenant))
+    .fetch_one(&mut conn)
+    .await
+    .expect("exactly one version row for this tenant");
+
+    VersionRow {
+        id: row.get::<uuid::Uuid, _>("id").to_string(),
+        file_id: row.get::<uuid::Uuid, _>("file_id").to_string(),
+        object_key: row.get("object_key"),
+        storage_profile_id: row.get::<uuid::Uuid, _>("storage_profile_id").to_string(),
+        size_bytes: row.get("size_bytes"),
+        checksum_sha256: row.get("checksum_sha256"),
+        mime_type: row.get("mime_type"),
+        major: row.get("major"),
+        minor: row.get("minor"),
+        status: row.get("status"),
+        av_status: row.get("av_status"),
+    }
+}
+
+/// A file node's `(name, status, current_version_id, size_bytes)`.
+async fn file_row(db: &TestDb, id: &str) -> (String, String, Option<String>, i64) {
+    let mut conn = db.connect().await.expect("connect");
+    let row = sqlx::query(
+        "SELECT name, status, current_version_id, size_bytes FROM files WHERE id = $1::uuid",
+    )
+    .bind(id)
+    .fetch_one(&mut conn)
+    .await
+    .expect("the file row the completion created");
+    (
+        row.get("name"),
+        row.get("status"),
+        row.get::<Option<uuid::Uuid>, _>("current_version_id").map(|id| id.to_string()),
+        row.get("size_bytes"),
+    )
+}
+
+/// What the tenant's stored-byte counter says.
+async fn used_bytes(db: &TestDb, tenant: TenantId) -> i64 {
+    let mut conn = db.connect().await.expect("connect");
+    sqlx::query_scalar("SELECT used_bytes FROM storage_quotas WHERE tenant_id = $1")
+        .bind(sql(tenant))
+        .fetch_one(&mut conn)
+        .await
+        .expect("the tenant has a quota row")
+}
+
+/// The index manifests queued for a tenant, as `(version_id, status)`.
+async fn manifests(db: &TestDb, tenant: TenantId) -> Vec<(String, String)> {
+    let mut conn = db.connect().await.expect("connect");
+    sqlx::query("SELECT version_id, status FROM index_manifests WHERE tenant_id = $1")
+        .bind(sql(tenant))
+        .fetch_all(&mut conn)
+        .await
+        .expect("read the index queue")
+        .into_iter()
+        .map(|row| (row.get::<uuid::Uuid, _>("version_id").to_string(), row.get("status")))
+        .collect()
 }
 
 /// The audit rows for one tenant, as `(action, outcome)`.
@@ -687,25 +852,32 @@ async fn a_blocked_extension_is_refused_before_the_store_is_asked() {
     assert_eq!(harness.store.created(), 1);
 }
 
-/// `CLAUDE.md` rule 9, asserted where it can actually be broken.
+/// **The journey**: sign in, upload, and the file is there — `ENC-691`.
 ///
-/// Three claims, and the third is what makes the first two more than a restatement of the
-/// response body:
+/// Every claim below is read out of a column, because the response body is precisely what was
+/// already right when this was broken. The defect was a `202` naming a `fileId` and a `versionId`
+/// for rows that did not exist, so a test that read the body passed against it.
 ///
 /// 1. the response is `202` and its `state` is `SCANNING` (`docs/05-API.md §8`);
-/// 2. the **row** says `SCANNING`, read straight out of the column;
-/// 3. **no `file_versions` row exists**, and none is `AVAILABLE` — a completed upload has not
-///    become readable content, and cannot until antivirus has run.
+/// 2. the session **row** says `SCANNING`;
+/// 3. a `files` row exists, under the id the staged key spent, pointing at the new version;
+/// 4. a `file_versions` row exists, `SCANNING`/`PENDING`, numbered `1.0`, carrying the store's size
+///    and checksum and the staged key as its object key;
+/// 5. the stored-byte counter moved by exactly those bytes (`ENC-589`);
+/// 6. an index manifest is queued for that version (`ENC-643`);
+/// 7. **nothing is readable.** No version is `AVAILABLE` and no version is `CLEAN`.
 ///
-/// The third assertion is about an absence, so it carries its own control: the file and version
-/// counts are read *before* the completion as well, and the point is that they are unchanged
-/// rather than that they happen to be zero.
+/// Claim 7 is an absence, and on its own it is worthless — it held perfectly while no version was
+/// created at all, which is the bug (`docs/12 §1.2`). Claims 3 to 6 are its positive control: the
+/// row exists, it is complete, and what it says is `SCANNING`.
 #[tokio::test]
 #[ignore = "requires a live PostgreSQL; CI runs it with --include-ignored"]
-async fn a_completed_upload_is_scanning_and_becomes_no_readable_content() {
-    let (db, fixtures, _pool, alpha_library, _beta) = setup().await;
+async fn a_completed_upload_becomes_a_scanning_version_and_nothing_readable() {
+    let (db, fixtures, pool, alpha_library, _beta) = setup().await;
     let harness = harness(&db).await;
     let alpha = fixtures.alpha.id;
+    // A metered tenant, so "the quota moved" is a claim about a number rather than about `None`.
+    set_quota(&pool, alpha, 1024 * 1024, Enforcement::Block).await;
 
     let (status, issued) = call(
         &harness,
@@ -720,6 +892,12 @@ async fn a_completed_upload_is_scanning_and_becomes_no_readable_content() {
     let upload_id = issued["uploadId"].as_str().expect("uploadId").to_owned();
 
     let before = content_rows(&db, alpha).await;
+    let charged_before = used_bytes(&db, alpha).await;
+    assert_eq!(
+        before,
+        (0, 0),
+        "the tenant starts with no content, so the counts below are the delta"
+    );
 
     let (status, body) = call(
         &harness,
@@ -733,8 +911,6 @@ async fn a_completed_upload_is_scanning_and_becomes_no_readable_content() {
 
     assert_eq!(status, StatusCode::ACCEPTED, "{body}");
     assert_eq!(body["state"], "SCANNING", "docs/05-API.md §8 fixes this value");
-    assert!(body["fileId"].is_string(), "the response carries the identifiers the key reserved");
-    assert!(body["versionId"].is_string());
 
     assert_eq!(
         stored_state(&db, &upload_id).await,
@@ -742,12 +918,67 @@ async fn a_completed_upload_is_scanning_and_becomes_no_readable_content() {
         "the response said SCANNING and the row says something else"
     );
 
-    let after = content_rows(&db, alpha).await;
+    // 3 and 4: the rows the response names.
     assert_eq!(
-        before, after,
-        "completing an upload created content rows. Nothing here may write a version: the commit \
-         belongs beside the antivirus pass, which is ENC-691, and a version written here would be \
-         one CLAUDE.md rule 9 has no gate in front of"
+        content_rows(&db, alpha).await,
+        (1, 1),
+        "a completed upload must produce exactly one file and one version. Nothing consumed the \
+         ScanHandoff, so the 202 named two rows that did not exist (ENC-691)"
+    );
+
+    let version = only_version(&db, alpha).await;
+    assert_eq!(
+        body["versionId"].as_str(),
+        Some(version.id.as_str()),
+        "the versionId on the wire is not the version that was written"
+    );
+    assert_eq!(
+        body["fileId"].as_str(),
+        Some(version.file_id.as_str()),
+        "the fileId on the wire is not the file the version belongs to"
+    );
+
+    // Rule 9, and the whole point of the row: it is not readable, and it is queued to be judged.
+    assert_eq!(version.status, "SCANNING");
+    assert_eq!(version.av_status, "PENDING");
+    assert_ne!(version.status, "AVAILABLE", "rule 9: nothing is readable before antivirus");
+    assert_ne!(version.av_status, "CLEAN");
+
+    assert_eq!((version.major, version.minor), (1, 0), "the first version of a new file is 1.0");
+    assert_eq!(version.size_bytes, 64, "the store's number, not the client's declaration");
+    assert_eq!(version.checksum_sha256, DIGEST_HEX);
+    assert_eq!(version.mime_type, "application/pdf", "the declared type, since one was declared");
+    assert_eq!(
+        version.storage_profile_id, "00000000-0000-0000-0000-000000000000",
+        "no storage_profiles table exists (ENC-573), so the column carries the value a backfill \
+         can find rather than a fabricated profile id"
+    );
+    // The staged key *is* the version key — nothing was copied on commit.
+    let staged = harness.store.state.lock().expect("lock").created[0].clone();
+    assert_eq!(version.object_key, staged);
+    assert!(
+        staged.contains(&version.file_id) && staged.contains(&version.id),
+        "the object key must name the file and version rows that now exist: `{staged}`"
+    );
+
+    let (name, file_status, current, file_size) = file_row(&db, &version.file_id).await;
+    assert_eq!(name, "Quarterly Plan.pdf");
+    assert_eq!(current.as_deref(), Some(version.id.as_str()), "the file points at the new version");
+    assert_eq!(file_size, 64);
+    assert_ne!(file_status, "AVAILABLE", "a file pointing at unscanned bytes is not available");
+
+    // 5: the charge (`ENC-589`), which happens inside the commit and nowhere else.
+    assert_eq!(
+        used_bytes(&db, alpha).await - charged_before,
+        64,
+        "the tenant was not charged for the bytes it just stored"
+    );
+
+    // 6: the index manifest (`ENC-643`), enqueued in the same transaction as the version.
+    assert_eq!(
+        manifests(&db, alpha).await,
+        vec![(version.id.clone(), "PENDING".to_owned())],
+        "the version is stored and permanently unsearchable"
     );
 
     // And the poll a client makes next reports the same state, from the same column.
@@ -763,6 +994,92 @@ async fn a_completed_upload_is_scanning_and_becomes_no_readable_content() {
     assert_eq!(status, StatusCode::OK, "{progress}");
     assert_eq!(progress["state"], "SCANNING");
     assert_eq!(progress["bytesReceived"], 64);
+}
+
+/// The other half of the journey: **the worker's antivirus pass finds what the upload committed.**
+///
+/// "A `file_versions` row exists" and "the pass that has to move it can see it" are two claims, and
+/// only the second is what M1's exit criterion needs. `ENC-641`'s queue keys on
+/// `file_versions.av_status`, so a completed upload that wrote no version was invisible to it —
+/// which is why the pass ran correctly over an empty set for four milestones and reported nothing
+/// wrong.
+///
+/// The scanner is `NoScanningPerformed` under the policy a shipped `antivirus: { provider: none }`
+/// deployment resolves to, because that is what this repository's own dev stack runs. It answers
+/// `Unsupported` — it did not look — and `unsupported` is pinned to `BLOCK`, so the version is
+/// quarantined `SKIPPED` and re-offered the day an engine that inspects content is configured. That
+/// is the correct outcome and the loud one: rule 9 holds, and the corpus is not silently readable.
+///
+/// The positive control is the count: `considered` is 1 and `written` is 1. Without them,
+/// "the version is not AVAILABLE afterwards" holds against a pass that found nothing at all — the
+/// same trap as the row's own absence.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL; CI runs it with --include-ignored"]
+async fn the_antivirus_pass_finds_the_version_a_completed_upload_committed() {
+    let (db, fixtures, pool, alpha_library, _beta) = setup().await;
+    let harness = harness(&db).await;
+    let alpha = fixtures.alpha.id;
+
+    let (_status, issued) = call(
+        &harness,
+        alpha,
+        fixtures.alpha.member,
+        "POST",
+        "/api/v1/uploads",
+        Some(upload_body(alpha_library, "Quarterly Plan.pdf", 64)),
+    )
+    .await;
+    let upload_id = issued["uploadId"].as_str().expect("uploadId").to_owned();
+
+    let (status, body) = call(
+        &harness,
+        alpha,
+        fixtures.alpha.member,
+        "POST",
+        &format!("/api/v1/uploads/{upload_id}/complete"),
+        Some(serde_json::json!({ "sizeBytes": 64, "sha256": DIGEST_HEX })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+
+    let version = only_version(&db, alpha).await;
+    assert_eq!((version.status.as_str(), version.av_status.as_str()), ("SCANNING", "PENDING"));
+
+    // The pass streams the bytes before it scans them, and `RecordingStore` refuses to serve any —
+    // deliberately, because the *upload* path must never move content through this process. This
+    // leg is the worker's, so it gets a store that behaves like the worker's.
+    let scannable =
+        Arc::new(ServingStore::holding(&version.object_key, b"quarterly plan".to_vec()));
+    let scanner = NoScanningPerformed;
+    let policy = ScanPolicy::from_config(&enclave_config::AntivirusConfig::default());
+    let pass = av_pass(
+        &pool,
+        alpha,
+        &scanner,
+        scannable.as_ref(),
+        policy,
+        10,
+        AvCursor::start(),
+        &Stop::new(),
+    )
+    .await
+    .expect("the pass must not fail on a version it cannot scan");
+
+    assert_eq!(
+        pass.considered, 1,
+        "the antivirus queue did not offer the version this upload just committed. That queue is \
+         `av_status`, and before ENC-691 a completed upload wrote no row for it to key on"
+    );
+    assert_eq!(pass.written, 1, "the pass found the version and recorded no verdict against it");
+
+    let after = only_version(&db, alpha).await;
+    assert_eq!(
+        (after.status.as_str(), after.av_status.as_str()),
+        ("QUARANTINED", "SKIPPED"),
+        "`provider: none` did not inspect the content, `unsupported` is pinned to BLOCK, and a \
+         version nothing looked at must not become readable (CLAUDE.md rule 9, ENC-641)"
+    );
+    assert_ne!(after.status, "AVAILABLE");
 }
 
 /// A size the store contradicts is a **persisted** refusal, not a warning.

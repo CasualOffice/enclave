@@ -138,6 +138,7 @@ impl Fixture {
     /// The description of a new version, with a key nobody else will use.
     fn new_version(&self, bump: VersionBump) -> NewVersion {
         NewVersion {
+            id: VersionId::new_v7(),
             file_id: self.file,
             object_key: format!("{}/{}", self.tenant, Uuid::now_v7()),
             storage_profile_id: self.storage_profile,
