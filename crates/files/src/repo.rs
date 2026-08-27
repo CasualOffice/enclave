@@ -87,6 +87,20 @@ pub enum Parent {
 /// A new file node: metadata only, with no content yet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewFile {
+    /// The id the node will carry.
+    ///
+    /// Supplied rather than minted here, because on the one path that creates a file with content
+    /// the id is **already spent**. `enclave_uploads::StagedObject` allocates a [`FileId`] when the
+    /// session is created and stages the bytes straight to
+    /// `tenant/{t}/files/{f}/versions/{v}` (`docs/02-HLD.md §7`), so that a commit is an `INSERT`
+    /// rather than a 5 GB server-side copy. A node minted with a fresh id here would leave that
+    /// object key naming a file that does not exist — the key cannot be rewritten without copying
+    /// the bytes, which is the whole thing the staging layout exists to avoid (`ENC-691`).
+    ///
+    /// A caller with no id to honour passes [`FileId::new_v7`]. It is a field rather than a
+    /// defaulted argument so that every call site states which of the two it is: an id that is
+    /// silently regenerated is the failure this exists to make visible.
+    pub id: FileId,
     /// Where it goes.
     pub parent: Parent,
     /// The name as the user typed it.
@@ -212,6 +226,8 @@ impl FileRepository {
         Self::insert(
             conn,
             tenant,
+            // A folder has no staged object and therefore no id to honour.
+            FileId::new_v7(),
             folder.parent,
             &folder.name,
             FOLDER_MIME_TYPE,
@@ -234,6 +250,9 @@ impl FileRepository {
     /// they exist, no file node in this system reaches `AVAILABLE`, and that is the intended
     /// direction to be wrong in.
     ///
+    /// The node carries [`NewFile::id`], which the caller chose — see that field for why the
+    /// upload path has no freedom here.
+    ///
     /// # Errors
     ///
     /// As [`FileRepository::create_folder`].
@@ -246,6 +265,7 @@ impl FileRepository {
         Self::insert(
             conn,
             tenant,
+            file.id,
             file.parent,
             &file.name,
             &file.mime_type,
@@ -576,6 +596,7 @@ impl FileRepository {
     async fn insert(
         conn: &mut PgConnection,
         tenant: TenantId,
+        id: FileId,
         parent: Parent,
         name: &str,
         mime_type: &str,
@@ -586,7 +607,6 @@ impl FileRepository {
     ) -> Result<FileNode> {
         validate_name(name)?;
 
-        let id = FileId::new_v7();
         let query = match parent {
             Parent::Library(library) => sqlx::query(CREATE_AT_LIBRARY_ROOT)
                 .bind(sql(tenant))

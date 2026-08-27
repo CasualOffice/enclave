@@ -170,6 +170,7 @@ async fn file(pool: &DbPool, at: &Fixture, parent: Parent, name: &str) -> FileNo
         &mut tx,
         at.tenant,
         &NewFile {
+            id: FileId::new_v7(),
             parent,
             name: name.to_owned(),
             mime_type: "application/pdf".to_owned(),
@@ -195,6 +196,7 @@ async fn try_file(
         &mut tx,
         at.tenant,
         &NewFile {
+            id: FileId::new_v7(),
             parent,
             name: name.to_owned(),
             mime_type: "application/pdf".to_owned(),

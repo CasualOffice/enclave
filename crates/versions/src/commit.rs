@@ -107,6 +107,34 @@ const COMMITTED_STATUS: VersionStatus = VersionStatus::Scanning;
 /// The antivirus verdict every freshly committed version is written with.
 const COMMITTED_AV_STATUS: AvStatus = AvStatus::Pending;
 
+/// The value [`NewVersion::storage_profile_id`] carries when the deployment has no profile to name.
+///
+/// # Why a constant and not a lookup
+///
+/// `file_versions.storage_profile_id` is `NOT NULL` (`migrations/0006`) and carries **no foreign
+/// key**, because the table it would reference does not exist: `docs/04-DATA-MODEL.md §4` describes
+/// `storage_profiles` and no migration creates it. `ENC-573` closed the other half of the same gap
+/// by deleting the `storage.profile` configuration key that named a row in it, and `docs/08 §15`
+/// now models a single deployment-wide `storage.s3` block instead. So at the moment a version is
+/// committed there is exactly one object store, it has no row, and there is nothing to look up.
+///
+/// The two alternatives were both worse:
+///
+/// * **Copy `libraries.storage_profile_id`.** That column is nullable, unenforced, and points at
+///   the same absent table — it is a dangling reference an operator can set to any UUID at all. It
+///   would make this column mean "whatever that library was configured with" for some rows and
+///   "the deployment default" for others, and the migration that eventually backfills real
+///   profiles would have no way to tell the two apart.
+/// * **Mint a fresh UUID per version.** Every row would then name a distinct profile that does not
+///   exist, which is unrecoverable rather than merely unresolved.
+///
+/// The nil UUID is chosen precisely because it can never collide with a generated
+/// [`enclave_core::Uuid`], so the backfill this is waiting for is one `WHERE storage_profile_id =
+/// '00000000-0000-0000-0000-000000000000'` statement. It means *"the one store this deployment is
+/// configured with"*, and it is honest about the fact that nothing has provisioned a profile — the
+/// direction `CLAUDE.md`'s working style asks a placeholder to be wrong in.
+pub const UNPROVISIONED_STORAGE_PROFILE: Uuid = Uuid::nil();
+
 /// The content of a new version: bytes that are already in object storage, described.
 ///
 /// Blob storage cannot join a SQL transaction (`docs/03-LLD.md §15`), so the bytes are staged and
@@ -603,6 +631,24 @@ mod tests {
         // The other half of the same rule: the file must not advertise content it cannot serve.
         assert!(BUMP_FILE.contains("status             = 'PROCESSING'"));
         assert!(!BUMP_FILE.contains("'AVAILABLE'"));
+    }
+
+    /// The placeholder profile has to stay findable, because a backfill is what ends it.
+    ///
+    /// Nil rather than a generated UUID: `Uuid::new_v7` and `Uuid::new_v4` can never produce it —
+    /// both set a version nibble — so a row carrying this value cannot be confused with a row that
+    /// names a real profile, and `WHERE storage_profile_id = <nil>` selects exactly the rows the
+    /// migration has to rewrite. A per-version UUID would be unrecoverable instead of merely
+    /// unresolved.
+    #[test]
+    fn the_unprovisioned_storage_profile_is_a_value_a_backfill_can_find() {
+        assert_eq!(UNPROVISIONED_STORAGE_PROFILE, Uuid::nil());
+        assert_ne!(UNPROVISIONED_STORAGE_PROFILE, Uuid::new_v4());
+        assert_ne!(UNPROVISIONED_STORAGE_PROFILE, Uuid::now_v7());
+        assert_eq!(
+            UNPROVISIONED_STORAGE_PROFILE.to_string(),
+            "00000000-0000-0000-0000-000000000000"
+        );
     }
 
     #[test]
