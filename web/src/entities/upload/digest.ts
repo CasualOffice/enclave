@@ -52,7 +52,16 @@ export async function sha256Hex(
   onProgress?: (fraction: number) => void,
 ): Promise<string> {
   const buffer = await readAll(file, onProgress);
-  const digest = await crypto.subtle.digest('SHA-256', buffer);
+  // `new Uint8Array(buffer)` rather than the buffer itself, and it is not defensive typing.
+  // `Blob.arrayBuffer()` is a host method: in a browser and under Node 22 it yields a real
+  // `ArrayBuffer`, but under the Node 20 that CI pins it can yield a view whose backing object
+  // `SubtleCrypto.digest` refuses with "2nd argument is not of type BufferSource". The chunked
+  // path below already builds a `Uint8Array` and never hit this; only files at or under one
+  // chunk did, so every local run passed and CI failed on five tests at once.
+  //
+  // A `Uint8Array` is a `BufferSource` on every runtime, so normalising here removes the
+  // difference rather than testing for it.
+  const digest = await crypto.subtle.digest('SHA-256', new Uint8Array(buffer));
   return hex(new Uint8Array(digest));
 }
 

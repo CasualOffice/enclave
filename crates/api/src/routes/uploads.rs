@@ -37,6 +37,25 @@
 //! spelling of a readable state appears in this module at all — because the first half only holds
 //! while the wire value keeps coming from the type.
 //!
+//! **`ENC-826` did not weaken any of that.** [`progress`] now reports whether the upload became
+//! servable, and it still names no readable state: the answer is `isReadable` on a
+//! [`VersionState`] rendered from the committed row, which is
+//! `enclave_versions::FileVersion::is_readable` — the same predicate the delivery routes' query
+//! splices. This module reads a verdict; it does not reach one. Both source-scanning tests below
+//! pass unchanged, and that is the point of running them against this change rather than adjusting
+//! them for it.
+//!
+//! # Where an upload's progress actually lives (`ENC-826`)
+//!
+//! The session's machine ends at `SCANNING`, so `GET /uploads/{id}` used to report `SCANNING`
+//! forever — including long after the version was published — and never named a `fileId` for a
+//! new-file upload, because the session row has none until the commit writes one. A client polling
+//! the documented progress endpoint could not learn that its own upload had finished, and had to
+//! go to `GET /files/{id}/versions` with an id that appeared only in the `complete` response.
+//!
+//! [`ProgressView`] carries the version now, and its documentation records why the session's own
+//! column is left alone rather than advanced by the antivirus pass.
+//!
 //! # Where a completed upload goes next
 //!
 //! `ENC-691`. [`enclave_uploads::ScanHandoff`] is described by its own crate as *the entire
@@ -93,11 +112,13 @@ use enclave_uploads::{
     UploadLimits, UploadService, UploadSessionId,
 };
 use enclave_versions::{
-    CommittedVersion, NewVersion, VersionBump, VersionService, UNPROVISIONED_STORAGE_PROFILE,
+    CommittedVersion, NewVersion, VersionBump, VersionRepository, VersionService,
+    UNPROVISIONED_STORAGE_PROFILE,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::auth::Authenticated;
+use crate::content::VersionState;
 use crate::error::{ApiError, Envelope};
 use crate::refusal::{none_dischargeable, Refused};
 use crate::state::ApiState;
@@ -209,18 +230,66 @@ struct IssuedUploadView {
 }
 
 /// The response to `GET /api/v1/uploads/{id}`.
+///
+/// # Why `state` alone could never finish the story (`ENC-826`)
+///
+/// `state` is the **upload session's** state, and the session's machine ends at `SCANNING`: that
+/// is the last transition [`enclave_uploads`] can make, by construction — `Session<Scanning>` has
+/// no transition methods and `Processing`, `Available` and `Quarantined` are not phases in that
+/// crate at all. Everything after the handoff happens to the *version*. So a client polling
+/// `state` watched `SCANNING` forever, on a file that had been published minutes earlier, and the
+/// endpoint that looks like the upload-progress API could not report the end of an upload.
+///
+/// [`version`](Self::version) is the answer, and it is the same [`VersionState`] that
+/// `GET /files/{id}` returns as `currentVersion` — so a client that can read one can read the
+/// other, and "is my upload ready" is the same field on both endpoints (`ENC-825`).
+///
+/// # Derived at read time, not written by the antivirus pass
+///
+/// The alternative was to have `crates/worker` write `upload_sessions.state` as it advances the
+/// version. Three reasons it is read here instead.
+///
+/// * **It would be a second mutable copy of a fact `file_versions` already owns.** Two writable
+///   copies of one truth drift, and the one that drifts is always the copy nothing reads back.
+/// * **The copy would outlive nothing.** A session is transient — `enclave_uploads::reap_expired`
+///   releases it after `upload.session_ttl`, 24h — while the version is permanent. Deriving keeps
+///   answering after the session row's own state has stopped being interesting.
+/// * **It would cost the type-level guarantee in `enclave_uploads::state`.** For the worker to
+///   write `PROCESSING` or `AVAILABLE` onto a session, those would have to *become* phases in a
+///   sealed machine whose entire purpose is that they are not — the one thing standing between an
+///   `UPDATE` and a session that claims content is readable before anything scanned it
+///   (`CLAUDE.md` rule 9). That is a large hole to open for a status field.
+///
+/// What that costs: `state` keeps saying `SCANNING` after handoff. That is not a lie — it is a
+/// true and final statement about the *session*, whose job ended there — and the wire says so by
+/// naming its subject. Overloading one field to span two rows with two owners and two lifetimes is
+/// how a client ends up unable to tell which of them it is looking at.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProgressView {
     upload_id: String,
-    /// The state the row holds, from [`LoadedSession::state`] — a client polling after `complete`
-    /// is entitled to see `SCANNING`, and later `QUARANTINED`.
+    /// The state the **session** row holds, from [`LoadedSession::state`]. Terminal at `SCANNING`;
+    /// see the type's documentation, and read [`version`](Self::version) for what happened next.
     state: &'static str,
     library_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     parent_id: Option<String>,
+    /// The file this upload is for.
+    ///
+    /// For a new-version upload this is the file named at creation. For a **new-file** upload the
+    /// session row carries no file id — the row is created by the commit — so it is read off the
+    /// committed version and is absent until that version exists. Absent rather than optimistic on
+    /// purpose: the id is knowable from the staged key the moment the session is created, and
+    /// putting it on the wire before the commit would be a response naming a row nothing has
+    /// written, which is exactly what `ENC-691` was.
     #[serde(skip_serializing_if = "Option::is_none")]
     file_id: Option<String>,
+    /// The version this upload became, once [`promote`] has committed one.
+    ///
+    /// Absent before the handoff. Carries `isReadable`, so a client learns that its upload is
+    /// servable from the same predicate the delivery routes will apply to it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    version: Option<VersionState>,
     name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     declared_size: Option<i64>,
@@ -404,12 +473,45 @@ pub async fn progress(
     let resource = container_of(ctx.tenant_id, record.library_id, record.parent_id);
     authorize(&state, &ctx, Action::Container(ContainerAction::Read), &resource).await?;
 
+    // The version this session's own bytes became, or `None` while it has not committed one
+    // (`ENC-826`). Both identifiers come off the staged key, which allocated them when the session
+    // was created and which the committed row is required to match — so this is a primary-key
+    // lookup, not a search, and it names *this upload's* version rather than whatever the file
+    // currently points at. That distinction is the reason it is not `VersionRepository::current`:
+    // a later upload can move `files.current_version_id`, and this endpoint must keep answering
+    // about the upload the caller asked about.
+    //
+    // `find` rather than `find_readable`: an unreadable version is precisely what a client polling
+    // for progress needs to hear about, and it hears it as `isReadable: false` with the reason
+    // beside it. No byte is served from here — this is metadata, and rule 9 lives on the delivery
+    // routes, which apply the same predicate `VersionState` reports.
+    let mut tx = state
+        .db
+        .begin(ctx.tenant_id)
+        .await
+        .map_err(|error| ApiError::new(error.into(), request_id))?;
+    let committed = VersionRepository::find(
+        &mut tx,
+        ctx.tenant_id,
+        record.staged.file(),
+        record.staged.version(),
+    )
+    .await
+    .map_err(|error| ApiError::new(error.into(), request_id))?;
+    tx.commit().await.map_err(|error| ApiError::new(error.into(), request_id))?;
+
     Ok(Json(ProgressView {
         upload_id: record.id.to_string(),
         state: session.state().as_str(),
         library_id: record.library_id.to_string(),
         parent_id: record.parent_id.map(|id| id.to_string()),
-        file_id: record.file_id.map(|id| id.to_string()),
+        // The committed row's own `file_id`, never the staged key's, for `ENC-691`'s reason: read
+        // off the key it is a promise about a row that may not exist.
+        file_id: record
+            .file_id
+            .or_else(|| committed.as_ref().map(|version| version.file_id))
+            .map(|id| id.to_string()),
+        version: committed.as_ref().map(VersionState::from),
         name: record.name.clone(),
         declared_size: record.declared_size,
         bytes_received: record.bytes_received,
@@ -1046,6 +1148,56 @@ mod tests {
         assert!(
             !handlers.contains("handoff.staged.file().to_string()"),
             "the response is naming the file id from the staged key again"
+        );
+    }
+
+    /// `ENC-826`: progress is reported about the version *this session* committed, and about
+    /// nothing else.
+    ///
+    /// Two ways to get this wrong, and the test names both because they fail in opposite
+    /// directions. Reading `VersionRepository::current` would answer about whatever the file
+    /// points at *now* — so a second upload into the same file would silently change what this
+    /// session reports, and a client would watch someone else's upload finish. Reading
+    /// `find_readable` would collapse "still scanning" and "quarantined" into an absence, which is
+    /// correct on a delivery route and is exactly the wrong answer on a progress endpoint: the
+    /// caller polling it is the one person entitled to be told *why* their upload is not ready.
+    ///
+    /// Needles assembled at run time, for `the_completion_response_cannot_name_a_readable_state`'s
+    /// reason (`docs/12-TESTING.md §1.2`).
+    #[test]
+    fn progress_reports_this_sessions_own_version_and_neither_hides_nor_guesses_its_state() {
+        let source = include_str!("uploads.rs");
+        let handlers = source.split("mod tests {").next().expect("the module has a body");
+
+        // Both identifiers come off the staged key, which allocated them at session creation.
+        for lookup in ["record.staged.file()", "record.staged.version()"] {
+            assert!(
+                handlers.contains(lookup),
+                "`{lookup}` is gone. The version this session produced is found by the two ids its \
+                 own staged key reserved; anything else answers about a different upload"
+            );
+        }
+
+        for wrong in [
+            format!("VersionRepository::{}(", "current"),
+            format!("VersionRepository::{}(", "find_readable"),
+        ] {
+            assert!(
+                !handlers.contains(&wrong),
+                "`{wrong}` is used for the progress lookup. `current` reports whatever the file \
+                 points at now rather than what this session committed, and `find_readable` turns \
+                 a scanning or quarantined version into an absence — which is the one answer a \
+                 client polling its own upload must not be given"
+            );
+        }
+
+        // The positive control: without it every absence above holds of a handler that has stopped
+        // reporting a version at all, which is the defect this row was.
+        assert!(
+            handlers.contains("version: committed.as_ref().map(VersionState::from)"),
+            "the progress response no longer carries the committed version, so asserting how it is \
+             looked up proves nothing. `state` is terminal at SCANNING and can never report the \
+             end of an upload on its own (ENC-826)"
         );
     }
 
