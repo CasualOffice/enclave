@@ -2003,6 +2003,7 @@ dependencies = [
  "enclave-search",
  "enclave-storage",
  "enclave-testing",
+ "enclave-uploads",
  "enclave-versions",
  "futures",
  "milvus-sdk-rust",

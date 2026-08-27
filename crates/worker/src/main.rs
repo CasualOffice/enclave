@@ -67,7 +67,8 @@ use enclave_worker::embedding::MountedEmbedder;
 use enclave_worker::indexing::{PgClassification, VectorStage};
 use enclave_worker::ocr::MountedOcr;
 use enclave_worker::schedule::{
-    AvRunner, ContentScanner, IndexRunner, PipelineRunner, ScanRunner, Scheduler, VersionScanner,
+    AvRunner, ContentScanner, IndexRunner, PipelineRunner, ReaperRunner, ScanRunner, Scheduler,
+    UploadReaper, VersionScanner,
 };
 use enclave_worker::tenants::DbTenants;
 use enclave_worker::Stop;
@@ -102,6 +103,33 @@ const SCAN_BATCH: i64 = 16;
 const AV_BATCH: i64 = 16;
 /// The share of PostgreSQL's expectation a tenant's store must hold to count as stocked.
 const COVERAGE_FLOOR: u32 = 90;
+/// Upload sessions claimed per tenant per reaping tick, per claim — `ENC-806`.
+///
+/// A hundred rather than [`AV_BATCH`]'s sixteen, because the unit of work is one `DeleteObject` and
+/// not a scan, and because a claim takes `FOR UPDATE SKIP LOCKED` on the rows it returns: the
+/// ceiling is how long those locks are held across object-store I/O, which is the number
+/// `enclave_uploads::reaper`'s own documentation asks to be kept at "a hundred, not a hundred
+/// thousand". A tick that fills its batch does not wait before the next one, so this bounds the lock
+/// window rather than the drain rate.
+const REAP_BATCH: usize = 100;
+/// How long a session must have been claiming to scan before this process treats it as stranded.
+///
+/// **Deliberately far longer than `enclave-cli reclaim-uploads`'s default**, and the difference is
+/// the whole of why this is a constant with a paragraph attached rather than a number inline.
+///
+/// The reclaim deletes a staged object, and since `ENC-691` a staged key *is* the committed
+/// version's `object_key` — so the cost of being wrong is a customer's file, not a retry.
+/// `ENC-787` made that unrepresentable rather than checked: the claim asserts `NOT EXISTS` a version
+/// naming the key, in the same statement, and `StrandedSession` is the only value the transition is
+/// reachable from. This window is the *second* guard, and it is the one that still holds if a future
+/// completion path ever writes `SCANNING` and commits its version in a second transaction.
+///
+/// An operator running the repair command has read the candidate list and can afford thirty
+/// minutes. Nobody reads this one before it runs, so it takes the conservative end: a day, which is
+/// the same order as the upload TTL `docs/03-LLD.md §15` gives, and long enough that no plausible
+/// in-flight completion is inside it. The cost of the longer window is a stranded session's bytes
+/// sitting for a day. The cost of a short one is not symmetrical.
+const STRANDED_GRACE: chrono::Duration = chrono::Duration::hours(24);
 
 /// The two pacing constants, checked at compile time rather than by a test.
 ///
@@ -116,6 +144,15 @@ const _PACING_IS_NOT_ZERO: () = {
     assert!(AV_BATCH > 0, "a batch of zero moves no av_status, so nothing ever becomes readable");
     assert!(COVERAGE_FLOOR > 0, "a floor of zero calls an empty index stocked");
     assert!(COVERAGE_FLOOR <= 100, "a floor above 100 is unsatisfiable");
+    assert!(REAP_BATCH > 0, "a batch of zero claims no sessions and reports a healthy sweep");
+    // The one guard here that is not about a pass silently doing nothing. A grace of zero would let
+    // the reclaim consider a session handed to the scanner *this instant* to be stranded, and the
+    // second of `ENC-787`'s two guards would be gone with no test failing — the first guard holds it
+    // alone today, which is exactly the condition under which a missing predicate goes unnoticed.
+    assert!(
+        STRANDED_GRACE.num_seconds() > 0,
+        "a zero grace period lets a completion still in flight be read as stranded"
+    );
 };
 
 #[tokio::main]
@@ -184,7 +221,8 @@ async fn main() -> anyhow::Result<()> {
         scheduler = scheduler
             .with_antivirus(passes.antivirus)
             .with_indexing(passes.indexing)
-            .with_scanning(passes.scanning);
+            .with_scanning(passes.scanning)
+            .with_upload_reaper(passes.reaping);
     }
     if let Some(census) = index_census(config, &secrets)? {
         scheduler = scheduler.with_coverage(census, CoverageFloor::percent(COVERAGE_FLOOR));
@@ -230,6 +268,12 @@ struct ContentPasses {
     indexing: Arc<dyn IndexRunner>,
     /// Detector counts into `security_facts` (`ENC-613`).
     scanning: Arc<dyn ScanRunner>,
+    /// Staged objects out of the bucket, for sessions nothing will ever read (`ENC-806`).
+    ///
+    /// Here rather than in a struct of its own because the dependency is identical — this bucket,
+    /// verified — and because the four must be absent *together*: a deployment with no object
+    /// storage has no content passes and nothing to reap either.
+    reaping: Arc<dyn ReaperRunner>,
 }
 
 /// The content passes' wiring, or `None` when this deployment configured no object storage.
@@ -277,10 +321,12 @@ async fn content_passes(
     let Some(store) = object_store(config, registry).await? else {
         tracing::error!(
             "no object storage is configured (`storage.provider` is `none`), so none of the three \
-             content passes is scheduled. The consequence is not degraded search: **nothing will \
-             move `file_versions.av_status`**, so no version ever becomes AVAILABLE/CLEAN, no read \
-             path serves anything, `chunk_text` stays empty and `security_facts` stays empty. See \
-             crates/worker/src/main.rs::object_store and docs/08-BYO-INFRA.md §15."
+             content passes is scheduled, and neither is the upload reaper. The consequence is not \
+             degraded search: **nothing will move `file_versions.av_status`**, so no version ever \
+             becomes AVAILABLE/CLEAN, no read path serves anything, `chunk_text` stays empty and \
+             `security_facts` stays empty — and no abandoned upload's staged bytes are ever \
+             released (ENC-806). See crates/worker/src/main.rs::object_store and \
+             docs/08-BYO-INFRA.md §15."
         );
         return Ok(None);
     };
@@ -434,6 +480,17 @@ async fn content_passes(
         SCAN_BATCH,
     ));
 
+    // `ENC-806`. Built here rather than beside the coverage probe because it has the *same*
+    // dependency as the three passes above — the object store — and because that dependency must be
+    // the same handle: a second store composed for the reaper is a second bucket the deployment
+    // could accidentally point somewhere else, and this is the one pass that deletes.
+    let reaping = Arc::new(UploadReaper::new(
+        pool.clone(),
+        Arc::clone(&store) as Arc<dyn enclave_storage::BlobStore>,
+        STRANDED_GRACE,
+        REAP_BATCH,
+    ));
+
     let antivirus = Arc::new(VersionScanner::new(
         pool,
         scanner,
@@ -445,7 +502,7 @@ async fn content_passes(
         AV_BATCH,
     ));
 
-    Ok(Some(ContentPasses { antivirus, indexing, scanning }))
+    Ok(Some(ContentPasses { antivirus, indexing, scanning, reaping }))
 }
 
 /// The embedding-and-vector-write stage, or `None` when this deployment embeds nothing.

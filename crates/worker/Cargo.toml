@@ -41,6 +41,12 @@ enclave-antivirus = { workspace = true }
 # constraints — so the statuses this pass writes cannot drift from the ones the column accepts — and
 # `READABLE_PREDICATE`, which the clean transition is asserted against rather than against a literal.
 enclave-versions = { workspace = true }
+# `ENC-806`: the upload reaper. `crates/uploads` owns `upload_sessions`, both claims and the type
+# that makes reclaiming a committed session unrepresentable; what it lacked was a caller. The edge
+# is this way round for the reason the antivirus and DLP ones are — the domain crate owns the
+# statements and the state machine, and the *pass* needs a pool, an object store and a clock, which
+# is composition and lives here.
+enclave-uploads = { workspace = true }
 enclave-indexing = { workspace = true }
 enclave-preview = { workspace = true }
 enclave-storage = { workspace = true }

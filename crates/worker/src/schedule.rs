@@ -87,6 +87,7 @@ use crate::epoch::ReconcilerConfig;
 use crate::indexing::{index_pass, IndexPass, VectorStage};
 use crate::ocr::MountedOcr;
 use crate::scan::{scan_pass, ScanCursor, ScanPass};
+use crate::uploads::{released_a_full_batch, ReapPass};
 use crate::{coverage, epoch, invalidation, Result, Stop, Woke};
 use enclave_dlp::detector::DetectorSet;
 
@@ -105,6 +106,8 @@ pub const INVALIDATION: &str = "invalidation";
 pub const EPOCH: &str = "epoch";
 /// See [`INDEXING`].
 pub const COVERAGE: &str = "coverage";
+/// See [`INDEXING`]. `ENC-806` — the pass that had no caller in any binary for five milestones.
+pub const UPLOADS: &str = "upload-reaper";
 
 /// How long each loop waits after a tick that found nothing to do.
 ///
@@ -157,6 +160,19 @@ pub struct Cadence {
     /// reads a gauge nothing refreshed since the last one. Each tick is one round trip to the vector
     /// store per tenant, which is why it is not shorter still.
     pub coverage: Duration,
+    /// How often abandoned and stranded upload sessions are swept when there are none.
+    ///
+    /// The longest of the six, and it is the only one where that is not a cost. A staged object
+    /// nobody will ever read costs storage, never correctness: no read path can reach it, no quota
+    /// counts it, no search can return it. Sweeping more often would find the same nothing more
+    /// expensively, per tenant, and this interval paces *only* the empty case — a tick that emptied
+    /// its batch goes straight round again ([`crate::uploads::released_a_full_batch`]), so a
+    /// deployment with a real backlog drains it at the speed of the object store rather than at the
+    /// speed of this number.
+    ///
+    /// What it must not be is hours. `ENC-806` is the row for a reaper nothing ran at all, and the
+    /// first thing anyone will do with a deployment that has one is watch whether the bytes go.
+    pub uploads_idle: Duration,
 }
 
 impl Default for Cadence {
@@ -168,6 +184,7 @@ impl Default for Cadence {
             invalidation: Duration::from_secs(300),
             epoch: Duration::from_secs(60),
             coverage: Duration::from_secs(60),
+            uploads_idle: Duration::from_secs(600),
         }
     }
 }
@@ -238,6 +255,107 @@ pub trait ScanRunner: Send + Sync + fmt::Debug {
     /// Whatever [`scan_pass`] returns: a storage or database failure, never a document that would
     /// not parse.
     async fn run(&self, tenant: TenantId, stop: &Stop) -> Result<ScanPass>;
+}
+
+/// One tenant's share of the upload sessions whose staged bytes nothing will ever read — `ENC-806`.
+///
+/// Its own trait for the reason [`AvRunner`] and [`ScanRunner`] are: this capability is
+/// independently absent, and [`Scheduler::scheduled`] has to be able to say so. It is the only pass
+/// in this crate that **deletes objects**, which is why its absence must be announced rather than
+/// inferred, and why it is never scheduled against a store that was not composed.
+#[async_trait]
+pub trait ReaperRunner: Send + Sync + fmt::Debug {
+    /// Releases up to one batch each of `tenant`'s abandoned and stranded sessions.
+    ///
+    /// Takes no [`Stop`], unlike the three content runners. Theirs drain a tenant across many
+    /// claims and have to be interruptible part-way; a reaping tick is two bounded transactions and
+    /// the loop checks the flag between ticks. A stopped sweep is a shorter sweep, never a
+    /// half-finished one — both predicates are self-consuming, so whatever it did not reach still
+    /// matches next time.
+    ///
+    /// # Errors
+    ///
+    /// Whatever [`reap_pass`](crate::uploads::reap_pass) returns: a claim, a transaction or a commit
+    /// failing. Never an object the store would not delete — that is a deferral, counted and
+    /// retried next tick.
+    async fn run(&self, tenant: TenantId) -> Result<ReapPass>;
+}
+
+/// [`ReaperRunner`] over a real store and pool — `ENC-806`.
+///
+/// # What it holds that the content runners do not
+///
+/// A **grace period**, and no extractor, no engine and no cursor.
+///
+/// No cursor because both claims are self-consuming: a released session is `EXPIRED` and matches
+/// neither predicate again, so a sweep resumes from the top and finds what is left. The two passes
+/// that carry cursors ([`ContentScanner`], [`VersionScanner`]) do so because their queues are
+/// *queries* with no claim column and a version that produces no verdict never leaves them.
+///
+/// The grace period is the one knob, and it exists because of what this pass can destroy. See
+/// [`UploadReaper::new`].
+pub struct UploadReaper {
+    pool: DbPool,
+    /// `Arc<dyn BlobStore>` rather than a type parameter, unlike the three runners above. They are
+    /// generic because they are constructed beside a `Pipeline<E>` whose extractor is already a type
+    /// parameter; this one composes nothing and needs no concrete store, so a parameter here would
+    /// be a name every caller has to write for no property it buys.
+    store: Arc<dyn BlobStore>,
+    grace: chrono::Duration,
+    batch: usize,
+}
+
+impl fmt::Debug for UploadReaper {
+    /// Names the wiring, never its contents — [`PipelineRunner`]'s reason. The grace *is* printed,
+    /// because it is the number that decides whether a completion still in flight can be mistaken
+    /// for a stranded one, and a start-up line is exactly where an operator should be able to read
+    /// it.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("UploadReaper")
+            .field("stranded_grace_hours", &self.grace.num_hours())
+            .field("batch", &self.batch)
+            .finish_non_exhaustive()
+    }
+}
+
+impl UploadReaper {
+    /// Assembles the reaping pass's dependencies once, for every tenant and every tick.
+    ///
+    /// `grace` is how long a session must have been claiming to scan before this pass will consider
+    /// it stranded. It is a parameter and not a constant here because the honest value differs
+    /// between a one-off repair somebody watches (`enclave-cli reclaim-uploads`, where an operator
+    /// picks it and reads the candidate list first) and an unattended standing sweep, which must be
+    /// the conservative one. `crates/worker/src/main.rs::STRANDED_GRACE` is the value this binary
+    /// chooses and states why.
+    ///
+    /// It is deliberately **not** derived from `expires_at`. That is the upload TTL — a fact about
+    /// when the session was created — and a session handed off to the scanner one minute before its
+    /// TTL ran out would be a candidate a minute later
+    /// (`UploadRepository::claim_stranded`).
+    #[must_use]
+    pub const fn new(
+        pool: DbPool,
+        store: Arc<dyn BlobStore>,
+        grace: chrono::Duration,
+        batch: usize,
+    ) -> Self {
+        Self { pool, store, grace, batch }
+    }
+}
+
+#[async_trait]
+impl ReaperRunner for UploadReaper {
+    async fn run(&self, tenant: TenantId) -> Result<ReapPass> {
+        crate::uploads::reap_pass(
+            &self.pool,
+            tenant,
+            self.store.as_ref(),
+            Utc::now(),
+            self.grace,
+            self.batch,
+        )
+        .await
+    }
 }
 
 /// [`IndexRunner`] over a real pipeline, store and pool.
@@ -598,6 +716,7 @@ pub struct Scheduler {
     antivirus: Option<Arc<dyn AvRunner>>,
     indexing: Option<Arc<dyn IndexRunner>>,
     scanning: Option<Arc<dyn ScanRunner>>,
+    reaping: Option<Arc<dyn ReaperRunner>>,
     coverage: Option<CoverageProbe>,
     reconciler: ReconcilerConfig,
     cadence: Cadence,
@@ -617,6 +736,7 @@ impl Scheduler {
             antivirus: None,
             indexing: None,
             scanning: None,
+            reaping: None,
             coverage: None,
             reconciler: ReconcilerConfig::default(),
             cadence: Cadence::default(),
@@ -665,6 +785,26 @@ impl Scheduler {
         self
     }
 
+    /// Schedules the upload reaper. **Without this call, no staged object is ever released**
+    /// (`ENC-806`).
+    ///
+    /// That was the state of every deployment until this builder step existed: `reap_expired` had a
+    /// full test suite and no caller outside it, so an abandoned upload kept its bytes forever —
+    /// unmetered, unreferenced and unreachable by any read path.
+    ///
+    /// Optional for the reason the three content passes are, and more strictly. The pass *deletes
+    /// objects*, so a deployment that configured no object storage must not have it scheduled and
+    /// failing: a sweep that could not delete would either mark rows and orphan their bytes for good
+    /// or defer every session forever while looking busy. Absent, it costs storage and nothing else
+    /// — no read path, no quota and no search can reach a staged object — and
+    /// [`Scheduler::scheduled`] is what makes that absence a line an operator reads rather than a
+    /// bucket that quietly grows.
+    #[must_use]
+    pub fn with_upload_reaper(mut self, runner: Arc<dyn ReaperRunner>) -> Self {
+        self.reaping = Some(runner);
+        self
+    }
+
     /// Schedules the coverage probe. Without this call, the coverage gauges have no producer and
     /// `SearchIndexCoverageUnreported` keeps describing the deployment (`docs/11 §5.7` step 5).
     #[must_use]
@@ -706,6 +846,9 @@ impl Scheduler {
         // until this one has run.
         if self.antivirus.is_some() {
             passes.insert(0, ANTIVIRUS);
+        }
+        if self.reaping.is_some() {
+            passes.push(UPLOADS);
         }
         if self.coverage.is_some() {
             passes.push(COVERAGE);
@@ -767,6 +910,14 @@ impl Scheduler {
             );
             tasks.push(tokio::spawn(async move {
                 epoch_loop(&pool, tenants.as_ref(), config, cadence, &stop).await;
+            }));
+        }
+
+        if let Some(runner) = self.reaping.clone() {
+            let (tenants, cadence, stop) =
+                (Arc::clone(&self.tenants), self.cadence.uploads_idle, stop.clone());
+            tasks.push(tokio::spawn(async move {
+                uploads_loop(tenants.as_ref(), runner.as_ref(), cadence, &stop).await;
             }));
         }
 
@@ -1048,6 +1199,99 @@ async fn scanning_loop(
 /// [`scanning_loop`].
 const fn scan_progressed(pass: &ScanPass) -> bool {
     pass.scanned > 0
+}
+
+/// Releases each tenant's unreferenced staged bytes, and goes round again while batches come back
+/// full — `ENC-806`.
+///
+/// **Only a full batch that released something is progress**, which is
+/// [`released_a_full_batch`] and is load-bearing in the same way deferral is for
+/// [`indexing_loop`]. A session the store refused to delete is left claimable on purpose, so a full
+/// batch that deferred every one of them still matches the same predicate next tick: counting it as
+/// progress would turn an object-store outage into a loop re-issuing the same hundred deletes at
+/// the speed of the network. Idling makes the retry one bounded attempt per interval.
+///
+/// A tenant is reported only when it did something or deferred something. A quiet sweep over a
+/// healthy deployment is every tenant finding nothing, every ten minutes, and a line per tenant per
+/// tick is a log nobody reads — which is the state in which the *interesting* line goes unnoticed.
+async fn uploads_loop(
+    tenants: &dyn TenantSource,
+    runner: &dyn ReaperRunner,
+    idle: Duration,
+    stop: &Stop,
+) {
+    run_loop(UPLOADS, idle, stop, move || async move {
+        let Some(tenants) = tenants_for(UPLOADS, tenants).await else { return Tick::Idle };
+
+        let mut progressed = false;
+        for tenant in tenants {
+            if stop.is_stopped() {
+                break;
+            }
+            match runner.run(tenant).await {
+                Ok(pass) => {
+                    report_reaped(tenant, &pass);
+                    progressed |= released_a_full_batch(&pass);
+                }
+                // Per tenant, and the loop continues: one tenant whose bucket is unreachable must
+                // not leave every other tenant's abandoned uploads holding their bytes.
+                Err(error) => {
+                    warn!(pass = UPLOADS, tenant = %tenant, %error, "the upload reaper failed");
+                }
+            }
+        }
+
+        if progressed {
+            Tick::Progressed
+        } else {
+            Tick::Idle
+        }
+    })
+    .await;
+}
+
+/// Says out loud what a reaping tick released, when it released or refused anything.
+///
+/// `info!` for a release and `warn!` for a deferral, and the split is the point: bytes going is
+/// routine and bytes *refusing* to go is a store an operator has to look at. A `deferred` count that
+/// stays high across ticks is the signal (`ReapReport::deferred`).
+///
+/// Silent when a tenant had nothing, which is the steady state — see [`uploads_loop`].
+fn report_reaped(tenant: TenantId, pass: &ReapPass) {
+    if pass.released() > 0 {
+        info!(
+            pass = UPLOADS,
+            tenant = %tenant,
+            expired = pass.expired.released,
+            stranded = pass.stranded.reclaimed,
+            "released the staged bytes of upload sessions nothing will read"
+        );
+    }
+
+    if pass.deferred() > 0 {
+        warn!(
+            pass = UPLOADS,
+            tenant = %tenant,
+            deferred = pass.deferred(),
+            "some staged objects could not be released; they keep their rows and are retried. A \
+             deferred count that does not fall is an object store refusing deletes."
+        );
+    }
+
+    // Separate from the two above, and never merged into them. Since `ENC-691` a version commits in
+    // the same transaction that writes `SCANNING`, so a *new* strand is unrepresentable and this
+    // number should drain a historical backlog to zero and stay there. One that keeps moving is a
+    // second completion path somewhere that does not commit its version with its state.
+    if pass.stranded.found > 0 {
+        warn!(
+            pass = UPLOADS,
+            tenant = %tenant,
+            found = pass.stranded.found,
+            "sessions were stranded in SCANNING with no version behind them (ENC-787). Since \
+             ENC-691 this is a historical backlog; a count that keeps growing is a completion path \
+             that does not commit its version in the same transaction as its state."
+        );
+    }
 }
 
 /// Lifts expired suppressions on a fixed cadence.
@@ -1455,6 +1699,93 @@ mod tests {
             "a re-confirmed unscannable version changed nothing, so a second tick finds it again"
         );
         assert!(!av_progressed(&AvPass::default()), "an empty queue is idle");
+    }
+
+    /// A reaper that records the tenants it was asked about and stops the loop after `stop_after`.
+    #[derive(Debug)]
+    struct FixedReaper {
+        seen: std::sync::Mutex<Vec<TenantId>>,
+        stop: Stop,
+        stop_after: usize,
+        outcome: ReapPass,
+    }
+
+    impl FixedReaper {
+        fn new(stop: Stop, stop_after: usize, outcome: ReapPass) -> Arc<Self> {
+            Arc::new(Self { seen: std::sync::Mutex::new(Vec::new()), stop, stop_after, outcome })
+        }
+
+        fn seen(&self) -> Vec<TenantId> {
+            self.seen.lock().expect("the recorder was not poisoned").clone()
+        }
+    }
+
+    #[async_trait]
+    impl ReaperRunner for FixedReaper {
+        async fn run(&self, tenant: TenantId) -> Result<ReapPass> {
+            let calls = {
+                let mut seen = self.seen.lock().expect("the recorder was not poisoned");
+                seen.push(tenant);
+                seen.len()
+            };
+            if calls >= self.stop_after {
+                self.stop.stop();
+            }
+            Ok(self.outcome)
+        }
+    }
+
+    fn released_one() -> ReapPass {
+        ReapPass {
+            expired: enclave_uploads::ReapReport { claimed: 1, released: 1, deferred: 0 },
+            stranded: enclave_uploads::ReclaimReport::default(),
+            batch: 100,
+        }
+    }
+
+    /// The upload reaper is scheduled when it is wired, and absent — visibly — when it is not.
+    ///
+    /// Both halves, and the negative one is the whole of `ENC-806`. For five milestones this pass
+    /// existed, was tested, and was called by nothing; a deployment with a growing bucket of
+    /// abandoned uploads and a deployment with none looked identical from outside the process,
+    /// because there was no line anywhere saying whether anything was reaping. `scheduled()` is that
+    /// line, so the assertion that the name appears when the runner is present is as load-bearing as
+    /// the one that it does not appear when the store is absent.
+    #[test]
+    fn the_upload_reaper_is_absent_until_it_is_wired_and_is_named_when_it_is() {
+        let tenants = FixedTenants::of(1);
+
+        let bare = Scheduler::new(tenants.clone());
+        assert!(
+            !bare.scheduled().contains(&UPLOADS),
+            "a deployment with no object store must not have a delete pass scheduled: {:?}",
+            bare.scheduled()
+        );
+
+        let wired = Scheduler::new(tenants).with_upload_reaper(FixedReaper::new(
+            Stop::new(),
+            usize::MAX,
+            released_one(),
+        ));
+        assert_eq!(wired.scheduled(), vec![INVALIDATION, EPOCH, UPLOADS]);
+    }
+
+    /// The loop visits every tenant, once per tick.
+    ///
+    /// The interval is an hour and is never waited on: the runner raises the signal on the last
+    /// tenant of the first sweep, so a regression that enumerated nothing, or that swept only the
+    /// first tenant, fails on the recorded list rather than on a stopwatch. That failure mode is not
+    /// hypothetical here — a reaper that visited one tenant would leave every other tenant's staged
+    /// bytes exactly as unreleased as no reaper at all, which is the state this row is about.
+    #[tokio::test]
+    async fn the_upload_reaper_loop_visits_every_tenant() {
+        let stop = Stop::new();
+        let tenants = FixedTenants::of(3);
+        let runner = FixedReaper::new(stop.clone(), 3, released_one());
+
+        uploads_loop(tenants.as_ref(), runner.as_ref(), Duration::from_secs(3600), &stop).await;
+
+        assert_eq!(runner.seen(), tenants.tenants, "every tenant, in the source's order, once");
     }
 
     /// A census that answers nothing, for the `scheduled()` assertions, which never call it.

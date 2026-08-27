@@ -45,6 +45,16 @@
 //! `facts_unavailable` policy's to settle rather than this crate's. What it must never do is record
 //! a scan it did not perform; see that module for why an unscannable document gets no row at all.
 //!
+//! [`uploads`] is the pass that deletes, which nothing else here does, and it is the one whose
+//! absence costs neither index size nor readability but **money and a compliance surface**: every
+//! abandoned upload in every deployment kept its staged object forever, unmetered and referenced by
+//! nothing (`ENC-806`). It is here rather than in `crates/scheduler` because a destructive sweep
+//! needs a verified object store, a tenant enumerator, per-tenant failure isolation, a
+//! drain-the-backlog tick and — above all — a way to *not be scheduled and say so* when its store
+//! is absent. Four of those five exist in this crate and none of them exists there; that module
+//! argues each one. What it must never do is decide for itself whether a session is collectable:
+//! `enclave_uploads::StrandedSession` owns that question and has one constructor.
+//!
 //! [`coverage`] is downstream of everything, because it writes nothing at all: it takes the
 //! index-coverage reading `crates/search/src/health.rs` computes, per tenant, and publishes it, so
 //! that the three rules in `deploy/monitoring/alerts/search.yml` have a producer. Its output is an
@@ -111,6 +121,7 @@ pub mod ocr;
 pub mod scan;
 pub mod schedule;
 pub mod tenants;
+pub mod uploads;
 
 pub use error::{Result, WorkerError};
 
