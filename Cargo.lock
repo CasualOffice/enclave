@@ -1986,6 +1986,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "aws-smithy-http-client",
+ "aws-smithy-runtime-api",
+ "aws-smithy-types",
  "bytes",
  "chrono",
  "enclave-antivirus",
