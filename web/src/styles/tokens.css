@@ -61,3 +61,40 @@
  * axe failed on it. Derived by theme here so no component has to remember. */
 :root{--on-accent:#fff}
 [data-theme="dark"]{--on-accent:var(--ink)}
+
+/* The focus indicator (`docs/09 §15`: "visible focus with a 3:1 contrast ratio
+ * against adjacent colors").
+ *
+ * **It is `--accent`, opaque, and not `--accent-ring`.** Every `:focus-visible`
+ * rule in this tree drew `2px solid var(--accent-ring)`, and `--accent-ring` is
+ * a 30–40% alpha wash meant for the *glow* behind a filled control, not for a
+ * line that has to be seen. Composited against the surface it lands on it
+ * measures, across the six theme × brand combinations this product ships:
+ *
+ *     light/default    1.76:1   dark/default    1.97:1
+ *     light/northwind  1.68:1   dark/northwind  2.41:1
+ *     light/meridian   1.94:1   dark/meridian   2.42:1
+ *
+ * — against a floor of 3:1, so the *lowest* of them is a little over half of
+ * what is required and the best is four fifths of it. The same measurement for
+ * the opaque accent is 4.79:1 at worst (`northwind` light, on `--sunken`) and
+ * 17.74:1 at best, and it clears 3:1 on `--sheet`, `--canvas`, `--sunken` and a
+ * selected row in every combination. `tests/unit/focus-ring.test.ts` is that
+ * measurement as an assertion, run over these token values.
+ *
+ * This was invisible because **axe does not check focus-indicator contrast**.
+ * It checks text and it checks some graphical objects; an `outline` colour on a
+ * `:focus-visible` pseudo-class is neither, so 94 green axe pages said nothing
+ * about it — the "green gate proving nothing" shape, one layer below where the
+ * repository last found it. `ENC-895`.
+ *
+ * `--accent-ring` keeps its job. `layout.css` and `search.css` use it as the
+ * outer glow *behind* this ring, which is what a 35% wash is good at, and both
+ * pair it with a solid inner line. Only the load-bearing line changed.
+ *
+ * Deliberately **not** derived from `--fg4`. `ENC-863` measures that grey at
+ * 3.47:1 on the sheet and 2.78:1 in dark, which fails the 3:1 WCAG 1.4.11 asks
+ * of a graphical object; a focus ring built from it would be invisible in dark
+ * mode to exactly the users who need it.
+ */
+:root{--focus-ring:var(--accent);--focus-ring-w:2px;--focus-ring-offset:1px}
