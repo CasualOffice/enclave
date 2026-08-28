@@ -165,12 +165,18 @@ pub fn router(state: ApiState, delivery: Delivery) -> Router {
         // because external sharing is the highest-consequence grant in the system, and the handler
         // picks between them from the requested audience alone.
         //
-        // `GET /shares/{token}` — the unauthenticated redemption — is **not** registered. It has no
-        // way to resolve a token to a tenant: `share_links` is under FORCE row-level security, so
-        // the digest lookup sees one tenant on a scoped connection and raises on an unscoped one,
-        // and the only connection that would work is refused outside `crates/db` by the no-raw-pool
-        // gate. `ENC-692` carries the finding and the two candidate designs; registering a route
-        // that could only 503 is the ENC-170 shape this router already refuses to have.
+        // `GET /shares/{token}` — the unauthenticated redemption — is **not** registered, and the
+        // reason is no longer the one `ENC-692` recorded. The tenant is now available on an
+        // unauthenticated route: `enclave_db::resolve_routed_tenant` resolves a verified custom
+        // domain and a slug (`ENC-686`), `main.rs` configures the platform URL it needs, and the
+        // `RoutedTenant` extractor is already how `POST /auth/login` gets a tenant. What blocks it
+        // is `ENC-879`: a redemption arrives with **no principal** the policy chain can name — there
+        // is no `Actor` variant for a link's bearer, no `acl_entries.principal_type` that could hold
+        // one, and `ResourceKind::Share` is an unsupported target — so `enforce` can only deny, for
+        // every caller. Registering a route that refuses every redemption is the ENC-170 shape this
+        // router already refuses to have, and a denial rendered as anything but `404` would confirm
+        // to an anonymous caller that the token is live (rule 7).
+        // `crates/api/src/routes/shares.rs` carries the argument and the tests that hold it.
         .route("/api/v1/files/{id}/shares", get(routes::shares::list).post(routes::shares::create))
         .route("/api/v1/shares/{id}", patch(routes::shares::update).delete(routes::shares::revoke))
         // Delivery (docs/05-API.md §9). Download is a POST because it has side effects: it spends

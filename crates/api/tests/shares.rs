@@ -25,8 +25,8 @@ use enclave_api::{router, ApiState, Delivery};
 use enclave_auth::{AccessTokenIssuer, Acr, AuthMethod, KeySet, PrivateSigningKey, TokenTemplate};
 use enclave_authorization::PgAclAuthorization;
 use enclave_core::{
-    Action, ClientType, FileAction, FileId, LibraryId, PolicyEngine, ShareAction, TenantId, UserId,
-    WorkspaceId,
+    Action, Actor, ClientType, Error, FileAction, FileId, GuestId, LibraryId, PolicyEngine,
+    RequestContext, ResourceKind, ResourceRef, ShareAction, TenantId, UserId, WorkspaceId,
 };
 use enclave_db::{sql, DbPool, TenantScoped};
 use enclave_sharing::{redeem, ShareToken, SharingError};
@@ -50,10 +50,30 @@ async fn harness(db: &TestDb) -> Harness {
     let key = PrivateSigningKey::generate(Utc::now()).expect("generate signing key");
 
     let state_pool = db.pool().await.expect("state pool");
+    let state = ApiState::new(
+        policy_engine(db).await,
+        state_pool,
+        ISSUER,
+        AUDIENCE,
+        KeySet::new([key.public().clone()]),
+    );
+
+    // Sharing reaches no delivery path: no bytes, no renditions.
+    Harness { app: router(state, Delivery::unconfigured()), key }
+}
+
+/// The chain the routes above run behind, built separately so a test can ask it a question directly.
+///
+/// Extracted for [`the_chain_can_authorize_no_principal_a_redemption_could_present`], which is about
+/// what the chain *decides* rather than about what a route answers. Asking a differently-composed
+/// engine would prove nothing about the endpoints, so there is one composition and both callers get
+/// it — in particular the real [`PgAclAuthorization`], because the whole question is what the ACL
+/// resolver does with a principal that is not in it.
+async fn policy_engine(db: &TestDb) -> PolicyEngine {
     let authz_pool = db.pool().await.expect("authorization pool");
     let audit_pool = db.pool().await.expect("audit pool");
 
-    let policy = PolicyEngine::new(
+    PolicyEngine::new(
         Arc::new(enclave_conditional_access::UnconfiguredConditionalAccess),
         Arc::new(PgAclAuthorization::new(authz_pool))
             as Arc<dyn enclave_core::AuthorizationService>,
@@ -62,13 +82,7 @@ async fn harness(db: &TestDb) -> Harness {
         Arc::new(enclave_dlp::DisabledDlp),
         Arc::new(enclave_retention::UnconfiguredRetention),
         Arc::new(enclave_audit::PgAuditSink::new(audit_pool, enclave_audit::ChainMode::Enabled)),
-    );
-
-    let state =
-        ApiState::new(policy, state_pool, ISSUER, AUDIENCE, KeySet::new([key.public().clone()]));
-
-    // Sharing reaches no delivery path: no bytes, no renditions.
-    Harness { app: router(state, Delivery::unconfigured()), key }
+    )
 }
 
 fn token(key: &PrivateSigningKey, tenant: TenantId, user: UserId) -> String {
@@ -490,6 +504,110 @@ async fn another_tenants_share_token_is_indistinguishable_from_one_that_was_neve
     )
     .await;
     assert_eq!(listed["items"][0]["downloadCount"], 1);
+}
+
+/// `ENC-879` — the blocker on `GET /shares/{token}` that `ENC-692`'s row does not name.
+///
+/// `ENC-692` says the route cannot be registered because no connection can resolve a token to a
+/// tenant. **Both halves of that are now false**: `enclave_db::resolve_routed_tenant` resolves a
+/// verified custom domain and a slug (`ENC-686`, `migrations/0026`), `crates/api/src/main.rs`
+/// configures `database.platform_url`, and `RoutedTenant` has been an extractor since `ENC-685`. So
+/// the tenant is available and the token resolves under `TenantScoped` — which is what the test
+/// above proves, from both sides.
+///
+/// What is left is a third blocker, and it is in the chain rather than in the connection. A
+/// redemption arrives with **no principal**: `enclave_core::Actor` has no variant for the bearer of
+/// a link, `acl_entries.principal_type` has no kind that could name one (`USER`, `GROUP`, `GUEST`,
+/// `SERVICE_ACCOUNT`, `EVERYONE`), and `enclave_authorization::classify` maps
+/// `ResourceKind::Share` to an unsupported target. So `PolicyEngine::enforce` — which `CLAUDE.md`
+/// rule 1 requires the handler to call — has no answer but `deny`, for every principal a redemption
+/// could honestly present. A registered route would therefore refuse every redemption, which is
+/// `ENC-170`'s shape; and rendering that denial as anything but `404` would tell an anonymous
+/// caller that the token is live (rule 7).
+///
+/// # What each leg proves, and which layer holds it
+///
+/// This is the **policy-chain** layer throughout — not row-level security, and not a query
+/// predicate. Every leg runs in `tenant-alpha`'s own scope against `tenant-alpha`'s own file, so
+/// RLS hides nothing from any of them: the only thing that can produce a refusal here is the
+/// authorization stage's verdict on the principal. That is deliberate, because the cross-tenant
+/// property is already held by the test above, where RLS *is* the mechanism.
+///
+/// The first assertion is the positive control and it runs first: the same action, the same
+/// resource and the same engine **allow** for a principal the ACL names. Without it, "the chain
+/// refused" is satisfied by an engine that refuses everything, a fixture whose grants never landed,
+/// or a resource reference that points at nothing.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL; CI runs it with --include-ignored"]
+async fn the_chain_can_authorize_no_principal_a_redemption_could_present() {
+    let (db, fixtures, _pool, alpha, _beta) = setup().await;
+    let harness = harness(&db).await;
+    let policy = policy_engine(&db).await;
+
+    // A real link, minted through the real endpoint, so the id below names a link that exists and
+    // the question is about the principal rather than about a fabricated row.
+    let (status, created) = call(
+        &harness,
+        alpha.tenant,
+        fixtures.alpha.member,
+        "POST",
+        &format!("/api/v1/files/{}/shares", alpha.file),
+        // `INTERNAL`, because the fixture grants `file.share` and not `file.share_external`, and
+        // because the audience makes no difference to what follows: the chain's answer turns on the
+        // principal, and an `ANYONE` link would be refused by the same stage for the same reason.
+        Some(share_body("INTERNAL")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let link_id: uuid::Uuid =
+        created["id"].as_str().expect("id").parse().expect("the endpoint returned a uuid");
+
+    // The pair a redemption would ask: `share.read` — *inspect an existing share* — against the
+    // resource the link exposes, because `governing_resource` already establishes that the
+    // permission governing a link is the permission on its target.
+    const READ: Action = Action::Share(ShareAction::Read);
+    let target = ResourceRef::file(alpha.tenant, alpha.file);
+
+    // The positive control, first and in the same run.
+    let mut named = RequestContext::system(alpha.tenant);
+    named.actor = Actor::User(fixtures.alpha.member);
+    let allowed = policy.enforce(&named, READ, &target).await;
+    assert!(
+        allowed.is_ok(),
+        "the chain refused a principal the ACL names, so every refusal below proves nothing: \
+         {allowed:?}"
+    );
+
+    // And every principal a redemption could present is refused. Each is a shortcut somebody could
+    // reach for, named so that the refusal is legible as a decision rather than as an accident.
+    for (shortcut, actor) in [
+        ("the System actor a handler holding no principal would build", Actor::System),
+        (
+            "a GuestId fabricated from the link's own id — which would also write that id into the \
+             audit row as though a guest had acted",
+            Actor::Guest(GuestId::from_uuid(link_id)),
+        ),
+        ("a UserId nothing in the directory names", Actor::User(UserId::new_v7())),
+    ] {
+        let mut ctx = RequestContext::system(alpha.tenant);
+        ctx.actor = actor;
+        let decision = policy.enforce(&ctx, READ, &target).await;
+        assert!(
+            matches!(decision, Err(Error::PolicyDenied { .. })),
+            "the chain authorized {shortcut}, so a redemption could be built on it: {decision:?}"
+        );
+    }
+
+    // Asking about the *link* instead of its target is not a way round it. `classify` calls
+    // `ResourceKind::Share` unsupported — share links carry no `acl_entries` rows — so even the
+    // principal the control just proved is granted is refused here.
+    let link = ResourceRef::new(alpha.tenant, ResourceKind::Share, link_id);
+    let on_the_link = policy.enforce(&named, READ, &link).await;
+    assert!(
+        matches!(on_the_link, Err(Error::PolicyDenied { .. })),
+        "the chain answered a question about a share object, so `ENC-879` may be narrower than \
+         this test claims: {on_the_link:?}"
+    );
 }
 
 /// Rule 7 on the two `/shares/{id}` methods: another tenant's link is a `404`, and so is a
