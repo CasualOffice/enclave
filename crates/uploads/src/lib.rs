@@ -69,7 +69,7 @@ pub mod state;
 
 mod row;
 
-pub use content::{ChecksumEvidence, FailureReason, ReportedContent, VerifiedContent};
+pub use content::{FailureReason, ReportedContent, VerifiedContent};
 pub use error::{Result, UploadError};
 pub use id::UploadSessionId;
 pub use limits::{extension_of, UploadLimits, MAX_NAME_CHARS};

@@ -139,6 +139,42 @@ pub enum StorageError {
         capability: &'static str,
     },
 
+    /// The caller asked for a provider-verified digest on an upload this backend cannot verify.
+    ///
+    /// Raised by [`BlobStore::create_upload`](crate::BlobStore::create_upload) *before* anything is
+    /// signed, so the refusal costs no bandwidth — `docs/05-API.md §8`.
+    ///
+    /// The case that reaches it is multipart. A single `PUT` carrying `x-amz-checksum-sha256` is
+    /// verified by S3 and by MinIO against the body they receive; a multipart upload is not, because
+    /// what those backends compute for one is a *checksum of the part checksums* with a `-N` suffix,
+    /// which is not the whole-object SHA-256 a version row records. AWS's `FULL_OBJECT` checksum
+    /// type would close it and MinIO `RELEASE.2025-04-22` answers `InvalidArgument` to it, so on the
+    /// backend this product ships with there is nothing to fall back to.
+    ///
+    /// Refusing here rather than accepting the upload and recording the client's unverified word is
+    /// the whole of `ENC-820`: a stored digest nobody checked reads as evidence, and is worse than
+    /// an absent one, which at least reads as unknown.
+    #[error(
+        "this store cannot have the provider verify a whole-object SHA-256 for an upload of \
+         {content_length} bytes: above {threshold} bytes it is sent as a multipart upload, for \
+         which this backend computes only a checksum of the part checksums"
+    )]
+    ChecksumUnverifiable {
+        /// The declared size that pushed the upload past the threshold.
+        content_length: u64,
+        /// The largest upload this store can have the provider verify, in bytes.
+        threshold: u64,
+    },
+
+    /// A digest handed to the store is not a lowercase hex SHA-256.
+    ///
+    /// A caller bug rather than client input — [`crate::UploadRequest::checksum_sha256`] documents
+    /// the format, and every path into it validates first. Refused rather than passed through,
+    /// because a value the provider cannot parse would be dropped by it and the upload would go
+    /// back to being unverified without anybody being told.
+    #[error("the declared checksum is not a lowercase hex SHA-256")]
+    MalformedChecksum,
+
     /// The store's configuration is not usable.
     #[error("object storage configuration is invalid: {problem}")]
     Config {

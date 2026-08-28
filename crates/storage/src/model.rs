@@ -239,8 +239,16 @@ pub struct UploadRequest {
     /// MIME type to store alongside the object. Advisory: the platform's own type detection is
     /// authoritative, and this value is never used to decide how to render anything.
     pub content_type: Option<String>,
-    /// Lowercase hex SHA-256 of the whole object, when the client declared one, so the provider
-    /// can reject a corrupted transfer rather than storing it.
+    /// Lowercase hex SHA-256 of the whole object, when the caller declared one.
+    ///
+    /// Not advisory, and not a hint. Setting this obliges the implementation to make the provider
+    /// **compute the digest of the bytes it receives and refuse them if they disagree** — see
+    /// [`BlobStore::create_upload`](crate::BlobStore::create_upload). An implementation that cannot
+    /// arrange that for this request must return
+    /// [`StorageError::ChecksumUnverifiable`](crate::StorageError::ChecksumUnverifiable) rather
+    /// than issue a session whose digest nothing will check. `ENC-820` is what the permissive
+    /// reading cost: the field was already here, already populated, and quietly dropped on the
+    /// floor by the S3 implementation.
     pub checksum_sha256: Option<String>,
 }
 
@@ -292,6 +300,26 @@ pub struct CompletedPart {
     pub etag: String,
 }
 
+/// A header the client **must** send with a pre-signed request, or the provider will refuse it.
+///
+/// Not a suggestion the client may drop. A pre-signed SigV4 URL commits to the exact set of headers
+/// that were present when it was signed — they appear in `X-Amz-SignedHeaders` — so a request
+/// missing one, or carrying a different value for one, fails the signature check. That property is
+/// what makes `x-amz-checksum-sha256` an *integrity control* rather than a courtesy: the client
+/// cannot decline to be checked without also failing to upload.
+///
+/// It has to travel to the API's caller, because the process that signs the URL is not the process
+/// that sends the bytes (`docs/05-API.md §8`: the API never proxies them). `ENC-821` is the same
+/// lesson learned the hard way with `content-type`, which was signed and documented nowhere, and
+/// cost the first client two attempts to diagnose as a `403`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequiredHeader {
+    /// The header name, lowercase.
+    pub name: String,
+    /// The exact value that was signed.
+    pub value: String,
+}
+
 /// How the client should send the bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UploadTarget {
@@ -299,6 +327,8 @@ pub enum UploadTarget {
     Single {
         /// Where to `PUT` the whole object.
         url: Url,
+        /// Headers the `PUT` must carry. See [`RequiredHeader`].
+        required_headers: Vec<RequiredHeader>,
     },
     /// Large enough to need multipart.
     Multipart {

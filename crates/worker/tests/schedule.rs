@@ -43,6 +43,7 @@ const IMPATIENT: Cadence = Cadence {
     invalidation: Duration::ZERO,
     epoch: Duration::ZERO,
     coverage: Duration::ZERO,
+    uploads_idle: Duration::ZERO,
 };
 
 /// Enough enumerations that every scheduled loop gets at least one full tick before the signal.

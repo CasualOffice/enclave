@@ -63,6 +63,20 @@ pub enum WorkerError {
     #[error("reading object storage failed")]
     Blob(#[from] enclave_storage::StorageError),
 
+    /// Claiming upload sessions to reap failed — `ENC-806`.
+    ///
+    /// Only the *claim* reaches here. A session whose object the store would not delete, or whose
+    /// row would not move, is counted in `ReapReport::deferred` rather than returned, so one
+    /// unreachable object cannot stop a tenant's sweep (`crate::uploads`).
+    ///
+    /// That also bounds what this variant can ever say. `UploadError` has two variants that
+    /// interpolate a caller's value — a rejected extension and a malformed file name — and both
+    /// belong to `UploadService::create`, which nothing in this crate calls. What is reachable from
+    /// a reaping pass is a database failure, a storage failure, an undecodable row and a lost
+    /// compare-and-swap, none of which name anything a user wrote (`CLAUDE.md` rule 10).
+    #[error("claiming upload sessions to reap failed")]
+    Uploads(#[from] enclave_uploads::UploadError),
+
     /// A deployment configured one half of a mount pair and not the other.
     ///
     /// Refused rather than half-built, for two stages now:
