@@ -54,8 +54,16 @@ export function isMod(event: Pick<KeyboardEvent, 'metaKey' | 'ctrlKey'>): boolea
 export function directionOf(element: Element | null): 'ltr' | 'rtl' {
   if (element === null) return 'ltr';
   const view = element.ownerDocument.defaultView;
-  if (view === null) return 'ltr';
-  return view.getComputedStyle(element).direction === 'rtl' ? 'rtl' : 'ltr';
+  if (view !== null && view.getComputedStyle(element).direction === 'rtl') return 'rtl';
+  /* The `dir` attribute as well as the computed style, and not as a fallback
+   * for a missing one: **jsdom does not map `dir` into computed style**, so a
+   * component test of a right-to-left tree reads `ltr` and passes while the
+   * browser does the opposite. A test that cannot see the bug is the bug.
+   *
+   * It is also correct in a real browser — `dir` is where direction comes from
+   * in this product; `docs/14 §7` sets it on the document and on individual
+   * `<bdi>` elements — and it is the cheaper of the two lookups. */
+  return element.closest('[dir]')?.getAttribute('dir') === 'rtl' ? 'rtl' : 'ltr';
 }
 
 /**

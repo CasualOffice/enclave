@@ -186,6 +186,34 @@ const FileRowView = memo(function FileRowView({
     onFocus: () => onFocusRow(groupIndex, rowInGroup, column),
   });
 
+  /**
+   * A cell holding exactly one control: the control is the focus stop, not the
+   * cell around it.
+   *
+   * This is the ARIA grid rule and it is the difference between "the cell that
+   * contains the button is reachable" and "the button is reachable". `→` onto
+   * the row-actions cell has to leave the user able to *press* the thing they
+   * arrived at; landing on the `<span>` and requiring a further, unbound key to
+   * get inside it is a control the keyboard can see and not use. The checkbox
+   * in column 0 is the same case, which is how selection is toggled without a
+   * pointer.
+   *
+   * The cell keeps its `gridcell` role and its column index — the grid's shape
+   * is unchanged — and gives up only the `tabindex` and the `data-cursor`,
+   * which move inward. `:focus-within` on the cell is therefore still what
+   * reveals the button, one moment before it takes focus.
+   */
+  const controlCell = (column: number) => ({
+    role: 'gridcell' as const,
+    'aria-colindex': column + 1,
+  });
+
+  const control = (column: number) => ({
+    'data-cursor': `r:${rowIndex}:${column}`,
+    tabIndex: cursorColumn === column ? 0 : -1,
+    onFocus: () => onFocusRow(groupIndex, rowInGroup, column),
+  });
+
   return (
     /* `specs/library.md §4A.3`: a row rises 4px and fades in over `--dur-row` on
      * the reference's own easing, staggered 20ms and capped at the twelfth so a
@@ -209,12 +237,12 @@ const FileRowView = memo(function FileRowView({
         if (event.target === event.currentTarget) onFocusRow(groupIndex, rowInGroup, null);
       }}
     >
-      <span className="egl-cell-select" {...cell(0)}>
+      <span className="egl-cell-select" {...controlCell(0)}>
         <input
           type="checkbox"
           className="egl-checkbox"
           checked={selected}
-          tabIndex={-1}
+          {...control(0)}
           aria-label={t('files.row.checkbox', { name: row.name })}
           onChange={() => onToggleSelect?.(row.id)}
         />
@@ -267,7 +295,7 @@ const FileRowView = memo(function FileRowView({
         {row.isFolder ? '' : formatters.bytes(row.sizeBytes)}
       </span>
       {/* ------------------------------------------------------- row actions */}
-      <span className="egl-cell-actions" {...cell(6)}>
+      <span className="egl-cell-actions" {...controlCell(6)}>
         {/* **`opacity: 0`, never `display: none`.**
          *
          * `.ui-iconbtn[data-reveal]` fades in on the row's hover and on
@@ -292,7 +320,7 @@ const FileRowView = memo(function FileRowView({
             label="files.row.details"
             values={{ name: row.name }}
             reveal
-            tabIndex={-1}
+            {...control(6)}
             onClick={() => onPeek(row)}
           />
         )}
@@ -579,6 +607,7 @@ export function GroupedFileList({
         onScroll={onScroll}
         onKeyDown={keyboard.onKeyDown}
         onBlur={keyboard.onBlur}
+        onFocus={keyboard.onFocus}
         role="treegrid"
         /* **The container is a tab stop only while the cursor's row is not.**
          *

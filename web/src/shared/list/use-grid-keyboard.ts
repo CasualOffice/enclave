@@ -66,6 +66,8 @@ export interface GridKeyboard {
   readonly containerTabIndex: 0 | -1;
   readonly onKeyDown: (event: KeyboardEvent<HTMLElement>) => void;
   readonly onBlur: (event: React.FocusEvent<HTMLElement>) => void;
+  /** `Tab` into the grid: adopt a cursor so the first arrow press *moves*. */
+  readonly onFocus: (event: React.FocusEvent<HTMLElement>) => void;
   /** Called when a pointer puts focus on a row, so the cursor follows the mouse. */
   readonly setCursor: (cursor: GridCursor | null) => void;
   readonly scrollerRef: (node: HTMLDivElement | null) => void;
@@ -104,6 +106,16 @@ export function useGridKeyboard(
   const anchor = useRef<GridCursor | null>(null);
   /** Set only by a keypress, so a scroll never steals focus back to the grid. */
   const wantsFocus = useRef(false);
+  /** The cursor as of the last commit, for handlers that must not re-render to read it. */
+  const cursorRef = useRef<GridCursor | null>(null);
+  /**
+   * Whether the grid held focus, as of the last event.
+   *
+   * The whole basis of the rescue, and it cannot be derived from
+   * `document.activeElement` after the fact — by then the answer is `<body>`
+   * and `<body>` is also where focus is when the user simply clicked the page.
+   */
+  const hadFocus = useRef(false);
 
   const scrollerRef = useCallback((node: HTMLDivElement | null) => {
     scrollerNode.current = node;
@@ -114,6 +126,7 @@ export function useGridKeyboard(
    * during render rather than in an effect so the `tabindex` written this
    * commit is the one for the cursor this commit. */
   const live = useMemo(() => clampCursor(layout, cursor), [layout, cursor]);
+  cursorRef.current = live;
   const focusKey = live === null ? null : focusKeyOf(layout, live);
 
   /**
@@ -137,7 +150,18 @@ export function useGridKeyboard(
   const cursorRendered =
     focusKey !== null && rendered.has(focusKey.startsWith('h:') ? focusKey : rowKeyOf(focusKey));
 
+  /**
+   * A pointer, or the browser, put focus somewhere: follow it.
+   *
+   * **Ignored when it names where the cursor already is**, and that guard is
+   * load-bearing rather than an optimisation. Every keyboard move ends by
+   * focusing an element, whose `onFocus` calls straight back into here — so
+   * without it, `Shift`-extend re-anchored to the row it had just extended
+   * *to*, and the third press of `Shift+↓` selected two rows instead of three.
+   * The bug is invisible for one press and wrong for every one after it.
+   */
   const setCursor = useCallback((next: GridCursor | null) => {
+    if (sameCursor(next, cursorRef.current)) return;
     anchor.current = next;
     setCursorState(next);
   }, []);
@@ -178,15 +202,23 @@ export function useGridKeyboard(
       const current = live ?? firstCursor(layout);
       if (current === null) return;
 
-      /* A control *inside* a row keeps its own keys. The row-actions button and
-       * the selection checkbox are real controls, and swallowing `Enter` on a
-       * focused button so the row can open instead is how a keyboard user
-       * discovers a button that cannot be pressed. */
+      /* A control *inside* a row keeps its own keys.
+       *
+       * The row-actions button and the selection checkbox are the grid's focus
+       * stops for their columns (the ARIA rule: a cell holding one widget puts
+       * focus on the widget), and they are still real controls. Swallowing
+       * `Enter` on a focused button so the row can open instead is how a
+       * keyboard user finds a button they can reach and cannot press, and
+       * swallowing `Space` on a checkbox is how selection stops working for
+       * exactly the people who need the checkbox.
+       *
+       * Only `Enter` and `Space` defer. The arrows still belong to the grid
+       * from anywhere inside it, or `→` onto the checkbox would be a one-way
+       * trip. */
       const target = event.target;
       const onControl =
         target instanceof HTMLElement &&
-        (target.tagName === 'INPUT' || target.tagName === 'BUTTON') &&
-        target.dataset.cursor === undefined;
+        (target.tagName === 'INPUT' || target.tagName === 'BUTTON');
 
       switch (event.key) {
         case 'ArrowDown':
@@ -286,9 +318,50 @@ export function useGridKeyboard(
   useLayoutEffect(() => {
     const scroller = scrollerNode.current;
     if (scroller === null || live === null || focusKey === null) return;
-    if (!wantsFocus.current) return;
 
-    const box = offsetOf(layout, live);
+    /**
+     * Focus is on a row of the grid, and it is the **wrong** one.
+     *
+     * This is not defensive coding; it is a specific consequence of how the
+     * pinned group header works. There is exactly one sticky element and it
+     * carries whichever header belongs at the top — which is what stops a
+     * duplicate row reaching the accessibility tree, and what makes it an
+     * element whose *identity changes underneath focus*. Focus the pinned
+     * `Files` header, scroll two pixels, and the same DOM node is now the
+     * `Folders` header with your focus still on it: the ring has not moved and
+     * the row it marks is a different file.
+     *
+     * Found by a test walking four rows and landing on the wrong group, and it
+     * is invisible without one — nothing blurs, nothing errors, and the ring
+     * stays exactly where the user expects it to be.
+     */
+    const active = document.activeElement;
+    const activeKey = active instanceof HTMLElement ? active.dataset.cursor : undefined;
+    const misplaced =
+      activeKey !== undefined && activeKey !== focusKey && scroller.contains(active);
+
+    /**
+     * Focus was in the grid and is now on `<body>`: the element holding it was
+     * unmounted by this very commit.
+     *
+     * **This is the rescue, and `onBlur` is not enough on its own.** Removing a
+     * focused node does not reliably fire `blur` or `focusout` — jsdom does not,
+     * and browsers disagree about it — so a handler waiting for that event waits
+     * for something that may never arrive. The commit is the one moment that is
+     * guaranteed to happen, because the commit is what removed the node.
+     *
+     * Found by a test that walked four rows across a group boundary and landed
+     * on `<body>`: the pinned header changed which group it was showing, the
+     * window unmounted the row that had focus, and nothing was told.
+     */
+    const lost = hadFocus.current && active === scroller.ownerDocument.body;
+
+    if (!wantsFocus.current && !misplaced && !lost) return;
+
+    /* Only a keypress scrolls. Correcting a misplaced ring must not, because
+     * what misplaced it was a scroll — and scrolling back would take the list
+     * away from wherever the user just put it. */
+    const box = wantsFocus.current ? offsetOf(layout, live) : null;
     if (box !== null) {
       /* The column header and the pinned group header both overlay the top of
        * the scroll area, so "visible" starts below them. Without this the
@@ -321,9 +394,41 @@ export function useGridKeyboard(
    * grid is correct and must not be fought; a row unmounted by a scroll is the
    * case where the browser has quietly dropped the user on `<body>`.
    */
+  /**
+   * `Tab` landed on the container.
+   *
+   * Entering a grid puts the user *on* its first item, not beside it — a
+   * container that took focus and left the cursor unset would make the first
+   * arrow press do nothing visible, which reads as the grid ignoring the
+   * keyboard. Only when there is no cursor yet: this also fires when the rescue
+   * above hands focus back to the container after a row was unmounted, and
+   * resetting to row 1 there would be the position loss the cursor exists to
+   * prevent.
+   */
+  const onFocus = useCallback(
+    (event: React.FocusEvent<HTMLElement>) => {
+      hadFocus.current = true;
+      if (event.target !== event.currentTarget) return;
+      if (cursorRef.current !== null) return;
+      const first = firstCursor(layout);
+      if (first === null) return;
+      wantsFocus.current = true;
+      anchor.current = first;
+      setCursorState(first);
+    },
+    [layout],
+  );
+
   const onBlur = useCallback((event: React.FocusEvent<HTMLElement>) => {
     const scroller = scrollerNode.current;
     if (scroller === null) return;
+    /* A genuine `Tab` away: focus went to a real element outside the grid. Let
+     * it go, and stop claiming the grid has focus — otherwise the next commit
+     * would drag the user back in from wherever they went. */
+    if (event.relatedTarget !== null && !scroller.contains(event.relatedTarget as Node)) {
+      hadFocus.current = false;
+      return;
+    }
     if (event.target.isConnected) return;
     scroller.focus({ preventScroll: true });
   }, []);
@@ -334,6 +439,7 @@ export function useGridKeyboard(
     containerTabIndex: cursorRendered ? -1 : 0,
     onKeyDown,
     onBlur,
+    onFocus,
     setCursor,
     scrollerRef,
   };
