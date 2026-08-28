@@ -1,4 +1,5 @@
 import { useCallback, useMemo } from 'react';
+import { useKeyBindings } from '../../shared/keyboard/use-key-bindings.ts';
 import { useT } from '../../shared/i18n/index.tsx';
 import { useFormatters } from '../../shared/i18n/format.ts';
 import { Button, IconButton } from '../../shared/ui/primitives.tsx';
@@ -67,6 +68,9 @@ export default function LibraryScreen() {
   const folderId = folderIdRaw.length > 0 ? folderIdRaw : undefined;
   const density: DensityName = useSearchParam('density') === 'compact' ? 'compact' : 'default';
   const peekId = peekIdRaw.length > 0 ? peekIdRaw : undefined;
+  /* `⌘\` pins the panel (`docs/09 §6`, `§7`). URL state like everything else
+   * on this screen: a pinned panel is part of the view a link describes. */
+  const pinned = useSearchParam('pin') === '1';
 
   const setFolderId = useCallback(
     (id: string | undefined) => write({ folder: id ?? null, peek: null }),
@@ -173,6 +177,58 @@ export default function LibraryScreen() {
 
   /** Replace the whole selection — `↑ ↓`, `Shift`-extend and `⌘A`. */
   const select = useListViewStore((state) => state.select);
+  const clearSelection = useListViewStore((state) => state.clearSelection);
+
+  /* ------------------------------------- `I`, `⌘\` and `Esc` (`docs/09 §6`)
+   *
+   * Registered here rather than in `app/` because all three act on the details
+   * panel, and the panel is this screen's URL state. A global handler could
+   * only reach it by writing a sentinel into the query string — and
+   * `docs/09 §3` promises that query string is a link a user can send to a
+   * colleague, not a private protocol between two modules.
+   */
+  useKeyBindings(
+    useMemo(
+      () => ({
+        /* `I` toggles the panel. With nothing selected it opens on the first
+         * row, which is what the toolbar's own toggle already does — a details
+         * panel that opens empty when there is something to describe is a
+         * surface that has been opened and then wasted. */
+        i: (event: KeyboardEvent) => {
+          event.preventDefault();
+          if (peekIdRaw.length > 0) write({ peek: null, pin: null });
+          else write({ peek: ordered[0]?.id ?? null });
+        },
+        /* `⌘\` pins it open. Pinned means it survives the selection being
+         * cleared, which is the empty-but-present state `PeekPanel` already
+         * draws — so pinning is a real distinction here rather than a flag with
+         * no consequence. */
+        'mod+\\': (event: KeyboardEvent) => {
+          event.preventDefault();
+          write({ pin: pinned ? null : '1', peek: peekIdRaw.length > 0 ? peekIdRaw : (ordered[0]?.id ?? null) });
+        },
+        /* `Esc` — "Close panel/dialog, clear selection", in `docs/09 §6`'s own
+         * order, and the order is the whole meaning. A user with the panel open
+         * and three rows selected expects the panel to close; taking the
+         * selection instead, out from under a panel that stayed, is the wrong
+         * half. One press closes the topmost thing there is; a second reaches
+         * the next one down. A *pinned* panel is not closed by `Esc` — that is
+         * what pinning it means — so the selection is what clears. */
+        Escape: (event: KeyboardEvent) => {
+          if (peekIdRaw.length > 0 && !pinned) {
+            event.preventDefault();
+            write({ peek: null });
+            return;
+          }
+          if (selected.size > 0) {
+            event.preventDefault();
+            clearSelection();
+          }
+        },
+      }),
+      [peekIdRaw, pinned, ordered, selected.size, write, clearSelection],
+    ),
+  );
 
   const peekIndex = peekId === undefined ? -1 : ordered.findIndex((row) => row.id === peekId);
   const navigation =

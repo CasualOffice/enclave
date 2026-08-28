@@ -1109,6 +1109,30 @@ export const catalog = {
     message: 'Ask arrives with the answer engine behind it.',
     description: 'Why ⌘J does nothing yet.',
   },
+  'palette.label': {
+    message: 'Commands',
+    description:
+      'Accessible name of the command palette dialog and of the list inside it, opened with ⌘K.',
+  },
+  'palette.input.label': {
+    message: 'Search commands and files',
+    description:
+      'Accessible name of the command palette’s input. The palette has no visible label — the placeholder is not one, because it disappears as soon as anything is typed.',
+  },
+  'palette.input.placeholder': {
+    message: 'Type a command, or search…',
+    description: 'Placeholder in the command palette’s input.',
+  },
+  'palette.empty': {
+    message: 'No command matches “{query}”.',
+    description:
+      'The command palette’s empty state, when nothing in the command list matches what was typed. "query" is the user’s text; it is quoted so an empty-looking query is still visible.',
+  },
+  'palette.empty.search': {
+    message: 'Search files instead',
+    description:
+      'The one action the palette’s empty state offers: hand what was typed to full search. docs/09 §11 requires an empty state to name the action that resolves it.',
+  },
   'kbd.sheet.title': {
     message: 'Keyboard shortcuts',
     description: 'Title of the shortcut sheet dialog, opened with ?.',

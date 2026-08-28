@@ -10,6 +10,7 @@ import { Avatar, Kbd, LaterChip } from '../shared/ui/primitives.tsx';
 import { Push, Row, Truncate } from '../shared/ui/layout.tsx';
 import type { MessageKey } from '../shared/i18n/catalog.ts';
 import { navigate, useRoute, type RouteName } from './routes.ts';
+import { KeyboardSurfaces } from './keyboard.tsx';
 import { useThemeStore } from './theme-store.ts';
 import './shell.css';
 
@@ -238,6 +239,14 @@ export function Shell({ children }: { children: ReactNode }) {
 
       <main className="shell-sheet">
         {children}
+        {/* `⌘K`, `?`, `/` and their two dialogs.
+         *
+         * In the shell rather than in a screen, for the same reason the upload
+         * tray is: a palette that unmounted on navigation would close itself
+         * halfway through the navigation it had just started, and `/` has to
+         * work on every route rather than on whichever one thought to register
+         * it. */}
+        <KeyboardSurfaces />
         {/* The tray lives in the shell, not in the library screen.
          *
          * `docs/09 §8`: uploads keep running across navigation. A tray rendered
