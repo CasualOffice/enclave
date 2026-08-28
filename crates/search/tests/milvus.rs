@@ -323,7 +323,7 @@ async fn s5_an_over_permissive_index_decides_nothing() {
         vec![visible.file],
         "the index's acl_tokens were believed by something downstream"
     );
-    assert_eq!(counts.proposed, 3);
+    assert_eq!(counts.proposed, 4);
     assert_eq!(counts.unauthorized, 1, "the ungranted file was dropped by something else");
     assert_eq!(counts.denylisted, 1, "the denylist did not suppress the purged file");
 
