@@ -352,12 +352,25 @@ async fn nothing_antivirus_has_not_cleared_is_rendered_or_even_fetched() {
     let sink = Watched::default();
     let service = pipeline(source.clone(), sink.clone());
 
-    // The states that mean "the bytes exist and nobody has looked at them", including the two that
-    // a filter checking only `status` would admit: `AVAILABLE`/`SKIPPED` and `AVAILABLE`/`ERROR`.
+    // The states that mean "the bytes exist and nobody has looked at them", including the one that
+    // a filter checking only `status` would admit: `AVAILABLE`/`ERROR`.
+    //
+    // `AVAILABLE`/`SKIPPED` was on this list until `ENC-828` and is deliberately no longer, which
+    // is a change to a security control and so is argued rather than assumed. It is the *only*
+    // outcome a deployment can opt into: `docs/06-SECURITY-DLP-ACCESS.md §6.2`'s `BLOCK` — the
+    // default — writes `QUARANTINED`/`SKIPPED`, so an `AVAILABLE`/`SKIPPED` row cannot exist
+    // unless that deployment set `ALLOW_WITH_FLAG`, and the whole meaning of that setting is that
+    // such content is served. A version it published that no route would serve made the setting a
+    // no-op and the product a write-only store. The rank ceiling is untouched: unscanned content at
+    // `CONFIDENTIAL` and above is blocked whatever the tenant set.
+    //
+    // What did *not* change is the clause of rule 9 about scans that have not finished.
+    // `AVAILABLE`/`PENDING` and `AVAILABLE`/`ERROR` both still mean "nobody has looked *yet*", and
+    // both are still refused below — which is why they stay on this list and why removing them
+    // would be a different and much worse change.
     for (status, av_status, why) in [
         ("SCANNING", "PENDING", "antivirus has not finished"),
         ("QUARANTINED", "INFECTED", "malware — the case that must never reach a parser"),
-        ("AVAILABLE", "SKIPPED", "deliberately not scanned: nobody looked"),
         ("AVAILABLE", "ERROR", "the scan itself failed: nobody looked"),
         ("AVAILABLE", "PENDING", "available before the scan finished"),
     ] {
@@ -378,6 +391,29 @@ async fn nothing_antivirus_has_not_cleared_is_rendered_or_even_fetched() {
     );
     assert!(sink.offered().is_empty(), "a rendition of unscanned content was offered to the sink");
 
+    // `ENC-828`'s half of the boundary, asserted as its own case rather than by its absence from
+    // the loop: a version a deployment published unscanned **is** served, and the digits prove a
+    // real render rather than merely a non-refusal.
+    let unscanned =
+        insert_version(&mut tx, alpha, &spine, "image/png", "AVAILABLE", "SKIPPED", now).await;
+    let readable = repo::readable_version(&mut tx, alpha, unscanned)
+        .await
+        .expect("query")
+        .expect("ALLOW_WITH_FLAG published this version, so a delivery path must serve it");
+    let delivery = service
+        .deliver(&mut tx, alpha, &readable, RenditionProfile::Thumb, now)
+        .await
+        .expect("deliver");
+    let Delivery::Available { bytes, .. } = delivery else {
+        panic!("a published-unscanned PNG produced no rendition, so ALLOW_WITH_FLAG buys nothing")
+    };
+    assert_eq!(ihdr(&bytes).0, 320);
+    assert_eq!(
+        source.reads.load(Ordering::Relaxed),
+        1,
+        "exactly the published version was fetched"
+    );
+
     // The control. The same file, the same pipeline, one row's two columns different — and now
     // there are bytes. Without this, every assertion above holds against a pipeline that renders
     // nothing, which is precisely what shipped before `ENC-798`.
@@ -393,7 +429,11 @@ async fn nothing_antivirus_has_not_cleared_is_rendered_or_even_fetched() {
         panic!("a clean PNG produced no rendition, so nothing above proves anything about rule 9")
     };
     assert_eq!(ihdr(&bytes).0, 320);
-    assert_eq!(source.reads.load(Ordering::Relaxed), 1, "exactly the cleared version was fetched");
+    assert_eq!(
+        source.reads.load(Ordering::Relaxed),
+        2,
+        "exactly the two servable versions were fetched"
+    );
 
     tx.commit().await.expect("commit");
     drop(db);
