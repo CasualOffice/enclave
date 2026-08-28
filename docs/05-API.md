@@ -1,6 +1,6 @@
 # 05 — API Surface
 
-> **Status:** Draft · **Version:** 1.7 · **Owner:** Platform Engineering · **Last updated:** 2026-08-28
+> **Status:** Draft · **Version:** 1.8 · **Owner:** Platform Engineering · **Last updated:** 2026-08-29
 > **Authoritative for:** REST contracts, error model, pagination, idempotency, versioning, rate limits.
 
 ## 1. Principles
@@ -599,6 +599,7 @@ GET  /api/v1/files/{id}/thumbnail?size=256
 POST /api/v1/files/{id}/download
 POST /api/v1/files/{id}/export        { "format": "pdf" }
 POST /api/v1/files/{id}/print-token
+POST /api/v1/files/{id}/print         { "token": "…" }
 ```
 
 `POST /files/{id}/download`:
@@ -620,6 +621,68 @@ single-use where the storage provider supports it.
 Preview responses set `Cache-Control: private, no-store` and carry
 `Content-Security-Policy: sandbox` for HTML renditions. Watermarked page images are generated per
 request and never cached (`06-SECURITY-DLP-ACCESS.md §5`).
+
+### 9.1 Print is two calls: mint, then spend (`ENC-724`)
+
+`POST /files/{id}/print-token` enforces `file.print` and returns a capability once:
+
+```json
+{
+  "token": "…43 url-safe base64 characters…",
+  "expiresIn": 120,
+  "singleUse": true,
+  "redeemAt": "/api/v1/files/{id}/print",
+  "watermark": true
+}
+```
+
+Only its SHA-256 is stored, so this response is the one time the value exists outside the caller's
+process. It names one tenant, one file, one version, one actor and one sign-in, and it is spendable
+at `redeemAt` and nowhere else.
+
+`POST /files/{id}/print` spends it:
+
+```json
+{ "token": "…", "justification": "Client audit request #4412" }
+```
+
+`200 OK` — `image/png`, `Content-Disposition: inline`, `Cache-Control: private, no-store`, one page
+image composited with the viewer's watermark where policy requires one.
+
+**Why two calls rather than one.** The mint is the decision and the redemption is the delivery, and
+they are separated because a browser print dialog is a user gesture that happens some seconds after
+the affordance is offered. A single call would have to either serve the page before the user asked
+for it or re-open the whole policy chain from a click handler with no request of its own.
+
+**Why the token is in the body and not the path.** `§10`'s `GET /shares/{token}` puts a share token
+in a URL because a share link *is* a URL, pasted into an email by a person. A print grant is never
+seen by a human, and a capability in a URL is a capability in an access log, a proxy log, a `Referer`
+header and a browser history entry.
+
+**What a redemption returns is not a download, and cannot become one.** The response is a
+*re-rendered page image* at `page-png-2x` — a PDF's embedded fonts, attachments, form fields,
+metadata, revision history and selectable text do not survive rasterisation — served `inline`, never
+`attachment`. No original object-storage URL is issued on this path and none can be: the handler
+holds the rendition pipeline and no object store, so "give me the original" is not expressible in the
+vocabulary it has (`12-TESTING.md §4.2` A15). Print remains separately deniable from download, from
+export and from preview (`CLAUDE.md` rule 6).
+
+**The chain runs again at redemption.** A grant is a decision about an earlier request; an ACL
+withdrawn, a barrier raised or a DLP rule added inside its 120 seconds takes effect. Obligations from
+the two decisions are unioned, so a mark required by either is required.
+
+**Every way of failing is one answer.** A token that was never issued, one whose lifetime elapsed,
+one already redeemed, one minted for another file, another actor, another sign-in, or in another
+tenant — all `404`, and none of them distinguishable from the others. Telling a presenter their token
+was real but expired tells them it was real (`CLAUDE.md` rule 7). A body carrying no `token` field at
+all is `400 VALIDATION_FAILED`, which is a statement about the request rather than about what the
+tenant holds.
+
+**Single use is enforced by PostgreSQL**, not by the API process: redemption is one
+`UPDATE … WHERE redeemed_at IS NULL … RETURNING` against `print_tokens` (`04-DATA-MODEL.md §15.2`),
+so two replicas racing the same grant produce exactly one winner. A refusal *after* a successful
+redemption — an obligation this path cannot discharge, or a rendition the deployment cannot produce
+— rolls the transaction back, so the caller keeps the capability they were issued.
 
 ## 10. Sharing
 
