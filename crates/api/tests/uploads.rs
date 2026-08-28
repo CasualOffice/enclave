@@ -1603,13 +1603,23 @@ async fn progress_follows_the_version_after_the_session_has_stopped_moving() {
     let file_id = completed["fileId"].as_str().expect("fileId").to_owned();
     let version_id = completed["versionId"].as_str().expect("versionId").to_owned();
 
-    // What the worker will do to this row, and what the endpoint must say at each step. The middle
-    // row is the one that matters: `AVAILABLE` is *published*, not *scanned*, and a client reading
-    // `status` alone would put a tick on a file both delivery routes refuse (`ENC-828`).
-    let steps: [(&str, &str, bool); 4] = [
+    // What the worker will do to this row, and what the endpoint must say at each step.
+    //
+    // `AVAILABLE`/`SKIPPED` expected `false` until `ENC-828` and now expects `true`, which is the
+    // whole of that change seen from the client's side: it is what `ALLOW_WITH_FLAG` writes, and a
+    // version that policy published which no delivery route would serve made the setting a no-op.
+    // The default `BLOCK` writes `QUARANTINED`/`SKIPPED`, so this row cannot occur unless the
+    // deployment asked for it.
+    //
+    // The row that carries the original lesson is now `AVAILABLE`/`PENDING`: `AVAILABLE` is
+    // *published*, not *scanned*, and a client reading `status` alone would put a tick on a file
+    // both delivery routes refuse. It is added here rather than left to the file endpoint's
+    // cross-product, because this is the endpoint a client actually polls while it waits.
+    let steps: [(&str, &str, bool); 5] = [
         ("SCANNING", "PENDING", false),
         ("PROCESSING", "CLEAN", false),
-        ("AVAILABLE", "SKIPPED", false),
+        ("AVAILABLE", "PENDING", false),
+        ("AVAILABLE", "SKIPPED", true),
         ("AVAILABLE", "CLEAN", true),
     ];
 
