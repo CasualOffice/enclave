@@ -132,7 +132,13 @@ object needs — and `ENC-868` lists what still diverges from the prototype and 
 waiting on. `ENC-853L` and `ENC-832` landed on the same branch.
 
 
-**In progress:** *(none)* — `ENC-698` is `DONE` on `worktree-agent-a386b3780a6047284`, unmerged —
+**In progress:** `ENC-673`, `ENC-674` and `ENC-675` on `worktree-agent-a7f7f97feec987a06` — the
+three M5 client rows about **the web app stating what the server decided and nothing more**. Taken
+as one batch by the repo owner rather than one at a time (a `§2.1` deviation, recorded here as
+`ENC-100`'s was): they share one seam — a client that must not compose a policy explanation — and
+splitting them would have put the same `capabilities` schema through three reviews.
+
+`ENC-698` is `DONE` on `worktree-agent-a386b3780a6047284`, unmerged —
 **the API process holds a vector index, so `diagnostics.degraded` is a decision rather than a
 constant.** Five rows it opened are not done. Only `ENC-893` is a P1, and it is a CI-visibility
 row rather than a feature: `crates/search/tests/milvus.rs` needs a Milvus that
