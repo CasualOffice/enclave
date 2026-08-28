@@ -1,7 +1,8 @@
-import { useEffect, useRef } from 'react';
+import { useRef } from 'react';
 import { useT } from '../i18n/index.tsx';
 import { IconButton, Kbd, LaterChip } from '../ui/primitives.tsx';
 import { BINDINGS } from './bindings.ts';
+import { useDialogFocus } from './use-dialog-focus.ts';
 import './keyboard.css';
 
 /* `?` — the keyboard shortcut reference (`docs/09 §6`).
@@ -35,51 +36,11 @@ export function ShortcutSheet({ onClose }: { onClose: () => void }) {
   const t = useT();
   const dialogRef = useRef<HTMLDivElement | null>(null);
 
-  /* Focus moves in on open and the dialog traps `Tab`, which is what makes it a
-   * dialog rather than a panel that happens to float. `docs/09 §6`'s last
-   * paragraph also requires focus to return to the trigger on close — that is
-   * the caller's job, because only the caller knows what opened this, and
-   * `use-global-keys.ts` does it. */
-  useEffect(() => {
-    /* Queried rather than held in a ref, because `IconButton` does not forward
-     * one and widening a shared primitive for a single caller is the churn
-     * `CLAUDE.md` asks this branch to avoid. */
-    dialogRef.current?.querySelector('button')?.focus();
-  }, []);
-
-  useEffect(() => {
-    const node = dialogRef.current;
-    if (node === null) return undefined;
-
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        event.stopPropagation();
-        onClose();
-        return;
-      }
-      if (event.key !== 'Tab') return;
-      /* The trap. Queried live rather than captured on mount: nothing in this
-       * dialog is conditional today, but a trap built from a stale list is one
-       * that silently stops trapping the first time something is. */
-      const focusable = node.querySelectorAll<HTMLElement>(
-        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
-      );
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (first === undefined || last === undefined) return;
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-
-    node.addEventListener('keydown', onKeyDown);
-    return () => node.removeEventListener('keydown', onKeyDown);
-  }, [onClose]);
+  /* Focus in on open, trapped while open, and `Esc` closes — one implementation
+   * shared with the palette. Focus *returning* to whatever opened the dialog is
+   * the caller's job (`app/keyboard.tsx`), because only the caller knows what
+   * that was. */
+  useDialogFocus(dialogRef, onClose);
 
   return (
     <div className="kbd-scrim" data-surface="shortcuts">
@@ -107,7 +68,21 @@ export function ShortcutSheet({ onClose }: { onClose: () => void }) {
           <span>{t('kbd.sheet.column.keys')}</span>
           <span>{t('kbd.sheet.column.action')}</span>
         </div>
-        <dl className="kbd-sheet-list">
+        {/* Focusable, because it scrolls.
+          *
+          * The list is taller than the sheet and none of its content is
+          * focusable — every row is text — so a keyboard user could open the
+          * sheet and never reach the bindings past the fold. axe caught it
+          * (`scrollable-region-focusable`), which is the one class of keyboard
+          * defect it *can* catch: it is a property of the static tree rather
+          * than of what happens when a key is pressed.
+          *
+          * No `role` override. `role="group"` was the first attempt and axe
+          * rejected it immediately — it takes the description-list semantics
+          * off the element, and every `<dt>`/`<dd>` inside then has no `<dl>`
+          * parent (`dlitem`, 28 nodes). A `<dl>` already has a role; it did not
+          * need a different one, only a name and a tab stop. */}
+        <dl className="kbd-sheet-list" aria-label={t('kbd.sheet.title')} tabIndex={0}>
           {BINDINGS.map((binding) => (
             <div
               key={binding.id}

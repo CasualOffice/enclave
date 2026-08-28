@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { BUILT, type BindingId } from '../shared/keyboard/bindings.ts';
 import { requestFocus } from '../shared/keyboard/focus-bus.ts';
 import { useKeyBindings } from '../shared/keyboard/use-key-bindings.ts';
@@ -43,27 +43,42 @@ export function KeyboardSurfaces() {
     else setShortcuts(true);
   }, []);
 
+  /** Set on close, consumed by the effect below once the dialog is gone. */
+  const wantsRestore = useRef(false);
+
+  const closePalette = useCallback(() => {
+    wantsRestore.current = true;
+    setPalette(false);
+  }, []);
+
+  const closeShortcuts = useCallback(() => {
+    wantsRestore.current = true;
+    setShortcuts(false);
+  }, []);
+
   /* "Focus returns to the triggering element when a dialog closes"
    * (`docs/09 §6`). Without it, closing the palette drops the user on `<body>`
    * and their next `Tab` restarts from the top of the page — the same ejection
-   * the grid's `onBlur` rescue prevents, one layer up. `isConnected` because
-   * the element that opened the dialog may have been a row that has since been
-   * scrolled out of the window. */
-  const restore = useCallback(() => {
+   * the grid's rescue prevents, one layer up.
+   *
+   * **In an effect, after the dialog has unmounted**, and that is not a style
+   * choice. Restoring inside the close handler runs while the dialog is still
+   * on screen, so the `focusin` trap sees focus land outside itself and does
+   * exactly what it is built to do: pulls it straight back in. A moment later
+   * the dialog unmounts with focus inside it and the user is on `<body>`. The
+   * trap and the restore are both correct and they fight; the fix is to order
+   * them, not to weaken either.
+   *
+   * `isConnected` because the element that opened the dialog may have been a
+   * row the window has since unmounted. */
+  useEffect(() => {
+    if (palette || shortcuts) return;
+    if (!wantsRestore.current) return;
+    wantsRestore.current = false;
     const node = opener.current;
     opener.current = null;
     if (node !== null && node.isConnected) node.focus();
-  }, []);
-
-  const closePalette = useCallback(() => {
-    setPalette(false);
-    restore();
-  }, [restore]);
-
-  const closeShortcuts = useCallback(() => {
-    setShortcuts(false);
-    restore();
-  }, [restore]);
+  }, [palette, shortcuts]);
 
   useKeyBindings(
     useMemo(

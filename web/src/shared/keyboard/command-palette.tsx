@@ -3,6 +3,7 @@ import { useT } from '../i18n/index.tsx';
 import type { MessageKey } from '../i18n/catalog.ts';
 import { Kbd, LaterChip } from '../ui/primitives.tsx';
 import { Icon, type IconName } from '../ui/icon-sprite.tsx';
+import { useDialogFocus } from './use-dialog-focus.ts';
 import './keyboard.css';
 
 /* `⌘K` — the command palette (`docs/09 §5`).
@@ -70,9 +71,10 @@ export function CommandPalette({
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
-  useEffect(() => {
-    inputRef.current?.focus();
-  }, []);
+  /* Trapped, and `Esc` closes — the same implementation the shortcut sheet
+   * uses. The input is the first focusable element inside, so the hook's
+   * open-focus lands exactly where this screen needs it. */
+  useDialogFocus(dialogRef, onClose);
 
   /* Matched on the **rendered** label rather than on the catalog key.
    *
@@ -115,11 +117,7 @@ export function CommandPalette({
         aria-label={t('palette.label')}
         ref={dialogRef}
         onKeyDown={(event) => {
-          if (event.key === 'Escape') {
-            event.preventDefault();
-            event.stopPropagation();
-            onClose();
-          } else if (event.key === 'ArrowDown') {
+          if (event.key === 'ArrowDown') {
             event.preventDefault();
             setActive((current) => Math.min(current + 1, Math.max(0, matches.length - 1)));
           } else if (event.key === 'ArrowUp') {
