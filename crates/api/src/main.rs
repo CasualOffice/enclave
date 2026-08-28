@@ -36,6 +36,127 @@ async fn object_store(
     Ok(Some(store))
 }
 
+/// Dense retrieval for `POST /api/v1/search`, when this deployment has both halves of it.
+///
+/// # What this closes
+///
+/// `ENC-698`. `ApiState` carried the policy engine, the pool, the token verifier, the edge and two
+/// rule caches, and **no vector index** — so `crates/api/src/routes/search.rs` handed
+/// `Retrieval::decide` a hardcoded `VectorStore::Unreachable` and every response said
+/// `degraded: true`. That was the truthful reading from inside the process, which is exactly why it
+/// needed closing deliberately: when a corpus existed, nothing about the route would have changed
+/// and it would have kept reporting a degraded search over a healthy index.
+///
+/// It is `ENC-770`'s shape one section along, and it is built the same way that one was: from the
+/// same conversion `crates/worker` uses, so the two binaries cannot come to disagree about what
+/// `search.milvus` means. That function is `MilvusConfig::from_operator_config`, which moved out of
+/// the worker's `main.rs` — where this file could not reach it — and beside the type it builds.
+///
+/// # Why both halves, and why `None` is not a failure
+///
+/// A vector index this process cannot form a query for is not a vector index: `candidates` takes an
+/// embedding, so without the mounted model the API could probe Milvus and never read it. Requiring
+/// the pair makes "the store is available and there is nothing to ask it with" unrepresentable
+/// rather than handled.
+///
+/// A deployment with neither, or with one, **starts and answers**. It answers from the lexical
+/// fallback over PostgreSQL and says `degraded: true`, which is the honest state and the one
+/// `docs/09-UX-WHITE-LABELING.md §10`'s header renders. Refusing to start would be worse than the
+/// defect: it would take the whole HTTP surface down over a search feature.
+///
+/// The two half-configured cases are warned about **by name**, because they are the ones an
+/// operator has to be able to diagnose — a deployment that mounted a model on the worker and not on
+/// the API gets lexical search with no error anywhere, and the log line is the only thing that says
+/// why.
+///
+/// # What it deliberately does not do
+///
+/// It does not call `ensure_collection`. Provisioning the collection is the worker's, once, at the
+/// width the active model declares (`crates/worker/src/main.rs::vector_stage`); an API replica
+/// creating it would be several processes racing to create one collection, at a width this process
+/// has no business choosing. A collection that is absent therefore reads as `Unreachable` through
+/// `has_collection` and the search degrades and says so — which is the right answer for an API that
+/// has been pointed at a store nobody has provisioned yet.
+///
+/// # Errors
+///
+/// A `search.milvus.token` that is not UTF-8, and a configured embedding mount that cannot be
+/// loaded — missing, unreadable, not a `.rten` graph, or emitting a width this build does not index
+/// against. The second is a start-up failure for the reason the `Err` arm of `build_auth_surface`
+/// below gives: this is the difference between *nothing was supplied* and *what was supplied does
+/// not work*, and only the second is always an operator error. It cannot fire for a deployment that
+/// has not asked for dense search, because it is reached only when `search.milvus` is set too.
+async fn vector_retrieval(
+    config: &enclave_config::Config,
+    secrets: &enclave_config::ResolvedSecrets,
+) -> anyhow::Result<Option<enclave_api::VectorRetrieval>> {
+    // The width is `enclave_embeddings::model::ACTIVE`'s and never a configuration key
+    // (`docs/08-BYO-INFRA.md §15`). It is inert in this process — nothing here creates a collection
+    // or writes a chunk — and passing the same constant the worker passes is what keeps it inert.
+    let milvus = enclave_search::MilvusConfig::from_operator_config(
+        config,
+        secrets,
+        enclave_embeddings::ACTIVE.dimension,
+    )
+    .context("read the vector store this deployment's `search.milvus` names")?;
+
+    // Read as two fields rather than through `Config::embedding_mounts`, because that reader
+    // answers the *worker's* three-state question — and its `Incomplete` state, a model with no
+    // vector store, is a start-up refusal there and must not be one here. `docs/08 §18.1` records
+    // why: a loader-level version of that rule stopped every binary in the workspace from booting
+    // in any shell that had exported `ENCLAVE_EMBEDDING_MODEL`, which is what CI and every runbook
+    // tell an operator to do.
+    let model = config.embedding_model.as_deref();
+
+    match (milvus, model) {
+        (Some(milvus), Some(model)) => {
+            let endpoint = milvus.uri.clone();
+            let collection = milvus.collection.clone();
+            let index = enclave_search::MilvusIndex::new(milvus);
+            let embedder = enclave_embeddings::MountedModel::air_gapped_router(model)
+                .with_context(|| {
+                    format!(
+                        "load the embedding model mounted at {} so searches can be embedded",
+                        model.display()
+                    )
+                })?;
+            tracing::info!(
+                endpoint = %endpoint,
+                collection = %collection,
+                model = enclave_embeddings::ACTIVE.id,
+                "dense search is wired; POST /api/v1/search reports degraded only when the store \
+                 says so"
+            );
+            Ok(Some(enclave_api::VectorRetrieval::new(Arc::new(index), Arc::new(embedder))))
+        }
+        (Some(_), None) => {
+            tracing::warn!(
+                "search.milvus names a vector store and `embedding_model` is unset, so this process \
+                 cannot embed a query and every search runs lexically with degraded: true. Stage \
+                 the converted weights on this node too (docs/08-BYO-INFRA.md §18.1) — the worker's \
+                 mount is not this process's"
+            );
+            Ok(None)
+        }
+        (None, Some(_)) => {
+            tracing::warn!(
+                "`embedding_model` is mounted and `search.milvus` names no vector store, so there \
+                 is nothing to search and every search runs lexically with degraded: true. This is \
+                 a start-up refusal in crates/worker and deliberately not one here"
+            );
+            Ok(None)
+        }
+        (None, None) => {
+            tracing::info!(
+                "no vector store is configured (`search.provider` is `none`), so every search runs \
+                 lexically over PostgreSQL and reports degraded: true. That is a posture, not a \
+                 fault: docs/09-UX-WHITE-LABELING.md §10's header is what a caller sees"
+            );
+            Ok(None)
+        }
+    }
+}
+
 /// The rendition pipeline, over the store this deployment configured (`ENC-798`).
 ///
 /// This function used to return `UnconfiguredPipeline` — the only `PreviewPipeline` in the
@@ -392,6 +513,14 @@ async fn main() -> anyhow::Result<()> {
     // conditional-access cache, which this binary still does not hand to `ApiState`.)
     if let Some(cache) = dlp_cache {
         state = state.with_dlp_rule_cache(cache);
+    }
+
+    // Dense search (`ENC-698`). `None` is the ordinary deployment and is not a failure — the route
+    // answers from the lexical fallback and says `degraded: true`, which is the honest state and
+    // what `docs/09 §10`'s header renders. `vector_retrieval` warns by name when one half of the
+    // pair is configured and the other is not.
+    if let Some(vector) = vector_retrieval(config, &secrets).await? {
+        state = state.with_vector_retrieval(vector);
     }
 
     // Delivery, and the same treatment the policy stages get above. `ENC-170`: the router used to

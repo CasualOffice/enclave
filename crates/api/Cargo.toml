@@ -24,6 +24,11 @@ enclave-retention = { workspace = true }
 # `POST /api/v1/search`. The post-filter, the lexical generator and the degraded envelope all live
 # there; this crate holds none of that logic and must not grow any (crates/api/src/routes/search.rs).
 enclave-search = { workspace = true }
+# ENC-698: the query half of dense search. The route embeds the caller's query with the same mounted
+# model the worker embedded the documents with — a vector index this process cannot form a query for
+# is not a vector index — and `MountedModel::air_gapped_router` is the one spelling of that wiring,
+# shared with `crates/worker` so the two cannot come to disagree about which provider a rank reaches.
+enclave-embeddings = { workspace = true }
 enclave-files = { workspace = true }
 # `normalize_email` on the login path: the writer of `users.normalized_email` and its reader must
 # fold identically, or a login lookup finds a second row for the same person (crates/identity).

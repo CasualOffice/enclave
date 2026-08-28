@@ -133,9 +133,15 @@ impl MountedEmbedder {
         // This is also where `ENC-533`'s first half lands — `MountedModel::mounted` refuses a graph
         // whose declared width is not `ACTIVE.dimension`, so a deployment that converted the wrong
         // model finds out at start-up rather than through months of degraded retrieval.
-        let model = MountedModel::mounted(model)?;
+        //
+        // `air_gapped_router` and not `mounted` + `air_gapped` spelled out here: `ENC-698` gave the
+        // API a second reason to build one of these — it embeds the query a search runs on — and the
+        // "air-gapped, never `new`" decision this module argues for above now has one spelling for
+        // both. The three-state rule *above* stays here, because it is the worker's and not the
+        // API's (`docs/08-BYO-INFRA.md §18.1`).
+        let router = MountedModel::air_gapped_router(model)?;
 
-        Ok(Some(Self { router: EmbeddingRouter::air_gapped(model) }))
+        Ok(Some(Self { router }))
     }
 
     /// The embedder, boxed for

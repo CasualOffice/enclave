@@ -659,9 +659,15 @@ mod tests {
             assert_eq!(classify(tenant, &resource), Target::Unsupported, "{resource}");
         }
 
-        // `ENC-879` moved `Share` off this list, so the sweep must say so rather than leave the
-        // reader to notice the absence. A share reference now classifies to a target of its own,
-        // and is resolved by one extra hop rather than refused.
+        // **`ENC-879` moved `Share` off this list, and this assertion is the record of that.**
+        //
+        // The sweep used to include it, with a comment saying a share link was *the one unsupported
+        // kind somebody has a live reason to want supported* and asking that the day the resolver
+        // learned about shares, this test fail and point at the row. It did, and this is that day.
+        // The entry is replaced rather than deleted, because an absence from a list is not something
+        // a reader notices: a share reference now classifies to a target of its own and is resolved
+        // by one extra hop — the link's own ACL is the ACL of what it exposes — and if that were
+        // ever reverted, the sweep above would go quietly green again.
         let share = ResourceRef::share(tenant, ShareLinkId::new_v7());
         assert_ne!(classify(tenant, &share), Target::Unsupported, "{share}");
     }

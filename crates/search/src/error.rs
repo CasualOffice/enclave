@@ -63,6 +63,19 @@ pub enum SearchError {
         reason: &'static str,
     },
 
+    /// The `search:` section names a store, and this process cannot build a client from what it
+    /// says.
+    ///
+    /// Separate from [`SearchError::VectorCollection`] because that one is about a collection that
+    /// exists and is the wrong shape; this is about a configuration file. It reads as internal for
+    /// the same reason: no retry fixes it, and the operator has to edit something.
+    #[error("the vector store configuration is not usable: {reason}")]
+    VectorConfiguration {
+        /// What is wrong, in fixed vocabulary. Never the value — a `search.milvus.token` is a
+        /// credential (`CLAUDE.md` rule 10).
+        reason: &'static str,
+    },
+
     /// A chunk cannot be written as the collection is shaped.
     ///
     /// Separate from [`SearchError::VectorIndex`] for the same reason

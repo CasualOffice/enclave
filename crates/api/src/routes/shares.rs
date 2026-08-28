@@ -7,25 +7,49 @@
 //! DELETE /api/v1/shares/{id}         → revoke
 //! ```
 //!
-//! # `GET /shares/{token}` is not here, and that is a finding rather than an omission
+//! # `GET /shares/{token}` is not here, and the reason has changed
 //!
-//! `ENC-692`. Redemption arrives with a token and nothing else, so resolving it *is* how the tenant
-//! is established — and no connection this crate may hold can do that.
-//! [`enclave_sharing::repo::find_by_digest`] writes its lookup with no `tenant_id` predicate and
-//! describes itself as resolving *"across every tenant"*, but `migrations/0008` puts
-//! `USING (tenant_id = current_setting('app.tenant_id')::uuid)` on `share_links` with `FORCE`, and
-//! row-level security is a property of the table rather than an opt-out a query can take. On a
-//! [`enclave_db::TenantScoped`] connection the lookup sees one tenant; on an unscoped one
-//! `current_setting` raises. The connection that would work is `DbPool::platform_connection`, which
-//! `.github/scripts/no_raw_pool.py` refuses outside `crates/db` and for which `crates/api`'s binary
-//! configures no URL.
+//! **This section used to give the tenant as the reason, and that reason has stopped being true.**
+//! It read: redemption arrives with a token and nothing else, so resolving it *is* how the tenant is
+//! established, and no connection this crate may hold can do that. Two things have landed since.
+//! `enclave_db::resolve_routed_tenant` resolves a verified custom domain and then a slug
+//! (`ENC-686`, with the `SELECT` it needs granted by `migrations/0026`), reached through the
+//! [`RoutedTenant`](crate::routes::auth::RoutedTenant) extractor `POST /api/v1/auth/login` has used
+//! since `ENC-685`; and `crates/api/src/main.rs` configures `database.platform_url` and warns when
+//! it is unset. So the tenant is available on an unauthenticated route, and the digest then resolves
+//! under [`enclave_db::TenantScoped`] with row-level security doing what `migrations/0008` wrote it
+//! to do. The correction is recorded rather than deleted, for `crates/api/src/routes/bootstrap.rs`'s
+//! reason: the conclusion survived and its justification did not, and a justification that changed
+//! shape has to be argued again.
 //!
-//! Registering the route anyway would produce either a permanent `503` or a redemption that
-//! silently only ever resolves same-tenant links — `ENC-170`'s shape, which this router exists not
-//! to repeat. The tracker row carries the two candidate designs. What *is* proved meanwhile is the
-//! half that matters most, and it is proved in `crates/api/tests/shares.rs`: a token minted in
-//! `tenant-alpha` and presented under `tenant-beta`'s scope is indistinguishable from one that was
-//! never minted, because RLS makes the row invisible rather than because anything compares ids.
+//! **`ENC-879` was the second reason, and it has now gone the same way.** It read: a redemption
+//! arrives with no principal, so [`enclave_core::Actor`] has no variant for the bearer of a link,
+//! `acl_entries.principal_type` has no kind that could name one, `classify` maps
+//! [`enclave_core::ResourceKind::Share`] to an unsupported target, and `PolicyEngine::enforce` — which
+//! `CLAUDE.md` rule 1 requires this handler to call — has no answer but `deny`. All four are fixed:
+//! `Actor::LinkBearer(ShareLinkId)`, a `SHARE_LINK` principal kind (`migrations/0027`), a real target
+//! for a share reference, and a `PrincipalSet` that a `SHARE_LINK` row matches and `EVERYONE`
+//! deliberately does not. `crates/api/tests/shares.rs` asserts an *allow* for the principal a
+//! redemption presents, with the audit row naming the link.
+//!
+//! **What blocks it now is `ENC-694`, and it is about the link rather than about the caller.** A
+//! link's password, OTP, MFA requirement and audience are stored and enforced by nothing. A route
+//! registered today would therefore authorise the redemption *correctly* — the chain would decide,
+//! audit and allow — and hand out access past every demand the link states, which is a worse failure
+//! than the one this section was originally written about: a `503` is visible, and a link whose
+//! password is ignored is not. `ENC-896` is the second prerequisite: nothing writes a `SHARE_LINK`
+//! `acl_entries` row when a link is minted, so every link in a real deployment currently resolves to
+//! `NotGranted` and a registered route would refuse every redemption for a *different* reason.
+//!
+//! Rendering any of those denials as anything but `404` would tell an anonymous caller that the
+//! token is live, which is rule 7 — asserted in `crates/api/tests/shares.rs` on both halves: the
+//! tenant half by a token minted in `tenant-alpha` and presented under `tenant-beta`'s scope,
+//! indistinguishable from one that was never minted because RLS makes the row invisible rather than
+//! because anything compares ids; and the principal half by
+//! `the_chain_authorizes_the_link_bearer_a_redemption_presents`, the rewrite of the test that used
+//! to prove the absence, which now proves the capability and keeps every shortcut it refused —
+//! `Actor::System`, a `UserId` nothing names, the bearer of a *different* link, and a `GuestId`
+//! fabricated from this link's own id, which is the leg the whole design turns on.
 //!
 //! # Internal and external sharing are two permissions, and the split fails closed
 //!

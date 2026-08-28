@@ -259,6 +259,36 @@ impl MountedModel {
             dimension,
         })
     }
+
+    /// The router a deployment's mounted weights make: local-only, by declaration.
+    ///
+    /// # Why this is a constructor and not two lines at each call site
+    ///
+    /// It is [`MountedModel::mounted`] followed by [`EmbeddingRouter::air_gapped`], and the second
+    /// of those is a **decision**, not plumbing. `EmbeddingRouter::new` is right there beside it and
+    /// compiles just as well; a router built with `new` and a configured ceiling would route
+    /// below-ceiling text to [`NoRemoteProvider`], which refuses by construction — so a deployment's
+    /// `PUBLIC` documents would fail to embed while its `RESTRICTED` ones succeeded, which is a
+    /// baffling symptom for a correct configuration.
+    ///
+    /// Until `ENC-698` there was exactly one composition root that made it, in
+    /// `enclave_worker::embedding`. There are now two — the indexing worker embeds documents and the
+    /// API embeds a query (`crates/api/src/routes/search.rs`) — and the second one spelling it out
+    /// again is how the two come to differ on the day somebody adds a remote provider. The two
+    /// processes still keep their **own** rules about when to build one at all: the worker refuses to
+    /// start with a model and no vector store (`docs/08-BYO-INFRA.md §18.1`), and the API must not,
+    /// because a loader-level version of that check once stopped every binary in the workspace from
+    /// booting in any shell that had exported `ENCLAVE_EMBEDDING_MODEL`.
+    ///
+    /// # Errors
+    ///
+    /// As [`MountedModel::mounted`]: every mount failure, reported rather than degraded, because a
+    /// volume that failed to attach is an outage and not a corpus without vectors.
+    pub fn air_gapped_router(
+        directory: &Path,
+    ) -> Result<crate::router::EmbeddingRouter<Self, crate::provider::NoRemoteProvider>> {
+        Ok(crate::router::EmbeddingRouter::air_gapped(Self::mounted(directory)?))
+    }
 }
 
 /// The last dimension of a node's declared shape, when the graph states one.

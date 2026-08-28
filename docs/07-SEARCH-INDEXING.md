@@ -1,6 +1,6 @@
 # 07 — Search & Indexing
 
-> **Status:** Draft · **Version:** 1.9 · **Owner:** Search Engineering · **Last updated:** 2026-08-25
+> **Status:** Draft · **Version:** 1.10 · **Owner:** Search Engineering · **Last updated:** 2026-08-29
 > **Authoritative for:** the indexing pipeline, Milvus schema, permission-aware retrieval, ACL invalidation, rebuild.
 
 ## 1. Position of the index
@@ -417,6 +417,32 @@ Two limits, stated rather than discovered:
   reading is reported as *unknown* rather than folded into "healthy", exported as
   `enclave_search_index_coverage_unknown`, and alerted on — because the difference between a quiet
   signal and a blind one is invisible otherwise.
+
+### 6.4.2 Which of the three triggers the query path can actually see today
+
+Stated here because the difference is invisible from a response, and a reader of `§6.6`'s table
+would otherwise assume all three are live everywhere.
+
+`POST /api/v1/search` is served by `enclave-api`, which since `ENC-698` holds a `VectorIndex` and
+takes the decision per request from two inputs: `VectorIndex::reachability`, a `has_collection`
+probe, and `denylist::in_force`, a count of the tenant's suppressions still in force. So
+**unreachability** and **denylist overflow** engage from that process exactly as this section
+describes.
+
+**Coverage does not**, and that is a gap rather than a design. `§6.4.1`'s depletion signal is
+established by a background probe that runs in the **worker** (`crates/worker/src/coverage.rs`),
+against `index_manifests`, and its verdict is exported as a metric — there is no channel by which it
+reaches an API replica's retrieval decision. A tenant whose collection was recreated empty therefore
+gets `degraded: false` from the query path while the operator gauges say otherwise, which is
+precisely the shape `§6.4.1` was written against, one process along. `ENC-890` carries it. The
+post-filter is unaffected either way: coverage is a recall signal and never an access-control one.
+
+Two consequences of taking reachability per request rather than from a cached verdict, both
+deliberate. A cached one would make the same query answer completely on one replica and degraded on
+another with no state change between them, which is the per-request-signal failure `§6.4`'s
+neighbouring rule and `crates/search/src/degraded.rs` both refuse. And there is no circuit breaker
+in front of the probe yet, so while the store is down every request pays one connect attempt —
+which is why `MilvusConfig::connect_timeout` is short by design.
 
 ### 6.5 Why not rely on `acl_tokens` alone
 

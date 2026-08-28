@@ -72,6 +72,73 @@ pub struct ApiState {
     /// It cannot write an allow — see [`HandlerAudit`]. The chain remains the only thing that
     /// records a decision it took.
     pub audit: HandlerAudit,
+    /// Dense retrieval, when this deployment has both halves of it (`ENC-698`).
+    ///
+    /// `None` is a supported deployment and the ordinary one: with no vector store configured, or no
+    /// embedding model mounted, `POST /api/v1/search` answers from the lexical fallback over
+    /// PostgreSQL and reports `diagnostics.degraded: true`. That is what
+    /// `crates/api/src/routes/search.rs` did unconditionally until this field existed — it held no
+    /// index, so `Retrieval::decide` was handed a hardcoded `VectorStore::Unreachable` and the flag
+    /// could never be anything else, however healthy the store was.
+    ///
+    /// It is an `Option` and never a stub for `crates/api/src/main.rs`'s `Delivery` reason: a
+    /// deployment that configured neither must not be refused at start-up over a search feature, and
+    /// a deployment that configured one is warned about the other by name at boot.
+    pub vector: Option<VectorRetrieval>,
+}
+
+/// The two halves of a dense search, which exist only together.
+///
+/// # Why one type and not two fields
+///
+/// A vector index the process cannot form a query for is not a vector index. `VectorIndex::candidates`
+/// takes a query embedding, so without an embedder the API can *probe* Milvus and never read it —
+/// and a handler that observed [`enclave_search::VectorStore::Available`] on that basis would take
+/// [`enclave_search::Retrieval::Complete`] and then have nothing to run. Binding the two in one
+/// value makes that state unrepresentable rather than handled.
+///
+/// # Both are trait objects
+///
+/// `crates/api/src/main.rs` puts `MilvusIndex` and a mounted `bge-m3` behind them. A test puts a
+/// candidate generator that proposes a file the caller may not read, which is the only way to prove
+/// the post-filter drops one on a machine whose Milvus holds nothing — `crates/search/src/vector.rs`
+/// established that substitutability deliberately, so that the guarantee could be tested against a
+/// fake before there was a real index to be tempted by.
+#[derive(Clone)]
+pub struct VectorRetrieval {
+    index: Arc<dyn enclave_search::VectorIndex>,
+    embedder: Arc<dyn enclave_embeddings::Embedder>,
+}
+
+impl std::fmt::Debug for VectorRetrieval {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The index names its endpoint and redacts its token; the embedder holds 2.2 GB of weights
+        // and its own `Debug` prints a model id. Neither is content.
+        f.debug_struct("VectorRetrieval").field("index", &self.index).finish_non_exhaustive()
+    }
+}
+
+impl VectorRetrieval {
+    /// Binds a candidate generator to the embedder that can form a query for it.
+    #[must_use]
+    pub fn new(
+        index: Arc<dyn enclave_search::VectorIndex>,
+        embedder: Arc<dyn enclave_embeddings::Embedder>,
+    ) -> Self {
+        Self { index, embedder }
+    }
+
+    /// The candidate generator. Proposes; never decides — `docs/07-SEARCH-INDEXING.md §6.2`.
+    #[must_use]
+    pub fn index(&self) -> &dyn enclave_search::VectorIndex {
+        self.index.as_ref()
+    }
+
+    /// The embedder the query is put through.
+    #[must_use]
+    pub fn embedder(&self) -> &dyn enclave_embeddings::Embedder {
+        self.embedder.as_ref()
+    }
 }
 
 impl std::fmt::Debug for ApiState {
@@ -112,7 +179,23 @@ impl ApiState {
             dlp_rule_cache: None,
             auth: Arc::new(crate::routes::auth::AuthSurface::unconfigured()),
             audit,
+            // The honest default: a process that was handed no index cannot reach one, so search
+            // runs lexically and says so. `with_vector_retrieval` is the only thing that changes it.
+            vector: None,
         }
+    }
+
+    /// Supplies the dense-retrieval pair `POST /api/v1/search` uses when this deployment has one.
+    ///
+    /// A builder step for [`ApiState::with_edge`]'s reason, and forgetting it fails in the
+    /// direction that is visible rather than silent: every response says `degraded: true`, which is
+    /// exactly what `docs/09-UX-WHITE-LABELING.md §10`'s header renders. The opposite arrangement —
+    /// a required argument every test harness must supply — is how a dependency comes to be
+    /// satisfied everywhere except in the binary (`ENC-170`).
+    #[must_use]
+    pub fn with_vector_retrieval(mut self, vector: VectorRetrieval) -> Self {
+        self.vector = Some(vector);
+        self
     }
 
     /// Supplies the authentication surface `/api/v1/auth/*` runs on.

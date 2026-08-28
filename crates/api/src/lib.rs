@@ -29,7 +29,7 @@ use enclave_preview::PreviewPipeline;
 use enclave_storage::BlobStore;
 
 pub use edge::Edge;
-pub use state::{unconfigured_stages, ApiState};
+pub use state::{unconfigured_stages, ApiState, VectorRetrieval};
 
 /// Builds the router.
 ///
@@ -165,12 +165,24 @@ pub fn router(state: ApiState, delivery: Delivery) -> Router {
         // because external sharing is the highest-consequence grant in the system, and the handler
         // picks between them from the requested audience alone.
         //
-        // `GET /shares/{token}` — the unauthenticated redemption — is **not** registered. It has no
-        // way to resolve a token to a tenant: `share_links` is under FORCE row-level security, so
-        // the digest lookup sees one tenant on a scoped connection and raises on an unscoped one,
-        // and the only connection that would work is refused outside `crates/db` by the no-raw-pool
-        // gate. `ENC-692` carries the finding and the two candidate designs; registering a route
-        // that could only 503 is the ENC-170 shape this router already refuses to have.
+        // `GET /shares/{token}` — the unauthenticated redemption — is **not** registered, and the
+        // reason is no longer the one `ENC-692` recorded. The tenant is now available on an
+        // unauthenticated route: `enclave_db::resolve_routed_tenant` resolves a verified custom
+        // domain and a slug (`ENC-686`), `main.rs` configures the platform URL it needs, and the
+        // `RoutedTenant` extractor is already how `POST /auth/login` gets a tenant. Nor is it
+        // `ENC-879` any more: the chain has an `Actor::LinkBearer`, `acl_entries` has a `SHARE_LINK`
+        // principal kind, `ResourceKind::Share` has a real target, and `enforce` returns a real
+        // allow for a redemption with the audit row naming the link.
+        //
+        // What blocks it now is **`ENC-694`**, and it is about the link rather than the caller: a
+        // link's password, OTP, MFA requirement and audience are stored and enforced by nothing, so
+        // a route registered today would authorise the redemption *correctly* and hand out access
+        // past every demand the link states. That is a worse failure than a `503`, because it is
+        // invisible. `ENC-896` is the second prerequisite — nothing writes the `SHARE_LINK` row when
+        // a link is minted, so every link would resolve to `NotGranted` and the route would be the
+        // ENC-170 shape for a different reason. A denial rendered as anything but `404` would
+        // confirm to an anonymous caller that the token is live (rule 7).
+        // `crates/api/src/routes/shares.rs` carries the argument and the tests that hold it.
         .route("/api/v1/files/{id}/shares", get(routes::shares::list).post(routes::shares::create))
         .route("/api/v1/shares/{id}", patch(routes::shares::update).delete(routes::shares::revoke))
         // Delivery (docs/05-API.md §9). Download is a POST because it has side effects: it spends

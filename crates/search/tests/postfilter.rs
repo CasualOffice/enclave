@@ -424,6 +424,123 @@ async fn grant_action(
     .expect("grant");
 }
 
+/// **`ENC-698`.** The size the degradation trigger reads counts what is suppressing, not what is
+/// merely still in the table.
+///
+/// `docs/07-SEARCH-INDEXING.md §6.4` step 3 degrades a tenant whose denylist has outgrown its
+/// limit, and `Retrieval::decide` takes that number. If it counted expired rows, a tenant whose
+/// denylist is entirely stale — every file in it findable, none of them suppressed — would lose
+/// dense retrieval because a housekeeping sweep had not run. `§6.4`'s lift is on `clears_at` alone,
+/// and this is the same rule read from the other side.
+///
+/// The control is the row that *has* not expired: without it this passes against a `in_force` that
+/// returns zero for everything.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL with migrations 0001–0011; CI runs it with --include-ignored"]
+async fn the_denylist_size_counts_what_is_in_force_and_not_what_has_expired() {
+    let (db, fixtures, pool) = start().await;
+    let alpha = fixtures.alpha.id;
+    let now = Utc::now();
+
+    let standing = Spine::new(alpha);
+    let expired = Spine::new(alpha);
+    let mut admin = db.connect().await.expect("admin connection");
+    standing.insert(&mut admin, fixtures.alpha.owner, now).await.expect("spine");
+    expired.insert(&mut admin, fixtures.alpha.owner, now).await.expect("spine");
+    drop(admin);
+
+    let mut tx = TenantScoped::begin(&pool, alpha).await.expect("begin");
+    assert_eq!(
+        denylist::in_force(&mut tx, alpha).await.expect("count"),
+        0,
+        "the tenant starts with an empty denylist, or nothing below means anything"
+    );
+
+    denylist::suppress(&mut tx, alpha, standing.file, "revoked", now, None)
+        .await
+        .expect("suppress with no expiry");
+    denylist::suppress(
+        &mut tx,
+        alpha,
+        expired.file,
+        "reindexing",
+        now,
+        Some(now - Duration::seconds(1)),
+    )
+    .await
+    .expect("suppress with a passed expiry");
+
+    assert_eq!(
+        denylist::in_force(&mut tx, alpha).await.expect("count"),
+        1,
+        "an expired suppression was counted as pressure on the denylist"
+    );
+
+    // And it agrees with what the post-filter would actually drop, which is the property the two
+    // statements share and the reason they must not drift.
+    let suppressed =
+        denylist::suppressed(&mut tx, alpha, &[standing.file, expired.file]).await.expect("read");
+    assert_eq!(suppressed.len(), 1, "the count and the drop disagree about `in force`");
+    assert!(suppressed.contains(&standing.file));
+    tx.commit().await.expect("commit");
+
+    drop(db);
+}
+
+/// **The tenant predicate in `in_force` is load-bearing, and this is the layer that proves it.**
+///
+/// `docs/12-TESTING.md §1.2` records that deleting a `tenant_id` predicate has failed to fail in
+/// crate after crate, because row-level security holds the property alone and the test cannot tell
+/// the two apart. So this one deliberately removes RLS from the picture: it runs the count over
+/// [`TestDb::connect`], the harness's **superuser** connection, where `FORCE ROW LEVEL SECURITY` is
+/// bypassed entirely. What is left is the statement's own `WHERE tenant_id = $1`.
+///
+/// Deleting that predicate makes this test fail and the app-role tests stay green, which is exactly
+/// the separation the counting above needs — a denylist size that summed every tenant's rows would
+/// degrade a small tenant because a large one is reorganising, and no assertion taken under
+/// `enclave_app` could ever see it.
+///
+/// The control is alpha's own row, which is counted: without it this passes against a count that
+/// returns zero.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL with migrations 0001–0011; CI runs it with --include-ignored"]
+async fn the_denylist_size_is_scoped_by_its_own_predicate_and_not_only_by_row_level_security() {
+    let (db, fixtures, _pool) = start().await;
+    let (alpha, beta) = (fixtures.alpha.id, fixtures.beta.id);
+    let now = Utc::now();
+
+    let mine = Spine::new(alpha);
+    let theirs = Spine::new(beta);
+    let mut admin = db.connect().await.expect("admin connection");
+    mine.insert(&mut admin, fixtures.alpha.owner, now).await.expect("alpha spine");
+    theirs.insert(&mut admin, fixtures.beta.owner, now).await.expect("beta spine");
+
+    // Written over the superuser connection, one row in each tenant, so the count has something to
+    // wrongly include.
+    denylist::suppress(&mut admin, alpha, mine.file, "revoked", now, None)
+        .await
+        .expect("suppress alpha's");
+    denylist::suppress(&mut admin, beta, theirs.file, "revoked", now, None)
+        .await
+        .expect("suppress beta's");
+
+    // Read over the same superuser connection: RLS is not in force here, so a count that came back
+    // as 2 would be a statement with no tenant predicate rather than a policy that failed.
+    assert_eq!(
+        denylist::in_force(&mut admin, alpha).await.expect("count alpha"),
+        1,
+        "the denylist size counted another tenant's suppressions"
+    );
+    assert_eq!(
+        denylist::in_force(&mut admin, beta).await.expect("count beta"),
+        1,
+        "the control: each tenant's own row must be counted, or the assertion above is free"
+    );
+    drop(admin);
+
+    drop(db);
+}
+
 // `grant`, `AclEffect`, `AclPrincipal` and `AclScope` are imported for the shape the harness
 // offers; this file writes its entries directly because it needs two *actions* on one resource,
 // which the helper does not express.
