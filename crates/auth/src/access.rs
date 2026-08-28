@@ -24,7 +24,7 @@
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 use chrono::{DateTime, Duration, Utc};
-use enclave_core::{ClientType, ScopeSet};
+use enclave_core::{ActorKind, ClientType, ScopeSet};
 use jsonwebtoken::{Algorithm, Header, Validation};
 use serde::Deserialize;
 use uuid::Uuid;
@@ -118,7 +118,8 @@ impl AccessTokenIssuer {
     ///
     /// # Errors
     ///
-    /// [`AuthError::Encoding`] if serialisation or signing fails.
+    /// [`AuthError::Encoding`] if serialisation or signing fails, and
+    /// [`AuthError::ActorKindNotATokenSubject`] for a `typ` this deployment never mints.
     pub fn issue(
         &self,
         key: &PrivateSigningKey,
@@ -126,6 +127,13 @@ impl AccessTokenIssuer {
         now: DateTime<Utc>,
         ttl: Duration,
     ) -> Result<IssuedAccessToken, AuthError> {
+        // `ENC-879`. Refused at the mint as well as at the door: a token that never exists cannot
+        // leak, and a caller that meant to write `ActorKind::Guest` finds out here rather than
+        // discovering at redemption time that its token is rejected.
+        if !is_token_subject(template.typ) {
+            return Err(AuthError::ActorKindNotATokenSubject { kind: template.typ });
+        }
+
         let claims = AccessTokenClaims {
             iss: self.issuer.clone(),
             aud: self.audience.clone(),
@@ -309,7 +317,32 @@ impl AccessTokenVerifier {
             return Err(AuthError::DeviceBindingRequired);
         }
 
+        // `ENC-879`. The `typ` claim selects which `Actor` variant the request runs as, so a kind
+        // that is not a token subject must be refused *here*, before `VerifiedAccessToken` exists:
+        // everything downstream reads the actor and none of it re-asks where the actor came from.
+        if !is_token_subject(claims.typ) {
+            return Err(AuthError::ActorKindNotATokenSubject { kind: claims.typ });
+        }
+
         Ok(())
+    }
+}
+
+/// Whether an access token may assert this actor kind (`ENC-879`).
+///
+/// Exhaustive rather than `!matches!(kind, ShareLink)`, so a new [`ActorKind`] cannot inherit the
+/// permissive answer: whoever adds one has to say here whether a signed JWT is allowed to claim it,
+/// which is the same argument [`crate::routes`]-side matches on `Actor` make elsewhere.
+///
+/// [`ActorKind::ShareLink`] is the only `false`. See [`AuthError::ActorKindNotATokenSubject`].
+const fn is_token_subject(kind: ActorKind) -> bool {
+    match kind {
+        ActorKind::User
+        | ActorKind::Guest
+        | ActorKind::ServiceAccount
+        | ActorKind::McpClient
+        | ActorKind::System => true,
+        ActorKind::ShareLink => false,
     }
 }
 

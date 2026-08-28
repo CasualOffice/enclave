@@ -32,10 +32,23 @@ impl Audience {
     /// not include loopback denies the retention sweep and the outbox publisher. That failure is
     /// loud — the job errors — and it is the correct direction. It is not papered over here,
     /// because papering over it is exactly how the exemption gets written.
+    /// # Why a share-link bearer is `Human`
+    ///
+    /// `ENC-879`. Nobody knows who is holding a link, so this is a judgement, and the two answers
+    /// are not symmetric. The `Human` rule set is where a tenant writes *"deny external principals
+    /// outside these countries"*, *"require MFA off the corporate network"* and the country and
+    /// zone rules of `docs/06 §7`; the `Machine` set is written about service accounts a tenant
+    /// registered and can name. Filing a redemption under `Machine` would therefore exempt the one
+    /// caller in the product whose identity is unknown from every rule an administrator wrote about
+    /// people — which is the same exemption shape the `system` paragraph above refuses.
+    ///
+    /// It also matches [`enclave_core::Actor::is_human`], which answers `true` for the same reason;
+    /// the two disagreeing would mean a redemption that is a person for step-up and a machine for
+    /// conditional access.
     #[must_use]
     pub const fn of(kind: ActorKind) -> Self {
         match kind {
-            ActorKind::User | ActorKind::Guest => Self::Human,
+            ActorKind::User | ActorKind::Guest | ActorKind::ShareLink => Self::Human,
             ActorKind::ServiceAccount | ActorKind::McpClient | ActorKind::System => Self::Machine,
         }
     }

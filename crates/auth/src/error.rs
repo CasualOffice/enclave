@@ -141,6 +141,22 @@ pub enum AuthError {
     #[error("this client type requires a bound device")]
     DeviceBindingRequired,
 
+    /// The `typ` claim named an actor kind that is never a token subject (`ENC-879`).
+    ///
+    /// [`enclave_core::ActorKind::ShareLink`] is the whole membership of that set today. A link
+    /// bearer is established by *redeeming a link*, inside the transaction that spends its budget
+    /// and after its password, OTP, MFA and audience have been satisfied. A token that could assert
+    /// the kind would be a way to become a link bearer while skipping every one of those, so it is
+    /// refused at issuance and again at verification rather than merely never minted.
+    ///
+    /// Distinct from [`AuthError::MalformedToken`] because the two say different things to an
+    /// operator: malformed is a broken client, this is somebody constructing claims.
+    #[error("actor kind {kind} is never a token subject")]
+    ActorKindNotATokenSubject {
+        /// The refused kind. A closed enumeration, so it is safe to render.
+        kind: enclave_core::ActorKind,
+    },
+
     /// The `jti`, or the whole `sid` family, is on the denylist (`docs/03-LLD.md §5.4`).
     #[error("the token has been revoked")]
     TokenRevoked,
@@ -232,6 +248,7 @@ impl AuthError {
                 | Self::TokenNotYetValid
                 | Self::WrongAudience
                 | Self::DeviceBindingRequired
+                | Self::ActorKindNotATokenSubject { .. }
                 | Self::TokenRevoked
                 | Self::EpochStale
                 | Self::RefreshRejected
@@ -259,6 +276,10 @@ impl AuthError {
             | Self::TokenExpired
             | Self::TokenNotYetValid
             | Self::WrongAudience
+            // The caller learns only `ACCESS_DENIED`. Naming the kind would tell whoever
+            // constructed the claims exactly which `typ` values this deployment refuses, which is
+            // the map for finding one it does not.
+            | Self::ActorKindNotATokenSubject { .. }
             | Self::TokenRevoked
             | Self::EpochStale
             | Self::RefreshRejected

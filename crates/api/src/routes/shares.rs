@@ -719,9 +719,15 @@ fn satisfy(obligations: &Obligations, justification: Option<&str>) -> Result<(),
 fn author(ctx: &RequestContext) -> Result<UserId, Refused> {
     match ctx.actor {
         Actor::User(id) => Ok(id),
-        Actor::Guest(_) | Actor::ServiceAccount(_) | Actor::McpClient(_) | Actor::System => {
-            Err(Refused::actor(ReasonCode::AccessDenied))
-        }
+        // A link bearer least of all (`ENC-879`): `share_links.created_by` would then name the link
+        // itself, and a link that minted a link is a chain nobody can attribute to a person. The
+        // one caller in the product that holds a `share_links.id` is the one that must not be
+        // written into that column.
+        Actor::Guest(_)
+        | Actor::ServiceAccount(_)
+        | Actor::McpClient(_)
+        | Actor::LinkBearer(_)
+        | Actor::System => Err(Refused::actor(ReasonCode::AccessDenied)),
     }
 }
 

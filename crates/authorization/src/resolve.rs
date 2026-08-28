@@ -158,6 +158,16 @@ pub enum PrincipalKind {
     Guest,
     /// A machine caller.
     ServiceAccount,
+    /// The bearer of one share link, named by the link (`ENC-879`).
+    ///
+    /// The identifier is `share_links.id`. An entry of this kind is the grant a redemption is
+    /// authorized against: it says *whoever holds link L may preview file F*, which is the only
+    /// true statement available about a caller who presented a credential and no principal.
+    ///
+    /// It is a principal kind and not a resource kind. `acl_entries.resource_type` still has no
+    /// `SHARE` value, because a share link carries no ACL of its own — the permission that governs
+    /// a link is the permission on the thing it exposes.
+    ShareLink,
     /// Everyone in the tenant. Carries no identifier.
     Everyone,
 }
@@ -171,8 +181,23 @@ impl PrincipalKind {
             Self::Group => "GROUP",
             Self::Guest => "GUEST",
             Self::ServiceAccount => "SERVICE_ACCOUNT",
+            Self::ShareLink => "SHARE_LINK",
             Self::Everyone => "EVERYONE",
         }
+    }
+
+    /// Every variant, so a test can assert this vocabulary against the `CHECK` constraint that
+    /// stores it rather than against a second copy of the list.
+    #[must_use]
+    pub const fn all() -> &'static [Self] {
+        &[
+            Self::User,
+            Self::Group,
+            Self::Guest,
+            Self::ServiceAccount,
+            Self::ShareLink,
+            Self::Everyone,
+        ]
     }
 
     /// Parses the database spelling. `None` for anything unrecognised — see
@@ -184,6 +209,7 @@ impl PrincipalKind {
             "GROUP" => Some(Self::Group),
             "GUEST" => Some(Self::Guest),
             "SERVICE_ACCOUNT" => Some(Self::ServiceAccount),
+            "SHARE_LINK" => Some(Self::ShareLink),
             "EVERYONE" => Some(Self::Everyone),
             _ => None,
         }
@@ -218,15 +244,42 @@ impl Principal {
 ///
 /// # What `EVERYONE` includes
 ///
-/// Every supported principal, guests included. `docs/04-DATA-MODEL.md §9` states rule 2 without
-/// qualification, and an ACL row is already tenant-scoped, so `EVERYONE` reads as "every principal
-/// of this tenant". Narrowing it to non-guests here would be inventing a rule no document states —
-/// but it is a rule worth stating, because "everyone" meaning "including the contractor you shared
-/// one folder with" surprises people. Raised as a documentation question rather than decided here.
+/// Every supported principal *of the tenant's directory*, guests included. `docs/04-DATA-MODEL.md
+/// §9` states rule 2 without qualification, and an ACL row is already tenant-scoped, so `EVERYONE`
+/// reads as "every principal of this tenant". Narrowing it to non-guests here would be inventing a
+/// rule no document states — but it is a rule worth stating, because "everyone" meaning "including
+/// the contractor you shared one folder with" surprises people. Raised as a documentation question
+/// rather than decided here.
+///
+/// # `EVERYONE` does **not** include a share-link bearer
+///
+/// `ENC-879`, and this is the decision the variant turns on rather than a detail of it.
+///
+/// Every other principal in the list above is *somebody a tenant administrator provisioned*: a
+/// directory member, a group, a guest they invited, a service account they registered. Each exists
+/// as a row somebody created deliberately, and each can be found, listed and removed. That is what
+/// makes "everyone" a sentence an administrator can evaluate — they can enumerate who it means.
+///
+/// A link bearer is none of those. It is whoever is holding a URL, which after the link has been
+/// forwarded once is a set nobody in the tenant can name. If `EVERYONE` matched it, then every
+/// tenant-wide grant — and `EVERYONE` grants are how "all staff may read the handbook library" is
+/// written — would silently become a grant to anyone who obtains any share link into that tenant,
+/// on resources the link never mentioned. The link says *this file*; the `EVERYONE` row would say
+/// *and everything else the tenant shares internally*. Nobody minting a link intends that, and
+/// nobody writing an `EVERYONE` grant is thinking about share links at all.
+///
+/// So the only thing that can grant a link bearer is a row that names its link. That is the same
+/// argument [`PrincipalSet::for_actor`] gives for refusing `Actor::McpClient` and `Actor::System`
+/// outright, applied to a principal that *does* have ACL rows of its own: the fall-through to
+/// `EVERYONE` is the quiet path around the chain, and it is closed here, in
+/// [`PrincipalSet::matches`], and again in the `WHERE` clause of
+/// [`crate::repo::acl_entries_by_action`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrincipalSet {
     direct: Principal,
     groups: HashSet<GroupId>,
+    /// Whether a tenant-wide `EVERYONE` entry names this caller. See the type documentation.
+    everyone: bool,
 }
 
 impl PrincipalSet {
@@ -239,17 +292,48 @@ impl PrincipalSet {
     /// precisely the "one quiet path around the policy chain" this codebase exists to not have.
     /// MCP access is gated by scopes and a workspace allowlist (`docs/04 §5`), and system paths get
     /// an explicit grant when one is designed.
+    ///
+    /// [`Actor::LinkBearer`] *does* return a set, because `ENC-879` gave `acl_entries` a
+    /// `SHARE_LINK` principal kind for it to be named by — but a set that `EVERYONE` does not
+    /// reach. See the type documentation for the argument; it is the part of this change most
+    /// worth disagreeing with in review.
     #[must_use]
     pub fn for_actor(actor: &Actor) -> Option<Self> {
-        let direct = match actor {
-            Actor::User(id) => Principal::new(PrincipalKind::User, id.as_uuid()),
-            Actor::Guest(id) => Principal::new(PrincipalKind::Guest, id.as_uuid()),
+        let (direct, everyone) = match actor {
+            Actor::User(id) => (Principal::new(PrincipalKind::User, id.as_uuid()), true),
+            Actor::Guest(id) => (Principal::new(PrincipalKind::Guest, id.as_uuid()), true),
             Actor::ServiceAccount(id) => {
-                Principal::new(PrincipalKind::ServiceAccount, id.as_uuid())
+                (Principal::new(PrincipalKind::ServiceAccount, id.as_uuid()), true)
+            }
+            Actor::LinkBearer(id) => {
+                (Principal::new(PrincipalKind::ShareLink, id.as_uuid()), false)
             }
             Actor::McpClient(_) | Actor::System => return None,
         };
-        Some(Self { direct, groups: HashSet::new() })
+        Some(Self { direct, groups: HashSet::new(), everyone })
+    }
+
+    /// Whether a tenant-wide `EVERYONE` entry names this caller.
+    ///
+    /// Public so [`crate::repo::acl_entries_by_action`] can put the same answer in its `WHERE`
+    /// clause. The prefilter and the rule are deliberately two places (see this module's header),
+    /// and this is the one value they must not derive independently.
+    #[must_use]
+    pub const fn matched_by_everyone(&self) -> bool {
+        self.everyone
+    }
+
+    /// Whether this caller can be a member of a group at all.
+    ///
+    /// `false` only for [`PrincipalKind::ShareLink`], and the reason is in the schema rather than
+    /// here: `group_members.member_type` (`migrations/0001_foundations.sql`) admits `USER`, `GROUP`,
+    /// `GUEST` and `SERVICE_ACCOUNT` and nothing else, so a row placing a share link in a group is
+    /// unwritable — including from `psql`. Asking here lets the resolver skip a round trip that can
+    /// only ever return zero rows, and says why it is skipping rather than looking like an
+    /// optimisation somebody could "fix".
+    #[must_use]
+    pub const fn can_hold_group_memberships(&self) -> bool {
+        !matches!(self.direct.kind, PrincipalKind::ShareLink)
     }
 
     /// Adds the resolved transitive group closure.
@@ -275,7 +359,9 @@ impl PrincipalSet {
     #[must_use]
     pub fn matches(&self, principal: &Principal) -> bool {
         match principal.kind {
-            PrincipalKind::Everyone => true,
+            // Not an unconditional `true` since `ENC-879`: see [`PrincipalSet`] for why a share-link
+            // bearer is outside "everyone in this tenant".
+            PrincipalKind::Everyone => self.everyone,
             PrincipalKind::Group => {
                 principal.id.is_some_and(|id| self.groups.contains(&GroupId::from_uuid(id)))
             }
