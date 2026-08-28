@@ -15,7 +15,16 @@ enclave-storage = { workspace = true }
 
 anyhow      = { workspace = true }
 async-trait = { workspace = true }
+# The five below exist for `print.rs` alone, and each is the same choice the other capability in
+# this product already made: `crates/sharing`'s share token is 256 bits of `rand` from the OS
+# CSPRNG, `base64`-url-encoded, stored as its `sha2` digest, compared in constant time with
+# `subtle`, and held in a `zeroize` wrapper so the plaintext does not outlive the response.
+base64      = { workspace = true }
 chrono      = { workspace = true }
+rand        = { workspace = true }
+sha2        = { workspace = true }
+subtle      = { workspace = true }
+zeroize     = { workspace = true }
 # The raster decoder. Chosen for header-before-pixels inspection, and pinned to three formats — see
 # the note in the workspace manifest and the bound in `src/raster.rs`.
 ab_glyph    = { workspace = true }
@@ -43,7 +52,14 @@ url             = { workspace = true }
 image           = { workspace = true }
 # `test-util` gives `#[tokio::test(start_paused = true)]`, which makes the wall-clock bound
 # testable deterministically instead of as a race against a real clock.
-tokio           = { workspace = true, features = ["rt-multi-thread", "macros", "time", "test-util"] }
+# `sync` is for `tests/print_tokens.rs`: the two-replica race needs a `Barrier` to hold both
+# transactions open until they can contend for the same row, rather than hoping the scheduler
+# interleaves them.
+tokio           = { workspace = true, features = ["rt-multi-thread", "macros", "time", "test-util", "sync"] }
+# The print-token tests write their own `file_versions` rows; the spine helper does not.
+chrono          = { workspace = true }
+uuid            = { workspace = true }
+sqlx            = { workspace = true }
 
 [lints]
 workspace = true
