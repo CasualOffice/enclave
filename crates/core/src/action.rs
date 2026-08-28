@@ -10,7 +10,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::id::{
-    ChunkId, DeviceId, FileId, GroupId, LibraryId, TenantId, UserId, VersionId, WorkspaceId,
+    ChunkId, DeviceId, FileId, GroupId, LibraryId, ShareLinkId, TenantId, UserId, VersionId,
+    WorkspaceId,
 };
 
 wire_enum! {
@@ -410,6 +411,16 @@ impl ResourceRef {
     #[must_use]
     pub const fn chunk(tenant_id: TenantId, id: ChunkId) -> Self {
         Self::new(tenant_id, ResourceKind::Chunk, id.as_uuid())
+    }
+
+    /// A reference to a share link.
+    ///
+    /// The link is a resource in its own right — `docs/05-API.md §10`'s `PATCH` and `DELETE` are
+    /// about the link, not about the file behind it — even though it carries no `acl_entries` rows.
+    /// `enclave_authorization` resolves it by walking whatever the link points at (`ENC-879`).
+    #[must_use]
+    pub const fn share(tenant_id: TenantId, id: ShareLinkId) -> Self {
+        Self::new(tenant_id, ResourceKind::Share, id.as_uuid())
     }
 
     /// A reference to a user.

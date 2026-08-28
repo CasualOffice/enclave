@@ -67,6 +67,14 @@ enum Target {
     Library(Uuid),
     /// A workspace.
     Workspace(Uuid),
+    /// A share link, which has to be resolved to what it points at before it can be walked
+    /// (`ENC-879`).
+    ///
+    /// The only target that is not final. [`resolve_share_targets`] rewrites it into a
+    /// [`Target::FileTree`] or a [`Target::Library`] before any chain is looked up; one that is
+    /// still a `ShareLink` afterwards is a link that could not be resolved — unknown, revoked,
+    /// expired, or another tenant's — and [`chain_key`] refuses it like any other.
+    ShareLink(Uuid),
     /// Belongs to another tenant. Refused without a query — see [`AclResolver::effective_in_tx`].
     ForeignTenant,
     /// A kind that carries no ACL rows.
@@ -90,13 +98,63 @@ fn classify(tenant: TenantId, resource: &ResourceRef) -> Target {
         ResourceKind::File | ResourceKind::Folder => Target::FileTree(resource.id),
         ResourceKind::Library => Target::Library(resource.id),
         ResourceKind::Workspace => Target::Workspace(resource.id),
-        // Versions, chunks, users, devices, shares, pages, lists and list items are all real
-        // resources; none of them resolve through the file inheritance tree. Pages and lists do
-        // carry `acl_entries` rows (`docs/04-DATA-MODEL.md §9`) but their containment is not
-        // modelled yet, and a chain that guessed at it would be a permission model nobody
-        // specified. Refused until each is designed.
+        // `ENC-879`. A share link resolves — but through one extra hop, because it carries no
+        // `acl_entries` rows of its own: the permission that governs a link is the permission on
+        // the thing it exposes. That is the rule `crates/api/src/routes/shares.rs` was already
+        // applying by hand, and this is it inside the resolver, where a link that is revoked,
+        // expired or another tenant's simply produces no chain.
+        ResourceKind::Share => Target::ShareLink(resource.id),
+        // Versions, chunks, users, devices, pages, lists and list items are all real resources;
+        // none of them resolve through the file inheritance tree. Pages and lists do carry
+        // `acl_entries` rows (`docs/04-DATA-MODEL.md §9`) but their containment is not modelled
+        // yet, and a chain that guessed at it would be a permission model nobody specified.
+        // Refused until each is designed.
         _ => Target::Unsupported,
     }
+}
+
+/// Replaces every [`Target::ShareLink`] with the target of the link it names (`ENC-879`).
+///
+/// Runs before any chain walk, and only when the batch actually contains a share reference — the
+/// common case pays nothing. A link that resolves to nothing keeps its `ShareLink` target, which
+/// [`chain_key`] refuses, so unknown, revoked, expired and cross-tenant links are one answer.
+///
+/// # Errors
+///
+/// Storage failures and unreadable rows.
+async fn resolve_share_targets(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    targets: &mut [Target],
+    now: DateTime<Utc>,
+) -> Result<()> {
+    let shares: Vec<Uuid> = targets
+        .iter()
+        .filter_map(|target| match *target {
+            Target::ShareLink(id) => Some(id),
+            _ => None,
+        })
+        .collect();
+    if shares.is_empty() {
+        return Ok(());
+    }
+
+    let resolved = repo::share_targets(conn, tenant, &shares, now).await?;
+    for target in targets.iter_mut() {
+        let Target::ShareLink(id) = *target else { continue };
+        // `AclResourceType::Folder` and `File` both walk the file tree, exactly as
+        // `ResourceRef::file` and `ResourceRef::folder` do — `merge_chains` keys on the family, not
+        // on the row's own kind, which is what makes that safe.
+        *target = match resolved.get(&id).map(|node| (node.kind, node.id)) {
+            Some((AclResourceType::File | AclResourceType::Folder, id)) => Target::FileTree(id),
+            Some((AclResourceType::Library, id)) => Target::Library(id),
+            // A link pointing at a workspace, page, list or list item: `share_links.resource_type`
+            // cannot hold any of them today, so this is schema drift rather than a case to model.
+            // Left unresolved, which refuses.
+            Some(_) | None => Target::ShareLink(id),
+        };
+    }
+    Ok(())
 }
 
 /// ACL resolution per `docs/04-DATA-MODEL.md §9`.
@@ -210,7 +268,7 @@ impl AclResolver {
         resources: &[ResourceRef],
         now: DateTime<Utc>,
     ) -> Result<EffectiveGrid> {
-        let targets: Vec<Target> = resources.iter().map(|r| classify(tenant, r)).collect();
+        let mut targets: Vec<Target> = resources.iter().map(|r| classify(tenant, r)).collect();
 
         // An actor with no ACL principal cannot be named by any entry, so there is nothing to ask
         // the database. Returning before the queries is not just an optimisation: it is what stops
@@ -218,6 +276,10 @@ impl AclResolver {
         let Some(principals) = PrincipalSet::for_actor(actor) else {
             return Ok(refusing(actions.len(), resources.len()));
         };
+
+        // `ENC-879`. Query 0, and only when a share reference is in the batch: a share link has no
+        // chain of its own, so it is rewritten into the target it exposes before anything is walked.
+        resolve_share_targets(conn, tenant, &mut targets, now).await?;
 
         let mut files = Vec::new();
         let mut libraries = Vec::new();
@@ -227,7 +289,9 @@ impl AclResolver {
                 Target::FileTree(id) => files.push(id),
                 Target::Library(id) => libraries.push(id),
                 Target::Workspace(id) => workspaces.push(id),
-                Target::ForeignTenant | Target::Unsupported => {}
+                // A `ShareLink` still standing after `resolve_share_targets` is a link that
+                // resolved to nothing, so it belongs with the other refusals.
+                Target::ShareLink(_) | Target::ForeignTenant | Target::Unsupported => {}
             }
         }
         if actions.is_empty() || (files.is_empty() && libraries.is_empty() && workspaces.is_empty())
@@ -254,9 +318,20 @@ impl AclResolver {
         );
 
         // Query 2 — the caller's transitive group closure, once for the whole batch.
-        let direct = principals.direct();
-        let groups = repo::group_closure(conn, tenant, direct, self.limits.max_group_depth).await?;
-        let principals = principals.with_groups(groups);
+        //
+        // Skipped entirely for a share-link bearer, and `PrincipalSet::can_hold_group_memberships`
+        // carries the reason: `group_members.member_type` cannot store a share link, so the walk
+        // could only ever return zero rows. The skip is safe *because* of that constraint and not
+        // because of anything here, which is why `migrations/0027` fails if the constraint is ever
+        // widened.
+        let principals = if principals.can_hold_group_memberships() {
+            let direct = principals.direct();
+            let groups =
+                repo::group_closure(conn, tenant, direct, self.limits.max_group_depth).await?;
+            principals.with_groups(groups)
+        } else {
+            principals
+        };
 
         // Query 3 — the entries on the union of every chain, for every action, once for the whole
         // batch. They come back already separated by action and are never seen together again.
@@ -329,7 +404,10 @@ fn chain_key(target: Target) -> Option<ChainNode> {
         Target::FileTree(id) => Some(ChainNode::new(AclResourceType::File, id)),
         Target::Library(id) => Some(ChainNode::new(AclResourceType::Library, id)),
         Target::Workspace(id) => Some(ChainNode::new(AclResourceType::Workspace, id)),
-        Target::ForeignTenant | Target::Unsupported => None,
+        // A share link has no chain filed under its own id — it is walked as whatever it points at,
+        // and [`resolve_share_targets`] has already rewritten the ones that resolve. Reaching here
+        // as a `ShareLink` therefore means the link resolved to nothing.
+        Target::ShareLink(_) | Target::ForeignTenant | Target::Unsupported => None,
     }
 }
 
@@ -479,7 +557,7 @@ mod tests {
     // Assertions are the point of a test; the workspace warns on these in non-test code.
     #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
-    use enclave_core::{FileId, LibraryId, UserId, VersionId, WorkspaceId};
+    use enclave_core::{FileId, LibraryId, ShareLinkId, UserId, VersionId, WorkspaceId};
 
     use super::*;
 
@@ -527,6 +605,38 @@ mod tests {
         ] {
             assert_eq!(classify(tenant, &resource), Target::Unsupported, "{resource}");
         }
+
+        // `ENC-879` moved `Share` off this list, so the sweep must say so rather than leave the
+        // reader to notice the absence. A share reference now classifies to a target of its own,
+        // and is resolved by one extra hop rather than refused.
+        let share = ResourceRef::share(tenant, ShareLinkId::new_v7());
+        assert_ne!(classify(tenant, &share), Target::Unsupported, "{share}");
+    }
+
+    /// `ENC-879`. A share reference classifies, and the tenant check still comes first.
+    #[test]
+    fn a_share_reference_reaches_its_own_resolution_and_another_tenants_does_not() {
+        let alpha = TenantId::new_v7();
+        let beta = TenantId::new_v7();
+        let link = ShareLinkId::new_v7();
+
+        assert_eq!(
+            classify(alpha, &ResourceRef::share(alpha, link)),
+            Target::ShareLink(link.as_uuid())
+        );
+        // Layer 3 — the application check inside `classify` — refuses before any query, which is
+        // the only layer that covers `authorize_many`'s direct callers. RLS is not what holds this.
+        assert_eq!(classify(alpha, &ResourceRef::share(beta, link)), Target::ForeignTenant);
+    }
+
+    /// An unresolved share link has no chain to look up, so it refuses like every other miss.
+    ///
+    /// This is what makes "unknown, revoked, expired and another tenant's are one answer" true at
+    /// the resolver rather than only in the SQL: even if `share_targets` returned nothing for a
+    /// reason nobody anticipated, the target that survives is one `chain_key` refuses.
+    #[test]
+    fn an_unresolved_share_link_has_no_chain() {
+        assert_eq!(chain_key(Target::ShareLink(Uuid::new_v4())), None);
     }
 
     #[test]
