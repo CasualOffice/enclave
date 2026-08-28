@@ -16,7 +16,7 @@ use crate::error::Result;
 use crate::repo;
 use crate::resolve::{
     AclResourceType, ChainNode, Effective, EffectiveGrid, EffectiveIndex, InheritanceChain,
-    PrincipalSet,
+    PrincipalKind, PrincipalSet,
 };
 
 /// Bounds on how far resolution will walk before refusing to answer.
@@ -157,6 +157,38 @@ async fn resolve_share_targets(
     Ok(())
 }
 
+/// Whether the caller, *if* it is a share-link bearer, presents a link that is still usable
+/// (`ENC-879`).
+///
+/// `true` for every other principal without asking anything: a user, a guest and a service account
+/// are not credentials with expiry dates, and charging them a round trip would be paying for a
+/// question that has no answer.
+///
+/// Unknown, revoked, expired and another tenant's link are one answer, which is `CLAUDE.md` rule 7
+/// arriving on the *principal* rather than on the resource. The cross-tenant leg is held twice
+/// here: `share_targets` carries an explicit `tenant_id = $1` predicate (layer 1) and runs on a
+/// `TenantScoped` connection where row-level security excludes the row anyway (layer 2).
+///
+/// # Errors
+///
+/// Storage failures. A failure is *not* "the link is dead": a database blip must not be able to
+/// masquerade as a policy answer in either direction (`crates/core/src/engine.rs`).
+async fn link_principal_is_live(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    principals: &PrincipalSet,
+    now: DateTime<Utc>,
+) -> Result<bool> {
+    let direct = principals.direct();
+    if direct.kind != PrincipalKind::ShareLink {
+        return Ok(true);
+    }
+    // `Principal::id` is `None` only for `EVERYONE`, which is not this kind — but a `SHARE_LINK`
+    // principal with no id names no link, so it holds nothing.
+    let Some(id) = direct.id else { return Ok(false) };
+    Ok(!repo::share_targets(conn, tenant, &[id], now).await?.is_empty())
+}
+
 /// ACL resolution per `docs/04-DATA-MODEL.md §9`.
 ///
 /// Holds no connection and no pool: it is the rules plus their limits, so a caller that already has
@@ -276,6 +308,27 @@ impl AclResolver {
         let Some(principals) = PrincipalSet::for_actor(actor) else {
             return Ok(refusing(actions.len(), resources.len()));
         };
+
+        // `ENC-879`. **A share link is a principal only while it is live.**
+        //
+        // Found by `the_chain_authorizes_the_link_bearer_a_redemption_presents`' sibling: an
+        // `acl_entries` row naming a link outlives the link, so without this a revoked or expired
+        // link kept every grant it had been given — `docs/12 §4.4` H4 requires revocation to close
+        // a link *including for an already-open session*, and an authorization stage that answers
+        // `ALLOW` for a revoked credential is that requirement failing at the one layer that
+        // decides.
+        //
+        // Deleting the `acl_entries` row at revocation time was the alternative and it is worse:
+        // revocation would then be two writes that can half-succeed, and the grant would survive
+        // whichever half failed. Liveness is read here, in the same transaction as the decision, so
+        // there is no window.
+        //
+        // The check is `repo::share_targets` rather than a second liveness predicate, deliberately:
+        // one function owns "is this link usable", so the resource side and the principal side
+        // cannot drift into disagreeing about a revoked link.
+        if !link_principal_is_live(conn, tenant, &principals, now).await? {
+            return Ok(refusing(actions.len(), resources.len()));
+        }
 
         // `ENC-879`. Query 0, and only when a share reference is in the batch: a share link has no
         // chain of its own, so it is rewritten into the target it exposes before anything is walked.
