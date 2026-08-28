@@ -122,12 +122,16 @@ async fn stage(store: &S3BlobStore, tenant: TenantId, file: FileId) -> String {
         .await
         .expect("open a staged upload");
 
-    // `required_headers` is bound rather than ignored with `..`. `ENC-820` added it to this
-    // variant, and every header named there was signed into the URL: a `PUT` that omits one fails
-    // the provider's signature check with `403 SignatureDoesNotMatch`. Ignoring the field would
-    // compile and would leave this test staging bytes the moment a header becomes mandatory —
-    // which is exactly what happened when `content-type` was signed and documented nowhere
-    // (`ENC-821`, two attempts to diagnose as a 403).
+    // `required_headers` is bound rather than ignored with `..`, and every header named there is
+    // sent on the `PUT` below. `ENC-820` made `create_upload` sign `x-amz-checksum-sha256` into the
+    // URL when the caller supplies a digest, and a signed header is a mandatory one: a `PUT` that
+    // omits it fails the provider's signature check with `403 SignatureDoesNotMatch`.
+    //
+    // As written this request supplies no digest and asks for no content type, so nothing is signed
+    // and the list is empty — but sending it rather than asserting it empty is what keeps this test
+    // true if that changes. Ignoring the field with `..` would compile and would leave the test
+    // staging bytes that never arrive, which is `ENC-821` exactly: `content-type` was signed,
+    // documented nowhere, and cost the first client two attempts to diagnose as a 403.
     let (url, required_headers) = match &session.target {
         UploadTarget::Single { url, required_headers } => (url.clone(), required_headers.clone()),
         other => panic!("a 64-byte object should be single-shot, not {other:?}"),

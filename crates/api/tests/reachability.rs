@@ -241,6 +241,33 @@ const SPECS: &[Spec] = &[
         credential: Credential::Bearer,
         expect: Expect::ServedOrAbsent,
     },
+    // Bootstrap (docs/05-API.md §19, `ENC-725`). Probed **twice, on one registration**, because it
+    // is one route with two callers and the interesting failure is not the same one for each. The
+    // set-agreement check below compares `(method, path)` sets, so two specs for one route agree
+    // with one registration; nothing here requires the table to be a bijection.
+    //
+    // The anonymous probe is the ENC-170 shape: a handler that reaches an extractor the binary
+    // never composed answers `500` in the binary and `200` in every in-process test. The
+    // authenticated probe is defect 3's shape: the composed authorization service refusing a caller
+    // who holds everything. Neither probe reads the *body* — that the anonymous half carries no
+    // tenant and the authenticated half does is `crates/api/tests/bootstrap.rs`'s claim, and it is
+    // the one claim that needs a second tenant to be worth anything.
+    Spec {
+        method: "GET",
+        path: "/api/v1/bootstrap",
+        target: "/api/v1/bootstrap",
+        body: None,
+        credential: Credential::None,
+        expect: Expect::Served,
+    },
+    Spec {
+        method: "GET",
+        path: "/api/v1/bootstrap",
+        target: "/api/v1/bootstrap",
+        body: None,
+        credential: Credential::Bearer,
+        expect: Expect::Served,
+    },
     // Navigation — workspaces and libraries (docs/05-API.md §7.1, `ENC-791`). All four name the
     // fixture spine's own workspace and library, which the caller holds every container action on,
     // so `Expect::Served` forbids `404` here and the two listings must come back non-empty for the
@@ -656,6 +683,28 @@ const SPECS: &[Spec] = &[
         target: "/health/ready",
         body: None,
         credential: Credential::None,
+        expect: Expect::Served,
+    },
+    // The dependency report (docs/05-API.md §19, `ENC-726`), probed on both of its halves for the
+    // reason `/api/v1/bootstrap` above gives. This one has a *second* ENC-170 exposure the others
+    // do not: `dependencies` extracts `Extension<Arc<dyn BlobStore>>`, and `download` and `preview`
+    // are the two routes that shipped extracting an extension the binary never attached and
+    // answered `500` for a milestone while every in-process test passed. The anonymous probe is
+    // what would see it, because it reaches the extractor before it reaches anything else.
+    Spec {
+        method: "GET",
+        path: "/health/dependencies",
+        target: "/health/dependencies",
+        body: None,
+        credential: Credential::None,
+        expect: Expect::Served,
+    },
+    Spec {
+        method: "GET",
+        path: "/health/dependencies",
+        target: "/health/dependencies",
+        body: None,
+        credential: Credential::Bearer,
         expect: Expect::Served,
     },
 ];
