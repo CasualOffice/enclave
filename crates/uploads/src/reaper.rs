@@ -95,6 +95,35 @@ pub async fn reap_expired(
         let id = session.record().id;
         let key = session.record().staged.as_str().to_owned();
 
+        // `ENC-839`: the parts first, then the object.
+        //
+        // `delete` removes a *completed* object. The parts of a multipart upload that was never
+        // completed are invisible to `DeleteObject` and go on being billed, so for every abandoned
+        // upload over `multipart_threshold_bytes` — 16 MiB by default, which is most of what this
+        // product is for — the row was marked `EXPIRED` and nothing was released.
+        //
+        // Order matters and is the same argument the delete-before-mark ordering below makes: abort
+        // while the row still says what the provider is holding. A store that cannot abort answers
+        // `Unsupported`, and that is *deferred* rather than swallowed — releasing nothing while
+        // recording a release would make the parts unreachable to every later pass, which is worse
+        // than the leak. The compensating control an integrator may also have configured is the
+        // bucket's `AbortIncompleteMultipartUpload` lifecycle rule (`docs/08-BYO-INFRA.md §5`),
+        // which nothing here can see or verify.
+        if let Some(upload_id) = session.record().multipart_id.as_deref() {
+            if let Err(error) = blob.abort_multipart(&key, upload_id).await {
+                tracing::warn!(
+                    tenant_id = %tenant,
+                    upload_session_id = %id,
+                    object_key = %key,
+                    error = %error,
+                    "could not abort an expired multipart upload, so its parts are still held; \
+                     leaving the session for the next pass"
+                );
+                report.deferred += 1;
+                continue;
+            }
+        }
+
         if let Err(error) = blob.delete(&key).await {
             // The key is safe to log: it is UUIDs, and carries no file name (`enclave_storage::key`).
             tracing::warn!(
@@ -300,6 +329,17 @@ mod tests {
         let body = source.split("pub async fn reap_expired(").nth(1).expect("the function exists");
         let delete = body.find("blob.delete(").expect("it deletes");
         let mark = body.find("session.expire(").expect("it marks the row");
+        let abort = body.find("blob.abort_multipart(").expect("it aborts multipart uploads");
+        assert!(
+            abort < delete,
+            "the multipart abort must precede the delete (ENC-839). `DeleteObject` cannot see the \
+             parts of an upload that was never completed, and aborting after the row has been \
+             marked leaves them held with nothing that will ever look again"
+        );
+        assert!(
+            abort < mark,
+            "the parts must be released before the row is marked EXPIRED (ENC-839)"
+        );
         assert!(
             delete < mark,
             "the staged bytes must be released before the row is marked EXPIRED"
