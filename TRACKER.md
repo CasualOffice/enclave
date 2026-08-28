@@ -730,10 +730,10 @@ for work that does not exist is not.
 |---|---|---|---|---|---|---|
 | D — Specification | 2 | 17 | 4 | 0 | 20 | 3 |
 | 0 — Foundations | 2 | 13 | 4 | 0 | 19 | 0 |
-| 1 — MVP | 16 | 153 | 131 | 32 | 207 | 125 |
+| 1 — MVP | 17 | 154 | 132 | 34 | 208 | 129 |
 | 2 — Enterprise V1 | 1 | 17 | 2 | 0 | 0 | 20 |
 | 3 — Beyond V1 | 0 | 0 | 1 | 5 | 0 | 6 |
-| **Total** | **21** | **200** | **142** | **37** | **246** | **154** |
+| **Total** | **22** | **201** | **143** | **39** | **247** | **158** |
 
 Counts include completed items in their priority column. Update this table whenever a row's status or
 priority changes; a stale rollup is worse than none — this one read "Phase 1: 0 done" while

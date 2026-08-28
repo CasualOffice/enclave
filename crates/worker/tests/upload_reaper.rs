@@ -122,8 +122,14 @@ async fn stage(store: &S3BlobStore, tenant: TenantId, file: FileId) -> String {
         .await
         .expect("open a staged upload");
 
-    let url = match &session.target {
-        UploadTarget::Single { url } => url.clone(),
+    // `required_headers` is bound rather than ignored with `..`. `ENC-820` added it to this
+    // variant, and every header named there was signed into the URL: a `PUT` that omits one fails
+    // the provider's signature check with `403 SignatureDoesNotMatch`. Ignoring the field would
+    // compile and would leave this test staging bytes the moment a header becomes mandatory —
+    // which is exactly what happened when `content-type` was signed and documented nowhere
+    // (`ENC-821`, two attempts to diagnose as a 403).
+    let (url, required_headers) = match &session.target {
+        UploadTarget::Single { url, required_headers } => (url.clone(), required_headers.clone()),
         other => panic!("a 64-byte object should be single-shot, not {other:?}"),
     };
 
@@ -134,6 +140,9 @@ async fn stage(store: &S3BlobStore, tenant: TenantId, file: FileId) -> String {
     let mut request = Request::new(SdkBody::from(BODY));
     request.set_method("PUT").expect("a valid method");
     request.set_uri(url.as_str()).expect("a valid URI");
+    for header in &required_headers {
+        request.headers_mut().insert(header.name.clone(), header.value.clone());
+    }
     let connector = Connector::builder()
         .tls_provider(tls::Provider::Rustls(tls::rustls_provider::CryptoMode::AwsLc))
         .build();
