@@ -524,6 +524,13 @@ mod tests {
             ResourceRef::version(tenant, VersionId::new_v7()),
             ResourceRef::user(tenant, UserId::new_v7()),
             ResourceRef::tenant(tenant),
+            // `ENC-879`. A share link is the one unsupported kind somebody has a live reason to
+            // want supported: `GET /shares/{token}` needs the chain to have an answer about a
+            // link, and there is none to have — `acl_entries` carries no row on a share and no
+            // `principal_type` that could name a link's bearer. Asserted here so that the day the
+            // resolver learns about shares, this fails and points at the row rather than letting a
+            // redemption route be built on a permission model nobody specified.
+            ResourceRef::new(tenant, ResourceKind::Share, Uuid::now_v7()),
         ] {
             assert_eq!(classify(tenant, &resource), Target::Unsupported, "{resource}");
         }
