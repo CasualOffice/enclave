@@ -19,8 +19,9 @@ wire_enum! {
     ///
     /// The strings match the `typ` access-token claim (`docs/03-LLD.md §5.2`) — with one
     /// deliberate exception. [`ActorKind::ShareLink`] is a kind the audit trail and `acl_entries`
-    /// can name and that **no token may ever carry**: `enclave_auth::Claims::actor` refuses it, so
-    /// a `typ` of `share_link` is a rejected token rather than a principal. See
+    /// can name and that **no token may ever carry**: `enclave_auth::AccessTokenIssuer::issue`
+    /// refuses to mint one and `AccessTokenVerifier::check_claims` refuses to accept one, so a
+    /// `typ` of `share_link` is a rejected token rather than a principal. See
     /// [`Actor::LinkBearer`] for the argument.
     pub enum ActorKind {
         /// A member of the tenant's directory.
@@ -112,11 +113,16 @@ pub enum Actor {
     ///
     /// # This is not a token subject
     ///
-    /// No access token is ever issued with `typ: "share_link"`, and `enclave_auth::Claims::actor`
-    /// refuses one that claims to be. A link bearer is established **only** by redeeming a token on
-    /// the redemption path, inside the transaction that spends the link's budget. If a token could
-    /// mint this actor, then every conditional-access and MFA requirement the link states would be
-    /// escapable by asking for a token instead of redeeming the link.
+    /// No access token is ever issued with `typ: "share_link"`, and one that claims to be is
+    /// refused twice: `enclave_auth::AccessTokenIssuer::issue` will not mint it, and
+    /// `AccessTokenVerifier::check_claims` will not accept it even when correctly signed. The
+    /// refusal is at the door and not in the claim projection, so it is testable by name and so
+    /// that `AccessTokenClaims::actor` stays an honest reading of what a token says.
+    ///
+    /// A link bearer is established **only** by redeeming a token on the redemption path, inside
+    /// the transaction that spends the link's budget. If a token could mint this actor, then every
+    /// conditional-access and MFA requirement the link states would be escapable by asking for a
+    /// token instead of redeeming the link.
     LinkBearer(ShareLinkId),
     /// Enclave itself: schedulers, retention sweeps, outbox publishing. It is a first-class actor
     /// rather than an absent one because these actions are audited like any other, and an audit
@@ -222,6 +228,42 @@ mod tests {
         assert!(!Actor::User(UserId::new_v7()).is_external());
         assert!(!Actor::ServiceAccount(ServiceAccountId::new_v7()).is_human());
         assert!(!Actor::System.is_human());
+    }
+
+    /// `ENC-879`. The two judgements the link-bearer variant had to make, asserted rather than left
+    /// to a doc comment — both are `matches!` rather than exhaustive matches, so the compiler will
+    /// not ask again if either is ever narrowed.
+    #[test]
+    fn a_link_bearer_is_external_and_is_treated_as_a_person() {
+        let bearer = Actor::LinkBearer(ShareLinkId::new_v7());
+
+        // External: a share link is very often the only credential protecting a document that has
+        // left the organisation, and `docs/06 §12.1` fails closed on external sharing at any
+        // classification. `false` here would exempt every redemption from that escalation.
+        assert!(bearer.is_external());
+
+        // Human: nobody knows who holds a link, and the two answers are not symmetric. Every
+        // control gated on this demands evidence *from a person*, so `true` makes a redemption that
+        // cannot produce it fail, and `false` makes those controls silently not apply to the one
+        // caller whose identity is unknown.
+        assert!(bearer.is_human());
+
+        // And the id is the link's own, so the audit row can name which link was used.
+        let id = ShareLinkId::new_v7();
+        assert_eq!(Actor::LinkBearer(id).subject_id(), Some(id.as_uuid()));
+        assert_eq!(Actor::LinkBearer(id).kind(), ActorKind::ShareLink);
+    }
+
+    /// The wire spelling is stable: it is written into `audit_events.actor_type` and read back by
+    /// `enclave_audit::actor_from_parts`, so changing it orphans every historical row.
+    #[test]
+    fn the_share_link_kind_round_trips_on_its_stored_spelling() {
+        assert_eq!(ActorKind::ShareLink.as_str(), "share_link");
+        assert_eq!("share_link".parse::<ActorKind>(), Ok(ActorKind::ShareLink));
+        assert_eq!("SHARE_LINK".parse::<ActorKind>(), Ok(ActorKind::ShareLink));
+        // Not the abbreviation its neighbours use, and not silently accepted as one.
+        assert!("link".parse::<ActorKind>().is_err());
+        assert!("share".parse::<ActorKind>().is_err());
     }
 
     #[test]
