@@ -516,6 +516,124 @@ export const catalog = {
     description:
       'The description associated with an unbuilt control. Future tense, about the product. Never offers a remedy, because there is nothing the user can do.',
   },
+
+  /* The denial sentences (`ENC-674`), one per reason code in `docs/05-API.md §5`.
+   *
+   * These are the wording half of a decision the *server* made: it answers
+   * `capabilities.download: false` and names `capabilityReasons.download:
+   * "PREVIEW_ONLY"`, and this catalog turns that code into a sentence in the
+   * reader's language (`docs/14 §5`). Nothing here chooses which code applies.
+   *
+   * Three rules for translators and for anyone editing them:
+   *
+   * 1. **Present tense, about this user, right now.** These are the opposite of
+   *    `later.*` above, which is future tense about the product. A denial that
+   *    reads like a roadmap note and a roadmap note that reads like a refusal
+   *    are the two failures `ENC-673` exists to prevent, and the copy is half of
+   *    what keeps them apart.
+   * 2. **Never name the rule.** No policy names, thresholds, conditions, or
+   *    whether anyone else has access (`docs/06 §24`, `CLAUDE.md` rule 10). Say
+   *    what is not available and, where it is genuinely actionable, what would
+   *    change it. Never why in terms of the system's own configuration.
+   * 3. **Never promise a retry.** A denial is a successful request with a
+   *    refusing answer (`docs/17 §7`). "Try again" is false and turns an access
+   *    request into a bug report.
+   */
+  'denial.accessDenied': {
+    message: 'You do not have access to this.',
+    description:
+      'Shown on a control the authorization stage refused. The most general denial there is — used when no more specific rule applied. Do not translate as "forbidden" or "error"; it is a statement about this user’s access, not about a failure.',
+  },
+  'denial.downloadBlockedByPolicy': {
+    message: 'Downloading this file is restricted outside the corporate network.',
+    description:
+      'Shown on Download when network policy blocks it specifically. Other access to the same file may be permitted, so do not translate as though the whole file were unavailable.',
+  },
+  'denial.externalShareBlocked': {
+    message: 'This file cannot be shared outside your organisation.',
+    description:
+      'Shown on the external-sharing control. Internal sharing may still be allowed — the restriction is on the audience, not on sharing.',
+  },
+  'denial.previewOnly': {
+    message: 'This file can be viewed but not downloaded.',
+    description:
+      'Shown on Download, Print and Export when the policy allows a rendition but not the original bytes. Leads with what is permitted, deliberately: the user can still read the document.',
+  },
+  'denial.networkNotAllowed': {
+    message: 'This action is not permitted from your current network.',
+    description:
+      'Conditional access refused on network. "Current network" rather than any named network or location — never identify which networks are permitted.',
+  },
+  'denial.deviceNotManaged': {
+    message: 'This action requires a managed device.',
+    description:
+      'Conditional access refused on device posture. Do not describe what makes a device managed; that is the administrator’s to explain.',
+  },
+  'denial.stepUpRequired': {
+    message: 'This action needs a fresher sign-in.',
+    description:
+      'Authentication succeeded but is not recent or strong enough. Distinct from being signed out — the user is signed in, and the session is simply too old for this particular action.',
+  },
+  'denial.dlpBlocked': {
+    message: 'This content cannot be shared or exported.',
+    description:
+      'Data-loss-prevention refused outright. Never say what was matched or which rule matched (CLAUDE.md rule 10) — the sentence stops at the outcome.',
+  },
+  'denial.dlpJustificationRequired': {
+    message: 'This action needs a written justification.',
+    description:
+      'Not a refusal so much as a condition: the action proceeds once the user records a reason. Translate as a requirement, not as a denial.',
+  },
+  'denial.dlpApprovalRequired': {
+    message: 'This action needs approval before it can proceed.',
+    description:
+      'The action is routed to an approver rather than executed. As above, a condition rather than a refusal — the user is not being told no.',
+  },
+  'denial.classificationCeiling': {
+    message: 'This content is above the sensitivity level available here.',
+    description:
+      '"Here" means this client or this context, not this user — the same content may be readable elsewhere. Never state the content’s classification, which the user may not be cleared to know.',
+  },
+  'denial.legalHoldActive': {
+    message: 'This item is under legal hold and cannot be changed.',
+    description:
+      'Shown on Edit and Delete. A statement about the item, not about the user — everyone sees this, including administrators.',
+  },
+  'denial.retentionBlocksDelete': {
+    message: 'A retention policy prevents this item from being deleted.',
+    description:
+      'Shown on Delete only. Do not name the policy or its period; the user can quote the reason code to an administrator who can.',
+  },
+  'denial.recordImmutable': {
+    message: 'This item is a declared record and cannot be modified.',
+    description:
+      'Shown on every mutation. A property of the item, like legal hold — not a permission the user is missing.',
+  },
+  'denial.quotaExceeded': {
+    message: 'Your organisation has reached a storage or usage limit.',
+    description:
+      'Deliberately about the organisation rather than the user: an individual cannot resolve it, and phrasing it personally sends them looking for something to delete.',
+  },
+  'denial.syncNotPermitted': {
+    message: 'This file is available on the web only.',
+    description:
+      'Shown on Sync. States where the file *is* available rather than where it is not, because the user can still work with it — they simply will not find it in a synced folder.',
+  },
+  'denial.malwareDetected': {
+    message: 'This file did not pass a security scan.',
+    description:
+      'Shown on every content path. Neutral about cause — a scan verdict is not an accusation about whoever uploaded it.',
+  },
+  'denial.sessionReplay': {
+    message: 'Your session has ended for security reasons.',
+    description:
+      'The credential was reused in a way that ended the session. Never explain the detection; say what happened and let the sign-in flow take it from there.',
+  },
+  'denial.unspecified': {
+    message: 'This action is not available to you.',
+    description:
+      'Shown when the server withheld a capability and sent a reason code this build has no wording for — a newer server naming a reason this client cannot phrase yet. Deliberately a restatement of the refusal and never a guess at its cause: an invented explanation is wrong exactly when it matters. Keep it as unspecific in translation as it is here.',
+  },
   'classification.public': {
     message: 'Public',
     description:
@@ -1097,6 +1215,22 @@ export const catalog = {
       'A document that says “terminate for convenience” will not be found by searching “cancel the contract”. Finding a document by what it means arrives in a later release.',
     description:
       'Second line, shown when this deployment has no semantic retrieval at all — a product state, so future tense about the product. Replace the quoted example with a natural pair in your language: two ways of saying the same thing that share no words.',
+  },
+  'search.retrieval.headDense': {
+    message: 'Matching on meaning, not exact words',
+    description:
+      'Heading of the retrieval notice when the vector index answered and the keyword half did not (diagnostics.mode = semantic, degraded = false). The mirror image of search.retrieval.head — do not translate the two the same way, they describe opposite halves of a hybrid search. Not an error; no alarm vocabulary.',
+  },
+  'search.retrieval.stillSearchedDense': {
+    message: 'Every file you can open is still being searched — by what its contents are about.',
+    description:
+      'First line of the dense variant, and the reassuring one: coverage is unchanged and only the matching is narrower. Deliberately not the same sentence as search.retrieval.stillSearched, which promises matching "by the words inside it" — the exact thing this mode does not do. Keep it first in translation.',
+  },
+  'search.retrieval.dense': {
+    message:
+      'An exact phrase may be missed — a file name, a case number or a clause reference is best found by opening the folder it lives in. Matching on the exact words as well arrives in a later release.',
+    description:
+      'Second line of the dense variant, shown when semantic retrieval answered but keyword retrieval has not run (docs/07 §5 hybrid fusion, ENC-891). Future tense about the product, so it carries the Later chip. The loss is the opposite of search.retrieval.lexical’s: there, meaning is missed; here, the literal string is. Replace the examples with identifiers natural to your language — the point is short exact strings a reader would type verbatim.',
   },
   'search.retrieval.degraded': {
     message:
@@ -1879,11 +2013,13 @@ export const catalog = {
 
   /* ------------------------------------------------------------- the upload */
 
-  'library.upload.denied': {
-    message: 'You cannot add files to this library.',
-    description:
-      'Reason shown on the disabled Upload control when the server’s library capabilities report create=false. Deliberately says only what the capability said — `capabilities` carries no per-action reason yet (ENC-674) and inventing one would be the client re-deriving a policy decision.',
-  },
+  /* `library.upload.denied` was here, and it is gone rather than kept
+   * (`ENC-674`). It was the client's own sentence for a refusal the server had
+   * not explained — honest at the time, because it restated the boolean and
+   * claimed no cause, but it was still one screen's private wording for a fact
+   * every screen has to state. The reason now arrives as a code and is phrased
+   * by `denial.*` above, so keeping this key would be a second answer to the
+   * same question, differing by surface. */
   'upload.dropHere': {
     message: 'Drop files to upload',
     description: 'Overlay shown over the file list while files are dragged over it.',

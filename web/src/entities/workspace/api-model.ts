@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { CapabilityReasons } from '../capability/denial.ts';
 
 /* The wire shapes of `GET /workspaces`, `GET /workspaces/{id}/libraries` and
  * `GET /libraries/{id}`.
@@ -53,6 +54,8 @@ export const Workspace = z.object({
   visibility: z.string(),
   revision: z.number(),
   capabilities: ContainerCapabilities,
+  /** Why each `false` above is `false` (`ENC-674`). See `entities/capability/denial.ts`. */
+  capabilityReasons: CapabilityReasons.optional(),
   obligations: Obligations,
   createdAt: z.string(),
   updatedAt: z.string(),
@@ -87,6 +90,8 @@ export const Library = z.object({
   revision: z.number(),
   settings: LibrarySettings,
   capabilities: ContainerCapabilities,
+  /** Why each `false` above is `false` (`ENC-674`). See `entities/capability/denial.ts`. */
+  capabilityReasons: CapabilityReasons.optional(),
   obligations: Obligations,
   createdAt: z.string(),
   updatedAt: z.string(),
