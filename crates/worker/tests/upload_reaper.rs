@@ -123,7 +123,21 @@ async fn stage(store: &S3BlobStore, tenant: TenantId, file: FileId) -> String {
         .expect("open a staged upload");
 
     let url = match &session.target {
-        UploadTarget::Single { url } => url.clone(),
+        // `required_headers` is destructured rather than ignored with `..`, and asserted empty,
+        // because it is exactly what the comment above is about. `ENC-820` made `create_upload`
+        // sign `x-amz-checksum-sha256` into the URL when the caller supplies a digest — and a
+        // signed header is a mandatory one, so a bare `PUT` that omits it fails. This request
+        // supplies none and asks for no content type, so nothing is signed and the bare `PUT`
+        // below is correct. If that ever stops being true this line fails with the reason, rather
+        // than the `PUT` failing with a `400` fifteen lines later.
+        UploadTarget::Single { url, required_headers } => {
+            assert!(
+                required_headers.is_empty(),
+                "the pre-signed PUT now requires {required_headers:?}, which the bare request \
+                 below does not send — it will answer 400"
+            );
+            url.clone()
+        }
         other => panic!("a 64-byte object should be single-shot, not {other:?}"),
     };
 
