@@ -5,6 +5,7 @@ import { cleanup, render, screen } from '@testing-library/react';
 import { I18nProvider } from '../../src/shared/i18n/index.tsx';
 import { Button, IconButton, type ControlState } from '../../src/shared/ui/primitives.tsx';
 import { Row } from '../../src/shared/ui/layout.tsx';
+import { catalog } from '../../src/shared/i18n/catalog.ts';
 
 afterEach(cleanup);
 
@@ -239,6 +240,60 @@ describe('denied, unbuilt and busy are distinguishable by construction', () => {
 
     expect(markers.size).toBe(3);
     expect(markers.has('')).toBe(false);
+  });
+
+  it('keeps the two vocabularies apart in the copy, not only in the markup', () => {
+    /* **The other half of the same security assertion**, and the half that only
+     * became reachable with `ENC-674`.
+     *
+     * D33 separates the two treatments structurally — different `data-state`,
+     * different selectors, different focus behaviour — and every assertion in
+     * this block so far is about the markup. But a user does not read
+     * `data-state`; they read the sentence. Two treatments that look different
+     * and *say* the same kind of thing have not actually been separated, and
+     * until this milestone the product had almost no denial copy to get this
+     * wrong with. It now has nineteen sentences.
+     *
+     * The rule is a tense and a subject. `later.*` is future tense about the
+     * **product** — it must never assert anything about this user's
+     * permissions. `denial.*` is present tense about this **user** — it must
+     * never talk about a release, because "you may not do this yet" invites a
+     * user to wait for something that is not coming.
+     *
+     * Both directions are asserted, because banning roadmap words from denials
+     * alone would pass against a product with no roadmap copy at all. */
+    const laterKeys = Object.keys(catalog).filter((key) => key.startsWith('later.'));
+    const denialKeys = Object.keys(catalog).filter((key) => key.startsWith('denial.'));
+
+    // Neither set is empty, so neither loop below is vacuous (`§1.2`).
+    expect(laterKeys.length).toBeGreaterThan(0);
+    expect(denialKeys.length).toBeGreaterThan(0);
+
+    /* A roadmap note may not tell a user what they are permitted to do. The
+     * words are the ones that make a sentence about *access* rather than about
+     * *availability*. */
+    for (const key of laterKeys) {
+      const message = catalog[key as keyof typeof catalog].message.toLowerCase();
+      for (const word of ['permission', 'not allowed', 'denied', 'restricted', 'blocked']) {
+        expect(message, `${key} reads as a refusal`).not.toContain(word);
+      }
+    }
+
+    /* …and a refusal may not read as a roadmap item. `denial.*` is about now. */
+    for (const key of denialKeys) {
+      const message = catalog[key as keyof typeof catalog].message.toLowerCase();
+      for (const word of ['later release', 'arrives', 'coming soon', 'not yet', 'in a future']) {
+        expect(message, `${key} reads as a roadmap note`).not.toContain(word);
+      }
+    }
+
+    /* The positive control for the second loop: the product does contain
+     * roadmap copy using exactly those words, so "no denial says `arrives`" is
+     * a fact about the denial set and not about a vocabulary nobody uses. */
+    const roadmapCopy = laterKeys.filter((key) =>
+      /arrives|later release/i.test(catalog[key as keyof typeof catalog].message),
+    );
+    expect(roadmapCopy.length).toBeGreaterThan(0);
   });
 
   it('keeps a denial focusable and an unbuilt control out of the tab order', () => {

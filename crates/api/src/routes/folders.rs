@@ -189,7 +189,7 @@ pub async fn create(
     // of a `container.create` on the *parent* would in any case be the wrong set to apply to the
     // child.
     let folder = ResourceRef::folder(ctx.tenant_id, node.id);
-    let (capabilities, wire) = capabilities_for(
+    let (capabilities, reasons, wire) = capabilities_for(
         state.policy.authorization().as_ref(),
         &ctx,
         &folder,
@@ -198,7 +198,7 @@ pub async fn create(
     .await
     .map_err(|error| ApiError::new(error, request_id))?;
 
-    Ok((StatusCode::CREATED, Json(Item::new(&node, capabilities, wire))).into_response())
+    Ok((StatusCode::CREATED, Json(Item::new(&node, capabilities, reasons, wire))).into_response())
 }
 
 // ---------------------------------------------------------------------------------------------

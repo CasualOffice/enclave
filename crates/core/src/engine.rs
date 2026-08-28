@@ -537,6 +537,77 @@ impl PolicyEngine {
         self.audit.record_allow(ctx, action, resource, &obligations).await?;
         Ok(PolicyDecision::allow(obligations))
     }
+
+    /// Re-runs tenant isolation and **conditional access alone**, for a caller that has a principal
+    /// and no resource operation to authorize.
+    ///
+    /// # The one caller, and why it is not [`Self::enforce`]
+    ///
+    /// Session refresh (`docs/03-LLD.md §5.3` rule 3, leakage row `K6`). A refresh is not an
+    /// operation on a resource: nothing is read, nothing is written, and the stages after this one
+    /// have nothing to decide about it. Authorization would be asked whether the caller may `read`
+    /// itself, barriers and classification would be asked about a principal rather than a document,
+    /// and DLP would be asked to inspect content that does not exist. Answers to questions nobody
+    /// asked are not extra safety; they are four more places for a refusal to come from that no
+    /// operator could explain.
+    ///
+    /// What *is* true of a refresh is the second stage: the rules that decide whether this
+    /// principal may be reached from this network, on this device, at this authentication strength.
+    /// Rule 3 exists because those rules change while a session is alive, and a session that never
+    /// re-asks them outlives them by the whole refresh lifetime.
+    ///
+    /// # Why it lives here rather than in the caller
+    ///
+    /// `CLAUDE.md` rule 10: audit happens inside the policy engine, for denials as well as allows.
+    /// A caller holding [`ConditionalAccessService`] and an audit sink separately could take this
+    /// decision and forget to record it — and a refusal nobody can find in `audit_events` is the
+    /// defect `crates/api/src/refusal.rs` was written about. Neither collaborator is reachable from
+    /// outside this type, so "the refusal is recorded" is a property of the method rather than of a
+    /// review.
+    ///
+    /// It is **not** a fast path around the chain, and it cannot become one: it takes no `Action`
+    /// that reads bytes to a useful conclusion, it returns the stage's obligations rather than
+    /// discharging them, and `xtask policy-routing` still requires every route handler to reach
+    /// [`Self::enforce`]. A handler that called this instead would fail that lint.
+    ///
+    /// # Errors
+    ///
+    /// * [`Error::NotFound`] when the resource belongs to another tenant, exactly as
+    ///   [`Self::enforce`] answers it.
+    /// * [`Error::PolicyDenied`] when conditional access refuses.
+    /// * Whatever the stage's own evaluation failed with. **An evaluation failure is not an
+    ///   allow.** `TenantConditionalAccess::policies_for` propagates a database failure and a rule
+    ///   it cannot decode rather than substituting an empty rule set, so a store that cannot answer
+    ///   ends the refresh here instead of granting fourteen more days of session.
+    pub async fn reevaluate_conditional_access(
+        &self,
+        ctx: &RequestContext,
+        action: Action,
+        resource: &ResourceRef,
+    ) -> Result<PolicyDecision> {
+        if ctx.tenant_id != resource.tenant_id {
+            self.audit
+                .record_deny(
+                    ctx,
+                    action,
+                    resource,
+                    Stage::TenantIsolation,
+                    ReasonCode::AccessDenied,
+                )
+                .await?;
+            return Err(Error::NotFound);
+        }
+
+        let decision = self.conditional_access.evaluate(ctx, action, resource).await?;
+        if let StageOutcome::Deny(code) = *decision.outcome() {
+            self.audit.record_deny(ctx, action, resource, Stage::ConditionalAccess, code).await?;
+            return Err(Error::denied(code));
+        }
+
+        let obligations = decision.ensure_allowed()?;
+        self.audit.record_allow(ctx, action, resource, &obligations).await?;
+        Ok(PolicyDecision::allow(obligations))
+    }
 }
 
 /// Deny-by-default implementations, used until each real service lands.

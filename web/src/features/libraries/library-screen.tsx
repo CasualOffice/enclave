@@ -1,4 +1,5 @@
 import { useCallback, useMemo } from 'react';
+import { useKeyBindings } from '../../shared/keyboard/use-key-bindings.ts';
 import { useT } from '../../shared/i18n/index.tsx';
 import { useFormatters } from '../../shared/i18n/format.ts';
 import { Button, IconButton } from '../../shared/ui/primitives.tsx';
@@ -6,7 +7,9 @@ import { Bar, Push, Tab, TabList } from '../../shared/ui/layout.tsx';
 import { FailureState } from '../../shared/ui/surface-states.tsx';
 import { failureOf } from '../../shared/api/failure.ts';
 import { rowFromItem } from '../../entities/file/present.ts';
+import { reasonMessage } from '../../entities/capability/denial.ts';
 import type { Item } from '../../entities/file/api-model.ts';
+import type { FileRow } from '../../entities/file/model.ts';
 import { useUploadStore } from '../../entities/upload/store.ts';
 import { useUploadTarget } from '../../entities/upload/use-upload-target.ts';
 import { isActive } from '../../entities/upload/model.ts';
@@ -66,6 +69,9 @@ export default function LibraryScreen() {
   const folderId = folderIdRaw.length > 0 ? folderIdRaw : undefined;
   const density: DensityName = useSearchParam('density') === 'compact' ? 'compact' : 'default';
   const peekId = peekIdRaw.length > 0 ? peekIdRaw : undefined;
+  /* `⌘\` pins the panel (`docs/09 §6`, `§7`). URL state like everything else
+   * on this screen: a pinned panel is part of the view a link describes. */
+  const pinned = useSearchParam('pin') === '1';
 
   const setFolderId = useCallback(
     (id: string | undefined) => write({ folder: id ?? null, peek: null }),
@@ -121,6 +127,11 @@ export default function LibraryScreen() {
    * (`docs/17 §1`). While the library metadata is still loading the control is
    * *busy* rather than denied: not knowing yet is not a refusal. */
   const canCreate = library.data?.capabilities.create === true;
+  /* …and the server explains it, too (`ENC-674`). The reason is looked up by the
+   * same key the boolean was read from, so the sentence and the refusal cannot
+   * come apart. `reasonMessage` handles the absent and the unrecognised code
+   * identically and neither of them guesses — see `entities/capability`. */
+  const uploadDenial = reasonMessage(library.data?.capabilityReasons?.['create']);
   const target = useUploadTarget(hasLibrary ? libraryId : undefined, folderId, canCreate);
 
   const { groups, ordered } = useMemo(
@@ -140,6 +151,90 @@ export default function LibraryScreen() {
   );
 
   const closePeek = useCallback(() => setPeekId(undefined), [setPeekId]);
+
+  /* ------------------------------------------------- what the keyboard does */
+
+  /**
+   * `Enter` on a row.
+   *
+   * A folder opens — it is a real navigation and the listing endpoint takes a
+   * `parentId`. **A file has no open surface in M5**, and `docs/09 §6` does not
+   * say what "Open" means for one in a product that has no editor and no
+   * full-page preview route. It is not silent by accident: §6 itself notes that
+   * "`Space` opens the peek, which *is* the preview surface", so the nearest
+   * true reading of Open-a-file today is the peek at its Preview tab, which is
+   * a built endpoint (`GET /files/{id}/preview`) and a built surface.
+   *
+   * That reading is recorded rather than assumed — `ENC-902`. What is *not*
+   * done here is inventing a second destination and calling the binding
+   * finished: `Enter` and `Space` land on the same panel and differ only in
+   * which tab it opens, which is honest about the product having one preview
+   * surface rather than two.
+   */
+  const openRow = useCallback(
+    (row: FileRow) => {
+      if (row.isFolder) setFolderId(row.id);
+      else write({ peek: row.id, tab: 'preview' });
+    },
+    [setFolderId, write],
+  );
+
+  const peekRow = useCallback((row: FileRow) => setPeekId(row.id), [setPeekId]);
+
+  /** Replace the whole selection — `↑ ↓`, `Shift`-extend and `⌘A`. */
+  const select = useListViewStore((state) => state.select);
+  const clearSelection = useListViewStore((state) => state.clearSelection);
+
+  /* ------------------------------------- `I`, `⌘\` and `Esc` (`docs/09 §6`)
+   *
+   * Registered here rather than in `app/` because all three act on the details
+   * panel, and the panel is this screen's URL state. A global handler could
+   * only reach it by writing a sentinel into the query string — and
+   * `docs/09 §3` promises that query string is a link a user can send to a
+   * colleague, not a private protocol between two modules.
+   */
+  useKeyBindings(
+    useMemo(
+      () => ({
+        /* `I` toggles the panel. With nothing selected it opens on the first
+         * row, which is what the toolbar's own toggle already does — a details
+         * panel that opens empty when there is something to describe is a
+         * surface that has been opened and then wasted. */
+        i: (event: KeyboardEvent) => {
+          event.preventDefault();
+          if (peekIdRaw.length > 0) write({ peek: null, pin: null });
+          else write({ peek: ordered[0]?.id ?? null });
+        },
+        /* `⌘\` pins it open. Pinned means it survives the selection being
+         * cleared, which is the empty-but-present state `PeekPanel` already
+         * draws — so pinning is a real distinction here rather than a flag with
+         * no consequence. */
+        'mod+\\': (event: KeyboardEvent) => {
+          event.preventDefault();
+          write({ pin: pinned ? null : '1', peek: peekIdRaw.length > 0 ? peekIdRaw : (ordered[0]?.id ?? null) });
+        },
+        /* `Esc` — "Close panel/dialog, clear selection", in `docs/09 §6`'s own
+         * order, and the order is the whole meaning. A user with the panel open
+         * and three rows selected expects the panel to close; taking the
+         * selection instead, out from under a panel that stayed, is the wrong
+         * half. One press closes the topmost thing there is; a second reaches
+         * the next one down. A *pinned* panel is not closed by `Esc` — that is
+         * what pinning it means — so the selection is what clears. */
+        Escape: (event: KeyboardEvent) => {
+          if (peekIdRaw.length > 0 && !pinned) {
+            event.preventDefault();
+            write({ peek: null });
+            return;
+          }
+          if (selected.size > 0) {
+            event.preventDefault();
+            clearSelection();
+          }
+        },
+      }),
+      [peekIdRaw, pinned, ordered, selected.size, write, clearSelection],
+    ),
+  );
 
   const peekIndex = peekId === undefined ? -1 : ordered.findIndex((row) => row.id === peekId);
   const navigation =
@@ -278,10 +373,13 @@ export default function LibraryScreen() {
            *   * `busy`    — the library's capabilities have not arrived. Not
            *                 knowing is not a refusal.
            *   * `denied`  — `capabilities.create` is `false`. Shown, focusable,
-           *                 not hidden (`docs/09 §5`). It carries **no reason**,
-           *                 because `capabilities` does not yet supply one
-           *                 (`ENC-674`) and a client-invented explanation of a
-           *                 policy decision is the client re-deriving it.
+           *                 not hidden (`docs/09 §5`), and it now carries **the
+           *                 server's reason**: `capabilityReasons.create` names
+           *                 a code and the catalog phrases it (`ENC-674`,
+           *                 `docs/14 §5`). Nothing here composes an explanation
+           *                 — a client-invented account of a policy decision is
+           *                 the client re-deriving it, which is the whole point
+           *                 of reading `capabilities` rather than a role.
            *   * `ready`   — opens the file picker.
            */}
           <Button
@@ -294,7 +392,7 @@ export default function LibraryScreen() {
                 ? { kind: 'busy' }
                 : canCreate
                   ? { kind: 'ready' }
-                  : { kind: 'denied', reason: t('library.upload.denied') }
+                  : { kind: 'denied', reason: t(uploadDenial) }
             }
           />
           <Button
@@ -345,6 +443,9 @@ export default function LibraryScreen() {
               onToggleGroup={toggleGroup}
               selected={selected}
               onToggleSelect={toggleSelected}
+              onSelect={select}
+              onOpen={openRow}
+              onPeek={peekRow}
               density={density}
               status={items.isPending ? 'loading' : 'ready'}
               filtersActive={false}

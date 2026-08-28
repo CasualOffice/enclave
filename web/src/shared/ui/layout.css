@@ -258,7 +258,7 @@
  * sheet, which is what `docs/09 §15` requires of a focus indicator. */
 .ui-field:focus-within {
   box-shadow:
-    0 0 0 1px var(--accent),
+    0 0 0 1px var(--focus-ring),
     0 0 0 4px var(--accent-ring);
 }
 

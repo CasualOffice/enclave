@@ -15,10 +15,27 @@
 //!    else: revoke the family, deny the outstanding access tokens, return
 //!    [`AuthError::SessionReplay`] so the caller can raise the incident.
 //! 3. Check the device binding.
-//! 4. Re-evaluate conditional access through the [`RefreshGuard`]. `docs/03-LLD.md §5.3` rule 3 is
-//!    the reason this is not optional: a user who moves outside an allowed network zone must lose
-//!    access within one access-token lifetime, and refresh is where that is noticed.
-//! 5. Rotate, then issue.
+//! 4. Re-resolve the session's facts — scopes, methods, epoch — through the
+//!    [`SessionFactsProvider`].
+//! 5. Re-evaluate conditional access through the [`RefreshGuard`], against *those* facts and the
+//!    network this request arrived on. `docs/03-LLD.md §5.3` rule 3 is the reason this is not
+//!    optional: a user who moves outside an allowed network zone must lose access within one
+//!    access-token lifetime, and refresh is where that is noticed.
+//! 6. Rotate, then issue.
+//!
+//! # Why step 4 comes before step 5, when it used to come after the rotation (`ENC-709`)
+//!
+//! The facts *are* half of what conditional access decides against. A rule that requires
+//! multi-factor authentication or a particular scope has to be evaluated against the strength the
+//! session actually authenticated with, and the only thing that knows it is the facts provider — a
+//! guard handed a bare [`RefreshRecord`] would see `Unauthenticated` and no scopes, refuse every
+//! MFA-conditioned rule for a session that *did* use two factors, and lock the break-glass
+//! administrator out of the one exemption that exists to un-lock them
+//! (`crates/conditional_access/src/policy.rs`).
+//!
+//! Resolving them before the rotation rather than after is a second, smaller improvement: a subject
+//! who was disabled between rotations no longer has their token consumed on the way to being
+//! refused.
 
 use core::fmt;
 
@@ -107,7 +124,7 @@ pub trait TokenService: Send + Sync {
     ///
     /// [`AuthError::SessionReplay`] when the presented token was already consumed — by which point
     /// the family has already been revoked — [`AuthError::RefreshRejected`],
-    /// [`AuthError::DeviceMismatch`] or [`AuthError::NetworkNotAllowed`].
+    /// [`AuthError::DeviceMismatch`] or [`AuthError::ConditionalAccessDenied`].
     async fn refresh(
         &self,
         presented: &RefreshToken,
@@ -146,27 +163,50 @@ pub trait TokenService: Send + Sync {
 ///
 /// A trait, not a call into the `conditional_access` crate, because `auth` is below the policy
 /// services in the dependency order (D1) and a direct dependency would be a sideways edge. The
-/// binary wires the real evaluator in.
+/// binary wires the real evaluator in — `crates/api/src/refresh_guard.rs`.
+///
+/// # What an implementation is given, and why it is all three
+///
+/// The record says *who* and *which family*; the facts say *how strongly they authenticated and
+/// what they may exercise*; the network says *where this particular request came from*. A rule can
+/// be conditioned on any of the three, so an implementation handed fewer than three would answer a
+/// question about the session as it was rather than about the request in front of it — which is the
+/// whole defect rule 3 exists to close.
+///
+/// The network is the request's own, resolved at the edge from the socket peer and from forwarding
+/// only where a configured proxy vouched for it hop by hop (`crates/api/src/edge.rs`,
+/// `CLAUDE.md` rule 3). Nothing on this trait can be populated from a header a caller controls.
 #[async_trait]
 pub trait RefreshGuard: Send + Sync + fmt::Debug {
-    /// Whether this family may still be refreshed from this network.
+    /// Whether this family may still be refreshed, given what the session is and where the request
+    /// came from.
     ///
     /// # Errors
     ///
-    /// [`AuthError::NetworkNotAllowed`], or another denial the evaluator determines.
+    /// [`AuthError::ConditionalAccessDenied`] carrying the stage's own reason code, or a failure
+    /// the evaluation could not be completed through. **An implementation must not turn the second
+    /// into the first, nor into an allow**: "the rules could not be read" is not "there are no
+    /// rules", and a store outage that permitted every refresh would hand every session another
+    /// full refresh lifetime at exactly the moment nobody is reading logs.
     async fn allow_refresh(
         &self,
         record: &RefreshRecord,
+        facts: &SessionFacts,
         network: &NetworkContext,
     ) -> Result<(), AuthError>;
 }
 
 /// A [`RefreshGuard`] that permits every refresh.
 ///
-/// **Development and tests only.** It is named for what it does rather than being a `Default`, so
-/// that wiring it is a visible choice in a binary's startup code and shows up in review. The real
-/// evaluator lands with the `conditional_access` crate in M1; until then a deployment profile check
-/// is the thing that should refuse to start with this in place.
+/// **Tests only.** It is named for what it does rather than being a `Default`, so that wiring it is
+/// a visible choice in a binary's startup code and shows up in review.
+///
+/// No binary in this workspace wires it any more (`ENC-709`): `crates/api/src/main.rs` builds
+/// `ChainRefreshGuard` over the same policy engine every authenticated request goes through, and
+/// the start-up banner no longer has a `refresh_guard` line to print because there is no
+/// configuration in which this type is reached. It survives so that the unit tests in this module
+/// can exercise rotation without standing up a policy chain — a suite that had to would be testing
+/// two things and reporting one.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct UnrestrictedRefreshGuard;
 
@@ -175,6 +215,7 @@ impl RefreshGuard for UnrestrictedRefreshGuard {
     async fn allow_refresh(
         &self,
         _record: &RefreshRecord,
+        _facts: &SessionFacts,
         _network: &NetworkContext,
     ) -> Result<(), AuthError> {
         Ok(())
@@ -513,8 +554,18 @@ where
             RefreshOutcome::Rejected => return Err(AuthError::RefreshRejected),
         };
 
+        // Scopes, `epoch` and the authentication facts are **re-resolved**, not copied from the
+        // previous token. That is the point of a ten-minute access token: a role removed, a group
+        // membership lost or an epoch bumped since the last refresh must be reflected in the token
+        // issued now. Carrying the old `scp` forward would make a refresh chain immune to
+        // authorization changes for as long as the user kept refreshing.
+        //
+        // Resolved here rather than after the rotation because the guard below decides against them
+        // (`ENC-709`); see the module header.
+        let facts = self.facts.facts_for(&record).await?;
+
         // Rule 3, and test K6.
-        self.guard.allow_refresh(&record, network).await?;
+        self.guard.allow_refresh(&record, &facts, network).await?;
 
         // K3: consume the presented token and insert its successor atomically.
         let successor_token = RefreshToken::generate()?;
@@ -537,12 +588,6 @@ where
         };
         self.refresh_store.rotate(record.id, successor, now).await?;
 
-        // Scopes, `epoch` and the authentication facts are **re-resolved**, not copied from the
-        // previous token. That is the point of a ten-minute access token: a role removed, a group
-        // membership lost or an epoch bumped since the last refresh must be reflected in the token
-        // issued now. Carrying the old `scp` forward would make a refresh chain immune to
-        // authorization changes for as long as the user kept refreshing.
-        let facts = self.facts.facts_for(&record).await?;
         let issued = self
             .issue_access_token(
                 SessionIdentity {
@@ -984,12 +1029,15 @@ mod tests {
             async fn allow_refresh(
                 &self,
                 _record: &RefreshRecord,
+                _facts: &SessionFacts,
                 network: &NetworkContext,
             ) -> Result<(), AuthError> {
                 if network.in_zone("Corporate India") {
                     Ok(())
                 } else {
-                    Err(AuthError::NetworkNotAllowed)
+                    Err(AuthError::ConditionalAccessDenied(
+                        enclave_core::ReasonCode::NetworkNotAllowed,
+                    ))
                 }
             }
         }
@@ -1017,7 +1065,9 @@ mod tests {
         assert!(
             matches!(
                 svc.refresh(&token, &NetworkContext::internal()).await,
-                Err(AuthError::NetworkNotAllowed)
+                Err(AuthError::ConditionalAccessDenied(
+                    enclave_core::ReasonCode::NetworkNotAllowed
+                ))
             ),
             "K6: a refresh from a blocked zone must be refused"
         );

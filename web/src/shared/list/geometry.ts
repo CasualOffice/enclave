@@ -54,6 +54,16 @@ export interface GroupSpec {
 
 export interface GroupLayout {
   readonly id: string;
+  /**
+   * Position in `Layout.groups`.
+   *
+   * Carried on the record rather than recovered with `indexOf` by whoever holds
+   * one. The keyboard cursor addresses a group by index, and the pinned header
+   * is handed a `GroupLayout` with no index beside it — searching for it by
+   * identity would be O(G) on every keystroke and would find the wrong group
+   * the first time two groups share a name.
+   */
+  readonly index: number;
   readonly name: string;
   readonly count: number;
   readonly collapsed: boolean;
@@ -104,6 +114,7 @@ export function buildLayout(
     const isCollapsed = collapsed.has(spec.id);
     const height = density.headerHeight + (isCollapsed ? 0 : spec.count * density.rowHeight);
     groups.push({
+      index: groups.length,
       id: spec.id,
       name: spec.name,
       count: spec.count,
