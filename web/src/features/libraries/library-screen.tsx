@@ -7,6 +7,7 @@ import { FailureState } from '../../shared/ui/surface-states.tsx';
 import { failureOf } from '../../shared/api/failure.ts';
 import { rowFromItem } from '../../entities/file/present.ts';
 import type { Item } from '../../entities/file/api-model.ts';
+import type { FileRow } from '../../entities/file/model.ts';
 import { useUploadStore } from '../../entities/upload/store.ts';
 import { useUploadTarget } from '../../entities/upload/use-upload-target.ts';
 import { isActive } from '../../entities/upload/model.ts';
@@ -140,6 +141,38 @@ export default function LibraryScreen() {
   );
 
   const closePeek = useCallback(() => setPeekId(undefined), [setPeekId]);
+
+  /* ------------------------------------------------- what the keyboard does */
+
+  /**
+   * `Enter` on a row.
+   *
+   * A folder opens — it is a real navigation and the listing endpoint takes a
+   * `parentId`. **A file has no open surface in M5**, and `docs/09 §6` does not
+   * say what "Open" means for one in a product that has no editor and no
+   * full-page preview route. It is not silent by accident: §6 itself notes that
+   * "`Space` opens the peek, which *is* the preview surface", so the nearest
+   * true reading of Open-a-file today is the peek at its Preview tab, which is
+   * a built endpoint (`GET /files/{id}/preview`) and a built surface.
+   *
+   * That reading is recorded rather than assumed — `ENC-897`. What is *not*
+   * done here is inventing a second destination and calling the binding
+   * finished: `Enter` and `Space` land on the same panel and differ only in
+   * which tab it opens, which is honest about the product having one preview
+   * surface rather than two.
+   */
+  const openRow = useCallback(
+    (row: FileRow) => {
+      if (row.isFolder) setFolderId(row.id);
+      else write({ peek: row.id, tab: 'preview' });
+    },
+    [setFolderId, write],
+  );
+
+  const peekRow = useCallback((row: FileRow) => setPeekId(row.id), [setPeekId]);
+
+  /** Replace the whole selection — `↑ ↓`, `Shift`-extend and `⌘A`. */
+  const select = useListViewStore((state) => state.select);
 
   const peekIndex = peekId === undefined ? -1 : ordered.findIndex((row) => row.id === peekId);
   const navigation =
@@ -345,6 +378,9 @@ export default function LibraryScreen() {
               onToggleGroup={toggleGroup}
               selected={selected}
               onToggleSelect={toggleSelected}
+              onSelect={select}
+              onOpen={openRow}
+              onPeek={peekRow}
               density={density}
               status={items.isPending ? 'loading' : 'ready'}
               filtersActive={false}

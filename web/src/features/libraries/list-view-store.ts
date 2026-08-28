@@ -21,6 +21,18 @@ export interface ListViewState {
   readonly density: DensityName;
   toggleGroup: (id: string) => void;
   toggleSelected: (id: string) => void;
+  /**
+   * Replace the selection outright.
+   *
+   * The keyboard needs this and clicking never did: `↑`/`↓` *move* the
+   * selection rather than adding to it, `Shift`-extend computes a whole range
+   * at once, and `⌘A` replaces it with everything. Expressing any of those as a
+   * sequence of `toggleSelected` calls would emit one store update per row —
+   * a hundred thousand of them for `⌘A` — and would produce the wrong answer
+   * whenever a row in the new range was already selected.
+   */
+  select: (ids: readonly string[]) => void;
+  clearSelection: () => void;
   setDensity: (density: DensityName) => void;
   reset: () => void;
 }
@@ -40,6 +52,8 @@ export const useListViewStore = create<ListViewState>((set) => ({
   density: 'default',
   toggleGroup: (id) => set((state) => ({ collapsed: toggled(state.collapsed, id) })),
   toggleSelected: (id) => set((state) => ({ selected: toggled(state.selected, id) })),
+  select: (ids) => set({ selected: new Set(ids) }),
+  clearSelection: () => set({ selected: EMPTY }),
   setDensity: (density) => set({ density }),
   reset: () => set({ collapsed: EMPTY, selected: EMPTY, density: 'default' }),
 }));

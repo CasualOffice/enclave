@@ -1,10 +1,12 @@
-import { memo, useCallback, type CSSProperties } from 'react';
+import { memo, useCallback, useMemo, type CSSProperties } from 'react';
 import { useT } from '../../../shared/i18n/index.tsx';
 import { useFormatters } from '../../../shared/i18n/format.ts';
 import { ChevronIcon } from '../../../shared/ui/icons.tsx';
-import { Avatar } from '../../../shared/ui/primitives.tsx';
+import { Avatar, IconButton } from '../../../shared/ui/primitives.tsx';
 import { DENSITY, type DensityName, type GroupLayout, type GroupSpec } from '../../../shared/list/geometry.ts';
 import { useGroupedWindow } from '../../../shared/list/use-grouped-window.ts';
+import { useGridKeyboard, type GridActions } from '../../../shared/list/use-grid-keyboard.ts';
+import { rowIndexOf } from '../../../shared/list/grid-cursor.ts';
 import { ClassificationChip } from '../../../entities/classification/chip.tsx';
 import { FileKindIcon } from '../../../entities/file/kind-icon.tsx';
 import type { FileRow } from '../../../entities/file/model.ts';
@@ -19,6 +21,9 @@ import {
 } from './states.tsx';
 import './grouped-list.css';
 
+/** The seven columns of `specs/library.md §4A`, which `→ ←` walks. */
+const COLUMN_COUNT = 7;
+
 export interface GroupedFileListProps {
   readonly groups: readonly GroupSpec[];
   /** Flat, in group order. `GroupLayout.firstRowIndex` indexes into it. */
@@ -27,6 +32,12 @@ export interface GroupedFileListProps {
   readonly onToggleGroup: (id: string) => void;
   readonly selected?: ReadonlySet<string>;
   readonly onToggleSelect?: ((id: string) => void) | undefined;
+  /** Replace the whole selection — what `↑ ↓`, `Shift`-extend and `⌘A` need. */
+  readonly onSelect?: ((ids: readonly string[]) => void) | undefined;
+  /** `Enter` on a row. A folder opens; a file has no open surface in M5 (see below). */
+  readonly onOpen?: ((row: FileRow) => void) | undefined;
+  /** `Space`, and `J`/`K` while the peek panel is open (`docs/09 §7`). */
+  readonly onPeek?: ((row: FileRow) => void) | undefined;
   readonly density?: DensityName;
   readonly status?: 'loading' | 'ready' | 'error';
   readonly error?: ListError | undefined;
@@ -55,26 +66,57 @@ export interface GroupedFileListProps {
   readonly uploads?: readonly UploadRow[];
 }
 
+/**
+ * `undefined` means this row is not where the cursor is; `null` means the
+ * cursor is on the row itself rather than in one of its cells.
+ *
+ * Three states in one prop so that moving the cursor re-renders **two** rows —
+ * the one it left and the one it reached — instead of every row in the window.
+ * Passing the focus key down instead would invalidate all thirty on every arrow
+ * press, which is the memoization this file's header exists to protect.
+ */
+type CursorColumn = number | null | undefined;
+
 const GroupHeaderRow = memo(function GroupHeaderRow({
   group,
   onToggle,
+  cursorHere,
+  onFocusRow,
 }: {
   group: GroupLayout;
   onToggle: (id: string) => void;
+  cursorHere: boolean;
+  onFocusRow: (groupIndex: number, rowInGroup: number | null, column: number | null) => void;
 }) {
   const t = useT();
   return (
-    <div role="row" aria-rowindex={group.ariaRowIndex}>
-      {/* The header is a button because it does something. `aria-expanded` on a
-       * `role="row"` inside a treegrid is what tells a screen reader that the
-       * rows beneath it are hidden rather than absent — the difference a
-       * collapsed `Archive 96` has to communicate. */}
+    /* **`aria-expanded` is on the row**, and the focus stop is the row.
+     *
+     * It used to sit on the `<button>` inside, which was defensible while
+     * nothing could focus a row: a screen reader met the button and heard the
+     * state there. Once the row is a roving tab stop it is the row that gets
+     * announced, and a row whose expanded state lives on a descendant is
+     * announced without it — the collapsed `Archive 96` reads as an ordinary
+     * row that happens to have nothing under it. The `<button>` stays, because
+     * the header does something and a click target should be a button, and it
+     * is taken out of the tab order the way every control in a grid is. */
+    <div
+      role="row"
+      aria-rowindex={group.ariaRowIndex}
+      aria-expanded={!group.collapsed}
+      aria-level={1}
+      className="egl-grouprow"
+      data-cursor={`h:${group.id}`}
+      tabIndex={cursorHere ? 0 : -1}
+      onFocus={() => onFocusRow(group.index, null, null)}
+    >
       <button
         type="button"
         className="egl-group"
         role="gridcell"
-        aria-colspan={7}
-        aria-expanded={!group.collapsed}
+        aria-colindex={1}
+        aria-colspan={COLUMN_COUNT}
+        tabIndex={-1}
         aria-label={t(group.collapsed ? 'files.group.expand' : 'files.group.collapse', {
           group: group.name,
         })}
@@ -106,21 +148,43 @@ type StaggerStyle = CSSProperties & Record<'--i', number>;
 const FileRowView = memo(function FileRowView({
   row,
   ariaRowIndex,
+  rowIndex,
+  groupIndex,
+  rowInGroup,
   windowIndex,
   selected,
+  cursorColumn,
   onToggleSelect,
+  onPeek,
+  onFocusRow,
 }: {
   row: FileRow;
   ariaRowIndex: number;
+  /** Index into the caller's flat row array — the `data-cursor` identity. */
+  rowIndex: number;
+  groupIndex: number;
+  rowInGroup: number;
   /** Position within the rendered window, which is what the stagger counts. */
   windowIndex: number;
   selected: boolean;
+  cursorColumn: CursorColumn;
   onToggleSelect: ((id: string) => void) | undefined;
+  onPeek: ((row: FileRow) => void) | undefined;
+  onFocusRow: (groupIndex: number, rowInGroup: number | null, column: number | null) => void;
 }) {
   const t = useT();
   const formatters = useFormatters();
   const modified = new Date(row.modifiedAt);
   const stagger: StaggerStyle = { '--i': windowIndex };
+
+  /** `tabIndex`/`data-cursor` for cell `column`, 0-based. */
+  const cell = (column: number) => ({
+    role: 'gridcell' as const,
+    'aria-colindex': column + 1,
+    'data-cursor': `r:${rowIndex}:${column}`,
+    tabIndex: cursorColumn === column ? 0 : -1,
+    onFocus: () => onFocusRow(groupIndex, rowInGroup, column),
+  });
 
   return (
     /* `specs/library.md §4A.3`: a row rises 4px and fades in over `--dur-row` on
@@ -135,17 +199,27 @@ const FileRowView = memo(function FileRowView({
       role="row"
       aria-rowindex={ariaRowIndex}
       aria-selected={selected}
+      aria-level={2}
+      data-cursor={`r:${rowIndex}`}
+      tabIndex={cursorColumn === null ? 0 : -1}
+      onFocus={(event) => {
+        /* Only when the row itself took focus. A cell's `focus` bubbles through
+         * here, and letting it set `column: null` would undo the `→` the user
+         * just pressed. */
+        if (event.target === event.currentTarget) onFocusRow(groupIndex, rowInGroup, null);
+      }}
     >
-      <span className="egl-cell-select" role="gridcell">
+      <span className="egl-cell-select" {...cell(0)}>
         <input
           type="checkbox"
           className="egl-checkbox"
           checked={selected}
+          tabIndex={-1}
           aria-label={t('files.row.checkbox', { name: row.name })}
           onChange={() => onToggleSelect?.(row.id)}
         />
       </span>
-      <span className="egl-name" role="gridcell">
+      <span className="egl-name" {...cell(1)}>
         <FileKindIcon kind={row.kind} />
         {/* `dir="auto"` and isolation: a file name mixing Arabic and Latin
          * script must not rearrange the row around it (`docs/14 §7`). */}
@@ -154,7 +228,7 @@ const FileRowView = memo(function FileRowView({
           <span className="egl-name-ext">{row.extension}</span>
         </bdi>
       </span>
-      <span className="egl-meta" role="gridcell">
+      <span className="egl-meta" {...cell(2)}>
         {/* No avatar when the server sent no modifier.
          *
          * `GET /libraries/{id}/items` carries `modifiedAt` but not the name of
@@ -176,7 +250,7 @@ const FileRowView = memo(function FileRowView({
           {formatters.relative(modified)}
         </time>
       </span>
-      <span role="gridcell">
+      <span {...cell(3)}>
         {/* Classification is a label on *content*. A folder has none, and
          * "Unclassified" on one would say nobody had labelled it rather than
          * that the idea does not apply — the same class of invented fact as a
@@ -185,14 +259,44 @@ const FileRowView = memo(function FileRowView({
       </span>
       {/* Effect pills (retention, no-download) land with `ENC-674`'s
        * capabilities-with-reasons. Empty and present, so the column exists. */}
-      <span role="gridcell" />
-      <span className="egl-meta egl-meta-size" role="gridcell">
+      <span {...cell(4)} />
+      <span className="egl-meta egl-meta-size" {...cell(5)}>
         {/* The server sends `sizeBytes: 0` for every folder, and rendering it
          * produced "0 byte" — a measurement, and a false one. A folder's size
          * is not zero; it is not a quantity the listing carries. */}
         {row.isFolder ? '' : formatters.bytes(row.sizeBytes)}
       </span>
-      <span role="gridcell" />
+      {/* ------------------------------------------------------- row actions */}
+      <span className="egl-cell-actions" {...cell(6)}>
+        {/* **`opacity: 0`, never `display: none`.**
+         *
+         * `.ui-iconbtn[data-reveal]` fades in on the row's hover and on
+         * `:focus-within`, and that choice is load-bearing rather than
+         * decorative: `display:none` and `visibility:hidden` both remove an
+         * element from the focus order, so a row-actions control hidden that
+         * way is one a keyboard user can never reach. The primitive has carried
+         * the decision since the design system landed; until now nothing in the
+         * list rendered it, so there was nothing for focus to reach *to*. `→`
+         * walks to this cell, which reveals the button through `:focus-within`,
+         * and the button is then the only focusable thing inside it.
+         *
+         * It opens the **details peek**, and it is not an overflow menu. There
+         * is no row menu to open — rename, move, copy and trash have no
+         * endpoint (`shared/keyboard/bindings.ts`) — and drawing a `⋯` that
+         * opens nothing would promise a menu the product does not have. Details
+         * is a real action on a real endpoint, which is why it is the one drawn.
+         */}
+        {onPeek !== undefined && (
+          <IconButton
+            name="side"
+            label="files.row.details"
+            values={{ name: row.name }}
+            reveal
+            tabIndex={-1}
+            onClick={() => onPeek(row)}
+          />
+        )}
+      </span>
     </div>
   );
 });
@@ -268,15 +372,23 @@ function ColumnHeaderRow() {
   const t = useT();
   return (
     <div className="egl-columns-row" role="row" aria-rowindex={1}>
-      <span role="columnheader" />
-      <span role="columnheader">{t('files.column.name')}</span>
-      <span role="columnheader">{t('files.column.modified')}</span>
-      <span role="columnheader">{t('files.column.classification')}</span>
-      <span role="columnheader">{t('files.column.status')}</span>
-      <span role="columnheader" className="egl-col-size">
+      <span role="columnheader" aria-colindex={1} />
+      <span role="columnheader" aria-colindex={2}>
+        {t('files.column.name')}
+      </span>
+      <span role="columnheader" aria-colindex={3}>
+        {t('files.column.modified')}
+      </span>
+      <span role="columnheader" aria-colindex={4}>
+        {t('files.column.classification')}
+      </span>
+      <span role="columnheader" aria-colindex={5}>
+        {t('files.column.status')}
+      </span>
+      <span role="columnheader" aria-colindex={6} className="egl-col-size">
         {t('files.column.size')}
       </span>
-      <span role="columnheader" />
+      <span role="columnheader" aria-colindex={7} />
     </div>
   );
 }
@@ -314,7 +426,8 @@ const NO_UPLOADS: readonly UploadRow[] = [];
  *
  * `plans/M5-MVP-GA.md` D38 sequenced this first because it is the one part of
  * M5 that can fail on its own merits. What makes it work is in
- * `geometry.ts` and `use-grouped-window.ts`; this file is the markup, and its
+ * `geometry.ts` and `use-grouped-window.ts`; what makes it *reachable* is in
+ * `grid-cursor.ts` and `use-grid-keyboard.ts`. This file is the markup, and its
  * one job is not to undo them — no per-row state, no context read inside a row,
  * no inline object props, `memo` on both row kinds.
  */
@@ -325,6 +438,9 @@ export function GroupedFileList({
   onToggleGroup,
   selected = NO_SELECTION,
   onToggleSelect,
+  onSelect,
+  onOpen,
+  onPeek,
   density = 'default',
   status = 'ready',
   error,
@@ -345,7 +461,60 @@ export function GroupedFileList({
     [onToggleSelect],
   );
 
+  /* The keyboard's view of the product. Row *indices* on this side of the
+   * boundary and row *ids* on the other: the cursor arithmetic works in
+   * positions, and the selection store keys by id, so exactly one place
+   * translates and it is here. */
+  const actions = useMemo<GridActions>(
+    () => ({
+      toggleGroup: (groupId) => onToggleGroup(groupId),
+      setSelection: (indices) =>
+        onSelect?.(indices.map((index) => rows[index]?.id).filter((id): id is string => id !== undefined)),
+      toggleSelection: (index) => {
+        const row = rows[index];
+        if (row !== undefined) onToggleSelect?.(row.id);
+      },
+      activate: (index, mode) => {
+        const row = rows[index];
+        if (row === undefined) return;
+        if (mode === 'peek') onPeek?.(row);
+        else onOpen?.(row);
+      },
+      walk: (index) => {
+        const row = rows[index];
+        if (row !== undefined) onPeek?.(row);
+      },
+      /* `⌘A` — "select all **in view**". Every row the current listing
+       * returned, including rows inside a collapsed group: a collapsed group is
+       * still part of this view, and its header says how many rows it holds, so
+       * a user who collapses "Archive 96" and presses `⌘A` has not stopped
+       * seeing them. It is the *filter* that decides what is in view, and the
+       * server has already applied it. */
+      selectAll: () => onSelect?.(rows.map((row) => row.id)),
+    }),
+    [rows, onToggleGroup, onSelect, onToggleSelect, onOpen, onPeek],
+  );
+
+  const keyboard = useGridKeyboard(layout, slice, COLUMN_COUNT, actions);
+
+  const setScroller = useCallback(
+    (node: HTMLDivElement | null) => {
+      scrollerRef(node);
+      keyboard.scrollerRef(node);
+    },
+    [scrollerRef, keyboard],
+  );
+
+  const onFocusRow = useCallback(
+    (groupIndex: number, rowInGroup: number | null, column: number | null) => {
+      keyboard.setCursor({ groupIndex, rowInGroup, column });
+    },
+    [keyboard],
+  );
+
   const sticky = slice.stickyGroupIndex >= 0 ? layout.groups[slice.stickyGroupIndex] : undefined;
+  const cursor = keyboard.cursor;
+  const cursorRowIndex = cursor === null ? -1 : rowIndexOf(layout, cursor);
 
   const styleVars = {
     '--egl-row-h': `${metrics.rowHeight}px`,
@@ -406,13 +575,26 @@ export function GroupedFileList({
       <UploadQueue uploads={uploads} />
       <div
         className="egl-scroller"
-        ref={scrollerRef}
+        ref={setScroller}
         onScroll={onScroll}
+        onKeyDown={keyboard.onKeyDown}
+        onBlur={keyboard.onBlur}
         role="treegrid"
-        tabIndex={0}
+        /* **The container is a tab stop only while the cursor's row is not.**
+         *
+         * That is the roving part. Two elements carrying `tabindex="0"` inside
+         * one grid is two stops on the `Tab` path, which is the thing roving
+         * tabindex exists to prevent; zero of them is a grid nothing can enter.
+         * The container takes the stop back whenever the cursor's row has been
+         * scrolled out of the DOM, so there is always exactly one. */
+        tabIndex={keyboard.containerTabIndex}
         aria-label={t('files.list.label')}
+        /* Against the **full** set, not the window. `layout` is built from every
+         * group's declared count; `slice` is the thirty rows that happen to be
+         * mounted. A treegrid that reports the window has told a screen-reader
+         * user the library has thirty files in it. */
         aria-rowcount={1 + layout.groups.length + layout.presentRowCount}
-        aria-colcount={7}
+        aria-colcount={COLUMN_COUNT}
       >
         <div className="egl-columns" role="rowgroup">
           <ColumnHeaderRow />
@@ -425,7 +607,14 @@ export function GroupedFileList({
          * windowing", answered by taking the sticky one out of it. */}
         <div className="egl-sticky" role="rowgroup">
           <div ref={stickyRef}>
-            {sticky !== undefined && <GroupHeaderRow group={sticky} onToggle={toggleGroup} />}
+            {sticky !== undefined && (
+              <GroupHeaderRow
+                group={sticky}
+                onToggle={toggleGroup}
+                cursorHere={cursor?.groupIndex === sticky.index && cursor.rowInGroup === null}
+                onFocusRow={onFocusRow}
+              />
+            )}
           </div>
         </div>
 
@@ -444,18 +633,32 @@ export function GroupedFileList({
             if (item.kind === 'header') {
               const group = layout.groups[item.groupIndex];
               return group === undefined ? null : (
-                <GroupHeaderRow key={item.key} group={group} onToggle={toggleGroup} />
+                <GroupHeaderRow
+                  key={item.key}
+                  group={group}
+                  onToggle={toggleGroup}
+                  cursorHere={cursor?.groupIndex === item.groupIndex && cursor.rowInGroup === null}
+                  onFocusRow={onFocusRow}
+                />
               );
             }
             const row = rows[item.rowIndex];
-            return row === undefined ? null : (
+            if (row === undefined) return null;
+            const group = layout.groups[item.groupIndex];
+            return (
               <FileRowView
                 key={item.key}
                 row={row}
                 ariaRowIndex={item.ariaRowIndex}
+                rowIndex={item.rowIndex}
+                groupIndex={item.groupIndex}
+                rowInGroup={item.rowIndex - (group?.firstRowIndex ?? 0)}
                 windowIndex={windowIndex}
                 selected={selected.has(row.id)}
+                cursorColumn={cursorRowIndex === item.rowIndex ? (cursor?.column ?? null) : undefined}
                 onToggleSelect={onToggleSelect === undefined ? undefined : handleToggleSelect}
+                onPeek={onPeek}
+                onFocusRow={onFocusRow}
               />
             );
           })}
