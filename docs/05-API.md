@@ -1,6 +1,6 @@
 # 05 — API Surface
 
-> **Status:** Draft · **Version:** 1.7 · **Owner:** Platform Engineering · **Last updated:** 2026-08-28
+> **Status:** Draft · **Version:** 1.8 · **Owner:** Platform Engineering · **Last updated:** 2026-08-29
 > **Authoritative for:** REST contracts, error model, pagination, idempotency, versioning, rate limits.
 
 ## 1. Principles
@@ -85,8 +85,22 @@ Returns the same shape as login. The response sets a **new** refresh cookie; the
 consumed. Reuse of a consumed token revokes the whole family and returns `401 SESSION_REPLAY`
 (`03-LLD.md §5.3`).
 
-Refresh re-evaluates conditional access. A client that has moved to a blocked network receives
-`403 NETWORK_NOT_ALLOWED` and must re-authenticate from a permitted location.
+Refresh re-evaluates conditional access, against the address the *refresh* request arrived on and
+the authentication strength the session actually holds — not against whatever was true when the
+session was created. A client that has moved to a blocked network, or whose tenant has tightened its
+rules since sign-in, receives `403 NETWORK_NOT_ALLOWED` and must re-authenticate from a permitted
+location.
+
+`NETWORK_NOT_ALLOWED` is the common refusal and not the only one: the stage's other effects produce
+`403 DEVICE_NOT_MANAGED` and `401 STEP_UP_REQUIRED` (`§3.3`), and the refresh path returns whichever
+code the stage decided, unchanged, because a session refused for its authentication strength that
+was told to change networks cannot act on what it was told. No refusal names the rule that produced
+it (`§5`).
+
+A refusal does **not** consume the presented token: the same refresh token still rotates from a
+permitted location, so a tightening that is later relaxed does not sign everyone out permanently. A
+refresh the server could not *decide* — the rule store is unreachable — is `503
+DEPENDENCY_UNAVAILABLE` and never a rotation.
 
 ### 3.3 Step-up
 
