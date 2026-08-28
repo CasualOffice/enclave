@@ -1,0 +1,82 @@
+/* The classification badge — the only stylesheet allowed to name a `--c-*`.
+ *
+ * Geometry from `web/design-system/specs/library.md §1.2`, which reads it out of
+ * the prototype: 20px tall, `padding-inline: 7px 8px` (asymmetric, because the
+ * dot needs less room before it than the text needs after it), a 6px dot, 11px
+ * at weight 500, and a full pill radius.
+ *
+ * The two `color-mix` ratios are not adjustable. `tools/classification-contrast.mjs`
+ * searched for the largest text ratio that keeps all five levels above 4.5:1 in
+ * both themes over an 11% tint; changing either number without re-running it
+ * makes one of the five illegible in one of the themes, and it will not be the
+ * one anybody is looking at.
+ */
+
+.ui-classification {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+  block-size: var(--sp-10);
+  padding-inline: 7px var(--sp-4);
+  border-radius: var(--r-pill);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  letter-spacing: 0;
+  white-space: nowrap;
+  flex: none;
+  background: color-mix(in srgb, var(--cc) 11%, transparent);
+  color: color-mix(in srgb, var(--cc) 70%, var(--fg));
+}
+
+.ui-classification[data-size='md'] {
+  block-size: 22px;
+  font-size: var(--fs-meta);
+}
+
+.ui-classification::before {
+  content: '';
+  inline-size: var(--sp-3);
+  block-size: var(--sp-3);
+  border-radius: var(--r-dot);
+  background: var(--cc);
+  flex: none;
+}
+
+/* The locked palette (`docs/09 §16a`), bound once.
+ *
+ * These five lines are the only place in `web/src` that reads a `--c-*` token.
+ * A second reader is a second thing to keep in step with the first, and the
+ * whole point of locking the palette is that Restricted is one colour rather
+ * than one colour per screen. */
+.ui-classification[data-level='public'] {
+  --cc: var(--c-pub);
+}
+
+.ui-classification[data-level='internal'] {
+  --cc: var(--c-int);
+}
+
+.ui-classification[data-level='confidential'] {
+  --cc: var(--c-conf);
+}
+
+.ui-classification[data-level='highlyConfidential'] {
+  --cc: var(--c-hconf);
+}
+
+.ui-classification[data-level='restricted'] {
+  --cc: var(--c-restr);
+}
+
+/* Unclassified is the *absence* of a level, not a sixth one, so it takes no
+ * colour and no dot — an outline pill that reads as "nothing has been said
+ * about this yet" rather than as a quieter Public. */
+.ui-classification[data-level='unclassified'] {
+  background: transparent;
+  box-shadow: var(--hairline);
+  color: var(--fg2);
+}
+
+.ui-classification[data-level='unclassified']::before {
+  display: none;
+}

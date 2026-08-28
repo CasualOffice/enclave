@@ -4,6 +4,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type KeyboardEvent,
   type ReactNode,
 } from 'react';
@@ -16,7 +17,7 @@ import { useT } from '../../shared/i18n/index.tsx';
  * predates it and kept the illegal import; the boundary rule in
  * `tools/lint-web.mjs` is what finally surfaced that. */
 import { useSearchString, useWriteSearchParams } from '../../shared/url-state.ts';
-import { Icon } from '../../shared/ui/icon-sprite.tsx';
+import { Field, Push } from '../../shared/ui/layout.tsx';
 import { Button, Kbd } from '../../shared/ui/primitives.tsx';
 import { useGroupedWindow } from '../../shared/list/use-grouped-window.ts';
 import type { Density, GroupSpec } from '../../shared/list/geometry.ts';
@@ -210,7 +211,18 @@ export default function SearchScreen() {
    * ring moves, and only once an arrow key is pressed. */
   const [activeIndex, setActiveIndex] = useState(-1);
   const scrollerNode = useRef<HTMLDivElement | null>(null);
-  const inputRef = useRef<HTMLInputElement | null>(null);
+  /* The bar rather than the input.
+   *
+   * `Field` draws the box, the placeholder colour and the one focus ring
+   * `docs/09 §15` asks for, and its props are the `<input>`'s — but not `ref`,
+   * which is not part of `InputHTMLAttributes`. Holding the band and asking it
+   * for its input is the same query the roving focus below already makes of the
+   * scroller, and it is cheaper than widening a shared component for one
+   * caller. */
+  const barRef = useRef<HTMLDivElement | null>(null);
+  const focusInput = useCallback(() => {
+    barRef.current?.querySelector('input')?.focus();
+  }, []);
 
   const setScroller = useCallback(
     (node: HTMLDivElement | null) => {
@@ -263,10 +275,10 @@ export default function SearchScreen() {
         moveActive(-1);
       } else if (event.key === 'Escape') {
         setActiveIndex(-1);
-        inputRef.current?.focus();
+        focusInput();
       }
     },
-    [moveActive],
+    [moveActive, focusInput],
   );
 
   /* ----------------------------------------------------------------- render */
@@ -350,22 +362,31 @@ export default function SearchScreen() {
   }
 
   return (
-    <div className="esr">
+    /* `--esr-row-h` is the windowing arithmetic's row height, published to CSS
+     * from the one constant that computes with it. Two copies of 80 is how the
+     * absolutely positioned window and the spacer that sizes the scrollbar stop
+     * agreeing. */
+    <div className="esr" style={{ '--esr-row-h': `${ROW_HEIGHT}px` } as CSSProperties}>
       {/* The sheet has no top bar (`docs/09 §3` after `ENC-676`), so the screen
        * names itself for a screen reader and nowhere else. */}
       <h1 className="ui-sr-only">{t('search.title')}</h1>
 
-      {/* The prototype's search bar, value for value. Its placeholder invites
-       * "or ask a question…", which M5 cannot answer — the answer slot below
-       * says so in the unbuilt treatment rather than the field implying it. */}
-      <div className="esr-bar">
-        <Icon name="s" size={16} className="esr-bar-icon" />
-        <input
-          ref={inputRef}
-          className="esr-input"
+      {/* The prototype's search bar, value for value — but the *field* is
+       * `Field`, which owns the one focus ring in the tree. There were three
+       * incompatible treatments across five inputs (a two-layer box-shadow, an
+       * outline at +2px, an outline at -2px), and a keyboard user relearning the
+       * affordance per screen is what `docs/09 §15` is trying to prevent.
+       *
+       * Its placeholder invites "or ask a question…", which M5 cannot answer —
+       * the answer slot below says so in the unbuilt treatment rather than the
+       * field implying it. */}
+      <div className="esr-bar" ref={barRef}>
+        <Field
+          label="search.input.label"
+          icon="s"
+          size="lg"
           type="search"
           value={query}
-          aria-label={t('search.input.label')}
           placeholder={t('search.input.placeholder')}
           onChange={(event) => write(event.target.value, filters)}
           onKeyDown={(event) => {
@@ -377,10 +398,8 @@ export default function SearchScreen() {
               setActiveIndex(0);
             }
           }}
+          trailing={<Kbd>{t('search.key.escape')}</Kbd>}
         />
-        <span className="esr-bar-kbd">
-          <Kbd>{t('search.key.escape')}</Kbd>
-        </span>
       </div>
 
       <div className="esr-filters">
@@ -418,11 +437,14 @@ export default function SearchScreen() {
          * beside "this search could not be run" is two answers to one question,
          * and the confident one is the wrong one. */}
         {searched && surface !== 'error' && (
-          <span className="esr-count">
-            {surface === 'loading'
-              ? t('search.results.counting')
-              : t('search.results.count', { count: results.length })}
-          </span>
+          <>
+            <Push />
+            <span className="esr-count">
+              {surface === 'loading'
+                ? t('search.results.counting')
+                : t('search.results.count', { count: results.length })}
+            </span>
+          </>
         )}
       </div>
 
@@ -453,7 +475,8 @@ export default function SearchScreen() {
           <Kbd>{t('search.key.enter')}</Kbd>
           {t('search.foot.open')}
         </span>
-        <span className="esr-foot-end">{t('search.foot.access')}</span>
+        <Push />
+        <span>{t('search.foot.access')}</span>
       </div>
     </div>
   );

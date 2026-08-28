@@ -1,7 +1,8 @@
 import { useCallback, useMemo } from 'react';
 import { useT } from '../../shared/i18n/index.tsx';
-import { Icon } from '../../shared/ui/icon-sprite.tsx';
-import { Button } from '../../shared/ui/primitives.tsx';
+import { useFormatters } from '../../shared/i18n/format.ts';
+import { Button, IconButton } from '../../shared/ui/primitives.tsx';
+import { Bar, Push, Tab, TabList } from '../../shared/ui/layout.tsx';
 import { FailureState } from '../../shared/ui/surface-states.tsx';
 import { failureOf } from '../../shared/api/failure.ts';
 import { rowFromItem } from '../../entities/file/present.ts';
@@ -53,6 +54,7 @@ function groupItems(items: readonly Item[]): {
 
 export default function LibraryScreen() {
   const t = useT();
+  const formatters = useFormatters();
   /* Library, folder and the peeked file are all **URL state** (`docs/17 §4`):
    * a view a user cannot send to a colleague is a worse product, and peek in
    * particular has to be a query parameter rather than a route so that opening
@@ -90,9 +92,13 @@ export default function LibraryScreen() {
   const peekTabRaw = useSearchParam('tab');
   const peekTab = peekTabRaw.length > 0 ? peekTabRaw : 'details';
   const setPeekTab = useCallback((tab: string) => write({ tab }), [write]);
-  /* The Preview tab needs `isReadable` as much as the Versions tab does, so the
-   * versions query is enabled for both rather than for one. */
-  const versions = useFileVersions(peekId, peekTab === 'versions' || peekTab === 'preview');
+  /* The Versions tab, and only it.
+   *
+   * The Preview tab used to need this query too, because `isReadable` lived
+   * only on `GET /files/{id}/versions` (`ENC-825`). `GET /files/{id}` carries it
+   * on `currentVersion` now, so the preview branch reads the detail it already
+   * has and this is one request per peek that no longer happens (`ENC-848`). */
+  const versions = useFileVersions(peekId, peekTab === 'versions');
 
   /* Upload rows for *this* container, drawn in the list as the prototype draws
    * them. The queue itself lives in `entities/upload` because two features read
@@ -156,7 +162,7 @@ export default function LibraryScreen() {
   if (!hasLibrary) {
     return (
       <main className="library" data-screen="library" data-state="picker">
-        <div className="library-location">
+        <Bar className="library-location">
           <nav className="library-crumbs" aria-label={t('library.breadcrumb')}>
             <ol>
               <li>
@@ -166,7 +172,7 @@ export default function LibraryScreen() {
               </li>
             </ol>
           </nav>
-        </div>
+        </Bar>
         <LibraryPicker onPick={setLibraryId} />
       </main>
     );
@@ -177,7 +183,7 @@ export default function LibraryScreen() {
   return (
     <main className="library" data-screen="library">
       {/* --------------------------------------------------- the location bar */}
-      <div className="library-location">
+      <Bar className="library-location">
         <nav className="library-crumbs" aria-label={t('library.breadcrumb')}>
           <ol>
             <li>
@@ -214,44 +220,55 @@ export default function LibraryScreen() {
           </ol>
         </nav>
 
+        {/* Everything after here goes to the trailing edge. One element instead
+          * of a `margin-inline-start: auto` on whichever child happens to be
+          * first in the trailing group — which is the detail that got
+          * mis-stated twice across this tree. */}
+        <Push />
         <span className="library-location-trailing">
-          <button
-            type="button"
-            className="library-iconbtn"
-            aria-pressed={peekOpen}
-            aria-label={t('library.toggleDetails')}
+          {/* `aria-pressed` is the accessible truth and `.ui-iconbtn` styles the
+            * pressed appearance from that same attribute, so what the toggle
+            * looks like and what it announces cannot disagree. This screen had
+            * grown a second 26-line icon button for want of that one rule. */}
+          <IconButton
+            name="side"
+            label="library.toggleDetails"
+            pressed={peekOpen}
             onClick={() => setPeekId(peekOpen ? undefined : (ordered[0]?.id ?? undefined))}
-          >
-            <Icon name="side" />
-          </button>
+          />
         </span>
-      </div>
+      </Bar>
 
       {/* ------------------------------------------------------- the view bar */}
-      <div className="library-viewbar">
-        <div className="library-views" role="tablist" aria-label={t('library.views')}>
-          <button type="button" role="tab" aria-selected="true" className="library-view">
-            {t('library.view.all')}
-            {items.data !== undefined && (
-              <span className="library-view-count">{items.data.items.length}</span>
-            )}
-          </button>
-        </div>
+      <Bar size="sm" className="library-viewbar">
+        <TabList label="library.views">
+          <Tab
+            label="library.view.all"
+            selected
+            {...(items.data === undefined
+              ? {}
+              : { count: formatters.count(items.data.items.length) })}
+          />
+        </TabList>
 
+        <Push />
         <span className="library-viewbar-trailing">
           {/* Filter and Display stay unbuilt, and honestly so: no endpoint
            * filters a listing and none stores a display preference. Neither is
            * *denied* — the policy chain has refused nobody. */}
+          {/* 26px and transparent — `specs/library.md §2.2` reserves the 24px
+            * form for `Share`, `New` and `Open preview`, which sit inside
+            * another control's row. These three do not. */}
           <Button
             label="library.filter"
             icon="filter"
-            size="sm"
+            variant="ghost"
             state={{ kind: 'unbuilt', note: 'library.filter.unbuilt' }}
           />
           <Button
             label="library.display"
             icon="sliders"
-            size="sm"
+            variant="ghost"
             state={{ kind: 'unbuilt', note: 'library.display.unbuilt' }}
           />
 
@@ -270,7 +287,7 @@ export default function LibraryScreen() {
           <Button
             label="library.upload"
             icon="up"
-            size="sm"
+            variant="ghost"
             onClick={target.pickFiles}
             state={
               library.isPending
@@ -288,7 +305,7 @@ export default function LibraryScreen() {
             state={{ kind: 'unbuilt', note: 'library.new.unbuilt' }}
           />
         </span>
-      </div>
+      </Bar>
 
       {/* ----------------------------------------------------------- the body */}
       <div

@@ -6,9 +6,10 @@ import { UploadTray } from '../features/upload/upload-tray.tsx';
 import { useViewer } from '../entities/user/viewer.tsx';
 import { Icon, type IconName } from '../shared/ui/icon-sprite.tsx';
 import { Mark } from '../shared/ui/mark.tsx';
-import { Avatar, Kbd } from '../shared/ui/primitives.tsx';
+import { Avatar, Kbd, LaterChip } from '../shared/ui/primitives.tsx';
+import { Push, Row, Truncate } from '../shared/ui/layout.tsx';
 import type { MessageKey } from '../shared/i18n/catalog.ts';
-import { navigate, pathFor, useRoute, type RouteName } from './routes.ts';
+import { navigate, useRoute, type RouteName } from './routes.ts';
 import { useThemeStore } from './theme-store.ts';
 import './shell.css';
 
@@ -83,32 +84,29 @@ function NavLink({ item }: { item: NavItem }) {
 
   if (item.unbuilt === true) {
     return (
-      /* Not an anchor and not focusable: there is nowhere to go and nothing to
-       * find out. `aria-disabled` plus a description says so to a screen reader
-       * without putting a dead stop in the tab order (`docs/17 §6`). */
-      <span
-        className="shell-navlink"
-        data-nested={item.nested}
-        aria-disabled="true"
-        style={{ opacity: 0.5, cursor: 'default' }}
-      >
+      /* Not focusable, and `Row` renders it as a `<span>` rather than as a
+       * `<button tabindex="-1">` — the honest form, because a button taken out
+       * of the tab order is still announced as a control and is still reachable
+       * through a screen reader's rotor, which does not consult `tabindex`.
+       *
+       * There is no `opacity` here and no danger tint. This copy carried
+       * `style={{ opacity: 0.5 }}` inline while the two other copies of the same
+       * treatment deliberately did not, which is precisely the drift
+       * `docs/17 §6` forbids: the unbuilt treatment may not vary by screen. */
+      <Row unbuilt indent={item.nested === true}>
         <Icon name={item.icon} />
-        {label}
-        <span className="shell-navlink-trailing">
-          <span className="ui-later">{t('later.chip')}</span>
-        </span>
-      </span>
+        <Truncate>{label}</Truncate>
+        <Push />
+        <LaterChip note="later.chip" />
+      </Row>
     );
   }
 
   return (
-    <a
-      className="shell-navlink"
-      data-nested={item.nested}
-      href={item.route === undefined ? '#' : pathFor(item.route)}
-      aria-current={current ? 'page' : undefined}
-      onClick={(event) => {
-        event.preventDefault();
+    <Row
+      current={current}
+      indent={item.nested === true}
+      onClick={() => {
         if (item.route !== undefined) navigate(item.route);
       }}
     >
@@ -117,16 +115,22 @@ function NavLink({ item }: { item: NavItem }) {
       ) : (
         <span className="shell-lib-dot" style={{ background: item.dot }} aria-hidden="true" />
       )}
-      {label}
+      <Truncate>{label}</Truncate>
       {item.shortcut !== undefined && (
-        <span className="shell-navlink-trailing">
-          <Kbd>{t(item.shortcut)}</Kbd>
-        </span>
+        <>
+          <Push />
+          <span className="shell-navlink-trailing">
+            <Kbd>{t(item.shortcut)}</Kbd>
+          </span>
+        </>
       )}
       {item.trailing !== undefined && (
-        <span className="shell-navlink-trailing">{item.trailing}</span>
+        <>
+          <Push />
+          <span className="shell-navlink-trailing">{item.trailing}</span>
+        </>
       )}
-    </a>
+    </Row>
   );
 }
 
@@ -141,13 +145,14 @@ export function Shell({ children }: { children: ReactNode }) {
   return (
     <div className="shell">
       <nav className="shell-nav" aria-label={t('app.brand')}>
-        <button type="button" className="shell-brand" aria-label={t('nav.workspaceSwitcher')}>
-          <Mark size={18} />
-          <span className="shell-brand-name">{t('app.brand')}</span>
-          <span className="shell-navlink-trailing" aria-hidden="true">
+        <div className="shell-brand">
+          <Row aria-label={t('nav.workspaceSwitcher')}>
+            <Mark size={18} />
+            <span className="shell-brand-name">{t('app.brand')}</span>
+            <Push />
             <Icon name="updown" />
-          </span>
-        </button>
+          </Row>
+        </div>
 
         {PRIMARY.map((item) => (
           <NavLink key={item.label} item={item} />
@@ -189,9 +194,7 @@ export function Shell({ children }: { children: ReactNode }) {
         )}
 
         <div className="shell-nav-foot">
-          <button
-            type="button"
-            className="shell-navlink"
+          <Row
             aria-label={t('nav.signOut')}
             onClick={() => {
               void signOut();
@@ -202,12 +205,19 @@ export function Shell({ children }: { children: ReactNode }) {
              * full name as provided, never assume given-name-first ordering and
              * never split on whitespace — which also means it never goes in the
              * catalog, because there is nothing to translate. */}
-            <bdi dir="auto">{viewer.displayName}</bdi>
-          </button>
+            <Truncate>
+              <bdi dir="auto">{viewer.displayName}</bdi>
+            </Truncate>
+          </Row>
           <div className="shell-prefs">
+            {/* `.ui-tab` for the pill, `aria-pressed` for the semantics. The
+              * third copy of this toggle's 16 lines is gone; what it is *not*
+              * is a `<Tab>`, because nothing here controls a tabpanel and
+              * announcing "tab" for a theme switch would be untrue. */}
             <span className="shell-seg" role="group" aria-label={t('theme.light')}>
               <button
                 type="button"
+                className="ui-tab"
                 aria-pressed={theme === 'light'}
                 onClick={() => setTheme('light')}
               >
@@ -215,6 +225,7 @@ export function Shell({ children }: { children: ReactNode }) {
               </button>
               <button
                 type="button"
+                className="ui-tab"
                 aria-pressed={theme === 'dark'}
                 onClick={() => setTheme('dark')}
               >

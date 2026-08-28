@@ -16,15 +16,18 @@
 .peek-preview {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding-block: 4px;
+  gap: var(--sp-4);
+  padding-block: var(--sp-2);
   min-inline-size: 0;
 }
 
+/* `--peek-w-min` is the panel's own floor, so a preview is never taller than
+ * the narrowest the panel is allowed to be — a portrait page that is taller
+ * than the panel is wide reads as a column of pixels rather than as a page. */
 .peek-preview-image {
   inline-size: 100%;
   block-size: auto;
-  max-block-size: 320px;
+  max-block-size: var(--peek-w-min);
   object-fit: contain;
   border-radius: var(--r-ctrl);
   background: var(--sunken);
@@ -36,9 +39,9 @@
 
 .peek-preview-note {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--fs-ctl);
   color: var(--fg2);
-  line-height: 1.5;
+  line-height: var(--lh-body);
 }
 
 /* Every state's note is the same neutral colour, and that is deliberate.

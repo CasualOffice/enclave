@@ -94,12 +94,22 @@ describe('the four states', () => {
 
   it('empty (filtered): a query that matched nothing, with the filters named', async () => {
     stubSearch(0);
-    await renderAt('?q=agreement&workspace=Legal&type=xls&modified=7d');
+    const { container } = await renderAt('?q=agreement&workspace=Legal&type=xls&modified=7d');
 
+    /* The title is asserted on the block that owns it rather than by role.
+     *
+     * `shared/ui/surface-states` renders a state block's title as a `<p>`, not
+     * as a heading — a state that replaces a list is not a section of the
+     * document outline. So the assertion names the state as well as the words,
+     * which is stricter than the role query it replaces: it now proves the
+     * query is quoted back *by the filtered-empty state* and not by whichever
+     * surface happened to render a matching heading. */
+    const block = container.querySelector('[data-state="filtered-empty"]');
+    expect(block, 'the filtered-empty state is the one on screen').not.toBeNull();
     expect(
-      screen.getByRole('heading', { name: /No results for/ }),
+      block!.querySelector('.surface-state-title')?.textContent ?? '',
       'the query is quoted back so the user can see what was searched',
-    ).toBeTruthy();
+    ).toMatch(/No results for/);
 
     /* `docs/09 §11` asks this state to name the filters, because "no results"
      * and "your filters exclude everything" are different problems. The list is
@@ -122,7 +132,9 @@ describe('the four states', () => {
 
     const status = screen.getByRole('status', { name: catalog['search.state.loading'].message });
     expect(status).toBeTruthy();
-    expect(container.querySelectorAll('.esr-skeleton').length).toBeGreaterThan(0);
+    // `.ui-skeleton` since the migration: one skeleton in the tree, one pulse,
+    // one reduced-motion answer. The feature's copy and its keyframes are gone.
+    expect(container.querySelectorAll('.ui-skeleton').length).toBeGreaterThan(0);
 
     /* The skeleton shares the loaded row's box model so nothing shifts when
      * results land (`docs/09 §11`) — same `.esr-row` element, same height. */
@@ -174,7 +186,10 @@ describe('the four states', () => {
     // something. An assertion about an absence passes for free otherwise.
     expect(container.querySelector('.esr-title')?.textContent ?? '').not.toBe('');
 
-    expect(container.querySelector('.esr-classification')).toBeNull();
+    // `.ui-classification` since the migration: `entities/classification` is
+    // the only badge, so this now asserts the absence against the one component
+    // that could have rendered it rather than against a feature-local copy.
+    expect(container.querySelector('.ui-classification')).toBeNull();
     expect(container.querySelector('.esr-ownername')).toBeNull();
     expect(container.querySelector('.esr-when')).toBeNull();
   });

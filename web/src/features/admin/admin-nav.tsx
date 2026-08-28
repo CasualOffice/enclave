@@ -1,6 +1,6 @@
 import { useT } from '../../shared/i18n/index.tsx';
 import type { MessageKey } from '../../shared/i18n/catalog.ts';
-import { Icon } from '../../shared/ui/icon-sprite.tsx';
+import { Field, Push, Row, Truncate } from '../../shared/ui/layout.tsx';
 import { IconButton, LaterChip } from '../../shared/ui/primitives.tsx';
 import type { DlpRule } from './dlp/model.ts';
 
@@ -18,6 +18,18 @@ import type { DlpRule } from './dlp/model.ts';
  * outside the tab order — future tense, about the product, never the denial
  * treatment (`docs/17 §6`). Half the rail meaning "not written yet" is exactly
  * how a user learns to stop reading dimmed, so it must not look refused.
+ *
+ * ## Why two of these three rows are `.ui-row` and one is `<Row>`
+ *
+ * `Row` renders a `<button>`, and a policy must be an `<a href>`: `docs/09 §21`
+ * requires a stable URL per admin object, and a button cannot be copied into a
+ * ticket, opened in a new tab or found in browser history. So the anchor wears
+ * the shared class while the unbuilt sections use the component — which is the
+ * half that matters, because the component is what renders unbuilt as a
+ * non-focusable `<span>` with no opacity change and no danger tint. This rail's
+ * own copy had drifted an `opacity: .5` onto that variant while the two others
+ * deliberately had none; `docs/17 §6` forbids exactly that, and one
+ * implementation is the only way it stays forbidden.
  */
 
 interface Section {
@@ -70,16 +82,17 @@ export function AdminNav({
           <div className="adm-nav-group">{t(section.label)}</div>
           {section.items.map((item) =>
             item.current === true ? (
-              <span className="adm-nav-link" key={item.label} aria-current="page">
+              <span className="ui-row" key={item.label} aria-current="page">
                 {t(item.label)}
               </span>
             ) : (
               /* Not an anchor and not focusable: there is nowhere to go and
                * nothing to find out (`docs/17 §6`). */
-              <span className="adm-nav-link" key={item.label} data-unbuilt="true" aria-disabled="true">
+              <Row key={item.label} unbuilt>
                 {t(item.label)}
+                <Push />
                 <LaterChip note="later.chip" />
-              </span>
+              </Row>
             ),
           )}
         </div>
@@ -92,22 +105,23 @@ export function AdminNav({
         )}
       </div>
 
-      <div className="adm-nav-search">
-        <Icon name="s" size={12} />
-        <input
-          type="search"
-          value={query}
-          aria-label={t('admin.dlp.rules.searchLabel')}
-          placeholder={t('admin.dlp.rules.searchLabel')}
-          onChange={(event) => onQuery(event.target.value)}
-        />
-      </div>
+      {/* One field, one focus ring. The rail's own recipe was an `outline` at
+        * +2px offset, one of three in the tree for five inputs (`docs/09 §15`
+        * wants one visible indicator, not one per screen). */}
+      <Field
+        label="admin.dlp.rules.searchLabel"
+        icon="s"
+        type="search"
+        value={query}
+        placeholder={t('admin.dlp.rules.searchLabel')}
+        onChange={(event) => onQuery(event.target.value)}
+      />
 
       <ul className="adm-nav-rules">
         {rules.map((rule) => (
           <li key={rule.id}>
             <a
-              className="adm-nav-link"
+              className="ui-row"
               href={hrefFor(rule.id)}
               aria-current={rule.id === selectedId ? 'page' : undefined}
               onClick={(event) => {
@@ -115,11 +129,16 @@ export function AdminNav({
                 onSelect(rule.id);
               }}
             >
-              {rule.name}
+              <Truncate>{rule.name}</Truncate>
               {/* `docs/05 §14.2`: a stored rule that no longer decodes fails
                * every request in the tenant, and this list is where an
                * administrator would find out which one to withdraw. */}
-              {!rule.decodes && <span className="adm-nav-broken">{t('admin.dlp.rules.decodeError')}</span>}
+              {!rule.decodes && (
+                <>
+                  <Push />
+                  <span className="adm-nav-broken">{t('admin.dlp.rules.decodeError')}</span>
+                </>
+              )}
             </a>
           </li>
         ))}

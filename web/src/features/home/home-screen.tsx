@@ -1,9 +1,10 @@
-import { useState } from 'react';
-import { CLASSIFICATION_KEY } from '../../entities/classification/model.ts';
+import { useState, type CSSProperties } from 'react';
+import { ClassificationChip } from '../../entities/classification/chip.tsx';
 import type { MessageKey } from '../../shared/i18n/catalog.ts';
 import { useT } from '../../shared/i18n/index.tsx';
 import { useFormatters } from '../../shared/i18n/format.ts';
 import { Icon } from '../../shared/ui/icon-sprite.tsx';
+import { Card, Eyebrow, Push, Truncate } from '../../shared/ui/layout.tsx';
 import {
   Avatar,
   Button,
@@ -34,9 +35,11 @@ import './home.css';
  *      time alone is unquotable to support and ages badly in a screenshot
  *      (`docs/14 §6`).
  *   2. Its classification badge mixes text at 82% of the level colour. That
- *      measures 3.68:1 and axe fails it; the badge here uses the 70% recipe
- *      `features/libraries/list` already ships, so one label is one colour
- *      across the product.
+ *      measures 3.68:1 and axe fails it. The badge is no longer this screen's
+ *      to get right: it is `entities/classification`'s `ClassificationChip`,
+ *      the **only** implementation in the tree, and `design-system.test.tsx`
+ *      asserts that the locked `--c-*` palette is read from exactly one
+ *      stylesheet. This file was the second reader.
  *   3. Every one of its eight controls is a live button. **None of them have a
  *      backend.** `docs/05-API.md` defines no Home resource, no approvals
  *      resource and no Ask resource, so the approval actions render *unbuilt* —
@@ -72,19 +75,18 @@ const ACTION_KEY: Record<AttentionKind, MessageKey> = {
 };
 
 /**
- * Which greeting to use, from the reader's own wall clock.
+ * A row's index, handed to the shared stagger.
  *
- * Three separate catalog keys rather than one with a placeholder, because the
- * boundaries and the number of greetings are both language-specific and a
- * translator has to be able to collapse or split them. The hours are the
- * reader's, not the server's — `getHours()` is local time by definition, which
- * is the one thing this needs to be right.
+ * `.enc-stagger-card` reads `--i` and caps it at `--stagger-cap`, so the delay
+ * is the token layer's decision and the row only supplies its position. Typed as
+ * an intersection rather than cast through `any`: a custom property is a legal
+ * `style` entry that `CSSProperties` does not model, and widening the whole
+ * object would take the type-checking off every other declaration in it.
  */
-function greetingKey(now: Date): MessageKey {
-  const hour = now.getHours();
-  if (hour < 12) return 'home.greeting.morning';
-  if (hour < 18) return 'home.greeting.afternoon';
-  return 'home.greeting.evening';
+type StaggerStyle = CSSProperties & Record<'--i', number>;
+
+function stagger(index: number): StaggerStyle {
+  return { '--i': index };
 }
 
 /**
@@ -112,22 +114,28 @@ function When({
   );
 }
 
+/**
+ * A section's eyebrow, and the neutral marker beside it where one is owed.
+ *
+ * The chip is a **sibling** of the `<h2>` rather than a child of it: `Eyebrow`
+ * renders the heading, and folding the chip inside would make "Continue
+ * working" announce as "Continue working Later". The uppercase belongs to
+ * `Eyebrow`, behind a `:lang()` allowlist — the catalog holds the sentence-case
+ * original, because `text-transform: uppercase` is wrong in Turkish, strips
+ * accents in Greek and means nothing in scripts without case (`docs/14`).
+ */
 function SectionHead({
   titleKey,
-  titleId,
   laterKey,
 }: {
   titleKey: MessageKey;
-  titleId: string;
   /** Present when the section is readable but not yet actionable. */
   laterKey?: MessageKey | undefined;
 }) {
   const t = useT();
   return (
     <div className="home-section-head">
-      <h2 className="home-section-title" id={titleId}>
-        {t(titleKey)}
-      </h2>
+      <Eyebrow label={titleKey} />
       {laterKey !== undefined && (
         <>
           {/* The same neutral marker the sidebar uses for a surface that does
@@ -146,42 +154,52 @@ function SectionHead({
 function AttentionSection({ data, now }: { data: HomeData; now: Date }) {
   const t = useT();
   return (
-    <section className="home-in" data-step="1" aria-labelledby="home-attention-title">
-      <SectionHead titleKey="home.attention.title" titleId="home-attention-title" />
+    <section aria-label={t('home.attention.title')}>
+      <SectionHead titleKey="home.attention.title" />
       {data.attention.length === 0 ? (
-        <p className="home-section-empty">{t('home.attention.empty')}</p>
+        <Card className="home-section-empty">{t('home.attention.empty')}</Card>
       ) : (
         <ul className="home-attention">
-          {data.attention.map((item) => (
-            <li className="home-card" key={item.id}>
-              <Avatar initials={item.requesterInitials} tone={item.requesterTone} size="lg" />
-              <div className="home-card-main">
-                <div className="home-card-title">{item.subject}</div>
-                <div className="home-card-sub">
-                  <span className="home-card-sub-who">
-                    {t('home.attention.requestedBy', { name: item.requesterName })}
-                  </span>
-                  <When at={item.requestedAt} now={now} />
+          {/* The entrance is the shared one, staggered by position, and it sits
+           * on the `<li>` rather than on the card so the animated box and the
+           * card's own box are not the same node — a transform on a
+           * `box-shadow`ed surface repaints the shadow every frame.
+           * `docs/09 §12` allows motion on enter and forbids it on a data
+           * update in place; this runs once, when the row arrives. */}
+          {data.attention.map((item, index) => (
+            <li className="enc-enter enc-stagger-card" key={item.id} style={stagger(index)}>
+              <Card className="home-card" padded={false}>
+                <Avatar initials={item.requesterInitials} tone={item.requesterTone} size="md" />
+                <div className="home-card-main">
+                  <div className="home-card-title">
+                    <Truncate>{item.subject}</Truncate>
+                  </div>
+                  <div className="home-card-sub">
+                    <Truncate>
+                      {t('home.attention.requestedBy', { name: item.requesterName })}
+                    </Truncate>
+                    <When at={item.requestedAt} now={now} />
+                  </div>
                 </div>
-              </div>
-              <div className="home-card-actions">
-                {/* Neutral, not accent-filled: `unbuilt` must never look like a
-                 * control that is one click from working, and it must never
-                 * look like a refusal either.
-                 *
-                 * `describedById` is keyed on the *item*, not on the label.
-                 * `Button` otherwise derives the note's id from the catalog key,
-                 * and a real attention list has two approvals in it far more
-                 * often than it has one of each kind — two controls sharing a
-                 * label would then emit one id twice and their
-                 * `aria-describedby` would resolve to the same node. That is an
-                 * axe `duplicate-id-aria` failure, tagged `wcag2a`. */}
-                <Button
-                  label={ACTION_KEY[item.kind]}
-                  state={UNBUILT}
-                  describedById={`home-attention-${item.id}-note`}
-                />
-              </div>
+                <div className="home-card-actions">
+                  {/* Neutral, not accent-filled: `unbuilt` must never look like a
+                   * control that is one click from working, and it must never
+                   * look like a refusal either.
+                   *
+                   * `describedById` is keyed on the *item*, not on the label.
+                   * `Button` otherwise derives the note's id from the catalog key,
+                   * and a real attention list has two approvals in it far more
+                   * often than it has one of each kind — two controls sharing a
+                   * label would then emit one id twice and their
+                   * `aria-describedby` would resolve to the same node. That is an
+                   * axe `duplicate-id-aria` failure, tagged `wcag2a`. */}
+                  <Button
+                    label={ACTION_KEY[item.kind]}
+                    state={UNBUILT}
+                    describedById={`home-attention-${item.id}-note`}
+                  />
+                </div>
+              </Card>
             </li>
           ))}
         </ul>
@@ -193,35 +211,38 @@ function AttentionSection({ data, now }: { data: HomeData; now: Date }) {
 function RecentSection({ data, now }: { data: HomeData; now: Date }) {
   const t = useT();
   return (
-    <section className="home-in" data-step="2" aria-labelledby="home-recent-title">
-      <SectionHead
-        titleKey="home.recent.title"
-        titleId="home-recent-title"
-        laterKey="home.recent.laterNote"
-      />
+    <section aria-label={t('home.recent.title')}>
+      <SectionHead titleKey="home.recent.title" laterKey="home.recent.laterNote" />
       {data.recent.length === 0 ? (
-        <p className="home-section-empty">{t('home.recent.empty')}</p>
+        <Card className="home-section-empty">{t('home.recent.empty')}</Card>
       ) : (
-        <ul className="home-recent">
-          {data.recent.map((file) => (
-            <li className="home-recent-row" key={file.id}>
-              <span className="home-file-icon" data-kind={file.kind} aria-hidden="true">
-                <Icon name="file" size={16} />
-              </span>
-              <span className="home-recent-name">
-                {file.name}
-                <span className="home-recent-ext">{file.extension}</span>
-              </span>
-              {/* Colour is never the only carrier: the badge says the level in
-               * words as well (`docs/09 §15`), and the words come from
-               * `entities/classification` so no component owns a second copy. */}
-              <span className="home-classification" data-level={file.classification}>
-                {t(CLASSIFICATION_KEY[file.classification])}
-              </span>
-              <When at={file.openedAt} now={now} className="home-recent-when" />
-            </li>
-          ))}
-        </ul>
+        <Card className="home-recent" padded={false}>
+          <ul className="home-recent-list">
+            {data.recent.map((file, index) => (
+              <li
+                className="home-recent-row enc-enter enc-stagger-card"
+                key={file.id}
+                style={stagger(index)}
+              >
+                <span className="home-file-icon" data-kind={file.kind} aria-hidden="true">
+                  <Icon name="file" size={16} />
+                </span>
+                <span className="home-recent-name">
+                  <Truncate>
+                    {file.name}
+                    <span className="home-recent-ext">{file.extension}</span>
+                  </Truncate>
+                </span>
+                {/* Colour is never the only carrier: the chip says the level in
+                 * words as well (`docs/09 §15`), and it is the product's single
+                 * implementation of that badge rather than this screen's copy. */}
+                <ClassificationChip level={file.classification} />
+                <Push />
+                <When at={file.openedAt} now={now} className="home-recent-when" />
+              </li>
+            ))}
+          </ul>
+        </Card>
       )}
     </section>
   );
@@ -230,20 +251,16 @@ function RecentSection({ data, now }: { data: HomeData; now: Date }) {
 function AsksSection({ data }: { data: HomeData }) {
   const t = useT();
   return (
-    <section className="home-in" data-step="3" aria-labelledby="home-asks-title">
-      <SectionHead
-        titleKey="home.asks.title"
-        titleId="home-asks-title"
-        laterKey="home.asks.laterNote"
-      />
+    <section aria-label={t('home.asks.title')}>
+      <SectionHead titleKey="home.asks.title" laterKey="home.asks.laterNote" />
       {data.asks.length === 0 ? (
-        <p className="home-section-empty">{t('home.asks.empty')}</p>
+        <Card className="home-section-empty">{t('home.asks.empty')}</Card>
       ) : (
         <ul className="home-asks">
           {data.asks.map((ask) => (
             <li className="home-ask" key={ask.id}>
               <Icon name="spark" size={12} className="home-ask-icon" />
-              <span className="home-ask-text">{ask.text}</span>
+              <Truncate>{ask.text}</Truncate>
             </li>
           ))}
         </ul>
@@ -256,6 +273,22 @@ export interface HomeViewProps {
   readonly data: HomeData;
   /** Passed in rather than read from the clock, so a relative time is assertable. */
   readonly now: Date;
+}
+
+/**
+ * Which greeting to use, from the reader's own wall clock.
+ *
+ * Three separate catalog keys rather than one with a placeholder, because the
+ * boundaries and the number of greetings are both language-specific and a
+ * translator has to be able to collapse or split them. The hours are the
+ * reader's, not the server's — `getHours()` is local time by definition, which
+ * is the one thing this needs to be right.
+ */
+function greetingKey(now: Date): MessageKey {
+  const hour = now.getHours();
+  if (hour < 12) return 'home.greeting.morning';
+  if (hour < 18) return 'home.greeting.afternoon';
+  return 'home.greeting.evening';
 }
 
 /**
@@ -285,7 +318,12 @@ export function HomeView({ data, now }: HomeViewProps) {
   return (
     <div className="home">
       <div className="home-page">
-        <header className="home-in">
+        {/* The header does **not** animate, and that is a measured decision
+         * rather than an omission. axe computes contrast from the composited
+         * pixel, so a run landing inside an opacity ramp read `--fg2` on this
+         * date line as 2.12:1 against a settled 6.83:1. The entrance now
+         * belongs to the rows, whose text sits on a card and arrives with it. */}
+        <header>
           <h1 className="home-greeting">{t(greetingKey(now), { name: data.givenName })}</h1>
           {/* One message, not four fragments concatenated: the separator, the
            * order and the plural category are all the translator's to move. */}
@@ -358,7 +396,7 @@ export default function Screen() {
     return (
       <div className="home">
         <div className="home-page">
-          <FailureState failure={failureOf(tasks.error)} onRetry={() => void tasks.refetch()} />
+          <FailureState failure={failureOf(tasks.error)} onRetry={() => void tasks.refetch()} fill />
         </div>
       </div>
     );

@@ -18,20 +18,43 @@ import { VersionPage } from '../file/api-model.ts';
  *
  * ## Two things learned by driving this against MinIO
  *
- * **The `Content-Type` is signed.** The issued URL carries
- * `X-Amz-SignedHeaders=content-type;host`, so the `PUT` must send exactly the
- * media type that was declared at step 1 or the store answers `403` with a
- * signature mismatch. A `PUT` with the browser's default type fails, and it
- * fails in a way that reads as a permission problem rather than a header
- * problem. `mimeType` is therefore threaded through both calls from one value.
+ * **The signed headers come from the server, not from here.** The issued URL is
+ * signed over a set of headers named in `X-Amz-SignedHeaders`, and a `PUT` that
+ * omits one, or sends a different value for one, fails the provider's signature
+ * check with `403 SignatureDoesNotMatch` — which reads as a permission problem
+ * rather than a header problem and cost the first client written against this
+ * API two attempts to diagnose (`ENC-821`).
  *
- * **`GET /uploads/{id}` is not the readiness signal.** The session row reports
- * `CREATED` before `complete` and `SCANNING` after it, and it stays `SCANNING`
- * — the worker advances the *version* and never writes back to the session. A
- * tray that polled it would show "Scanning" forever on a file that finished
- * (`ENC-826`). Readiness comes from `GET /files/{id}/versions`, and the
- * `fileId` needed to ask comes from the `complete` response, which is the only
- * place it appears.
+ * That was `content-type`, threaded by hand from the value this client had
+ * declared. `ENC-820` adds a second — `x-amz-checksum-sha256`, which is what
+ * makes the store itself verify the digest — and, with it,
+ * `requiredHeaders` on the `201`: **every header the `PUT` must carry, with the
+ * exact value that was signed** (`docs/05 §8.1`). The hand-threaded
+ * `Content-Type` is gone rather than left beside it, because two sources for one
+ * header is how they drift, and the drift would present as a `403`.
+ *
+ * The map is sent **verbatim**: not filtered to the names this client happens to
+ * recognise, not re-cased, not reordered, and nothing recomputed locally. A
+ * value computed here is a different string from the one that was signed even
+ * when it looks identical, and the signature does not care which of the two is
+ * "right".
+ *
+ * **`GET /uploads/{id}`'s own `state` is not the readiness signal** — and that
+ * is still true, deliberately. The session reports `CREATED` before `complete`
+ * and `SCANNING` after it, and it stays `SCANNING`: handing the staged object
+ * to antivirus is the last transition the *session* makes, and everything after
+ * it happens to the version. A tray that waited for `state` to become "ready"
+ * waits forever, and did (`ENC-826`).
+ *
+ * What has changed is the rest of that response. `ENC-826` added the committed
+ * `version` — `status`, `avStatus`, `isReadable` — and `fileId` beside the
+ * session's `state`, so `GET /uploads/{id}` *can* now answer readiness; read the
+ * version's state beside the session's, never instead of it (`docs/05 §8.1`).
+ * The `fileId` is no longer only in the `complete` response either.
+ *
+ * The store still polls `GET /files/{id}/versions`, which also answers, and
+ * moving it is `ENC-848` — see the poll's own comment in `store.ts` for why
+ * that is left to a session that can drive a real upload.
  */
 
 /** What `POST /uploads` answers. `uploadUrl` and `urls` are mutually exclusive; `method` says which. */
@@ -39,6 +62,28 @@ const IssuedUpload = z.object({
   uploadId: z.string(),
   method: z.enum(['SINGLE', 'MULTIPART']),
   uploadUrl: z.string().optional(),
+  /**
+   * Every header the pre-signed `PUT` must carry, verbatim.
+   *
+   * **Required, not optional** (`docs/05 §8.1`). Optional would make the one
+   * failure mode this field exists to prevent — a `PUT` sent without the signed
+   * headers — a silent `403` from a third-party host at the end of a transfer,
+   * rather than a parse error before it starts. `ENC-821` is that debugging
+   * session; once was enough.
+   *
+   * The server omits it only on a `MULTIPART` response, which it documents as
+   * unreachable: `UploadService::create` always declares a digest, and a store
+   * that cannot have the provider confirm one for an upload that size refuses
+   * before a URL exists (`403 QUOTA_EXCEEDED`, `ENC-829`). This client refuses
+   * `MULTIPART` anyway, so requiring the field costs a clearer message on a
+   * response that should not occur, and buys a loud failure on the one that
+   * would otherwise cost bytes.
+   *
+   * `z.record` rather than a named shape on purpose: the set of signed headers
+   * is the *store's*, and a client that enumerated the two it knows about today
+   * would silently drop a third.
+   */
+  requiredHeaders: z.record(z.string(), z.string()),
   urls: z
     .array(
       z.object({
@@ -127,19 +172,31 @@ export class TransferError extends Error {
  *
  * Note what is *absent*: no `Authorization`, no `idempotency-key`, no cookies.
  * `withCredentials` stays `false`. See the header of this file.
+ *
+ * `headers` is `requiredHeaders` from the `201`, passed through untouched. This
+ * function deliberately knows nothing about which headers those are: it does not
+ * default a `Content-Type`, does not add one the map omits, and does not drop
+ * one it does not recognise. Every value in it was signed into the URL, and the
+ * provider verifies the set rather than the intent.
  */
 export function putBytes(
   url: string,
   file: Blob,
-  mimeType: string,
+  headers: Readonly<Record<string, string>>,
   onProgress: (sentBytes: number) => void,
   signal: AbortSignal,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open('PUT', url, true);
-    /* Signed into the URL. Anything else is a 403 from the store. */
-    xhr.setRequestHeader('Content-Type', mimeType);
+    /* Verbatim, and all of them. `x-amz-checksum-sha256` is what makes the store
+     * compute the digest of the body it receives and refuse the object if it
+     * disagrees with what was declared (`ENC-820`) — so a client cannot decline
+     * to be checked without also failing to upload. Reconstructing any of these
+     * locally would produce a different string from the one that was signed. */
+    for (const [name, value] of Object.entries(headers)) {
+      xhr.setRequestHeader(name, value);
+    }
     xhr.withCredentials = false;
 
     xhr.upload.addEventListener('progress', (event) => {

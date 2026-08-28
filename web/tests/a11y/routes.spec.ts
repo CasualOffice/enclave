@@ -253,6 +253,30 @@ for (const surface of SURFACES) {
       await page.goto(surface.url);
       await page.waitForSelector(surface.ready, { timeout: 30_000 });
 
+      /* The positive control for `ENC-677`, stated rather than implied.
+       *
+       * `surface.ready` is what stops this run checking one page N times: a
+       * sign-in screen does not contain `.egl-row`. That is a sound argument
+       * and it is an argument, not an assertion — it holds only for as long as
+       * every `ready` selector in `SURFACES` happens to be absent from the
+       * sign-in screen, which nobody re-verifies when a selector changes.
+       *
+       * This is the assertion. If the stub's cookie, its `/me` answer or the
+       * preview host ever drifts, every route falls back to sign-in and **every
+       * non-signin surface fails by name here** — rather than 80 tests passing
+       * while inspecting one page. The failure is loud and it is specific,
+       * which is the difference between a gate and a ritual.
+       *
+       * The bug this replaces was found only because the suite timed out. */
+      if (surface.api?.signedIn !== false) {
+        const signIn = await page.locator('[data-signin-state]').count();
+        expect(
+          signIn,
+          `${surface.name} rendered the sign-in screen: the API stub did not take effect, ` +
+            `so this run is inspecting one page rather than the product (ENC-677)`,
+        ).toBe(0);
+      }
+
       const results = await new AxeBuilder({ page })
         // WCAG 2.2 AA is the stated target (`docs/09 §15`), so the tag set is
         // the target rather than axe's defaults.

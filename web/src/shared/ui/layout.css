@@ -1,0 +1,286 @@
+/* Containers. The other half of the primitive layer.
+ *
+ * Every dimension here reads a token from `styles/scale.css` and every property
+ * name is logical. Both are checkable: `tools/lint-web.mjs` fails the build on a
+ * physical property, and a literal px in this file is a value that escaped the
+ * scale — which is how the tree accumulated roughly 700 of them.
+ */
+
+/* -------------------------------------------------------------------- card */
+
+.ui-card {
+  box-sizing: border-box;
+  border-radius: var(--r-surf);
+  background: var(--sheet);
+  box-shadow: var(--hairline);
+  min-inline-size: 0;
+}
+
+.ui-card[data-padded] {
+  padding-block: var(--sp-5);
+  padding-inline: var(--sp-6);
+}
+
+/* A well, not a warning. Recessed so the eye reads it as behind the page — a
+ * notice, an excerpt, a preview placeholder. No semantic colour, ever: a card
+ * that tints itself is a card that has opinions about its contents. */
+.ui-card[data-tone='sunken'] {
+  background: var(--sunken);
+  box-shadow: none;
+}
+
+.ui-card[data-tone='flat'] {
+  background: transparent;
+  box-shadow: none;
+}
+
+/* --------------------------------------------------------------------- bar */
+
+/* The band a toolbar sits on.
+ *
+ * `padding-inline: 16px 14px` is asymmetric in the reference and deliberately
+ * kept so: the leading edge aligns with the list's content inset while the
+ * trailing edge stops short, because the trailing control is an icon button
+ * whose own padding makes up the difference. Symmetrising it moves every
+ * trailing cluster 2px and reads as a misalignment against the rows below. */
+.ui-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-block-size: var(--bar-h);
+  padding-block: var(--sp-5) 0;
+  padding-inline: var(--sp-8) var(--sp-7);
+  color: var(--fg2);
+  font-size: var(--fs-body);
+  min-inline-size: 0;
+}
+
+.ui-bar[data-size='sm'] {
+  min-block-size: auto;
+  padding-block: var(--sp-4);
+  padding-inline: var(--sp-7) var(--sp-6);
+}
+
+.ui-push {
+  margin-inline-start: auto;
+}
+
+/* ----------------------------------------------------------------- eyebrow */
+
+.ui-eyebrow {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  margin: 0;
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  color: var(--fg2);
+}
+
+/* The uppercase, behind a language allowlist.
+ *
+ * `text-transform: uppercase` is wrong in Turkish (dotted i), strips accents in
+ * Greek, and means nothing in scripts without case (`docs/14`). The allowlist is
+ * the locales where it is known-correct; every other locale gets the
+ * sentence-case original, which is what the catalog holds and what a screen
+ * reader announces in both cases.
+ *
+ * Adding a locale here is a translation decision, not a styling one. */
+.ui-eyebrow-text:lang(en),
+.ui-eyebrow-text:lang(de),
+.ui-eyebrow-text:lang(fr),
+.ui-eyebrow-text:lang(es),
+.ui-eyebrow-text:lang(it),
+.ui-eyebrow-text:lang(pt),
+.ui-eyebrow-text:lang(nl) {
+  text-transform: uppercase;
+}
+
+/* --------------------------------------------------------------------- row */
+
+.ui-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  inline-size: 100%;
+  min-inline-size: 0;
+  block-size: var(--ctl-h-lg);
+  padding-inline: var(--sp-4);
+  border: 0;
+  border-radius: var(--r-ctrl);
+  background: transparent;
+  color: var(--fg2);
+  font: inherit;
+  font-size: var(--fs-body);
+  text-align: start;
+  cursor: pointer;
+  /* Colour only. A row that moves under the pointer makes a list feel like it
+   * is breathing, and `docs/09 §12` allows motion on enter, exit, expansion and
+   * position change — a hover is none of those. */
+  transition: background-color var(--dur-fade) var(--ease-enter);
+}
+
+.ui-row:hover {
+  background: var(--hover);
+  color: var(--fg);
+}
+
+.ui-row[aria-current='page'] {
+  background: var(--selected);
+  color: var(--fg);
+  font-weight: 500;
+}
+
+.ui-row[data-indent] {
+  padding-inline-start: var(--sp-10);
+}
+
+/* The unbuilt treatment on a row, and the one rule that matters about it:
+ * **no opacity change and no danger tint**. `docs/17 §6` — if dimmed usually
+ * means "not written yet", a user stops reading dimmed as anything, and carries
+ * that habit to the control where dimmed means DLP refused them. Quieter text,
+ * no hover, out of the tab order, and a `Later` chip the caller supplies. */
+.ui-row[data-unbuilt] {
+  color: var(--fg2);
+  cursor: default;
+}
+
+.ui-row[data-unbuilt]:hover {
+  background: transparent;
+}
+
+.ui-truncate {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ----------------------------------------------------------------- popover */
+
+.ui-popover {
+  position: absolute;
+  z-index: var(--z-popover);
+  min-inline-size: 168px;
+  padding: var(--sp-2);
+  border-radius: var(--r-surf);
+  background: var(--sheet);
+  box-shadow: var(--el2);
+  animation: enc-pop var(--dur-pop) var(--ease-enter) both;
+}
+
+/* -------------------------------------------------------------------- tabs */
+
+.ui-tablist {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-inline-size: 0;
+}
+
+.ui-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex: none;
+  padding-block: var(--sp-2);
+  padding-inline: var(--ctl-pad);
+  border: 0;
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--fg2);
+  font: inherit;
+  font-size: var(--fs-body);
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color var(--dur-fade) var(--ease-enter);
+}
+
+.ui-tab:hover,
+.ui-tab[aria-selected='true'] {
+  background: var(--sunken);
+  color: var(--fg);
+}
+
+.ui-tab[data-unbuilt] {
+  cursor: default;
+}
+
+.ui-tab[data-unbuilt]:hover {
+  background: transparent;
+  color: var(--fg2);
+}
+
+/* Counts are monospace so a column of them aligns, and they arrive already
+ * formatted by `Intl.NumberFormat` — the comma in `1,284` is a locale decision
+ * and not a character a component may insert. */
+.ui-tab-count {
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  color: var(--fg2);
+}
+
+/* ------------------------------------------------------------------- field */
+
+.ui-field {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-inline-size: 0;
+  block-size: var(--ctl-h);
+  padding-inline: var(--ctl-pad);
+  border-radius: var(--r-ctrl);
+  background: var(--sheet);
+  box-shadow: var(--hairline);
+  color: var(--fg3);
+}
+
+.ui-field[data-size='sm'] {
+  block-size: var(--ctl-h-sm);
+}
+
+.ui-field[data-size='lg'] {
+  block-size: var(--row-h);
+  padding-inline: var(--sp-5);
+}
+
+/* **The** focus ring. One recipe, on the wrapper.
+ *
+ * There were three in the tree for five inputs — a two-layer box-shadow, an
+ * outline at +2px offset, and an outline at -2px — which means a keyboard user
+ * relearned the affordance on every screen. `:focus-within` rather than
+ * `:focus` so a field containing a clear button shows one ring around the field
+ * instead of two rings that disagree about where the control is.
+ *
+ * The 1px accent line plus the 4px ring reaches 3:1 against both themes'
+ * sheet, which is what `docs/09 §15` requires of a focus indicator. */
+.ui-field:focus-within {
+  box-shadow:
+    0 0 0 1px var(--accent),
+    0 0 0 4px var(--accent-ring);
+}
+
+/* The input itself draws nothing — the field owns the box. A bordered input
+ * inside a bordered field is the double-box every one of the five copies
+ * started with and then worked around. */
+.ui-field-input {
+  flex: 1;
+  min-inline-size: 0;
+  border: 0;
+  background: transparent;
+  outline: 0;
+  font: inherit;
+  font-size: var(--fs-body);
+  color: var(--fg);
+}
+
+.ui-field-input::placeholder {
+  color: var(--fg3);
+}
+
+.ui-field-icon {
+  flex: none;
+  color: var(--fg3);
+}
