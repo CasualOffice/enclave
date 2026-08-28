@@ -17,6 +17,67 @@ use serde::Serialize;
 /// caller would attach one caller's correlation id to another's failure.
 pub(crate) const NO_STORE: HeaderValue = HeaderValue::from_static("private, no-store");
 
+/// Why each capability the response reports as `false` was withheld, keyed by capability name.
+///
+/// `docs/05-API.md §7`; `ENC-674`. The `capabilities` object answers *may I* with nine (or six)
+/// booleans and, until this type existed, said nothing at all about *why not*. The client's only
+/// way to explain a disabled control was therefore to compose a sentence of its own — which is the
+/// client re-deriving a policy decision, the one thing `CLAUDE.md`'s React conventions forbid, and
+/// it yields an explanation that is wrong the moment two rules can withhold the same action.
+///
+/// # Only the code travels
+///
+/// A [`ReasonCode`] is a published constant (`docs/05-API.md §5`), not a description of the rule
+/// that matched. `CLAUDE.md` rule 10 forbids the second, and there is nowhere here to put it: the
+/// value is a closed enumeration with no `String` beside it, for the reason `enclave_core`'s error
+/// module gives for the denial envelope. The rule, the policy id and the matched values still reach
+/// audit, inside the engine, where they belong.
+///
+/// The user-facing sentence is not on the wire either. `docs/14-I18N-L10N.md §5` makes the client
+/// authoritative for wording — it renders its own localized string keyed by the stable code — so
+/// shipping English here would be a second source of truth for a sentence the client must own.
+///
+/// # Why it is always serialized, even when empty
+///
+/// An absent object and an empty one would have to mean the same thing to a client, and they do
+/// not: absent could equally mean *this build does not report reasons*. A client that cannot tell
+/// those apart falls back to inventing a sentence, which is the defect being closed. An
+/// always-present object makes "nothing was withheld" a statement rather than a silence.
+///
+/// # A key here is a capability name, never an action name
+///
+/// The keys are the wire names from `CAPABILITY_ACTIONS` / `CONTAINER_ACTIONS` — `shareExternal`,
+/// not `SHARE_EXTERNAL` — so a client indexes `capabilityReasons[k]` with the same `k` it read
+/// `capabilities[k]` from. `metadataRead` and `read` never appear: both are true by construction on
+/// any object a caller can see, so a reason for either could only ever be fiction.
+#[derive(Debug, Default, Serialize)]
+pub(crate) struct CapabilityReasons(std::collections::BTreeMap<&'static str, ReasonCode>);
+
+impl CapabilityReasons {
+    /// Records that `capability` was withheld, and the code the caller may be shown for it.
+    ///
+    /// Last write wins, and the call order is what makes that correct rather than arbitrary: the
+    /// authorization stage records first and obligation suppression second, so where both could
+    /// apply the caller is told about the restriction that actually took the capability away. A
+    /// capability the ACL never granted is never reached by the suppression pass, because that pass
+    /// only ever fires on a capability that is currently `true`.
+    pub(crate) fn withheld(&mut self, capability: &'static str, code: ReasonCode) {
+        let _ = self.0.insert(capability, code);
+    }
+
+    /// The code recorded for one capability, if any.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn get(&self, capability: &str) -> Option<ReasonCode> {
+        self.0.get(capability).copied()
+    }
+
+    /// How many capabilities carry a reason.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn len(&self) -> usize {
+        self.0.len()
+    }
+}
+
 /// The error envelope from `docs/05-API.md §5`.
 #[derive(Debug, Serialize)]
 pub struct ErrorBody {

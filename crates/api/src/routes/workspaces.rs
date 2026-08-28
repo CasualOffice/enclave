@@ -75,14 +75,14 @@ use axum::extract::{Path, Query, State};
 use axum::Json;
 use enclave_core::{
     Action, AuthorizationService, ContainerAction, Error, FieldError, Obligation, Obligations,
-    PolicyDecision, ReasonCode, RequestContext, RequestId, ResourceRef, ValidationCode,
-    WorkspaceId,
+    PolicyDecision, ReasonCode, RequestContext, RequestId, ResourceRef, StageOutcome,
+    ValidationCode, WorkspaceId,
 };
 use enclave_workspaces::{PageSize, Visibility, Workspace, WorkspaceFilter, WorkspaceRepository};
 use serde::{Deserialize, Serialize};
 
 use crate::auth::Authenticated;
-use crate::error::ApiError;
+use crate::error::{ApiError, CapabilityReasons};
 use crate::state::ApiState;
 
 // ---------------------------------------------------------------------------------------------
@@ -195,6 +195,8 @@ pub struct WorkspaceView {
     revision: i64,
     /// What this caller may attempt, from the stage that will decide it.
     capabilities: ContainerCapabilities,
+    /// Why each `false` above is `false` (`ENC-674`). See [`CapabilityReasons`].
+    capability_reasons: CapabilityReasons,
     obligations: WireObligations,
     created_at: chrono::DateTime<chrono::Utc>,
     updated_at: chrono::DateTime<chrono::Utc>,
@@ -212,6 +214,7 @@ impl WorkspaceView {
     fn new(
         workspace: &Workspace,
         capabilities: ContainerCapabilities,
+        capability_reasons: CapabilityReasons,
         obligations: WireObligations,
     ) -> Self {
         Self {
@@ -222,6 +225,7 @@ impl WorkspaceView {
             visibility: visibility_str(workspace.visibility),
             revision: workspace.revision,
             capabilities,
+            capability_reasons,
             obligations,
             created_at: workspace.created_at,
             updated_at: workspace.updated_at,
@@ -367,7 +371,7 @@ pub async fn read(
     // existed and was refused by no grant. Same answer either way.
     let record = record.ok_or_else(|| ApiError::new(Error::NotFound, request_id))?;
 
-    let (capabilities, wire) = capabilities_for_container(
+    let (capabilities, reasons, wire) = capabilities_for_container(
         state.policy.authorization().as_ref(),
         &ctx,
         &resource,
@@ -376,7 +380,7 @@ pub async fn read(
     .await
     .map_err(|error| ApiError::new(error, request_id))?;
 
-    Ok(Json(WorkspaceView::new(&record, capabilities, wire)))
+    Ok(Json(WorkspaceView::new(&record, capabilities, reasons, wire)))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -422,8 +426,8 @@ async fn readable_workspaces(
     Ok(admitted
         .into_iter()
         .zip(computed)
-        .map(|((workspace, _, _), (capabilities, wire))| {
-            WorkspaceView::new(workspace, capabilities, wire)
+        .map(|((workspace, _, _), (capabilities, reasons, wire))| {
+            WorkspaceView::new(workspace, capabilities, reasons, wire)
         })
         .collect())
 }
@@ -469,15 +473,20 @@ pub(crate) async fn capabilities_for_container(
     ctx: &RequestContext,
     resource: &ResourceRef,
     enforced: &Obligations,
-) -> Result<(ContainerCapabilities, WireObligations), Error> {
+) -> Result<(ContainerCapabilities, CapabilityReasons, WireObligations), Error> {
     let batch = [(*resource, enforced.clone())];
     let mut computed = capabilities_for_containers(authorization, ctx, &batch).await?;
     match computed.pop() {
         Some(answer) => Ok(answer),
         // Unreachable: one input, one answer. If it ever stopped holding, the refusing object is the
         // safe one — a capability wrongly withheld costs a button, and the action itself is enforced
-        // by the chain either way.
-        None => Ok((ContainerCapabilities::default(), WireObligations::default())),
+        // by the chain either way. The reasons object stays empty on this branch for `content.rs`'s
+        // reason: nothing decided, so there is nothing to report and no reason to invent.
+        None => Ok((
+            ContainerCapabilities::default(),
+            CapabilityReasons::default(),
+            WireObligations::default(),
+        )),
     }
 }
 
@@ -519,7 +528,7 @@ pub(crate) async fn capabilities_for_containers(
     authorization: &dyn AuthorizationService,
     ctx: &RequestContext,
     admitted: &[(ResourceRef, Obligations)],
-) -> Result<Vec<(ContainerCapabilities, WireObligations)>, Error> {
+) -> Result<Vec<(ContainerCapabilities, CapabilityReasons, WireObligations)>, Error> {
     if admitted.is_empty() {
         return Ok(Vec::new());
     }
@@ -528,13 +537,14 @@ pub(crate) async fn capabilities_for_containers(
     // the decision that admitted it cannot be zipped out of step by an edit here.
     let resources: Vec<ResourceRef> = admitted.iter().map(|(resource, _)| *resource).collect();
 
-    let mut computed: Vec<(ContainerCapabilities, WireObligations)> = admitted
+    let mut computed: Vec<(ContainerCapabilities, CapabilityReasons, WireObligations)> = admitted
         .iter()
         .map(|(_, enforced)| {
             (
                 // `read` is true by construction: nothing reaches this function that the
                 // `container.read` decision above did not admit.
                 ContainerCapabilities { read: true, ..ContainerCapabilities::default() },
+                CapabilityReasons::default(),
                 WireObligations {
                     watermark: enforced.contains(&Obligation::Watermark),
                     ..WireObligations::default()
@@ -552,8 +562,14 @@ pub(crate) async fn capabilities_for_containers(
     // unanswered; both withhold a capability rather than offering one that will be refused, which is
     // the direction an absent verdict has to fail in.
     for ((name, action), decisions) in CONTAINER_ACTIONS.iter().zip(grid) {
-        for ((capabilities, wire), decision) in computed.iter_mut().zip(decisions) {
+        for ((capabilities, reasons, wire), decision) in computed.iter_mut().zip(decisions) {
             if !decision.is_allowed() {
+                // `ENC-674`, and the container half is the one the shipped client actually renders:
+                // the library Upload control reads `capabilities.create`, and until this line the
+                // only explanation available to it was one the client wrote itself.
+                if let StageOutcome::Deny(code) = decision.outcome() {
+                    reasons.withheld(name, *code);
+                }
                 continue;
             }
             // The stage allowed, so this cannot be an `Err`; taking the obligations rather than
@@ -572,8 +588,8 @@ pub(crate) async fn capabilities_for_containers(
         }
     }
 
-    for ((capabilities, _), (_, enforced)) in computed.iter_mut().zip(admitted) {
-        apply_obligations(capabilities, enforced);
+    for ((capabilities, reasons, _), (_, enforced)) in computed.iter_mut().zip(admitted) {
+        apply_obligations(capabilities, reasons, enforced);
     }
     Ok(computed)
 }
@@ -598,18 +614,43 @@ fn set_capability(capabilities: &mut ContainerCapabilities, action: ContainerAct
 ///
 /// Only ever subtracts. An obligation is a restriction a stage attached to an *allow*, and one that
 /// could add a capability would be a stage granting access outside the authorization stage.
-fn apply_obligations(capabilities: &mut ContainerCapabilities, obligations: &Obligations) {
+fn apply_obligations(
+    capabilities: &mut ContainerCapabilities,
+    reasons: &mut CapabilityReasons,
+    obligations: &Obligations,
+) {
+    /// Turns one container capability off and records why, but only if it was on.
+    ///
+    /// `content::withdraw`'s reasoning exactly: a capability already `false` here was refused by the
+    /// ACL and carries that stage's code, and overwriting it would report an obligation taking away
+    /// something the caller never had.
+    fn withdraw(
+        field: &mut bool,
+        reasons: &mut CapabilityReasons,
+        capability: &'static str,
+        code: ReasonCode,
+    ) {
+        if *field {
+            *field = false;
+            reasons.withheld(capability, code);
+        }
+    }
+
     for obligation in obligations {
         match obligation {
             // "Suppress every mutation path in the response" (`crates/core/src/policy.rs`). On a
             // container that is all five of the non-read actions: creating a library in a workspace
             // is as much a write as renaming it.
+            //
+            // `ACCESS_DENIED` on all five, and it is the same weak answer `content.rs` records:
+            // the published vocabulary has no code for *readable but not writable*. `ENC-895`.
             Obligation::ReadOnly => {
-                capabilities.create = false;
-                capabilities.update = false;
-                capabilities.delete = false;
-                capabilities.manage_members = false;
-                capabilities.manage_permissions = false;
+                let code = ReasonCode::AccessDenied;
+                withdraw(&mut capabilities.create, reasons, "create", code);
+                withdraw(&mut capabilities.update, reasons, "update", code);
+                withdraw(&mut capabilities.delete, reasons, "delete", code);
+                withdraw(&mut capabilities.manage_members, reasons, "manageMembers", code);
+                withdraw(&mut capabilities.manage_permissions, reasons, "managePermissions", code);
             }
             // Both are restrictions on *content*, and a container carries none. They are listed
             // rather than swept into a catch-all so that the reasoning is visible: neither can be
@@ -752,8 +793,14 @@ mod tests {
 
     /// The object as it would reach the wire, so comparisons are of rendered JSON rather than of a
     /// struct whose fields a future edit might add to unnoticed.
-    fn rendered(answer: &(ContainerCapabilities, WireObligations)) -> serde_json::Value {
-        serde_json::json!({ "capabilities": answer.0, "obligations": answer.1 })
+    fn rendered(
+        answer: &(ContainerCapabilities, CapabilityReasons, WireObligations),
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "capabilities": answer.0,
+            "capabilityReasons": answer.1,
+            "obligations": answer.2,
+        })
     }
 
     #[tokio::test]
@@ -784,7 +831,15 @@ mod tests {
         assert!(!computed[2].0.create && !computed[2].0.delete && !computed[2].0.manage_members);
         // Every row survived the trim to get here, so every row can be read — and that is the only
         // field the three have in common.
-        assert!(computed.iter().all(|(capabilities, _)| capabilities.read));
+        assert!(computed.iter().all(|(capabilities, _, _)| capabilities.read));
+        // …and no row carries a reason for `read`: it was never withheld, so a reason for it would
+        // be a refusal the server never made (`ENC-674`).
+        assert!(computed.iter().all(|(_, reasons, _)| reasons.get("read").is_none()));
+        // The positive control for the line above. Every row refuses *something* — the fixture is
+        // three rows with three different grants — so an empty reasons object anywhere here would
+        // mean the codes are not being recorded at all rather than correctly withheld.
+        assert!(computed.iter().all(|(_, reasons, _)| reasons.len() > 0));
+        assert_eq!(computed[2].1.get("create"), Some(ReasonCode::AccessDenied));
     }
 
     #[tokio::test]
@@ -854,9 +909,15 @@ mod tests {
             computed[0].0.read,
             "ReadOnly suppresses mutations, never the read that carried it"
         );
-        assert!(computed[0].1.watermark);
+        assert!(computed[0].2.watermark);
         assert!(computed[1].0.create, "a neighbour's obligation took a capability away");
-        assert!(!computed[1].1.watermark);
+        assert!(!computed[1].2.watermark);
+        // The reason travels per row exactly as the obligation does (`ENC-674`). The neighbour
+        // holds `create`, so it carries no reason for it — a reason on a capability the caller has
+        // would render a refusal that never happened.
+        assert_eq!(computed[0].1.get("create"), Some(ReasonCode::AccessDenied));
+        assert_eq!(computed[1].1.get("create"), None);
+        assert!(computed[0].1.get("read").is_none(), "the read that carried the obligation");
     }
 
     #[tokio::test]
