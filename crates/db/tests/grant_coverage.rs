@@ -535,3 +535,59 @@ async fn the_platform_role_is_refused_what_it_was_not_granted() {
 
     println!("{PLATFORM_ROLE} is refused DELETE on refresh_tokens, so the grant above is real.");
 }
+
+/// Custom-domain routing's one privilege, proved by running its statement (`ENC-686`).
+///
+/// `crates/db/tests/domain_routing.rs` asserts that the lookup resolves the right tenant, and it
+/// would pass with no grant at all: `resolve_routed_tenant` takes `platform_connection`, and in the
+/// harness that connects as the cluster superuser, which bypasses grants and row-level security
+/// alike. Those tests prove the *query*. This one proves the **deployment** — that the role a real
+/// process runs as may issue it.
+///
+/// The pairing is the point, and it is the same pairing `ENC-705` needed for `refresh_tokens`. Two
+/// grants have now been missing for months in exactly this shape, each with correct code above it
+/// and a superuser underneath it.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL; CI runs it with --include-ignored"]
+async fn the_platform_role_can_resolve_a_custom_domain() {
+    let (_db, mut conn) = migrated_database().await;
+
+    sqlx::query("SET ROLE enclave_platform")
+        .execute(&mut conn)
+        .await
+        .unwrap_or_else(|e| panic!("could not assume {PLATFORM_ROLE}: {e}"));
+
+    // The shape of the statement `resolve_routed_tenant` issues: the join is the part that needs a
+    // privilege on both sides, and `tenant_domains` is the side that had none.
+    let read = sqlx::query(
+        "SELECT t.id FROM tenant_domains d JOIN tenants t ON t.id = d.tenant_id WHERE false",
+    )
+    .fetch_all(&mut conn)
+    .await;
+
+    // Writing is not routing's business: verification is an administrative action under a tenant
+    // context, and this role holds BYPASSRLS.
+    let written = sqlx::query("DELETE FROM tenant_domains WHERE false").execute(&mut conn).await;
+
+    if let Err(e) = sqlx::query("RESET ROLE").execute(&mut conn).await {
+        println!("warning: could not reset the session role: {e}");
+    }
+
+    assert!(
+        read.is_ok(),
+        "as {PLATFORM_ROLE}, the custom-domain lookup failed: {}. `CLAUDE.md` rule 3 names \
+         custom-domain routing as one of only two sources of tenant identity, and without this \
+         privilege it fails with `permission denied` — which every caller reads as `no such \
+         domain` (ENC-686).",
+        read.err().map_or_else(String::new, |e| e.to_string()),
+    );
+    let write_error = written.err().map(|e| e.to_string()).unwrap_or_default();
+    assert!(
+        write_error.contains("permission denied"),
+        "as {PLATFORM_ROLE}, DELETE on tenant_domains was permitted (or failed for another \
+         reason: {write_error:?}). Routing reads a mapping and writes nothing, and this role sees \
+         every tenant — so a write privilege here is one that can retarget any tenant's traffic."
+    );
+
+    println!("{PLATFORM_ROLE} can resolve a custom domain and cannot rewrite the mapping.");
+}

@@ -75,9 +75,30 @@ use crate::DbError;
 /// deployment that cannot sign anyone in and should say so loudly rather than resolve every host to
 /// nothing — and [`DbError::Query`] for a statement failure.
 pub async fn resolve_routed_tenant(pool: &DbPool, host: &str) -> Result<Option<TenantId>, DbError> {
-    let Some(slug) = routing_slug(host) else { return Ok(None) };
-
+    let Some(name) = routing_host(host) else { return Ok(None) };
     let mut conn = pool.platform_connection().await?;
+
+    // The verified custom domain first, and the order is the security content rather than a
+    // preference (`ENC-686`).
+    //
+    // A custom domain is a whole name that a tenant proved it controls. A slug is one label. Try
+    // the slug first and `docs.acme.example` — Acme's verified domain — resolves to whichever
+    // tenant happens to be slugged `docs`, because the leftmost label matches. That is a
+    // cross-tenant misroute produced by nothing more than an unlucky signup, and no request could
+    // reveal it: the caller reaches a real tenant, sees its sign-in page, and their credentials
+    // simply do not work.
+    //
+    // Specific before general is the general rule; here it is also the only safe one.
+    let row = sqlx::query(SELECT_TENANT_BY_DOMAIN)
+        .bind(&name)
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(DbError::Query)?;
+    if let Some(row) = row {
+        return Ok(Some(TenantId::from_uuid(row.get::<Uuid, _>("id"))));
+    }
+
+    let Some(slug) = routing_slug(host) else { return Ok(None) };
     let row = sqlx::query(SELECT_TENANT_BY_SLUG)
         .bind(&slug)
         .fetch_optional(&mut *conn)
@@ -85,6 +106,26 @@ pub async fn resolve_routed_tenant(pool: &DbPool, host: &str) -> Result<Option<T
         .map_err(DbError::Query)?;
 
     Ok(row.map(|row| TenantId::from_uuid(row.get::<Uuid, _>("id"))))
+}
+
+/// The whole host a request arrived on, normalised for comparison against `tenant_domains.domain`.
+///
+/// The same cleanup [`routing_slug`] performs — port, root label, case, surrounding whitespace —
+/// applied to the entire name rather than to its first label, and separated for the same reason:
+/// the parsing is where the mistakes are, and it is testable without a database.
+///
+/// Returns `None` for anything that cannot be a custom domain: a bracketed IPv6 authority, and a
+/// single-label name like `localhost`, which is a host rather than a tenant.
+fn routing_host(host: &str) -> Option<String> {
+    let host = host.trim();
+    if host.starts_with('[') {
+        return None;
+    }
+    let host = host.split(':').next().unwrap_or(host).trim_end_matches('.');
+    if host.is_empty() || !host.contains('.') {
+        return None;
+    }
+    Some(host.to_ascii_lowercase())
 }
 
 /// The slug a routed host names, or `None` when it names none.
@@ -124,6 +165,18 @@ fn routing_slug(host: &str) -> Option<String> {
 /// security surface of this function.
 const SELECT_TENANT_BY_SLUG: &str = "SELECT id FROM tenants \
      WHERE slug = $1 AND deleted_at IS NULL AND status IN ('ACTIVE', 'READ_ONLY')";
+
+/// One live tenant by a **verified** custom domain.
+///
+/// `verified_at IS NOT NULL` is the whole control on this side: a row in `tenant_domains` is a
+/// *claim* on a name until verification completes, and routing an unverified claim would let anyone
+/// who can add a domain take traffic for it. The same lifecycle filter as the slug lookup applies —
+/// a suspended or deleting tenant resolves to nothing whichever way its host was written, so the
+/// two paths cannot disagree about whether a tenant is live.
+const SELECT_TENANT_BY_DOMAIN: &str = "SELECT t.id FROM tenant_domains d \
+     JOIN tenants t ON t.id = d.tenant_id \
+     WHERE d.domain = $1 AND d.verified_at IS NOT NULL \
+       AND t.deleted_at IS NULL AND t.status IN ('ACTIVE', 'READ_ONLY')";
 
 #[cfg(test)]
 mod tests {
