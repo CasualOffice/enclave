@@ -36,7 +36,7 @@ import type { MessageKey } from '../i18n/catalog.ts';
  * Nowhere — that is the point, and `ENC-676` settled that this table overrules
  * the design reference rather than the other way round. Where §6 is *silent* or
  * *contradicts itself*, the gap is recorded here at the binding and in
- * `ENC-896`/`ENC-897`, and no binding was invented to paper over it.
+ * `ENC-901`/`ENC-902`, and no binding was invented to paper over it.
  */
 
 export type BindingId =
@@ -147,7 +147,7 @@ export const BINDINGS: readonly Binding[] = [
   /* `L R`. **`docs/09 §6` contradicts itself here** and the contradiction is
    * recorded rather than resolved: the row above binds `R` to Rename, and this
    * row binds `R` again as half of the label chord. One of the two cannot fire.
-   * `ENC-896` carries it to whoever owns `docs/09`; nothing here guesses which
+   * `ENC-901` carries it to whoever owns `docs/09`; nothing here guesses which
    * reading was meant, because guessing and shipping it *is* the thing that
    * makes a specification stop being one. It is `later` regardless — no route
    * applies a classification label — so the collision has no runtime effect

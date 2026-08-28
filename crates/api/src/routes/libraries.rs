@@ -53,7 +53,7 @@ use enclave_libraries::{
 use serde::Serialize;
 
 use crate::auth::Authenticated;
-use crate::error::ApiError;
+use crate::error::{ApiError, CapabilityReasons};
 use crate::routes::workspaces::{
     admit, capabilities_for_container, capabilities_for_containers, conceal, consume, page_size,
     ContainerCapabilities, ListParams, Page, PageInfo, WireObligations,
@@ -86,6 +86,8 @@ pub struct LibraryView {
     /// What this caller may attempt on the library itself, from the stage that will decide it.
     /// Actions on the *content* are on each item (`GET /libraries/{id}/items`).
     capabilities: ContainerCapabilities,
+    /// Why each `false` above is `false` (`ENC-674`). See [`CapabilityReasons`].
+    capability_reasons: CapabilityReasons,
     obligations: WireObligations,
     created_at: chrono::DateTime<chrono::Utc>,
     updated_at: chrono::DateTime<chrono::Utc>,
@@ -137,6 +139,7 @@ impl LibraryView {
     fn new(
         library: &Library,
         capabilities: ContainerCapabilities,
+        capability_reasons: CapabilityReasons,
         obligations: WireObligations,
     ) -> Self {
         let settings = &library.settings;
@@ -146,6 +149,7 @@ impl LibraryView {
             name: settings.name.clone(),
             slug: settings.slug.clone(),
             revision: library.revision,
+            capability_reasons,
             settings: LibrarySettingsView {
                 versioning_mode: versioning_str(settings.versioning_mode),
                 version_limit: settings.version_limit,
@@ -306,7 +310,7 @@ pub async fn read(
     // existed and was refused by no grant. Same answer either way.
     let record = record.ok_or_else(|| ApiError::new(Error::NotFound, request_id))?;
 
-    let (capabilities, wire) = capabilities_for_container(
+    let (capabilities, reasons, wire) = capabilities_for_container(
         state.policy.authorization().as_ref(),
         &ctx,
         &resource,
@@ -315,7 +319,7 @@ pub async fn read(
     .await
     .map_err(|error| ApiError::new(error, request_id))?;
 
-    Ok(Json(LibraryView::new(&record, capabilities, wire)))
+    Ok(Json(LibraryView::new(&record, capabilities, reasons, wire)))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -353,8 +357,8 @@ async fn readable_libraries(
     Ok(admitted
         .into_iter()
         .zip(computed)
-        .map(|((library, _, _), (capabilities, wire))| {
-            LibraryView::new(library, capabilities, wire)
+        .map(|((library, _, _), (capabilities, reasons, wire))| {
+            LibraryView::new(library, capabilities, reasons, wire)
         })
         .collect())
 }
@@ -409,8 +413,12 @@ mod tests {
     #[test]
     fn the_internal_references_never_reach_the_wire() {
         let record = library(ExternalSharing::Disabled, VersioningMode::Major);
-        let view =
-            LibraryView::new(&record, ContainerCapabilities::default(), WireObligations::default());
+        let view = LibraryView::new(
+            &record,
+            ContainerCapabilities::default(),
+            CapabilityReasons::default(),
+            WireObligations::default(),
+        );
         let rendered = serde_json::to_string(&view).expect("render");
 
         for absent in
@@ -451,6 +459,7 @@ mod tests {
         let rendered = serde_json::to_value(LibraryView::new(
             &record,
             ContainerCapabilities::default(),
+            CapabilityReasons::default(),
             WireObligations::default(),
         ))
         .expect("render");

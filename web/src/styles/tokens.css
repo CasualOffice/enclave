@@ -86,7 +86,7 @@
  * It checks text and it checks some graphical objects; an `outline` colour on a
  * `:focus-visible` pseudo-class is neither, so 94 green axe pages said nothing
  * about it — the "green gate proving nothing" shape, one layer below where the
- * repository last found it. `ENC-895`.
+ * repository last found it. `ENC-900`.
  *
  * `--accent-ring` keeps its job. `layout.css` and `search.css` use it as the
  * outer glow *behind* this ring, which is what a 35% wash is good at, and both

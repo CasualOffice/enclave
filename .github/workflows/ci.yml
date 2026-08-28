@@ -640,15 +640,33 @@ jobs:
         if: always()
         run: df -h / | tail -1
 
-      - name: Report tests that were still skipped
+      - name: Report which tests this job did not execute
+        # `cargo test -- --ignored --list` lists every test *carrying* `#[ignore]`. It does not and
+        # cannot know what the preceding step ran, so under the `--include-ignored` above that list
+        # is a roster of tests which **did** execute. Printing it under the heading "Tests that did
+        # not run in this job" therefore asserted the exact opposite of what happened.
+        #
+        # It was believed. `ENC-893` was filed as a P1 off this output: it names
+        # `s5_an_over_permissive_index_decides_nothing` — a `docs/12-TESTING.md §4` leakage-matrix
+        # row — under that heading, and the row concluded that the live-index half of `S5` had never
+        # run in CI and was proven only on a developer's laptop. It had run, against the Milvus this
+        # job has started since `ENC-503`, in every run of this workflow. A step whose stated
+        # purpose is catching tests that silently do not run, and which mislabels seven that do, is
+        # the `ENC-543` shape pointing the other way: there the gate reported `pass` without
+        # inspecting anything, here the report cries skipped over a suite that is green.
+        #
+        # So the heading now says what the list is. The set this job genuinely does not execute is
+        # the `--skip` argument above, and it is named rather than derived so that a second `--skip`
+        # appearing later is a visible edit to this line rather than a silent absorption.
         if: always()
         run: |
           set -euo pipefail
-          # With --include-ignored above, anything still reported here genuinely did not run.
-          # It should be empty. If it is not, something is skipping and the reason needs to be
-          # a deliberate, written one — never "it was flaky".
-          echo "Tests that did not run in this job:"
+          echo "Carrying #[ignore] — and EXECUTED by this job, because the run above passes"
+          echo "--include-ignored. This is a roster of what ran, not of what was skipped:"
           cargo test --workspace --locked -- --ignored --list 2>/dev/null || true
+          echo
+          echo "NOT executed by this job: a_lost_role_creation_race, and nothing else."
+          echo "It drops cluster-global roles, so it runs alone in the role-race job below."
 
   build:
     name: build — release binaries

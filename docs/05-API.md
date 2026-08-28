@@ -1,6 +1,6 @@
 # 05 — API Surface
 
-> **Status:** Draft · **Version:** 1.7 · **Owner:** Platform Engineering · **Last updated:** 2026-08-28
+> **Status:** Draft · **Version:** 1.8 · **Owner:** Platform Engineering · **Last updated:** 2026-08-29
 > **Authoritative for:** REST contracts, error model, pagination, idempotency, versioning, rate limits.
 
 ## 1. Principles
@@ -207,6 +207,11 @@ will reject:
     "preview": true, "download": false, "print": false, "export": false,
     "edit": true, "share": true, "shareExternal": false, "delete": false, "sync": false
   },
+  "capabilityReasons": {
+    "download": "PREVIEW_ONLY", "print": "PREVIEW_ONLY", "export": "PREVIEW_ONLY",
+    "shareExternal": "EXTERNAL_SHARE_BLOCKED", "delete": "ACCESS_DENIED",
+    "sync": "SYNC_NOT_PERMITTED"
+  },
   "obligations": { "watermark": true, "justificationRequired": ["download"] },
   "governance": { "onLegalHold": true, "isRecord": false, "retentionPolicy": "Board Records 7y" }
 }
@@ -214,6 +219,40 @@ will reject:
 
 `capabilities` is computed by the same policy engine that will enforce the action — it is a UI hint
 derived from the real decision, not a parallel implementation.
+
+**`capabilityReasons` says why each `false` is `false`** (`ENC-674`). Without it a client that wants
+to explain a disabled control has only one option — compose a sentence of its own — and that is the
+client re-deriving a policy decision, which `CLAUDE.md`'s React conventions forbid and which produces
+a wrong explanation as soon as two rules can withhold the same action. `docs/06 §24` requires a
+denial to carry a stable code, a user-safe explanation and a remediation; this is that requirement
+applied to the capability hint rather than only to the `403` a caller gets after clicking.
+
+The rules, each held by a test:
+
+- **A key here is a capability name, and it appears only when that capability is `false`.** The keys
+  are the same strings `capabilities` uses (`shareExternal`, not `SHARE_EXTERNAL`), so a client
+  indexes both objects with one key. A reason for an *available* capability would describe a refusal
+  that did not happen, and none is ever emitted.
+- **The value is a `§5` reason code and nothing else.** Never the rule, policy id, condition,
+  threshold or matched value that produced it (`CLAUDE.md` rule 10, `docs/06 §24`). Those reach
+  audit, inside the policy engine. The field is a closed enumeration, so there is nowhere for prose
+  to be added by mistake.
+- **No sentence is on the wire.** `docs/14 §5` makes the client authoritative for wording: it
+  renders its own localized string keyed by the code. An English sentence here would be a second
+  source of truth for text the client owns.
+- **The object is always present, even when empty.** An absent object and an empty one would have to
+  mean the same thing to a client and they do not — absent also reads as *this build does not report
+  reasons*, and a client that cannot tell those apart falls back to inventing an explanation, which
+  is the defect being closed.
+- **`metadataRead` and `read` never appear.** Both are true by construction on any object a caller
+  can see, so a reason for either could only be fiction.
+- **The reason is the one that actually withheld the capability.** Where the ACL refused, the code is
+  the authorization stage's. Where the ACL granted and an obligation then suppressed it, the code is
+  the obligation's — `NoDownload` reports `PREVIEW_ONLY` on `download`, `print` and `export`, and
+  `SYNC_NOT_PERMITTED` on `sync`, because "available on the web only" is what a user needs to hear
+  about a replica that will not appear.
+
+The same object, under the same name and the same rules, is on the container capabilities of `§7.1`.
 
 **`currentVersion` says whether the content can actually be served, and why.** `status` alone cannot:
 `CLAUDE.md` rule 9 is *two* conditions, and a version is served only when `status` is `AVAILABLE`
@@ -279,6 +318,10 @@ live under `/admin/**` (`§14`); nothing here mutates.
         "read": true, "create": true, "update": false,
         "delete": false, "manageMembers": false, "managePermissions": false
       },
+      "capabilityReasons": {
+        "update": "ACCESS_DENIED", "delete": "ACCESS_DENIED",
+        "manageMembers": "ACCESS_DENIED", "managePermissions": "ACCESS_DENIED"
+      },
       "obligations": { "watermark": false, "justificationRequired": [], "approvalRequired": [] },
       "createdAt": "2026-01-04T09:12:00Z",
       "updatedAt": "2026-08-19T14:02:11Z"
@@ -311,6 +354,8 @@ A library row adds `workspaceId` and a `settings` object:
   },
   "capabilities": { "read": true, "create": true, "update": false, "delete": false,
                     "manageMembers": false, "managePermissions": false },
+  "capabilityReasons": { "update": "ACCESS_DENIED", "delete": "ACCESS_DENIED",
+                         "manageMembers": "ACCESS_DENIED", "managePermissions": "ACCESS_DENIED" },
   "obligations": { "watermark": false, "justificationRequired": [], "approvalRequired": [] },
   "createdAt": "2026-01-04T09:14:00Z",
   "updatedAt": "2026-06-02T11:40:00Z"

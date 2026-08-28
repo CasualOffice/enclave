@@ -16,7 +16,7 @@ import { describe, expect, it } from 'vitest';
  * What the tree drew was `2px solid var(--accent-ring)`, and `--accent-ring` is
  * a 30–40% alpha wash. Composited, it measures between 1.68:1 and 2.42:1 across
  * the six theme × brand combinations — the best of them four fifths of the
- * floor. That is `ENC-895`.
+ * floor. That is `ENC-900`.
  *
  * This test reads `tokens.css` for the values rather than restating them, so a
  * brand added to the palette without a legible focus ring fails here instead of

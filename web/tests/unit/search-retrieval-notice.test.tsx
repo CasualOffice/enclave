@@ -115,12 +115,81 @@ describe('the degraded-search header', () => {
   });
 });
 
+describe('a healthy semantic search is not described as having no semantic search', () => {
+  /* `ENC-675`, and the regression `ENC-698` introduced under it.
+   *
+   * The API process now holds a vector index, so `diagnostics.mode` can be
+   * `semantic` — mapped to `dense` by `api.ts` — with `degraded: false`. That
+   * is the *healthy* dense path. `noticeFor` used to return `lexical` for it,
+   * so the notice read "Finding a document by what it means arrives in a later
+   * release" underneath results that had just been found by what they mean,
+   * with a `Later` chip on a shipped feature.
+   *
+   * This is the same class of defect the notice exists to prevent, inverted:
+   * the component that keeps search from overstating what it did was itself
+   * understating it. */
+
+  it('does not claim semantic retrieval is unbuilt when semantic retrieval answered', () => {
+    renderNotice({ mode: 'dense', degraded: false });
+
+    // The assertion this block exists for.
+    expect(screen.queryByText(catalog['search.retrieval.lexical'].message)).toBeNull();
+    // Positive control: a notice *is* on screen, so the absence above is an
+    // absence within a rendered notice rather than within nothing.
+    expect(screen.getByRole('status')).toBeTruthy();
+    expect(screen.getByText(catalog['search.retrieval.dense'].message)).toBeTruthy();
+  });
+
+  it('names the loss that actually applies, and not the opposite one', () => {
+    /* The two variants lose opposite things — meaning, or the literal string —
+     * and a user who is told the wrong one goes and rewrites their query in the
+     * wrong direction. Asserting only that they *differ* would pass against two
+     * sentences that were both wrong, so each is checked against its own. */
+    const { unmount } = renderNotice({ mode: 'dense', degraded: false });
+    expect(screen.getByText(catalog['search.retrieval.headDense'].message)).toBeTruthy();
+    expect(screen.queryByText(catalog['search.retrieval.head'].message)).toBeNull();
+    // The reassurance is the dense one too: the lexical one promises matching
+    // "by the words inside it", which is exactly what this mode does not do.
+    expect(screen.getByText(catalog['search.retrieval.stillSearchedDense'].message)).toBeTruthy();
+    expect(screen.queryByText(catalog['search.retrieval.stillSearched'].message)).toBeNull();
+    unmount();
+
+    renderNotice({ mode: 'lexical', degraded: false });
+    expect(screen.getByText(catalog['search.retrieval.head'].message)).toBeTruthy();
+    expect(screen.queryByText(catalog['search.retrieval.headDense'].message)).toBeNull();
+    expect(screen.getByText(catalog['search.retrieval.stillSearched'].message)).toBeTruthy();
+    expect(screen.queryByText(catalog['search.retrieval.stillSearchedDense'].message)).toBeNull();
+  });
+
+  it('still carries the Later chip, because hybrid fusion is unbuilt rather than broken', () => {
+    /* `docs/07 §5`'s sparse side is populated and never queried (`ENC-891`), so
+     * this is a roadmap fact and wears the D33 marker — unlike the degraded
+     * variant, which is an incident. */
+    renderNotice({ mode: 'dense', degraded: false });
+    expect(screen.getByText(LATER)).toBeTruthy();
+  });
+
+  it('is an incident, not a mode, when a dense search degraded', () => {
+    renderNotice({ mode: 'dense', degraded: true });
+    expect(screen.getByText(catalog['search.retrieval.degraded'].message)).toBeTruthy();
+    expect(screen.queryByText(catalog['search.retrieval.dense'].message)).toBeNull();
+    expect(screen.queryByText(LATER)).toBeNull();
+  });
+});
+
 describe('noticeFor', () => {
   it('treats a degraded fallback as an incident even though the mode is lexical', () => {
     expect(noticeFor({ mode: 'lexical', degraded: true })).toBe('degraded');
     expect(noticeFor({ mode: 'lexical', degraded: false })).toBe('lexical');
-    expect(noticeFor({ mode: 'dense', degraded: false })).toBe('lexical');
     expect(noticeFor({ mode: 'hybrid', degraded: false })).toBeNull();
+  });
+
+  it('distinguishes a healthy dense search from a lexical one', () => {
+    /* This assertion previously read `.toBe('lexical')` and was wrong the day
+     * `ENC-698` landed — a test pinning the defect in place. `dense` is what the
+     * server reports as `semantic`, and it is a mode rather than a shortfall. */
+    expect(noticeFor({ mode: 'dense', degraded: false })).toBe('dense');
+    expect(noticeFor({ mode: 'dense', degraded: true })).toBe('degraded');
   });
 
   it('still speaks when a hybrid search degraded', () => {
