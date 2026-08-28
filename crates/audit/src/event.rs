@@ -491,6 +491,10 @@ pub fn actor_from_parts(actor_type: &str, actor_id: Option<Uuid>) -> Result<Acto
         ActorKind::Guest => Actor::Guest(actor_id.ok_or_else(missing)?.into()),
         ActorKind::ServiceAccount => Actor::ServiceAccount(actor_id.ok_or_else(missing)?.into()),
         ActorKind::McpClient => Actor::McpClient(actor_id.ok_or_else(missing)?.into()),
+        // `ENC-879`. A share-link row needs its id as much as a user row does, and for the same
+        // reason: `actor_id` is `share_links.id`, so *which link* was redeemed is the question an
+        // investigation asks first, and a row that lost it names an event nobody can attribute.
+        ActorKind::ShareLink => Actor::LinkBearer(actor_id.ok_or_else(missing)?.into()),
         ActorKind::System => Actor::System,
     };
     Ok(actor)

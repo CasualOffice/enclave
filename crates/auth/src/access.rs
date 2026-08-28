@@ -24,7 +24,7 @@
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 use chrono::{DateTime, Duration, Utc};
-use enclave_core::{ClientType, ScopeSet};
+use enclave_core::{ActorKind, ClientType, ScopeSet};
 use jsonwebtoken::{Algorithm, Header, Validation};
 use serde::Deserialize;
 use uuid::Uuid;
@@ -118,7 +118,8 @@ impl AccessTokenIssuer {
     ///
     /// # Errors
     ///
-    /// [`AuthError::Encoding`] if serialisation or signing fails.
+    /// [`AuthError::Encoding`] if serialisation or signing fails, and
+    /// [`AuthError::ActorKindNotATokenSubject`] for a `typ` this deployment never mints.
     pub fn issue(
         &self,
         key: &PrivateSigningKey,
@@ -126,6 +127,13 @@ impl AccessTokenIssuer {
         now: DateTime<Utc>,
         ttl: Duration,
     ) -> Result<IssuedAccessToken, AuthError> {
+        // `ENC-879`. Refused at the mint as well as at the door: a token that never exists cannot
+        // leak, and a caller that meant to write `ActorKind::Guest` finds out here rather than
+        // discovering at redemption time that its token is rejected.
+        if !is_token_subject(template.typ) {
+            return Err(AuthError::ActorKindNotATokenSubject { kind: template.typ });
+        }
+
         let claims = AccessTokenClaims {
             iss: self.issuer.clone(),
             aud: self.audience.clone(),
@@ -309,7 +317,32 @@ impl AccessTokenVerifier {
             return Err(AuthError::DeviceBindingRequired);
         }
 
+        // `ENC-879`. The `typ` claim selects which `Actor` variant the request runs as, so a kind
+        // that is not a token subject must be refused *here*, before `VerifiedAccessToken` exists:
+        // everything downstream reads the actor and none of it re-asks where the actor came from.
+        if !is_token_subject(claims.typ) {
+            return Err(AuthError::ActorKindNotATokenSubject { kind: claims.typ });
+        }
+
         Ok(())
+    }
+}
+
+/// Whether an access token may assert this actor kind (`ENC-879`).
+///
+/// Exhaustive rather than `!matches!(kind, ShareLink)`, so a new [`ActorKind`] cannot inherit the
+/// permissive answer: whoever adds one has to say here whether a signed JWT is allowed to claim it,
+/// which is the same argument [`crate::routes`]-side matches on `Actor` make elsewhere.
+///
+/// [`ActorKind::ShareLink`] is the only `false`. See [`AuthError::ActorKindNotATokenSubject`].
+const fn is_token_subject(kind: ActorKind) -> bool {
+    match kind {
+        ActorKind::User
+        | ActorKind::Guest
+        | ActorKind::ServiceAccount
+        | ActorKind::McpClient
+        | ActorKind::System => true,
+        ActorKind::ShareLink => false,
     }
 }
 
@@ -590,6 +623,48 @@ mod tests {
             f.verifier.verify(&issued.token, f.now),
             Err(AuthError::UnknownSigningKey)
         ));
+    }
+
+    /// `ENC-879`. A correctly signed token claiming `typ: "share_link"` is rejected at
+    /// verification, not merely never minted.
+    ///
+    /// [`AccessTokenIssuer::issue`] refuses the kind, so the only way to produce this token is the
+    /// way this test does: assemble the claims and sign them with the deployment's own key. That is
+    /// exactly the threat the check exists for — a *future* issuance path, or anything with access
+    /// to the signing key, must not be able to turn a JWT into a share-link bearer. If it could,
+    /// becoming one would be a matter of asking for a token instead of redeeming a link, skipping
+    /// the password, OTP, MFA and audience the link states (`ENC-694`).
+    #[test]
+    fn a_signed_token_claiming_to_be_a_share_link_is_refused_at_the_door() {
+        let f = fixture();
+
+        // The control, first: the identical claims with `typ: user` verify. Without it this test
+        // passes against a verifier that has stopped accepting anything.
+        let mut claims = f
+            .issuer
+            .issue(&f.key, template(ClientType::Web, None), f.now, Duration::minutes(10))
+            .expect("issue")
+            .claims;
+        assert!(f.verifier.verify(&sign(&f.key, &claims), f.now).is_ok());
+
+        claims.typ = ActorKind::ShareLink;
+        let refused = f.verifier.verify(&sign(&f.key, &claims), f.now);
+        assert!(
+            matches!(
+                refused,
+                Err(AuthError::ActorKindNotATokenSubject { kind: ActorKind::ShareLink })
+            ),
+            "a signed share-link token verified: {refused:?}"
+        );
+    }
+
+    /// Signs arbitrary claims with the deployment's real key, bypassing [`AccessTokenIssuer`].
+    ///
+    /// Only a test does this, and only to reach a code path issuance refuses to produce.
+    fn sign(key: &PrivateSigningKey, claims: &AccessTokenClaims) -> String {
+        let mut header = Header::new(TOKEN_ALGORITHM);
+        header.kid = Some(key.kid().to_string());
+        jsonwebtoken::encode(&header, claims, &key.encoding_key()).expect("sign")
     }
 
     #[test]
