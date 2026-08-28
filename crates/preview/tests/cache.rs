@@ -365,10 +365,7 @@ async fn no_version_the_antivirus_policy_did_not_publish_can_be_rendered() {
     let published_unscanned =
         insert_version(&mut tx, alpha, &spine, "AVAILABLE", "SKIPPED", now).await;
     assert!(
-        repo::readable_version(&mut tx, alpha, published_unscanned)
-            .await
-            .expect("query")
-            .is_some(),
+        repo::readable_version(&mut tx, alpha, published_unscanned).await.expect("query").is_some(),
         "ALLOW_WITH_FLAG published this version and the rendering path refuses it, so the setting \
          buys no availability at all — ENC-828"
     );
