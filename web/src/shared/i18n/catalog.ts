@@ -215,11 +215,6 @@ export const catalog = {
     description:
       'View-bar button for adding files. Renders under the unbuilt treatment because the API binds an unconfigured delivery pipeline and the upload route answers 503 in every build.',
   },
-  'library.upload.unbuilt': {
-    message: 'Uploading arrives once object storage is wired into the API',
-    description:
-      'Release note for the unbuilt Upload button, reached through aria-describedby. Future tense, about the product. This is NOT a permission refusal and must never read as one.',
-  },
   'library.group.folders': {
     message: 'Folders',
     description: 'Group header above the folders in a library listing.',
@@ -227,17 +222,6 @@ export const catalog = {
   'library.group.files': {
     message: 'Files',
     description: 'Group header above the files in a library listing.',
-  },
-  'library.noPicker.title': {
-    message: 'No library chosen',
-    description:
-      'Shown when the URL carries no library id. Title of the unbuilt state, not an empty state and not a refusal.',
-  },
-  'library.noPicker.body': {
-    message:
-      'Choosing a library needs a list of them, and the API has no endpoint that returns one yet. Open a library by its address to browse it in the meantime.',
-    description:
-      'Explains that the library picker is missing because GET /api/v1/libraries is not registered. States the product gap in future tense and never implies the user lacks permission.',
   },
   'library.status.AVAILABLE': {
     message: 'Available',
@@ -331,11 +315,6 @@ export const catalog = {
     message: 'Preview',
     description:
       'Peek panel tab showing a rendered copy of the document. Unbuilt: the API binds an unconfigured delivery pipeline, so no rendition can exist.',
-  },
-  'library.peek.tab.preview.unbuilt': {
-    message: 'Previews arrive once object storage is wired into the API',
-    description:
-      'Release note behind the unbuilt Preview tab. Names the actual blocker rather than shrugging. Future tense, about the product — never a permission refusal.',
   },
   'library.peek.tab.details': {
     message: 'Details',
@@ -615,15 +594,6 @@ export const catalog = {
     message: 'Try again',
     description: 'Retry action on the fetch-error state. Present only when the error is retryable.',
   },
-  'files.state.error.requestId': {
-    message: 'Request ID',
-    description:
-      'Label for the copyable correlation ID on the error state (docs/09 §11). The value is not translated.',
-  },
-  'files.state.error.copy': {
-    message: 'Copy request ID',
-    description: 'Accessible name of the button that copies the request ID to the clipboard.',
-  },
 
   'home.greeting.morning': {
     message: 'Good morning, {name}',
@@ -758,11 +728,6 @@ export const catalog = {
     description:
       'Retry action on Home’s fetch-error state. Present only when the failure is retryable, and never on a policy denial — retrying a denial teaches a user the product is broken rather than that they lack permission (docs/17 §7).',
   },
-  'home.state.error.requestId': {
-    message: 'Request ID',
-    description:
-      'Label for the copyable correlation ID on Home’s error state (docs/09 §11). The value itself is not translated.',
-  },
 
   /* ------------------------------------------------------------------- ask
    *
@@ -868,11 +833,6 @@ export const catalog = {
     description:
       'Retry action on the Ask error state. Present only for a failed request — a policy denial never offers retry (docs/09 §11).',
   },
-  'ask.state.error.requestId': {
-    message: 'Request ID',
-    description:
-      'Label for the copyable correlation ID on the Ask error state (docs/09 §11). The value itself is not translated.',
-  },
   'auth.title': {
     message: 'Sign in to {brand}',
     description:
@@ -957,16 +917,6 @@ export const catalog = {
     message: 'Try again',
     description:
       'Retry action on the sign-in error state. Present only for a failed request — a refused sign-in and a policy denial never offer retry (docs/09 §11, docs/17 §7).',
-  },
-  'auth.error.requestId': {
-    message: 'Request ID',
-    description:
-      'Label for the copyable correlation ID on the sign-in error state (docs/09 §11). The value itself is not translated.',
-  },
-  'auth.error.copy': {
-    message: 'Copy request ID',
-    description:
-      'Action that copies the sign-in request ID to the clipboard. An accelerator only — the ID is selectable text as well.',
   },
   'auth.legal.support': {
     message: 'Support',
@@ -1235,11 +1185,6 @@ export const catalog = {
     message: 'Try again',
     description:
       'Retry action on the fetch-error state. Present only when the failure is retryable, and never on a policy denial or on the degraded-search header.',
-  },
-  'search.state.error.requestId': {
-    message: 'Request ID',
-    description:
-      'Label for the copyable correlation ID on the search error state (docs/09 §11). The value itself is not translated.',
   },
 
   /* ------------------------------------------------------------------ admin
@@ -1893,26 +1838,6 @@ export const catalog = {
     message: 'Try again',
     description:
       'Retry action on the fetch-error state. Present only when the failure is retryable, and never on a refusal.',
-  },
-  'admin.state.error.requestId': {
-    message: 'Request ID',
-    description:
-      'Label for the copyable correlation ID on the admin error state. The value is not translated.',
-  },
-  'admin.state.denied.title': {
-    message: 'You cannot open this surface',
-    description:
-      'Heading when the policy chain refused the request. Present tense and about this person, because a refusal is about them — unlike the neutral "Later" marker, which is about the product.',
-  },
-  'admin.state.denied.noReason': {
-    message:
-      'The server refused this request and sent no explanation with it. Your security administrator can say why.',
-    description:
-      'Shown when a refusal arrives without the user-safe sentence the error envelope normally carries. It reports the absence rather than guessing at a reason, because a client-invented reason is a second authority.',
-  },
-  'admin.state.denied.codeLabel': {
-    message: 'Reason code',
-    description: 'Label before the stable refusal code on the denied state.',
   },
   'admin.state.fixture': {
     message: 'Review fixture',

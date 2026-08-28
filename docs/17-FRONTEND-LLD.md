@@ -1,6 +1,6 @@
 # 17 — Frontend low-level design
 
-> **Status:** Draft · **Version:** 1.0 · **Owner:** Frontend · **Last updated:** 2026-08-25
+> **Status:** Draft · **Version:** 1.1 · **Owner:** Frontend · **Last updated:** 2026-08-28
 
 **Authoritative for:** frontend module boundaries, state ownership, the interface layer, component
 contracts, routing, and the client-side error taxonomy.
@@ -43,8 +43,18 @@ shared/       api client, i18n, hooks, primitives, tokens
 ```
 
 **Features do not import each other.** When two features need the same thing, it moves down to
-`entities/` or `shared/`. This is enforced by an ESLint boundary rule, not by convention — the rule
-is the gate, and `ENC-543` is why a rule nobody enforces is worse than no rule.
+`entities/` or `shared/`. This is enforced by a real gate and not by convention — the rule is the
+gate, and `ENC-543` is why a rule nobody enforces is worse than no rule.
+
+The gate is `web/tools/lint-web.mjs`, rule `arch/layer-boundary`, run by `npm run lint:i18n` in CI.
+Earlier revisions of this sentence said "an ESLint boundary rule"; there is no ESLint in this tree
+and there was no rule either, so the sentence described an enforcement that did not exist. Corrected
+rather than quietly deleted, because it is the second time a claim in this document has outrun the
+code, and both times the claim is what a later reader trusted.
+
+Two limits of the gate are worth knowing before you route around them by accident: it resolves only
+relative specifiers, so introducing a path alias silently disables it, and it matches `from '…'` on
+the same line as the `import`, so a multi-line import is invisible to it.
 
 **`app/` is thin.** Routing, providers, error boundaries and the shell frame. No business logic
 lives there, because everything in `app/` runs on every route and is therefore the most expensive
@@ -256,7 +266,121 @@ classification is belongs in `entities/classification`, not in `shared/ui`.
 
 ---
 
-## 12. Open questions
+## 12. The component library
+
+**Authoritative for:** when a surface must become a component, what a component must expose, how a
+variant is expressed, and where the boundary between the three layers runs.
+
+**Not authoritative for:** what anything looks like (`09-UX-WHITE-LABELING.md`), or what a token's
+value is (`web/design-system/`). The inventory of what currently exists is
+[`web/src/shared/ui/README.md`](../web/src/shared/ui/README.md), which is a map rather than a
+contract and is expected to change every time a component lands.
+
+### 12.1 The rule
+
+**A surface that appears twice is a component. A number that appears twice is a token.**
+
+Not a preference. The measurement that produced this section: `web/src/features` held 4,548 lines of
+CSS against `web/src/shared`'s 571 — an 8:1 ratio, which is the inverse of a design system — and
+`shared/ui` was five files. Behind those numbers were four byte-identical copies of one 44px figure,
+six copies of one paragraph rule, seven copies of a request-ID row, three copies of the button, four
+copies of the classification badge and eight per-file answers to `prefers-reduced-motion`.
+
+Duplication of this kind is not a tidiness problem, and the evidence is in the copies themselves:
+
+- Three of the seven request-ID rows isolated the identifier's text direction and four did not, so
+  the same string rendered correctly on three screens and reversed on four.
+- One of the three "not built yet" row treatments added an opacity change the other two deliberately
+  refused — the exact drift `§6` exists to prevent, in the treatment whose whole job is to stay
+  distinguishable from a policy denial.
+- The library list's avatars hardcoded light-theme hex and did not flip in dark mode, while the two
+  other copies used the token pairs and did.
+
+Each is a defect that was fixed once and left broken two, three or four times over. **A surface
+duplicated five times is a surface fixed once and broken four times**, and that is the cost being
+avoided, not the line count.
+
+### 12.2 Reach for a primitive rather than write CSS
+
+Write CSS in a feature only when all four are true:
+
+1. Nothing in `shared/ui`, `entities/` or the token layer already does it.
+2. It is genuinely one screen's. A second caller means it moves down — that is `§2`, and
+   `tools/lint-web.mjs` enforces the boundary rather than trusting the convention.
+3. Every dimension in it is a token. A literal `px` is a value that escaped the scale.
+4. Any animation in it reads `var(--dur-*)` and `var(--ease-*)`.
+
+A feature stylesheet that grows past a few dozen lines is usually reporting a missing primitive.
+
+### 12.3 What a component must expose
+
+| | Requirement | Why |
+|---|---|---|
+| **Text** | A `MessageKey`, never a `string` | `CLAUDE.md` rule 12 made unrepresentable rather than forbidden: `<Button label="Save" />` does not compile |
+| **Geometry** | From tokens. No literal `px` in a primitive | `docs/09 §13`'s density brief is only enforceable if the numbers are in one place |
+| **Direction** | Logical properties. `--icon-flip` / `--chev-collapsed` for the rotations and translations logical properties cannot reach | `en-XB` mirrors direction in CI |
+| **States** | All four of `docs/09 §11` where the component displays data | A component that renders `null` while loading has three states and fails review |
+| **Motion** | `var(--dur-*)`, `var(--ease-*)`. Never a literal duration or a hand-written curve | The reduced-motion answer works by rewriting those tokens, so a component inherits it without knowing it exists |
+| **Permissions** | Rendered from `capabilities`. Never re-derived | `§1` |
+| **Non-actionability** | The `ControlState` union — `ready` / `denied` / `unbuilt` / `busy` | `§6`. A component that takes a `disabled: boolean` has collapsed three things into one and cannot be un-collapsed later |
+
+That last row is the one worth arguing about. `disabled` is the obvious prop and it is the defect:
+it merges a policy refusal, an unbuilt feature and an in-flight request into one appearance and one
+focus behaviour, which is precisely what `ENC-673` forbids. A component that never accepts it cannot
+express the mistake.
+
+### 12.4 How a variant is expressed
+
+**A data attribute selected in CSS, not a class list assembled in TypeScript.**
+
+```tsx
+<button className="ui-btn" data-variant={variant} data-size={size} data-state={state.kind} />
+```
+
+Three reasons, in order of how much they cost when ignored:
+
+1. **A state that has an accessible attribute is styled from that attribute.** `aria-pressed`,
+   `aria-current`, `aria-selected`, `aria-disabled` are the accessible truth; keying the appearance
+   off the same attribute means what a control looks like and what it announces cannot fall out of
+   step. A parallel `data-active` is a second source of truth for one fact.
+2. **The variant axes stay orthogonal.** `data-variant` and `data-size` compose; a
+   `ui-btn--primary-sm` naming scheme multiplies.
+3. **The set of variants is checkable.** A test can read the stylesheet and assert that the denied
+   and unbuilt treatments share no selector — which is F2 of `§10` — and that is only possible
+   because the treatments are values of one attribute rather than strings concatenated at runtime.
+
+Variants are closed sets, deliberately. Two sizes rather than an open size prop, because the four
+copies of the classification badge arrived at four different heights by accident and not by choice.
+
+### 12.5 The boundary rule, restated for components
+
+```
+shared/ui/     no domain knowledge. A Button, a Card, a Row, a Field.
+entities/      knows what a thing is. ClassificationChip, the file-kind icon,
+               upload phase steps.
+features/      knows what a screen does. Composes the two layers above.
+```
+
+The classification chip is the worked example. It is the only reader of `--c-pub … --c-restr` in the
+tree, and a test asserts that. `docs/09 §16a` locks that palette so a user reads *Restricted*
+identically on every screen — and four hand-maintained copies of the badge defeat that from the
+inside, whatever the token says. **Locking a token and duplicating its only consumer locks nothing.**
+
+### 12.6 What holds this in place
+
+- `tests/unit/design-system.test.tsx` — one implementation per surface, expressed as *where* a
+  declaration may appear: one `prefers-reduced-motion` block in the tree, no `@keyframes` under
+  `features/`, one reader of the classification palette, and the three non-actionable treatments
+  sharing no marker.
+- `tools/lint-web.mjs` — the layer boundary, physical CSS, string literals, manual formatting.
+- `tests/a11y/routes.spec.ts` — axe on every surface in both themes.
+- `tests/shots/surfaces.spec.ts` — not a gate; one capture per surface at the reference's viewport,
+  to be looked at beside `tools/prototype-shot.mjs`'s capture of the prototype. Reading each other's
+  markup instead of looking is how the divergence this section documents was allowed to happen.
+
+---
+
+## 13. Open questions
 
 | # | Question | Blocks |
 |---|---|---|

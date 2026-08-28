@@ -883,6 +883,11 @@ async fn a_caller_who_may_edit_but_not_sync_cannot_reserve_an_upload() {
             "fileId": refused.file.to_string(),
             "baseVersionId": refused.version.to_string(),
             "sizeBytes": 1024,
+            // Required since `ENC-820`. Without it the body is refused as malformed at 422
+            // and the request never reaches the policy chain — which makes a test that
+            // asserts a *refusal* pass for the wrong reason, and one that asserts an allow
+            // fail for a reason that has nothing to do with what it is testing.
+            "checksumSha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
         }),
     )
     .await;
@@ -902,6 +907,11 @@ async fn a_caller_who_may_edit_but_not_sync_cannot_reserve_an_upload() {
         serde_json::json!({
             "fileId": permitted.file.to_string(),
             "sizeBytes": 1024,
+            // Required since `ENC-820`. Without it the body is refused as malformed at 422
+            // and the request never reaches the policy chain — which makes a test that
+            // asserts a *refusal* pass for the wrong reason, and one that asserts an allow
+            // fail for a reason that has nothing to do with what it is testing.
+            "checksumSha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
         }),
     )
     .await;
@@ -954,6 +964,11 @@ async fn a_stale_base_version_conflicts_and_names_what_the_server_holds() {
             "fileId": doc.file.to_string(),
             "baseVersionId": VersionId::new_v7().to_string(),
             "sizeBytes": 1024,
+            // Required since `ENC-820`. Without it the body is refused as malformed at 422
+            // and the request never reaches the policy chain — which makes a test that
+            // asserts a *refusal* pass for the wrong reason, and one that asserts an allow
+            // fail for a reason that has nothing to do with what it is testing.
+            "checksumSha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
         }),
     )
     .await;
@@ -1017,6 +1032,11 @@ async fn a_locked_file_is_read_only_to_a_sync_client() {
             "fileId": doc.file.to_string(),
             "baseVersionId": doc.version.to_string(),
             "sizeBytes": 1024,
+            // Required since `ENC-820`. Without it the body is refused as malformed at 422
+            // and the request never reaches the policy chain — which makes a test that
+            // asserts a *refusal* pass for the wrong reason, and one that asserts an allow
+            // fail for a reason that has nothing to do with what it is testing.
+            "checksumSha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
         }),
     )
     .await;
@@ -1045,6 +1065,11 @@ async fn a_locked_file_is_read_only_to_a_sync_client() {
             "fileId": doc.file.to_string(),
             "baseVersionId": VersionId::new_v7().to_string(),
             "sizeBytes": 1024,
+            // Required since `ENC-820`. Without it the body is refused as malformed at 422
+            // and the request never reaches the policy chain — which makes a test that
+            // asserts a *refusal* pass for the wrong reason, and one that asserts an allow
+            // fail for a reason that has nothing to do with what it is testing.
+            "checksumSha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
         }),
     )
     .await;

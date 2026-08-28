@@ -1,27 +1,39 @@
 import { useT } from '../../shared/i18n/index.tsx';
 import { Icon } from '../../shared/ui/icon-sprite.tsx';
+import { Card } from '../../shared/ui/layout.tsx';
+import { LaterChip, Skeleton } from '../../shared/ui/primitives.tsx';
+import {
+  ErrorState as SurfaceErrorState,
+  EmptyState,
+  FilteredEmptyState,
+  type FetchFailure,
+} from '../../shared/ui/surface-states.tsx';
 import type { FilterId } from './filters.ts';
 
-/* The four states `docs/09 §11` requires, none of which the prototype draws.
+/* The four states `docs/09 §11` requires — as this screen's *words* wrapped
+ * around the shared block, rather than as a fifth copy of the block.
  *
- * `web/design-system/enclave-client-prototype.html`'s Search block has exactly
- * one: a centred *"No files match “{{searchQ}}”"* with a Clear search button.
- * That is the filtered-empty state and it names no filters, so it cannot tell a
- * user whose query is wrong from a user whose *filters* are wrong — which is the
- * single distinction `docs/09 §11` asks this state to draw. There is no new-empty
- * state, no loading state and no error state anywhere in the block.
+ * `web/design-system/enclave-client-prototype.html`'s Search block draws exactly
+ * one of them: a centred *"No files match “{{searchQ}}”"* with a Clear search
+ * button. That is the filtered-empty state and it names no filters, so it cannot
+ * tell a user whose query is wrong from a user whose *filters* are wrong — which
+ * is the single distinction `docs/09 §11` asks this state to draw. There is no
+ * new-empty state, no loading state and no error state anywhere in the block.
  *
- * So they are designed here, against the treatment `features/libraries/list`
- * already established: the same 44 px token-drawn figure, the same title/body
- * sizes, the same restraint. The visual language is duplicated rather than
- * imported because a feature may not import another feature (`docs/17 §2`) —
- * two screens wanting the same state components is precisely the signal that
- * they belong in `shared/`, and that is reported rather than taken.
+ * ## Why there is no `Figure` in this file any more
+ *
+ * There was one, and it was character-for-character the same helper as the ones
+ * in `features/home`, `features/ask` and `features/libraries/list`. Four copies
+ * of a 44px square with a 13.75px inset, and four copies of the `:dir(rtl)`
+ * mirror that keeps its window's square corner on the leading edge. Nobody would
+ * have noticed one of them drifting, and the request-ID row beside it *had*
+ * drifted — three of seven copies isolated the identifier and four did not, so
+ * the same string rendered correctly on three screens and reversed on four.
+ *
+ * `shared/ui/surface-states` is the one implementation now. What stays here is
+ * the part that is genuinely search's: which sentence each state says, and the
+ * list of active filter chips the filtered-empty state has to name.
  */
-
-function Figure({ tone }: { tone: 'neutral' | 'error' }) {
-  return <div className="esr-state-figure" data-tone={tone} aria-hidden="true" />;
-}
 
 /* ------------------------------------------------------------ empty (new) */
 
@@ -34,22 +46,15 @@ function Figure({ tone }: { tone: 'neutral' | 'error' }) {
  * because "universal search across filename, natural language, metadata, person,
  * date, workspace, file type and classification" (`docs/09 §10`) is not
  * guessable from an empty box.
+ *
+ * No keyboard hint, though the surrounding surfaces have room for one.
+ * `docs/09 §6` binds `/` to "focus search" and nothing in this codebase
+ * implements it — it is an application-level shortcut and this screen does not
+ * own the application. A hint for a key that does nothing is the same
+ * promise-without-a-product this milestone is named after, at hint scale.
  */
 export function NewSearchState() {
-  const t = useT();
-  return (
-    <div className="esr-state" data-state="empty">
-      <Figure tone="neutral" />
-      <h2 className="esr-state-title">{t('search.state.new.title')}</h2>
-      <p className="esr-state-body">{t('search.state.new.body')}</p>
-      {/* No keyboard hint here, though the surrounding surfaces have room for
-       * one. `docs/09 §6` binds `/` to "focus search" and nothing in this
-       * codebase implements it — it is an application-level shortcut and this
-       * screen does not own the application. A hint for a key that does nothing
-       * is the same promise-without-a-product this milestone is named after, at
-       * hint scale. Reported instead. */}
-    </div>
-  );
+  return <EmptyState heading="search.state.new.title" body="search.state.new.body" fill />;
 }
 
 /* ------------------------------------------------------- empty (filtered) */
@@ -79,49 +84,46 @@ export function NoResultsState({
   const t = useT();
   const filtered = filters.length > 0;
 
-  return (
-    <div className="esr-state" data-state="filtered-empty">
-      <Figure tone="neutral" />
-      <h2 className="esr-state-title">{t('search.state.noResults.title', { query })}</h2>
+  /* Two different sentences under one heading, and the branch is the whole
+   * point of the state.
+   *
+   * Filtered: the count separates "your filters are too narrow" from "this query
+   * finds nothing", which are different problems with different fixes.
+   * Collapsing them is how a user concludes the document is gone.
+   *
+   * Unfiltered and lexical: the useful advice is the retrieval notice's — the
+   * index matched the words you typed, so type the words the document would use.
+   * Saying it again here is not a repetition; this is the moment the user is
+   * actually stuck. */
+  const body = filtered
+    ? 'search.state.noResults.filtered'
+    : lexical
+      ? 'search.state.noResults.lexicalAdvice'
+      : 'search.state.noResults.advice';
 
-      {filtered ? (
-        <>
-          {/* The count is the whole point of this branch: it separates "your
-           * filters are too narrow" from "this query finds nothing", which are
-           * different problems with different fixes. Collapsing them is how a
-           * user concludes the document is gone. */}
-          <p className="esr-state-body">
-            {t('search.state.noResults.filtered', { count: unfilteredCount })}
-          </p>
-          <ul className="esr-state-filters" aria-label={t('search.state.noResults.filterList')}>
-            {filters.map((filter) => (
-              <li key={filter.id} className="esr-chip" data-active="true">
-                <span className="esr-chip-key">{filter.key}</span>
-                <bdi className="esr-chip-value" dir="auto">
-                  {filter.value}
-                </bdi>
-              </li>
-            ))}
-          </ul>
-          <div className="esr-state-actions">
-            <button type="button" className="esr-btn" data-variant="primary" onClick={onClearFilters}>
-              {t('search.state.noResults.clearFilters')}
-            </button>
-          </div>
-        </>
-      ) : (
-        <p className="esr-state-body">
-          {/* On a lexical-only search the useful advice is different, and it is
-           * the same advice the retrieval notice gives: the index matched the
-           * words you typed, so type the words the document would use. Saying it
-           * here as well is not a repetition — this is the moment the user is
-           * actually stuck. */}
-          {lexical
-            ? t('search.state.noResults.lexicalAdvice')
-            : t('search.state.noResults.advice')}
-        </p>
+  return (
+    <FilteredEmptyState
+      heading="search.state.noResults.title"
+      body={body}
+      values={{ query, count: unfilteredCount }}
+      fill
+      {...(filtered
+        ? { clearLabel: 'search.state.noResults.clearFilters' as const, onClear: onClearFilters }
+        : {})}
+    >
+      {filtered && (
+        <ul className="esr-state-filters" aria-label={t('search.state.noResults.filterList')}>
+          {filters.map((filter) => (
+            <li key={filter.id} className="esr-chip" data-active="true">
+              <span className="esr-chip-key">{filter.key}</span>
+              <bdi className="esr-chip-value" dir="auto">
+                {filter.value}
+              </bdi>
+            </li>
+          ))}
+        </ul>
       )}
-    </div>
+    </FilteredEmptyState>
   );
 }
 
@@ -132,8 +134,12 @@ export function NoResultsState({
  *
  * `docs/09 §11` states this as a layout-shift requirement, and the shared box is
  * literal: `.esr-hit` and `.esr-skeleton-hit` are the same three lines at the
- * same heights inside the same 80 px row, so nothing moves when results land.
+ * same heights inside the same row, so nothing moves when results land.
  * Rendering `null` here would be three states and fails review (`docs/17 §8`).
+ *
+ * The bars themselves are `Skeleton`. It pulses opacity rather than sliding a
+ * 200%-wide gradient across itself, which is what this file used to do: a sweep
+ * repaints the whole skeleton every frame and `docs/09 §2` budgets 60fps.
  */
 export function LoadingState({ rows = 8 }: { rows?: number }) {
   const t = useT();
@@ -142,19 +148,24 @@ export function LoadingState({ rows = 8 }: { rows?: number }) {
   const widths = [58, 71, 46, 64, 52, 77, 61, 44];
 
   return (
-    <div className="esr-loading" role="status" aria-busy="true" aria-label={t('search.state.loading')}>
+    <div
+      className="esr-loading"
+      role="status"
+      aria-busy="true"
+      aria-label={t('search.state.loading')}
+    >
       {Array.from({ length: rows }, (_, index) => (
         <div key={index} className="esr-row" aria-hidden="true">
           <div className="esr-skeleton-hit">
             <span className="esr-line esr-line-title">
-              <span className="esr-skeleton esr-skeleton-icon" />
-              <span className="esr-skeleton" style={{ inlineSize: `${widths[index % 8]}%` }} />
+              <Skeleton />
+              <Skeleton width={`${widths[index % 8]}%`} />
             </span>
             <span className="esr-line esr-line-meta">
-              <span className="esr-skeleton" style={{ inlineSize: '38%' }} />
+              <Skeleton width="38%" />
             </span>
             <span className="esr-line esr-line-excerpt">
-              <span className="esr-skeleton" style={{ inlineSize: '86%' }} />
+              <Skeleton width="86%" />
             </span>
           </div>
         </div>
@@ -165,11 +176,15 @@ export function LoadingState({ rows = 8 }: { rows?: number }) {
 
 /* -------------------------------------------------------------------- error */
 
-export interface SearchError {
-  readonly retryable: boolean;
-  /** The correlation ID from the API. Not translated, and quoted verbatim. */
-  readonly requestId: string;
-}
+/**
+ * What this screen knows about a failed read.
+ *
+ * Structurally the shared `FetchFailure`, and deliberately re-exported under the
+ * name the screen already uses rather than renamed: `docs/17 §7` says
+ * retryability is the API client's classification and never a guess, and both
+ * shapes say exactly that.
+ */
+export type SearchError = FetchFailure;
 
 /**
  * A read that did not complete.
@@ -177,40 +192,26 @@ export interface SearchError {
  * **A policy denial never arrives here** (`docs/09 §11`, `docs/17 §7`): a `403`
  * from DLP, a barrier or conditional access is a successful request with a
  * refusing answer, it renders inline with a reason and a remedy, and it never
- * offers retry. Neither does the degraded-search notice arrive here — a lexical
- * fallback returned real results, and rendering it as a failure would teach a
- * user the product is broken when it is merely narrower.
+ * offers retry — `FailureState` in `shared/ui/surface-states` owns that branch.
+ * Neither does the degraded-search notice arrive here: a lexical fallback
+ * returned real results, and rendering it as a failure would teach a user the
+ * product is broken when it is merely narrower.
+ *
+ * The four catalog keys are this screen's because the *sentence* is; the block,
+ * the ring, the retry-only-when-retryable rule and the copyable request ID are
+ * not, and were duplicated five times to carry the one part that is.
  */
-export function ErrorState({
-  error,
-  onRetry,
-}: {
-  error: SearchError;
-  onRetry: () => void;
-}) {
-  const t = useT();
+export function ErrorState({ error, onRetry }: { error: SearchError; onRetry: () => void }) {
   return (
-    /* `alert`, not `status`: a read that failed while the user was waiting on it
-     * is worth interrupting for — and it is the one thing on this screen that
-     * is. The notice above is deliberately `status` for the same reason. */
-    <div className="esr-state" data-tone="error" data-state="error" role="alert">
-      <Figure tone="error" />
-      <h2 className="esr-state-title">{t('search.state.error.title')}</h2>
-      <p className="esr-state-body">
-        {error.retryable ? t('search.state.error.body') : t('search.state.error.bodyFinal')}
-      </p>
-      {error.retryable && (
-        <div className="esr-state-actions">
-          <button type="button" className="esr-btn" data-variant="primary" onClick={onRetry}>
-            {t('search.state.error.retry')}
-          </button>
-        </div>
-      )}
-      <p className="esr-request-id">
-        <span>{t('search.state.error.requestId')}</span>
-        <code>{error.requestId}</code>
-      </p>
-    </div>
+    <SurfaceErrorState
+      heading="search.state.error.title"
+      body="search.state.error.body"
+      bodyFinal="search.state.error.bodyFinal"
+      retry="search.state.error.retry"
+      error={error}
+      onRetry={onRetry}
+      fill
+    />
   );
 }
 
@@ -229,26 +230,36 @@ export function ErrorState({
  * milestone is named after: a user who has been sold "ask a question" and sees a
  * plain result list learns nothing about whether the feature exists, is broken,
  * or is refused to them. `ENC-673` is the same argument for controls.
+ *
+ * The raised surface is a `Card`; the row inside it carries the ARIA, because
+ * `Card` renders no attributes of its own and the `aria-disabled` /
+ * `aria-describedby` pair *is* the unbuilt contract.
  */
 export function AnswerSlot() {
   const t = useT();
   return (
-    <div
-      className="esr-answer"
-      /* Not focusable and not interactive: there is nowhere to go and nothing to
-       * find out. `aria-disabled` with a description says so without leaving a
-       * dead stop in the tab order. */
-      aria-disabled="true"
-      aria-describedby="esr-answer-note"
-    >
-      <span className="esr-answer-icon">
-        <Icon name="spark" size={12} />
+    <Card padded={false} className="esr-answer-card">
+      <span
+        className="esr-answer"
+        /* Not focusable and not interactive: there is nowhere to go and nothing
+         * to find out. `aria-disabled` with a description says so without
+         * leaving a dead stop in the tab order. */
+        aria-disabled="true"
+        aria-describedby="esr-answer-note"
+      >
+        <span className="esr-answer-icon">
+          <Icon name="spark" size={12} />
+        </span>
+        <span className="esr-answer-text">{t('search.answer.title')}</span>
+        <LaterChip note="later.chip" />
+        {/* The release note, reached through `aria-describedby` rather than
+         * shown. D33 splits the marker in two so the chip can stay one word and
+         * the note can be a sentence; `ui-sr-only` is the shared clip, never a
+         * physical offset. */}
+        <span id="esr-answer-note" className="ui-sr-only">
+          {t('later.arrivesLater')}
+        </span>
       </span>
-      <span className="esr-answer-text">{t('search.answer.title')}</span>
-      <span className="ui-later">{t('later.chip')}</span>
-      <span id="esr-answer-note" className="ui-sr-only">
-        {t('later.arrivesLater')}
-      </span>
-    </div>
+    </Card>
   );
 }

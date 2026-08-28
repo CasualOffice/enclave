@@ -2,18 +2,33 @@
  *
  * Values are lifted from `web/design-system/enclave-client-prototype.html`'s
  * `data-screen-label="Sign in"` block, which is authoritative for appearance:
- * the 360 px sheet, 16 px radius, `--el2`, the 22 px dotted field masked to an
- * ellipse, 36 px controls, 12.5 px body copy.
+ * the 360 px sheet, the 22 px dotted field masked to an ellipse, 36 px
+ * controls, 12.5 px body copy.
  *
  * Every *property name* is logical. The prototype is physical throughout
  * (`inset:0` aside, it uses `left`, `margin-left:auto`, `text-align:right`) and
  * `en-XB` mirrors direction in CI, so this copies its values and none of its
  * property names (`docs/17 §8`, `plans/M5-MVP-GA.md` D35.6).
  *
- * No z-index is set anywhere in this file. The screen is a single stacking
- * context with a backdrop behind one card; the scale at the top of
- * `shared/ui/primitives.css` is for things that float over other things, and
- * nothing here does.
+ * ## This screen is deliberately not dense, and that is not a licence
+ *
+ * `styles/scale.css` is the product's density: 36px rows, 26px controls,
+ * 12.5px body. Sign-in is the one surface that ignores it — a 360px card with
+ * 28px of air and 36px controls, because it is a single decision on an empty
+ * page rather than a working surface. What changed here is not the generosity
+ * but where the numbers come from: `--sp-*`, `--fs-*` and `--ctl-*` instead of
+ * twenty-odd literals, so the card scales with the ramp rather than beside it.
+ *
+ * ## What is no longer here
+ *
+ * The 36px input (its own box, its own placeholder colour, its own focus ring —
+ * one of three ring recipes in the tree for five inputs) is `Field size="lg"`.
+ * The request-ID row is `RequestId`, which is direction-isolated: this copy was
+ * one of the four that omitted `unicode-bidi: isolate; direction: ltr`, so an
+ * RTL reader saw a correct identifier rendered with its segments reversed and
+ * copied a string that did not match what was on screen. The
+ * `prefers-reduced-motion` block is `styles/motion.css`'s, once, for the whole
+ * tree.
  */
 
 .sgn {
@@ -23,13 +38,16 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 24px;
+  padding: var(--sp-12);
   background: var(--canvas);
   overflow: hidden;
 }
 
 /* The dotted field, masked to an ellipse so it fades before it reaches an edge.
- * Decorative and inert: it must never intercept a click meant for the card. */
+ * Decorative and inert: it must never intercept a click meant for the card.
+ * The 22px grid and the two mask stops are the mark's own construction rather
+ * than points on a scale, so they stay literal for the same reason the state
+ * figure's 13.75px inset does. */
 .sgn-backdrop {
   position: absolute;
   inset: 0;
@@ -43,26 +61,26 @@
 
 .sgn-card {
   position: relative;
-  inline-size: 360px;
+  inline-size: var(--card-measure);
   max-inline-size: 100%;
-  padding: 28px 28px 22px;
-  border-radius: 16px;
+  padding: var(--sp-16) var(--sp-16) var(--sp-12);
+  border-radius: var(--r-sheet);
   background: var(--sheet);
   box-shadow: var(--el2);
 }
 
 .sgn-mark {
   color: var(--accent);
-  margin-block-end: 18px;
+  margin-block-end: var(--sp-10);
   display: block;
 }
 
 .sgn-title {
-  margin: 0 0 4px;
+  margin: 0 0 var(--sp-2);
   font-family: var(--tight);
-  font-size: 20px;
+  font-size: var(--fs-display);
   font-weight: 600;
-  letter-spacing: -0.02em;
+  letter-spacing: var(--ls-tight);
 }
 
 /* `--fg2`, not the prototype's `--fg3`.
@@ -74,9 +92,9 @@
  * places the prototype loses. Every muted value on this screen was re-derived
  * the same way; the run that found them is in the report for this change. */
 .sgn-sub {
-  margin: 0 0 18px;
+  margin: 0 0 var(--sp-10);
   color: var(--fg2);
-  font-size: 12.5px;
+  font-size: var(--fs-body);
 }
 
 /* ------------------------------------------------------------------- form */
@@ -84,13 +102,13 @@
 .sgn-form {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--sp-6);
 }
 
 .sgn-field {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: var(--sp-3);
 }
 
 /* The label sits **above** the input and stays there. A placeholder is not a
@@ -98,44 +116,22 @@
  * they are most likely to need it, and it is invisible to a voice-control user
  * naming the control. */
 .sgn-label {
-  font-size: 12px;
+  font-size: var(--fs-ctl);
   font-weight: 500;
   color: var(--fg2);
 }
 
-.sgn-input {
-  block-size: 36px;
-  padding-inline: 9px;
-  border: 0;
-  border-radius: var(--r-ctrl);
-  background: var(--sheet);
-  box-shadow: var(--hairline);
-  color: var(--fg);
-  font: inherit;
-  font-size: 12.5px;
+/* The field is `Field size="lg"`; this is only its width, which is the form's
+ * business rather than the primitive's. */
+.sgn-field .ui-field {
   inline-size: 100%;
-  transition: box-shadow 120ms ease;
-}
-
-/* `--fg4` in the prototype: 2.44:1 on white. A placeholder is text a user has
- * to read, so it is held to the same 4.5:1 as any other. It stays clearly
- * distinct from a typed value, which renders at `--fg`. */
-.sgn-input::placeholder {
-  color: var(--fg2);
-}
-
-.sgn-input:focus {
-  outline: 0;
-  box-shadow:
-    0 0 0 1px var(--accent),
-    0 0 0 4px var(--accent-ring);
 }
 
 .sgn-actions {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  margin-block-start: 2px;
+  gap: var(--sp-4);
+  margin-block-start: var(--sp-1);
 }
 
 /* The primary control is full width and 36 px tall, matching the prototype's
@@ -148,10 +144,10 @@
 .sgn-or {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--sp-5);
   color: var(--fg2);
-  font-size: 11px;
-  margin-block: 6px;
+  font-size: var(--fs-sm);
+  margin-block: var(--sp-3);
 }
 
 .sgn-or::before,
@@ -166,28 +162,20 @@
  *
  * `plans/M5-MVP-GA.md` D33 and `docs/17 §6`. Passkey has no backend until M6,
  * so it is **unbuilt, never denied**, and the two treatments may not share a
- * class or a colour. `.ui-btn[data-state='unbuilt']` in `primitives.css` does
- * the control; this only lays out the neutral release note beside it.
- *
- * The note is deliberately untinted. The denial treatment is a
- * `--danger` inset ring, and if this were tinted at all a user would start
- * reading "we haven't built it" and "policy refused you" as the same signal —
- * which is the erosion D33 names as the whole cost of the decision.
+ * class or a colour. `.ui-btn[data-state='unbuilt']` and `.ui-later` do all of
+ * it; this is the row the button and its chip sit on and nothing else. The
+ * release note is `.ui-later-note`'s — visually hidden and reached through
+ * `aria-describedby`, which is where every other unbuilt control in the product
+ * keeps it.
  */
 .sgn-later {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-4);
 }
 
 .sgn-later .ui-btn {
   flex: 1;
-}
-
-.sgn-later-note {
-  margin: 0;
-  color: var(--fg2);
-  font-size: 11.5px;
 }
 
 /* ----------------------------------------------------------- the answer slot
@@ -204,65 +192,50 @@
 .sgn-note {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 10px 12px;
+  gap: var(--sp-3);
+  padding: var(--sp-5) var(--sp-6);
   border-radius: var(--r-surf);
-  font-size: 12.5px;
-  margin-block-end: 12px;
+  background: var(--sunken);
+  color: var(--fg);
+  font-size: var(--fs-body);
+  margin-block-end: var(--sp-6);
 }
 
 .sgn-note p {
   margin: 0;
 }
 
-/* A refusal and a policy denial share the refusing tone — both are answers, and
- * `docs/09 §11` keeps them out of the error state. Neither carries a retry. */
+/* A refusal and a policy denial share the refusing treatment — both are answers,
+ * `docs/09 §11` keeps them out of the error state, and neither carries a retry.
+ *
+ * The treatment is the shared one from `shared/ui/surface-states.css`: **a ring,
+ * never tinted text.** This file painted the sentence
+ * `color-mix(--danger 74%, --fg)`, which is the recipe that measured 3.40:1 on
+ * the dark sheet and is why the shared block moved the colour onto a graphical
+ * object — a ring needs 3:1 under WCAG 1.4.11 and clears it in both themes,
+ * while the words stay at full contrast. Nothing is lost: colour is never the
+ * only carrier (`docs/09 §15`), and the sentence says what happened. */
 .sgn-note[data-kind='refused'],
 .sgn-note[data-kind='denied'] {
-  background: color-mix(in srgb, var(--danger) 8%, transparent);
-  color: color-mix(in srgb, var(--danger) 74%, var(--fg));
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 22%, transparent);
-}
-
-.sgn-note[data-kind='denied'] .sgn-note-remedy {
-  color: var(--fg2);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 34%, transparent);
 }
 
 /* A request that did not complete is a different thing and looks like one:
  * neutral, because nothing has been refused and nothing is the user's fault. */
 .sgn-note[data-kind='failed'] {
-  background: var(--sunken);
-  color: var(--fg);
   box-shadow: var(--hairline);
 }
 
-.sgn-note-body {
+.sgn-note-body,
+.sgn-note-remedy {
   color: var(--fg2);
 }
 
 .sgn-note-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-block-start: 2px;
-}
-
-.sgn-request-id {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  color: var(--fg2);
-  margin-block-start: 2px;
-}
-
-.sgn-request-id code {
-  font-family: var(--mono);
-  font-size: 10.5px;
-  color: var(--fg2);
-  /* Selectable with a mouse as well as copyable with the button: support asks
-   * for this string over the phone as often as through a form. */
-  user-select: all;
+  gap: var(--sp-4);
+  margin-block-start: var(--sp-1);
 }
 
 /* --------------------------------------------------------- loading, success */
@@ -277,8 +250,10 @@
  */
 .sgn-loading {
   display: flex;
-  min-block-size: 92px;
-  margin-block-start: 12px;
+  /* Room for the 30px mark and its caption, reserved so the card does not
+   * resize under a request that is already in flight. */
+  min-block-size: calc(var(--sp-16) * 3);
+  margin-block-start: var(--sp-6);
 }
 
 .sgn-success {
@@ -286,8 +261,8 @@
   flex-direction: column;
   align-items: center;
   text-align: center;
-  gap: 8px;
-  padding-block: 22px 10px;
+  gap: var(--sp-4);
+  padding-block: var(--sp-12) var(--sp-5);
 }
 
 .sgn-success-mark {
@@ -296,26 +271,26 @@
 
 .sgn-success-title {
   margin: 0;
-  font-size: 15px;
+  font-size: var(--fs-head);
   font-weight: 600;
-  letter-spacing: -0.02em;
+  letter-spacing: var(--ls-tight);
 }
 
 .sgn-success-body {
   margin: 0;
   color: var(--fg2);
-  font-size: 12.5px;
+  font-size: var(--fs-body);
 }
 
 /* ----------------------------------------------------------------- footer */
 
 .sgn-legal {
   display: flex;
-  gap: 12px;
+  gap: var(--sp-6);
   align-items: center;
-  font-size: 11px;
+  font-size: var(--fs-sm);
   color: var(--fg2);
-  margin-block-start: 16px;
+  margin-block-start: var(--sp-8);
 }
 
 .sgn-legal a {
@@ -326,10 +301,4 @@
 .sgn-legal a:hover {
   color: var(--fg);
   text-decoration: underline;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .sgn-input {
-    transition: none;
-  }
 }

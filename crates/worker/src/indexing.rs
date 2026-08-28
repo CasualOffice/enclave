@@ -338,15 +338,23 @@ impl VectorStage {
     /// [`WorkerError::Search`] when the store refuses the write. Every one of them leaves the
     /// caller's transaction unwritten — that is the whole ordering argument in this module's
     /// documentation.
-    async fn write(
+    /// Resolves the rank this file's vectors are written at.
+    ///
+    /// Split out of [`write`](Self::write) by `ENC-850`, and the split is the whole point: this is
+    /// the only part of the stage that touches PostgreSQL, and it is fast. Embedding is neither.
+    /// Keeping them in one method meant the caller's transaction stayed open across a model call,
+    /// and `idle_in_transaction_session_timeout` — 60 seconds, deliberately — terminated the
+    /// connection out from under it.
+    ///
+    /// # Errors
+    ///
+    /// [`WorkerError::Unclassified`] when the file's rank cannot be resolved.
+    async fn resolve_rank(
         &self,
         conn: &mut PgConnection,
         tenant: TenantId,
-        file: &FileFacts,
-        version: VersionId,
-        mime_type: &str,
-        chunks: &[Chunk],
-    ) -> Result<ModelId> {
+        file: FileId,
+    ) -> Result<ClassificationRank> {
         // The rank first, and by itself. Nothing below is meaningful if this is a guess, so the
         // refusal happens before a byte of text is copied anywhere.
         //
@@ -354,14 +362,14 @@ impl VectorStage {
         // rank cannot express *"nothing is labelled and the tenant said what that means"*, and a
         // `let rank = ...` that flattened `Assumed` into `Labelled` would put an assumption into
         // the collection with no record that it was one.
-        let rank = match self.ranks.effective_rank(conn, tenant, file.id).await? {
+        let rank = match self.ranks.effective_rank(conn, tenant, file).await? {
             ClassificationOutcome::Labelled(effective) => effective.rank(),
             // Logged at `info` rather than silently taken. The rank is written into the collection
             // and decides which provider sees the text, so an operator reading back why a document
             // routed the way it did needs to know the number was configuration, not a label.
             ClassificationOutcome::Assumed(assumed) => {
                 debug!(
-                    file = %file.id,
+                    file = %file,
                     rank = assumed.rank().get(),
                     "no label on this file's chain; embedding at the rank the tenant assumes"
                 );
@@ -372,7 +380,29 @@ impl VectorStage {
             // absent service.
             ClassificationOutcome::Denied { .. } => return Err(WorkerError::Unclassified),
         };
+        Ok(rank)
+    }
 
+    /// Embeds one version's chunks and writes them to the vector store.
+    ///
+    /// Takes no connection, and must not acquire one: everything here is a model call and a store
+    /// write, and the caller runs it with **no transaction open** (`ENC-850`). Returns the model
+    /// that produced the vectors, which is what `index_manifests.embedding_model` records — from
+    /// the embedder rather than from configuration, because the route is per file.
+    ///
+    /// # Errors
+    ///
+    /// [`WorkerError::Embedding`] when the provider refuses or returns a short batch,
+    /// [`WorkerError::CollectionWidth`] when it returns vectors of the wrong width, and
+    /// [`WorkerError::Search`] when the store refuses the write.
+    async fn write(
+        &self,
+        rank: ClassificationRank,
+        file: &FileFacts,
+        version: VersionId,
+        mime_type: &str,
+        chunks: &[Chunk],
+    ) -> Result<ModelId> {
         // The one place chunk text becomes embeddable text. `ClassifiedText` has no method that
         // returns its chunks, so from here the only readers are `TextBatch::<Local>::admit` and
         // `TextBatch::<Remote>::admit` — and holding the batch a remote provider takes *is* the
@@ -566,6 +596,12 @@ pub async fn index_pass<E: Extractor, S: BlobStore + ?Sized>(
             break;
         }
 
+        // The first of two transactions, and the split is `ENC-850`. Everything PostgreSQL is
+        // needed for is read here and the transaction closes before a byte is fetched — because
+        // what follows is an object read, text extraction, OCR and a model call, any one of which
+        // can outlast `idle_in_transaction_session_timeout`. It did: 60 seconds is the configured
+        // value, deliberately, since a transaction left open holds its `SET LOCAL app.tenant_id`,
+        // and the pass was terminated mid-embed with `25P03`.
         let mut tx = pool.begin(tenant).await?;
 
         let Some(readable) = readable_version(&mut tx, tenant, file.version_id).await? else {
@@ -575,6 +611,18 @@ pub async fn index_pass<E: Extractor, S: BlobStore + ?Sized>(
             outcome.deferred += 1;
             continue;
         };
+
+        // Read now, used after the transaction is gone. Both are properties of a row that cannot
+        // change underneath this pass: a version is immutable once committed, and the rank is
+        // resolved against the file's chain as it stands at the moment the pass claimed it. A
+        // reclassification landing mid-embed is handled the way every other one is — by the epoch
+        // reconciler — and not by holding a transaction open in the hope of noticing.
+        let facts = file_facts(&mut tx, tenant, file.file_id).await?;
+        let rank = match vectors {
+            Some(stage) => Some(stage.resolve_rank(&mut tx, tenant, file.file_id).await?),
+            None => None,
+        };
+        tx.commit().await?;
 
         // Read before the extractor sees anything. The budget bounds what is read as well as what
         // is parsed — an extractor that is handed the whole of a 40 GB object has already lost,
@@ -605,19 +653,20 @@ pub async fn index_pass<E: Extractor, S: BlobStore + ?Sized>(
         // as the honest one for a deployment where nothing has embedded.
         let mut embedded_by: Option<ModelId> = None;
 
+        // Still before the manifest is written, which is this module's ordering argument and is
+        // unchanged: the surviving state after a crash must be vectors with no manifest, not a
+        // `READY` manifest over vectors nothing wrote. What changed is only that no transaction is
+        // open while it happens — the ordering was never what held the connection.
+        //
+        // A refusal here — no model, a store that will not take the batch — returns before the
+        // second transaction is opened, so nothing is recorded and the file is retried whole,
+        // exactly as before.
         if let Outcome::Ready { .. } = prepared.outcome {
-            if let Some(stage) = vectors {
-                // Before `write_chunks` and before the commit, which is this module's ordering
-                // argument: the surviving state after a crash must be vectors with no manifest, not
-                // a `READY` manifest over vectors nothing wrote. A refusal here — no model, no
-                // classification, a store that will not take the batch — aborts the transaction and
-                // the file is retried whole.
-                let facts = file_facts(&mut tx, tenant, file.file_id).await?;
+            if let (Some(stage), Some(rank)) = (vectors, rank) {
                 embedded_by = Some(
                     stage
                         .write(
-                            &mut tx,
-                            tenant,
+                            rank,
                             &facts,
                             file.version_id,
                             readable.media_type(),
@@ -627,7 +676,14 @@ pub async fn index_pass<E: Extractor, S: BlobStore + ?Sized>(
                 );
                 outcome.embedded += 1;
             }
+        }
 
+        // The second transaction: the chunk rows and the manifest, which must be atomic with one
+        // another. Both are fast, and nothing between here and the commit blocks on anything but
+        // PostgreSQL.
+        let mut tx = pool.begin(tenant).await?;
+
+        if let Outcome::Ready { .. } = prepared.outcome {
             write_chunks(
                 &mut tx,
                 tenant,

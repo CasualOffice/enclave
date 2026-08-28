@@ -226,6 +226,19 @@ impl DbConfig {
         self
     }
 
+    /// Sets how long a connection may sit inside an open transaction before PostgreSQL ends it.
+    ///
+    /// Exists so a test can make the control fire in seconds rather than in the sixty a deployment
+    /// uses (`ENC-850`). It is a knob for shortening, not for lengthening: the default is a
+    /// control, not a tuning parameter — a transaction left open holds its `SET LOCAL
+    /// app.tenant_id` — and raising it in a deployment to accommodate slow work inside a
+    /// transaction is fixing the wrong thing.
+    #[must_use]
+    pub fn with_idle_in_transaction_timeout(mut self, timeout: Duration) -> Self {
+        self.idle_in_transaction_timeout = timeout;
+        self
+    }
+
     /// Rejects a configuration that would weaken a control, before any connection is attempted.
     ///
     /// Validation happens at load rather than at first use because the failure modes here are

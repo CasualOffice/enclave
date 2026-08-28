@@ -30,10 +30,18 @@ import type { VersionEntry } from '../file/api-model.ts';
  * on a file the product refuses to serve, which is the precise lie rule 9
  * exists to prevent.
  *
- * `GET /files/{id}` does **not** carry the distinction — its `currentVersion`
- * reports `status: "AVAILABLE"` with no `avStatus` and no `isReadable` beside
- * it (`ENC-825`). `GET /files/{id}/versions` is the only endpoint that answers
- * the question, so it is the one the tray polls.
+ * **Three endpoints answer it now, and this comment used to say one did.**
+ * `GET /files/{id}/versions` always has. `GET /files/{id}`'s `currentVersion`
+ * gained `avStatus` and `isReadable` with `ENC-825`, and `GET /uploads/{id}`
+ * gained the committed version and `fileId` with `ENC-826` — both on
+ * 2026-08-28, both named in `docs/05 §7` and `§8.1`. The tray still polls the
+ * version listing; that is now a choice rather than the only option, and moving
+ * it is `ENC-848`. The sentence is corrected here because a stale justification
+ * for a workaround is how the next reader concludes the workaround is still
+ * load-bearing.
+ *
+ * What has **not** changed is the rule: branch on `isReadable`, never on
+ * `status === 'AVAILABLE'`, whichever of the three you read it from.
  *
  * ## Hashing is a phase, not a detail
  *

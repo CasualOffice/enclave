@@ -2,14 +2,15 @@ import type { ReactNode } from 'react';
 import { useT } from '../../../shared/i18n/index.tsx';
 import { useFormatters } from '../../../shared/i18n/format.ts';
 import type { MessageKey } from '../../../shared/i18n/catalog.ts';
-import { Icon } from '../../../shared/ui/icon-sprite.tsx';
-import { Kbd, LaterChip, Skeleton } from '../../../shared/ui/primitives.tsx';
+import { IconButton, Kbd, LaterChip, Skeleton } from '../../../shared/ui/primitives.tsx';
+import { Bar, Push, Tab, TabList } from '../../../shared/ui/layout.tsx';
 import { PreviewTab } from './preview-tab.tsx';
 import { FailureState } from '../../../shared/ui/surface-states.tsx';
 import { failureOf } from '../../../shared/api/failure.ts';
 import type {
   CapabilityName,
   FileDetail,
+  ItemStatus,
   VersionPage,
 } from '../../../entities/file/api-model.ts';
 
@@ -65,6 +66,25 @@ const UNBUILT_NOTE: Record<string, MessageKey> = {
   activity: 'library.peek.tab.activity.unbuilt',
 };
 
+/**
+ * The four server statuses, spelled out rather than interpolated.
+ *
+ * It was `t(\`library.status.${detail.status}\` as MessageKey)` — one line
+ * shorter, and it defeated two checks at once. `tools/lint-web.mjs` scans for
+ * quoted catalog keys and cannot see a computed one, so all four read as
+ * orphans and the gate would have failed on working code; and `as MessageKey`
+ * suppressed the only compile-time evidence that the four keys exist at all, so
+ * a renamed status would have failed at runtime with a missing message. A
+ * `Record<ItemStatus, MessageKey>` is exhaustive by type and visible to the
+ * scan.
+ */
+const STATUS_LABEL: Record<ItemStatus, MessageKey> = {
+  AVAILABLE: 'library.status.AVAILABLE',
+  PROCESSING: 'library.status.PROCESSING',
+  QUARANTINED: 'library.status.QUARANTINED',
+  FAILED: 'library.status.FAILED',
+};
+
 /** The nine actions worth naming, in the order a user thinks about them. */
 const CAPABILITY_LABELS: readonly (readonly [CapabilityName, MessageKey])[] = [
   ['preview', 'library.peek.cap.preview'],
@@ -98,8 +118,13 @@ function PeekChrome({
 }) {
   const t = useT();
   return (
-    <aside className="library-peek" aria-label={t('library.peek.label')}>
-      <div className="library-peek-head">
+    /* `.enc-enter-panel` rather than a local `@keyframes encPeek`. The local
+     * copy held `translateX(calc(14px * var(--icon-flip, 1)))`, which was the
+     * last physical-axis declaration left in the tree; `styles/motion.css` owns
+     * the keyframe now, reading `--travel-panel` and `--icon-flip`, so the
+     * reduced-motion answer comes with it. */
+    <aside className="library-peek enc-enter-panel" aria-label={t('library.peek.label')}>
+      <Bar>
         {/* The Esc hint, shown so the shortcut is learned rather than
          * discovered. A key cap reads differently per platform, so the glyph
          * is a catalog string and not a literal. */}
@@ -107,6 +132,7 @@ function PeekChrome({
           <Kbd>{t('key.escape')}</Kbd>
           {t('library.peek.escHint')}
         </span>
+        <Push />
         <span className="library-peek-head-actions">
           {/* Previous and next walk the rows the list already has.
            *
@@ -115,34 +141,23 @@ function PeekChrome({
            * has already returned and already filtered. Being at the end of the
            * list is a neutral disabled state, and it must not borrow the denial
            * treatment — there is nothing the user lacks permission to do. */}
-          <button
-            type="button"
-            className="library-iconbtn"
-            aria-label={t('library.peek.previous')}
-            aria-disabled={navigation?.hasPrevious === false ? true : undefined}
-            onClick={navigation?.hasPrevious === false ? undefined : navigation?.onPrevious}
-          >
-            <Icon name="chev" className="library-peek-chev-prev" />
-          </button>
-          <button
-            type="button"
-            className="library-iconbtn"
-            aria-label={t('library.peek.next')}
+          <span className="library-peek-prev">
+            <IconButton
+              name="chev"
+              label="library.peek.previous"
+              aria-disabled={navigation?.hasPrevious === false ? true : undefined}
+              onClick={navigation?.hasPrevious === false ? undefined : navigation?.onPrevious}
+            />
+          </span>
+          <IconButton
+            name="chev"
+            label="library.peek.next"
             aria-disabled={navigation?.hasNext === false ? true : undefined}
             onClick={navigation?.hasNext === false ? undefined : navigation?.onNext}
-          >
-            <Icon name="chev" />
-          </button>
-          <button
-            type="button"
-            className="library-iconbtn"
-            aria-label={t('library.peek.close')}
-            onClick={onClose}
-          >
-            <Icon name="x" />
-          </button>
+          />
+          <IconButton name="x" label="library.peek.close" onClick={onClose} />
         </span>
-      </div>
+      </Bar>
       {/* `aria-live="polite"` on the title, so walking rows announces what the
        * panel now describes. Without it the panel changes silently and a
        * screen-reader user has no idea the content moved. */}
@@ -181,6 +196,7 @@ function VersionList({ versions }: { versions: VersionPage | undefined }) {
               {t('library.peek.versions.number', { major: version.major, minor: version.minor })}
             </span>
             <span className="library-peek-version-meta">{formatters.bytes(version.sizeBytes)}</span>
+            <Push />
             <time dateTime={created.toISOString()} className="library-peek-version-when">
               {formatters.relative(created)}
             </time>
@@ -188,9 +204,7 @@ function VersionList({ versions }: { versions: VersionPage | undefined }) {
              * `CLEAN` — and the client shows it rather than recomputing it from
              * the two status fields beside it. */}
             {!version.isReadable && (
-              <span className="library-peek-version-unreadable">
-                {t('library.peek.versions.unreadable')}
-              </span>
+              <span className="ui-pill">{t('library.peek.versions.unreadable')}</span>
             )}
           </li>
         );
@@ -209,7 +223,7 @@ function DetailsTab({ detail }: { detail: FileDetail }) {
     <>
       <dl className="library-peek-facts">
         <dt>{t('library.peek.fact.status')}</dt>
-        <dd>{t(`library.status.${detail.status}` as MessageKey)}</dd>
+        <dd>{t(STATUS_LABEL[detail.status])}</dd>
 
         <dt>{t('library.peek.fact.type')}</dt>
         <dd>{detail.mimeType}</dd>
@@ -257,7 +271,15 @@ function DetailsTab({ detail }: { detail: FileDetail }) {
           {CAPABILITY_LABELS.map(([name, label]) => {
             const allowed = detail.capabilities[name];
             return (
-              <li key={name} className="library-peek-cap" data-allowed={allowed ? 'true' : 'false'}>
+              /* `.ui-pill` draws the chip: `outline` for allowed, the default
+               * sunken tone for refused — which is exactly the pair this file
+               * used to declare by hand. */
+              <li
+                key={name}
+                className="ui-pill library-peek-cap"
+                data-tone={allowed ? 'outline' : undefined}
+                data-allowed={allowed ? 'true' : 'false'}
+              >
                 <span className="library-peek-cap-mark" aria-hidden="true" />
                 {t(label)}
                 {/* The state in words as well as in colour and position, so the
@@ -282,17 +304,17 @@ function DetailsTab({ detail }: { detail: FileDetail }) {
           <h4>{t('library.peek.obligations')}</h4>
           <ul className="library-peek-caps">
             {detail.obligations.watermark && (
-              <li className="library-peek-cap">{t('library.peek.obligation.watermark')}</li>
+              <li className="ui-pill">{t('library.peek.obligation.watermark')}</li>
             )}
             {detail.obligations.justificationRequired.length > 0 && (
-              <li className="library-peek-cap">
+              <li className="ui-pill">
                 {t('library.peek.obligation.justification', {
                   count: detail.obligations.justificationRequired.length,
                 })}
               </li>
             )}
             {detail.obligations.approvalRequired.length > 0 && (
-              <li className="library-peek-cap">
+              <li className="ui-pill">
                 {t('library.peek.obligation.approval', {
                   count: detail.obligations.approvalRequired.length,
                 })}
@@ -349,7 +371,7 @@ export function PeekPanel({
    * its width so the list does not reflow when a row is picked. */
   if (fileId === undefined) {
     return (
-      <aside className="library-peek" aria-label={t('library.peek.label')}>
+      <aside className="library-peek enc-enter-panel" aria-label={t('library.peek.label')}>
         <p className="library-peek-empty">{t('library.peek.none')}</p>
       </aside>
     );
@@ -371,12 +393,14 @@ export function PeekPanel({
      * (`docs/09 §11`). */
     return (
       <aside
-        className="library-peek"
+        className="library-peek enc-enter-panel"
         aria-label={t('library.peek.label')}
         aria-busy="true"
         role="status"
       >
-        <div className="library-peek-head" />
+        <Bar>
+          <Skeleton width="96px" />
+        </Bar>
         <div className="library-peek-title" aria-hidden="true">
           <Skeleton width="72%" />
           <div className="library-peek-meta">
@@ -410,74 +434,83 @@ export function PeekPanel({
         </div>
       </div>
 
-      <div className="library-peek-tabs" role="tablist" aria-label={t('library.peek.tabs')}>
-        {TABS.map((entry) => {
-          const selected = entry.built && tab === entry.id;
-          if (!entry.built) {
-            /* Not focusable, neutral, no remedy — and never the denial
-             * treatment (`docs/17 §6`, `ENC-673`). The note behind
-             * `aria-describedby` names the actual blocker rather than shrugging. */
-            const noteId = `peek-tab-${entry.id}-note`;
-            return (
-              <span
-                key={entry.id}
-                className="library-peek-tab"
-                role="tab"
-                aria-selected={false}
-                aria-disabled="true"
-                tabIndex={-1}
-                aria-describedby={noteId}
-              >
-                {t(entry.label)}
-                <LaterChip note="later.chip" />
-                <span id={noteId} className="ui-later-note">
-                  {t(UNBUILT_NOTE[entry.id] ?? 'later.arrivesLater')}
+      {/* The strip's band — padding, the block-end hairline and the horizontal
+        * scroll — around `TabList`, which owns the pills. `.library-peek-tab`
+        * was declared **twice** in `library.css`, a merge artefact that survived
+        * because nobody reads a stylesheet end to end; it is one rule in
+        * `shared/ui/layout.css` now, shared with the saved-view pills. */}
+      <div className="library-peek-tabs">
+        <TabList label="library.peek.tabs">
+          {TABS.map((entry) => {
+            if (!entry.built) {
+              /* Not focusable, neutral, no remedy — and never the denial
+               * treatment (`docs/17 §6`, `ENC-673`).
+               *
+               * A `<span role="tab">` rather than `<Tab unbuilt>`, for the
+               * reason `Row` gives for its own unbuilt branch: a `<button
+               * tabindex="-1">` is still announced as a button and is still
+               * reachable through a screen reader's control rotor, which does
+               * not consult `tabindex`. It also carries the two things D33
+               * splits the marker into — a one-word chip and a sentence behind
+               * `aria-describedby` naming the actual blocker — which a
+               * label-only primitive has nowhere to put. The *appearance* is
+               * still `.ui-tab[data-unbuilt]`, so it cannot drift from the
+               * built tabs beside it. */
+              const noteId = `peek-tab-${entry.id}-note`;
+              return (
+                <span
+                  key={entry.id}
+                  className="ui-tab"
+                  data-unbuilt=""
+                  role="tab"
+                  aria-selected={false}
+                  aria-disabled="true"
+                  tabIndex={-1}
+                  aria-describedby={noteId}
+                >
+                  {t(entry.label)}
+                  <LaterChip note="later.chip" />
+                  <span id={noteId} className="ui-later-note">
+                    {t(UNBUILT_NOTE[entry.id] ?? 'later.arrivesLater')}
+                  </span>
                 </span>
-              </span>
+              );
+            }
+            return (
+              <Tab
+                key={entry.id}
+                label={entry.label}
+                selected={tab === entry.id}
+                onClick={() => {
+                  onTabChange(entry.id);
+                }}
+              />
             );
-          }
-          return (
-            <button
-              key={entry.id}
-              type="button"
-              className="library-peek-tab"
-              role="tab"
-              aria-selected={selected}
-              onClick={() => {
-                onTabChange(entry.id);
-              }}
-            >
-              {t(entry.label)}
-            </button>
-          );
-        })}
+          })}
+        </TabList>
       </div>
 
       <div className="library-peek-body">
         {tab === 'preview' ? (
-          /* The Preview tab reads `versions` too, because `isReadable` is the
-           * only field that answers whether bytes may be served and it lives
-           * there rather than on `FileDetail` (`ENC-825`). Passing the page in
-           * rather than fetching it again keeps one request behind two tabs.
+          /* The Preview tab reads `detail.currentVersion` and nothing else.
+           *
+           * It used to be handed the `versions` page as well, because
+           * `isReadable` — the only field that answers whether bytes may be
+           * served — lived only there (`ENC-825`). `GET /files/{id}` carries it
+           * now, so the second request is gone (`ENC-848`) and the versions
+           * query is enabled for the Versions tab alone.
            *
            * `detail` is awaited rather than defaulted. A placeholder
            * `capabilities` of all-`false` would render *preview refused* — a
            * denial the policy chain never issued, shown with the confidence of
            * a real one, which is the exact failure `docs/17 §3` names. */
-          detail === undefined ? (
-            <div className="peek-preview" role="status" aria-busy="true">
-              <Skeleton width="100%" />
-            </div>
-          ) : (
-            <PreviewTab
-              fileId={fileId}
-              name={detail.name}
-              mimeType={detail.mimeType}
-              capabilities={detail.capabilities}
-              versions={versions}
-              versionsPending={versions === undefined}
-            />
-          )
+          <PreviewTab
+            fileId={fileId}
+            name={detail.name}
+            mimeType={detail.mimeType}
+            capabilities={detail.capabilities}
+            currentVersion={detail.currentVersion}
+          />
         ) : tab === 'versions' ? (
           <VersionList versions={versions} />
         ) : (

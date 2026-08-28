@@ -1,6 +1,7 @@
 import { useT } from '../../shared/i18n/index.tsx';
 import { useFormatters } from '../../shared/i18n/format.ts';
 import { Button, IconButton } from '../../shared/ui/primitives.tsx';
+import { Bar, Popover, Push } from '../../shared/ui/layout.tsx';
 import { DeniedPanel } from '../../shared/ui/surface-states.tsx';
 import { PhaseSteps } from '../../entities/upload/phase-steps.tsx';
 import {
@@ -40,6 +41,7 @@ function UploadRowView({ row }: { row: UploadRow }) {
         <bdi className="upl-row-name" dir="auto">
           {row.name}
         </bdi>
+        <Push />
         <span className="upl-row-size">{formatters.bytes(row.sizeBytes)}</span>
       </div>
 
@@ -73,6 +75,7 @@ function UploadRowView({ row }: { row: UploadRow }) {
          * sentence is about processing, not permission. */}
         {row.note !== undefined && <span className="upl-row-note">{t(row.note)}</span>}
 
+        <Push />
         <span className="upl-row-actions">
           {isActive(row.phase) && (
             <Button label="upload.cancel" variant="ghost" size="sm" onClick={() => cancel(row.id)} />
@@ -120,8 +123,14 @@ export function UploadTray() {
   const active = rows.filter((row) => isActive(row.phase)).length;
 
   return (
-    <section className="upl-tray" aria-label={t('upload.tray.label')}>
-      <header className="upl-tray-head">
+    /* A floating surface, so it is the shared one: `--z-popover` from the named
+     * ladder rather than the hand-written `z-index: 20` two files had
+     * independently arrived at, plus one elevation, one radius and one
+     * entrance. `role="dialog"` because it is a named region with controls in
+     * it, not a menu of choices — and non-modal, because an upload must not
+     * stop the user reading the list behind it. */
+    <Popover className="upl-tray" label="upload.tray.label" role="dialog">
+      <Bar size="sm" as="header" className="upl-tray-head">
         <h2 className="upl-tray-title">
           {/* Aggregate progress, as a count rather than a percentage. Summing
            * per-file fractions into one bar implies the total is known, and a
@@ -131,19 +140,20 @@ export function UploadTray() {
             total: rows.length,
           })}
         </h2>
+        <Push />
         <span className="upl-tray-head-actions">
           {rows.some((row) => isSettled(row.phase)) && (
             <Button label="upload.clearDone" variant="ghost" size="sm" onClick={clearSettled} />
           )}
           <IconButton name="x" label="upload.tray.hide" onClick={() => setTrayOpen(false)} />
         </span>
-      </header>
+      </Bar>
 
       <ul className="upl-tray-list">
         {rows.map((row) => (
           <UploadRowView key={row.id} row={row} />
         ))}
       </ul>
-    </section>
+    </Popover>
   );
 }

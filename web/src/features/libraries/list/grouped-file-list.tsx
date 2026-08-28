@@ -1,10 +1,12 @@
-import { memo, useCallback } from 'react';
+import { memo, useCallback, type CSSProperties } from 'react';
 import { useT } from '../../../shared/i18n/index.tsx';
 import { useFormatters } from '../../../shared/i18n/format.ts';
-import { ChevronIcon, FileIcon } from '../../../shared/ui/icons.tsx';
+import { ChevronIcon } from '../../../shared/ui/icons.tsx';
+import { Avatar } from '../../../shared/ui/primitives.tsx';
 import { DENSITY, type DensityName, type GroupLayout, type GroupSpec } from '../../../shared/list/geometry.ts';
 import { useGroupedWindow } from '../../../shared/list/use-grouped-window.ts';
-import { CLASSIFICATION_KEY } from '../../../entities/classification/model.ts';
+import { ClassificationChip } from '../../../entities/classification/chip.tsx';
+import { FileKindIcon } from '../../../entities/file/kind-icon.tsx';
 import type { FileRow } from '../../../entities/file/model.ts';
 import { PhaseSteps, type UploadRow } from '../../../entities/upload/index.ts';
 import {
@@ -90,23 +92,50 @@ const GroupHeaderRow = memo(function GroupHeaderRow({
   );
 });
 
+/**
+ * A row's entrance index, as a typed custom property.
+ *
+ * `--i` is read by `.enc-stagger` in `styles/motion.css`, which computes
+ * `min(--i, --stagger-cap) × --stagger-row` — the prototype's own
+ * `Math.min(i, 12) * 0.02s`. Typed rather than cast through `any`: a custom
+ * property is not in `CSSProperties`, and the honest way to say so is to name
+ * the one property being added.
+ */
+type StaggerStyle = CSSProperties & Record<'--i', number>;
+
 const FileRowView = memo(function FileRowView({
   row,
   ariaRowIndex,
+  windowIndex,
   selected,
   onToggleSelect,
 }: {
   row: FileRow;
   ariaRowIndex: number;
+  /** Position within the rendered window, which is what the stagger counts. */
+  windowIndex: number;
   selected: boolean;
   onToggleSelect: ((id: string) => void) | undefined;
 }) {
   const t = useT();
   const formatters = useFormatters();
   const modified = new Date(row.modifiedAt);
+  const stagger: StaggerStyle = { '--i': windowIndex };
 
   return (
-    <div className="egl-row" role="row" aria-rowindex={ariaRowIndex} aria-selected={selected}>
+    /* `specs/library.md §4A.3`: a row rises 4px and fades in over `--dur-row` on
+     * the reference's own easing, staggered 20ms and capped at the twelfth so a
+     * long list finishes its entrance in 240ms rather than in eight seconds.
+     * Both halves are utilities in `styles/motion.css`, so the reduced-motion
+     * answer — travel to zero, duration to 1ms, stagger to 0 — is inherited
+     * rather than restated here. */
+    <div
+      className="egl-row enc-enter-row enc-stagger"
+      style={stagger}
+      role="row"
+      aria-rowindex={ariaRowIndex}
+      aria-selected={selected}
+    >
       <span className="egl-cell-select" role="gridcell">
         <input
           type="checkbox"
@@ -117,7 +146,7 @@ const FileRowView = memo(function FileRowView({
         />
       </span>
       <span className="egl-name" role="gridcell">
-        <FileIcon className="egl-name-icon" kind={row.kind} />
+        <FileKindIcon kind={row.kind} />
         {/* `dir="auto"` and isolation: a file name mixing Arabic and Latin
          * script must not rearrange the row around it (`docs/14 §7`). */}
         <bdi className="egl-name-text" dir="auto">
@@ -134,9 +163,11 @@ const FileRowView = memo(function FileRowView({
          * letters of an id would read as a person who does not exist. Drawing
          * nothing is the only one of the three that is true. */}
         {row.modifiedByInitials.length > 0 && (
-          <span className="egl-avatar" data-tone={row.modifiedByTone} aria-hidden="true">
-            {row.modifiedByInitials}
-          </span>
+          /* `Avatar`, not a local `.egl-avatar`. The local one hard-coded its
+           * four tones as light-theme hex — `#E0E7FF/#3730A3` and friends — so
+           * the list's avatars did not flip in dark mode at all. `Avatar` reads
+           * the `--av-*-bg` / `--av-*-fg` pairs, which do. */
+          <Avatar initials={row.modifiedByInitials} tone={row.modifiedByTone} />
         )}
         {/* Relative time from `Intl.RelativeTimeFormat`, with the absolute value
          * in the title. The reference hand-builds "2 h ago" and "Yesterday";
@@ -150,11 +181,7 @@ const FileRowView = memo(function FileRowView({
          * "Unclassified" on one would say nobody had labelled it rather than
          * that the idea does not apply — the same class of invented fact as a
          * guessed capability. */}
-        {!row.isFolder && (
-          <span className="egl-classification" data-level={row.classification}>
-            {t(CLASSIFICATION_KEY[row.classification])}
-          </span>
-        )}
+        {!row.isFolder && <ClassificationChip level={row.classification} />}
       </span>
       {/* Effect pills (retention, no-download) land with `ENC-674`'s
        * capabilities-with-reasons. Empty and present, so the column exists. */}
@@ -215,7 +242,7 @@ const UploadQueue = memo(function UploadQueue({ uploads }: { uploads: readonly U
         <li key={row.id} className="egl-row egl-row-upload">
           <span className="egl-cell-select" />
           <span className="egl-name">
-            <FileIcon className="egl-name-icon" kind="other" />
+            <FileKindIcon kind="other" />
             <bdi className="egl-name-text" dir="auto">
               {row.name}
             </bdi>
@@ -350,7 +377,7 @@ export function GroupedFileList({
          * the rows land — but it carries no grid semantics, because there is no
          * grid yet and claiming one would be the same lie the rest of this
          * milestone is about. */}
-        <LoadingState density={metrics} />
+        <LoadingState />
       </div>
     );
   }
@@ -413,7 +440,7 @@ export function GroupedFileList({
         />
 
         <div className="egl-window" role="rowgroup" ref={windowRef}>
-          {slice.items.map((item) => {
+          {slice.items.map((item, windowIndex) => {
             if (item.kind === 'header') {
               const group = layout.groups[item.groupIndex];
               return group === undefined ? null : (
@@ -426,6 +453,7 @@ export function GroupedFileList({
                 key={item.key}
                 row={row}
                 ariaRowIndex={item.ariaRowIndex}
+                windowIndex={windowIndex}
                 selected={selected.has(row.id)}
                 onToggleSelect={onToggleSelect === undefined ? undefined : handleToggleSelect}
               />

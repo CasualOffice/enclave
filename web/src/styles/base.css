@@ -7,6 +7,12 @@
 
 @import './fonts.css';
 @import './tokens.css';
+/* Geometry and motion. Split from `tokens.css` because that file is extracted
+ * from the reference in one block and re-extracted when the reference changes
+ * (`ENC-678`); these are derived scales, and mixing generated with derived is
+ * how a re-extraction silently deletes half of them. */
+@import './scale.css';
+@import './motion.css';
 /* The mark's loading motion, from the prototype (`ENC-135`, `web/public/BRAND.md`). */
 @import '/logo-loader.css';
 

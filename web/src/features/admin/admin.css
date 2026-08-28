@@ -8,110 +8,96 @@
  * CI, so copying its values and never its property names is the rule
  * (`docs/17 §8`).
  *
- * Two deliberate departures from the reference, both because the reference is
- * wrong rather than because taste differs:
+ * ## What is no longer here
  *
- *   1. The classification badge mixes its text at **70%** of the locked
- *      classification colour, not the prototype's 82%. 82% is 3.68:1 against the
- *      11% tint and fails WCAG AA; axe catches it. The recipe is copied from
- *      `.egl-classification` so the two surfaces cannot drift.
- *   2. Nothing here restyles `--c-pub … --c-restr`. They are locked
- *      (`docs/09 §16a`) — a tenant recolouring "Restricted" is a tenant whose
- *      users misread sensitivity at a glance.
+ * Roughly 230 of this file's declarations were a second copy of something that
+ * already existed: the four state blocks with their 44px figure and `:dir`
+ * mirror, the request-ID row, the classification badge, the raised-card recipe
+ * written out three times, the uppercase eyebrow three times, a private focus
+ * ring for five controls, a nav row, and a per-file `prefers-reduced-motion`
+ * block. They are `shared/ui/surface-states`, `entities/classification/chip`,
+ * `shared/ui/layout` and `styles/motion.css` now. What remains is what only
+ * this screen has: the builder's bands and clauses, the chips a clause is
+ * written with, the rehearsal panel, the diff table and the release gate.
  *
- * No z-index is invented: the scale is documented at the top of
- * `shared/ui/primitives.css` and nothing on this screen floats.
+ * Two of the deletions were load-bearing:
+ *
+ *   1. **Nothing here reads `--c-pub … --c-restr`.** The palette is locked
+ *      (`docs/09 §16a`) and `entities/classification/chip.css` is the only file
+ *      allowed to bind it — `tests/unit/design-system.test.tsx` asserts the
+ *      reader list is exactly that one file. Admin's copy had already drifted
+ *      to 22px with no `unclassified` branch.
+ *   2. **The unbuilt treatment is `.ui-row`'s, unchanged.** The copy here added
+ *      `opacity: .5` where the other two deliberately did not — the exact drift
+ *      `docs/17 §6` forbids, because a user calibrates on the unbuilt marker
+ *      and then meets it again where dimmed means DLP refused them.
+ *
+ * Every dimension reads a token from `styles/scale.css`. The five below are the
+ * exceptions, named here rather than there because each is structural to this
+ * one screen.
  */
 
 .adm {
+  /* The rail's width is the width at which the longest section name fits on one
+   * line; it does not move with the density switch. The other four are grid
+   * measures, sized to their content for the same reason. */
+  --adm-rail: 200px;
+  --adm-stat-min: 120px;
+  --adm-panel-min: 260px;
+  --adm-bar-label: 110px;
+  --adm-json-max: 320px;
+
   display: grid;
-  grid-template-columns: 200px minmax(0, 1fr);
+  grid-template-columns: var(--adm-rail) minmax(0, 1fr);
   flex: 1;
   min-block-size: 0;
+}
+
+/* A state that replaces the whole screen gets the whole screen.
+ *
+ * Loading, denied and failed render as the only child of `.adm`, which put them
+ * in the grid's first cell — so a refusal was drawn at the rail's 200px with
+ * its sentence broken over six lines (`/tmp/enc-before/light/15-admin-denied`).
+ * One column, one row, and `<StateBlock fill>` centres itself in it. */
+.adm[data-solo] {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
 }
 
 /* ------------------------------------------------------------------ the rail */
 
 .adm-nav {
-  padding-block: 14px;
-  padding-inline: 12px 8px;
+  padding-block: var(--sp-7);
+  padding-inline: var(--sp-6) var(--sp-4);
   color: var(--fg2);
-  font-size: 12.5px;
+  font-size: var(--fs-body);
   overflow: auto;
+}
+
+/* A policy is a real `<a href>` carrying its id (`docs/09 §21`), so it wears
+ * `.ui-row` rather than being one — a `Row` renders a `<button>`, and a button
+ * cannot be copied into a ticket or opened in a new tab. */
+.adm-nav a {
+  text-decoration: none;
+}
+
+.adm-nav .ui-field {
+  margin-block-end: var(--sp-2);
 }
 
 .adm-nav-group {
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: 11px;
+  gap: var(--sp-3);
+  font-size: var(--fs-sm);
   color: var(--fg2);
-  padding-block: 12px 4px;
-  padding-inline: 8px;
+  padding-block: var(--sp-6) var(--sp-2);
+  padding-inline: var(--sp-4);
   font-weight: 500;
 }
 
 .adm-nav-group:first-child {
   padding-block-start: 0;
-}
-
-.adm-nav-link {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding-block: 5px;
-  padding-inline: 8px;
-  border-radius: var(--r-ctrl);
-  text-decoration: none;
-  color: var(--fg2);
-  cursor: pointer;
-}
-
-.adm-nav-link:hover {
-  background: var(--hover);
-  color: var(--fg);
-}
-
-.adm-nav-link[aria-current='page'] {
-  background: var(--selected);
-  color: var(--fg);
-  font-weight: 500;
-}
-
-/* Unbuilt: neutral, never the denial treatment, and the component keeps it out
- * of the tab order because focus order is behaviour rather than styling. */
-.adm-nav-link[data-unbuilt='true'] {
-  opacity: 0.5;
-  cursor: default;
-  justify-content: space-between;
-}
-
-.adm-nav-link[data-unbuilt='true']:hover {
-  background: transparent;
-  color: var(--fg2);
-}
-
-.adm-nav-search {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  block-size: 26px;
-  padding-inline: 8px;
-  margin-block-end: 4px;
-  border-radius: var(--r-ctrl);
-  background: var(--sunken);
-  color: var(--fg2);
-}
-
-.adm-nav-search input {
-  flex: 1;
-  min-inline-size: 0;
-  border: 0;
-  background: transparent;
-  font: inherit;
-  font-size: 12px;
-  color: var(--fg);
-  outline: none;
 }
 
 .adm-nav-rules {
@@ -121,16 +107,15 @@
 }
 
 .adm-nav-broken {
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   color: var(--danger);
-  margin-inline-start: auto;
 }
 
 /* ------------------------------------------------------------------- the pane */
 
 .adm-pane {
-  padding-block: 20px 28px;
-  padding-inline: 28px;
+  padding-block: var(--sp-8) var(--sp-12);
+  padding-inline: var(--sp-8);
   overflow: auto;
   min-inline-size: 0;
 }
@@ -138,15 +123,15 @@
 .adm-editor {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: var(--sp-7);
 }
 
 .adm-crumbs {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--sp-2);
   color: var(--fg2);
-  font-size: 12.5px;
+  font-size: var(--fs-body);
 }
 
 .adm-crumbs b {
@@ -157,71 +142,59 @@
 .adm-head {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-4);
   flex-wrap: wrap;
 }
 
 .adm-h1 {
   margin: 0;
   font-family: var(--tight);
-  font-size: 20px;
+  font-size: var(--fs-display);
   font-weight: 600;
-  letter-spacing: -0.02em;
-}
-
-.adm-spacer {
-  flex: 1;
+  letter-spacing: var(--ls-tight);
 }
 
 .adm-modenote {
-  margin-block: -8px 0;
+  margin-block: calc(var(--sp-4) * -1) 0;
 }
 
 .adm-muted {
   color: var(--fg2);
-  font-size: 11.5px;
+  font-size: var(--fs-meta);
   margin: 0;
   max-inline-size: 78ch;
 }
 
 /* -------------------------------------------------------- the sentence builder */
 
+/* The card itself is `Card`; this is only the clip, so a band's sunken fill
+ * stops at the surface radius instead of squaring off its corners. */
 .adm-builder {
-  border-radius: var(--r-surf);
-  box-shadow: var(--hairline);
   overflow: hidden;
-  background: var(--sheet);
 }
 
 .adm-band {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding-block: 10px;
-  padding-inline: 14px;
-  font-size: 11px;
-  font-weight: 500;
-  color: var(--fg2);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
+  padding-block: var(--sp-5);
+  padding-inline: var(--sp-7);
   background: var(--sunken);
 }
 
+/* The hint is a sibling of `.ui-eyebrow-text`, never inside it, so it does not
+ * take the uppercase transform or the tracking that goes with it. */
 .adm-band-hint {
-  text-transform: none;
-  letter-spacing: 0;
   font-weight: 400;
+  letter-spacing: 0;
   color: var(--fg2);
 }
 
 .adm-clauses {
   list-style: none;
   margin: 0;
-  padding-block: 10px;
-  padding-inline: 14px;
+  padding-block: var(--sp-5);
+  padding-inline: var(--sp-7);
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--sp-4);
 }
 
 /* A clause is prose with controls in it, so it wraps like prose. The chips are
@@ -230,11 +203,22 @@
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 6px;
-  font-size: 13px;
-  line-height: 1.5;
+  gap: var(--sp-3);
+  font-size: var(--fs-row);
+  line-height: var(--lh-body);
   color: var(--fg);
   margin: 0;
+}
+
+/* A field inside a clause is a word in a sentence: it sits on the line box and
+ * takes its width from its content. `Field` is a block flex row by default,
+ * which is right everywhere it is a control and wrong where it is a noun. */
+.adm-clause .ui-field {
+  display: inline-flex;
+}
+
+.adm-clause .ui-field-input {
+  flex: none;
 }
 
 .adm-lit {
@@ -257,31 +241,21 @@
 .adm-chip {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  block-size: 26px;
-  padding-inline: 9px;
-  border-radius: 7px;
+  gap: var(--sp-3);
+  block-size: var(--ctl-h);
+  padding-inline: var(--ctl-pad);
+  border-radius: var(--r-ctrl);
   box-shadow: var(--hairline);
   background: var(--sheet);
   color: var(--fg);
-  font-size: 12.5px;
+  font-size: var(--fs-body);
   font-weight: 500;
   white-space: nowrap;
   max-inline-size: 100%;
 }
 
-.adm-chip-sm {
-  block-size: 20px;
-  padding-inline: 7px;
-  font-size: 11px;
-  border-radius: 999px;
-  background: var(--sunken);
-  box-shadow: none;
-  color: var(--fg2);
-}
-
 .adm-chip-control {
-  padding-inline: 9px 4px;
+  padding-inline: var(--ctl-pad) var(--sp-2);
 }
 
 .adm-chip-control:hover,
@@ -289,26 +263,19 @@
   background: var(--sunken);
 }
 
+/* No `font-size` here: the select inherits its chip's, which is how one control
+ * serves both the 12.5px sentence chip and the 11px classification badge. The
+ * declaration that used to pin it to 12.5px is why the badge needed an inner
+ * wrapper to undo it. */
 .adm-select {
   appearance: none;
   border: 0;
   background: transparent;
   font: inherit;
-  font-size: 12.5px;
-  font-weight: inherit;
   color: inherit;
   cursor: pointer;
   padding: 0;
   max-inline-size: 22ch;
-}
-
-.adm-select:focus-visible,
-.adm-chip-input:focus-visible,
-.adm-chip-x:focus-visible,
-.adm-json:focus-visible,
-.adm-nav-search input:focus-visible {
-  outline: 2px solid var(--accent-ring);
-  outline-offset: 2px;
 }
 
 /* `--fg3`, not `--fg4`. These two are graphics rather than text, so axe's
@@ -324,27 +291,13 @@
   color: var(--fg2);
   font-weight: 400;
   box-shadow: none;
-  padding-inline: 9px;
-}
-
-.adm-chip-input {
-  font: inherit;
-  font-size: 12.5px;
-  font-weight: 500;
-  color: var(--fg);
-  border: 0;
-  background: var(--sheet);
-  min-inline-size: 6ch;
-}
-
-.adm-chip-number {
-  inline-size: 9ch;
+  padding-inline: var(--ctl-pad);
 }
 
 .adm-chip-x {
-  inline-size: 18px;
-  block-size: 18px;
-  border-radius: 5px;
+  inline-size: var(--sp-10);
+  block-size: var(--sp-10);
+  border-radius: var(--r-chip);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -367,93 +320,23 @@
 
 .adm-code {
   font-family: var(--mono);
-  font-size: 11.5px;
-  padding-block: 1px;
-  padding-inline: 5px;
-  border-radius: 5px;
+  font-size: var(--fs-meta);
+  padding-block: var(--sp-1);
+  padding-inline: var(--sp-3);
+  border-radius: var(--r-chip);
   background: var(--sunken);
   color: var(--fg2);
 }
 
-/* The locked classification palette, mixed at 70% — see the header. */
-.adm-classification {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  block-size: 22px;
-  padding-inline: 7px 6px;
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0;
-  white-space: nowrap;
-  background: color-mix(in srgb, var(--cc) 11%, transparent);
-  color: color-mix(in srgb, var(--cc) 70%, var(--fg));
-}
-
-.adm-classification::before {
-  content: '';
-  inline-size: 6px;
-  block-size: 6px;
-  border-radius: 50%;
-  background: var(--cc);
-  flex: none;
-}
-
-.adm-classification[data-level='public'] {
-  --cc: var(--c-pub);
-}
-.adm-classification[data-level='internal'] {
-  --cc: var(--c-int);
-}
-.adm-classification[data-level='confidential'] {
-  --cc: var(--c-conf);
-}
-.adm-classification[data-level='highlyConfidential'] {
-  --cc: var(--c-hconf);
-}
-.adm-classification[data-level='restricted'] {
-  --cc: var(--c-restr);
-}
-
-.adm-classification-inner {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  color: inherit;
-  font-size: 11px;
-}
-
-.adm-classification-inner .adm-select {
-  font-size: 11px;
-  font-weight: 500;
-}
-
 /* ------------------------------------------------------------------- panels */
 
+/* The raised surface is `Card`'s (`.ui-card`); this is the stack inside it.
+ * A panel stays a `<section>` with an accessible name so it remains a landmark,
+ * which is why it wears the class rather than being wrapped in the component. */
 .adm-panel {
-  border-radius: var(--r-surf);
-  box-shadow: var(--hairline);
-  background: var(--sheet);
-  padding: 14px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  min-inline-size: 0;
-}
-
-.adm-panel-title {
-  margin: 0;
-  font-size: 11px;
-  font-weight: 500;
-  color: var(--fg2);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-}
-
-.adm-panel-title-lg {
-  font-size: 12px;
-  color: var(--fg2);
+  gap: var(--sp-5);
 }
 
 /* --------------------------------------------------------- the denial preview */
@@ -461,8 +344,8 @@
 .adm-denial {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 12px;
+  gap: var(--sp-3);
+  padding: var(--sp-6);
   border-radius: var(--r-ctrl);
   background: color-mix(in srgb, var(--danger) 7%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 20%, transparent);
@@ -470,22 +353,22 @@
 
 .adm-denial-message {
   margin: 0;
-  font-size: 13px;
+  font-size: var(--fs-row);
   color: var(--fg);
 }
 
 .adm-denial-remedy {
   margin: 0;
-  font-size: 12.5px;
+  font-size: var(--fs-body);
   color: var(--fg2);
 }
 
 .adm-denial-code {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--sp-3);
   margin: 0;
-  font-size: 11px;
+  font-size: var(--fs-sm);
   color: var(--fg2);
 }
 
@@ -494,73 +377,58 @@
 .adm-sim {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--sp-5);
 }
 
 .adm-sim-head {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-4);
   flex-wrap: wrap;
 }
 
 .adm-sim-stale {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--fs-ctl);
   color: color-mix(in srgb, var(--warn) 66%, var(--fg));
   background: color-mix(in srgb, var(--warn) 12%, transparent);
-  padding-block: 6px;
-  padding-inline: 10px;
+  padding-block: var(--sp-3);
+  padding-inline: var(--sp-5);
   border-radius: var(--r-ctrl);
-}
-
-.adm-sim-empty {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 8px;
 }
 
 .adm-stats {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-  gap: 10px;
-}
-
-.adm-stat {
-  border-radius: var(--r-surf);
-  box-shadow: var(--hairline);
-  padding-block: 12px;
-  padding-inline: 14px;
-  background: var(--sheet);
+  grid-template-columns: repeat(auto-fit, minmax(var(--adm-stat-min), 1fr));
+  gap: var(--sp-5);
 }
 
 .adm-stat-value {
   display: block;
   font-family: var(--tight);
-  font-size: 22px;
+  font-size: var(--fs-display);
   font-weight: 600;
-  letter-spacing: -0.02em;
+  letter-spacing: var(--ls-tight);
   line-height: 1.1;
-  min-block-size: 24px;
+  min-block-size: var(--sp-12);
 }
 
 .adm-stat-label {
   display: block;
   color: var(--fg2);
-  font-size: 11.5px;
+  font-size: var(--fs-meta);
 }
 
 .adm-blast {
   margin: 0;
-  font-size: 13px;
+  font-size: var(--fs-row);
   color: var(--fg);
 }
 
 .adm-sim-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(var(--adm-panel-min), 1fr));
+  gap: var(--sp-7);
 }
 
 .adm-bars {
@@ -569,31 +437,34 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  font-size: 12px;
+  gap: var(--sp-3);
+  font-size: var(--fs-ctl);
 }
 
 .adm-bar-row {
   display: grid;
-  grid-template-columns: 110px minmax(0, 1fr) 36px;
+  grid-template-columns: var(--adm-bar-label) minmax(0, 1fr) var(--row-h);
   align-items: center;
-  gap: 10px;
+  gap: var(--sp-5);
 }
 
+/* The one animation on this screen, and it degrades on its own: `--dur-bar`
+ * collapses to 1ms under `prefers-reduced-motion` in `styles/motion.css`, which
+ * is why there is no media query in this file. */
 .adm-bar {
-  block-size: 6px;
-  border-radius: 3px;
+  block-size: var(--sp-3);
+  border-radius: var(--r-pill);
   background: var(--fg2);
   opacity: 0.7;
   display: block;
-  transition: inline-size 500ms cubic-bezier(0.2, 0.7, 0.3, 1);
+  transition: inline-size var(--dur-bar) var(--ease-enter);
 }
 
 .adm-bar-count {
   text-align: end;
   color: var(--fg2);
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--fs-sm);
 }
 
 .adm-events {
@@ -602,15 +473,15 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  font-size: 12.5px;
+  gap: var(--sp-5);
+  font-size: var(--fs-body);
 }
 
 .adm-event {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--sp-4);
 }
 
 .adm-event-text {
@@ -618,9 +489,8 @@
 }
 
 .adm-event-when {
-  margin-inline-start: auto;
   color: var(--fg2);
-  font-size: 11px;
+  font-size: var(--fs-sm);
   font-family: var(--mono);
   white-space: nowrap;
 }
@@ -630,9 +500,9 @@
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 5px;
+  gap: var(--sp-3);
   color: var(--fg2);
-  font-size: 11.5px;
+  font-size: var(--fs-meta);
 }
 
 /* --------------------------------------------------------------------- diff */
@@ -640,23 +510,27 @@
 .adm-diff {
   inline-size: 100%;
   border-collapse: collapse;
-  font-size: 12.5px;
+  font-size: var(--fs-body);
 }
 
 .adm-diff th,
 .adm-diff td {
   text-align: start;
   vertical-align: top;
-  padding-block: 7px;
-  padding-inline: 8px;
+  padding-block: var(--sp-3);
+  padding-inline: var(--sp-4);
   border-block-end: 1px solid var(--line);
 }
 
+/* A column header is an eyebrow that cannot hold a heading element, so the
+ * uppercase comes from `.ui-eyebrow-text` on a span inside the `<th>` — behind
+ * the same `:lang()` allowlist, because `text-transform: uppercase` is wrong in
+ * Turkish, strips accents in Greek and means nothing in a caseless script
+ * (`docs/14`). This rule carries everything but the transform. */
 .adm-diff thead th {
-  font-size: 11px;
+  font-size: var(--fs-sm);
   font-weight: 500;
   color: var(--fg2);
-  text-transform: uppercase;
   letter-spacing: 0.06em;
 }
 
@@ -673,16 +547,16 @@
 .adm-confirm {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 12.5px;
+  gap: var(--sp-4);
+  font-size: var(--fs-body);
   color: var(--fg);
   cursor: pointer;
 }
 
 .adm-confirm input {
   accent-color: var(--accent);
-  inline-size: 14px;
-  block-size: 14px;
+  inline-size: var(--icon);
+  block-size: var(--icon);
   margin: 0;
 }
 
@@ -694,21 +568,20 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  counter-reset: adm-step;
+  gap: var(--sp-4);
 }
 
 .adm-gate-step {
   display: flex;
   align-items: flex-start;
-  gap: 10px;
-  font-size: 12.5px;
+  gap: var(--sp-5);
+  font-size: var(--fs-body);
 }
 
 .adm-gate-mark {
-  inline-size: 20px;
-  block-size: 20px;
-  border-radius: 50%;
+  inline-size: var(--sp-10);
+  block-size: var(--sp-10);
+  border-radius: var(--r-dot);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -725,13 +598,12 @@
 .adm-gate-text {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--sp-1);
   min-inline-size: 0;
 }
 
 .adm-gate-status {
-  margin-inline-start: auto;
-  font-size: 11px;
+  font-size: var(--fs-sm);
   color: var(--fg2);
   white-space: nowrap;
 }
@@ -744,15 +616,15 @@
 
 .adm-json {
   margin: 0;
-  padding: 12px;
+  padding: var(--sp-6);
   border-radius: var(--r-ctrl);
   background: var(--sunken);
   color: var(--fg2);
   font-family: var(--mono);
-  font-size: 11.5px;
-  line-height: 1.55;
+  font-size: var(--fs-meta);
+  line-height: var(--lh-body);
   overflow: auto;
-  max-block-size: 320px;
+  max-block-size: var(--adm-json-max);
 }
 
 /* ------------------------------------------------------------------- states */
@@ -760,113 +632,27 @@
 .adm-fixture {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-block: 0 12px;
-  font-size: 11.5px;
+  gap: var(--sp-4);
+  margin-block: 0 var(--sp-6);
+  font-size: var(--fs-meta);
   color: var(--fg2);
-}
-
-.adm-state {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  min-block-size: 60vh;
-  padding-inline: 32px;
-  text-align: center;
-}
-
-/* The mark's own construction, at rest: a bounded field with a window inside
- * it. Drawn from tokens rather than shipped as a raster, so it re-themes. */
-.adm-state-figure {
-  inline-size: 44px;
-  block-size: 44px;
-  border-radius: 11px;
-  box-shadow: inset 0 0 0 1px var(--line-strong);
-  position: relative;
-  margin-block-end: 4px;
-  color: var(--fg4);
-}
-
-.adm-state-figure::after {
-  content: '';
-  position: absolute;
-  inset-block-start: 13.75px;
-  inset-inline-start: 13.75px;
-  inline-size: 22px;
-  block-size: 22px;
-  border-radius: 0 5.5px 5.5px 5.5px;
-  box-shadow: inset 0 0 0 1px var(--line-strong);
-}
-
-:dir(rtl) .adm-state-figure::after {
-  border-radius: 5.5px 0 5.5px 5.5px;
-}
-
-.adm-state-figure[data-tone='error'],
-.adm-state-figure[data-tone='error']::after {
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 34%, transparent);
-}
-
-/* The denial treatment, and it is deliberately not the error one. A refusal is
- * a successful request with a refusing answer (`docs/17 §7`), so it reads as a
- * closed door rather than as a broken pipe — and it offers no retry. */
-.adm-state-figure[data-tone='denied'],
-.adm-state-figure[data-tone='denied']::after {
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warn) 40%, transparent);
-}
-
-.adm-state-title {
-  font-size: 15px;
-  font-weight: 600;
-  letter-spacing: -0.02em;
-  margin: 0;
-}
-
-.adm-state-body {
-  color: var(--fg2);
-  font-size: 12.5px;
-  max-inline-size: 46ch;
-  margin: 0;
-}
-
-.adm-request-id {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 11px;
-  color: var(--fg2);
-  margin: 0;
-}
-
-.adm-request-id code {
-  font-family: var(--mono);
-  font-size: 11px;
-  color: var(--fg2);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .adm-bar {
-    transition: none;
-  }
 }
 
 /* `docs/09 §16`: the admin surface says so rather than rendering an unusable
  * table. Below the rail's breakpoint the sections stack and the pane keeps its
  * own scroll, so the builder is still readable at a phone width even though it
- * is not where this work gets done. */
+ * is not where this work gets done.
+ *
+ * The breakpoint is the one literal a token cannot replace: a media query
+ * cannot read a custom property. */
 @media (max-width: 720px) {
   .adm {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto minmax(0, 1fr);
   }
 
-  .adm-pane {
-    padding-inline: 16px;
-  }
-
   .adm-bar-row {
-    grid-template-columns: 88px minmax(0, 1fr) 32px;
+    --adm-bar-label: 88px;
+    grid-template-columns: var(--adm-bar-label) minmax(0, 1fr) var(--ctl-h-lg);
   }
 }

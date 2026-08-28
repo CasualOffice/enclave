@@ -122,22 +122,18 @@ async fn stage(store: &S3BlobStore, tenant: TenantId, file: FileId) -> String {
         .await
         .expect("open a staged upload");
 
-    let url = match &session.target {
-        // `required_headers` is destructured rather than ignored with `..`, and asserted empty,
-        // because it is exactly what the comment above is about. `ENC-820` made `create_upload`
-        // sign `x-amz-checksum-sha256` into the URL when the caller supplies a digest — and a
-        // signed header is a mandatory one, so a bare `PUT` that omits it fails. This request
-        // supplies none and asks for no content type, so nothing is signed and the bare `PUT`
-        // below is correct. If that ever stops being true this line fails with the reason, rather
-        // than the `PUT` failing with a `400` fifteen lines later.
-        UploadTarget::Single { url, required_headers } => {
-            assert!(
-                required_headers.is_empty(),
-                "the pre-signed PUT now requires {required_headers:?}, which the bare request \
-                 below does not send — it will answer 400"
-            );
-            url.clone()
-        }
+    // `required_headers` is bound rather than ignored with `..`, and every header named there is
+    // sent on the `PUT` below. `ENC-820` made `create_upload` sign `x-amz-checksum-sha256` into the
+    // URL when the caller supplies a digest, and a signed header is a mandatory one: a `PUT` that
+    // omits it fails the provider's signature check with `403 SignatureDoesNotMatch`.
+    //
+    // As written this request supplies no digest and asks for no content type, so nothing is signed
+    // and the list is empty — but sending it rather than asserting it empty is what keeps this test
+    // true if that changes. Ignoring the field with `..` would compile and would leave the test
+    // staging bytes that never arrive, which is `ENC-821` exactly: `content-type` was signed,
+    // documented nowhere, and cost the first client two attempts to diagnose as a 403.
+    let (url, required_headers) = match &session.target {
+        UploadTarget::Single { url, required_headers } => (url.clone(), required_headers.clone()),
         other => panic!("a 64-byte object should be single-shot, not {other:?}"),
     };
 
@@ -148,6 +144,9 @@ async fn stage(store: &S3BlobStore, tenant: TenantId, file: FileId) -> String {
     let mut request = Request::new(SdkBody::from(BODY));
     request.set_method("PUT").expect("a valid method");
     request.set_uri(url.as_str()).expect("a valid URI");
+    for header in &required_headers {
+        request.headers_mut().insert(header.name.clone(), header.value.clone());
+    }
     let connector = Connector::builder()
         .tls_provider(tls::Provider::Rustls(tls::rustls_provider::CryptoMode::AwsLc))
         .build();

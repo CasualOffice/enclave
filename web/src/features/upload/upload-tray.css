@@ -1,8 +1,17 @@
 /* The upload tray.
  *
- * Anchored to the block-end and inline-end of the sheet, above the content and
- * below a dialog. Values follow the reference's surface ladder: `--el2` for a
- * floating panel, `--r-surf` corners, 12.5 px body text.
+ * A floating surface, so it is a `Popover` (`shared/ui/layout`) and what is
+ * left here is only where it floats and how big it is. The elevation, the
+ * radius and the entrance are the popover's, and — the reason this matters —
+ * so is the stacking level. This file previously wrote `z-index: 20` by hand,
+ * as did `shared/ui/primitives.css`'s menu, because the ladder was **prose in a
+ * comment** and neither author could read it from CSS. It is `--z-popover` in
+ * `styles/scale.css` now and nothing invents a value outside that list.
+ *
+ * It lives in the shell rather than in the library screen, because `docs/09 §8`
+ * requires an upload to keep running across navigation: a tray rendered by the
+ * screen that started it would vanish the moment the user opened Search and the
+ * transfer would continue with nothing on screen saying so.
  *
  * Logical properties only — `inset-inline-end`, never `right`. `en-XB` mirrors
  * direction in CI and the gate fails on a physical property.
@@ -18,32 +27,26 @@
  */
 
 .upl-tray {
-  position: absolute;
-  inset-block-end: 12px;
-  inset-inline-end: 12px;
-  inline-size: 360px;
-  max-inline-size: calc(100% - 24px);
+  inset-block-end: var(--sp-6);
+  inset-inline-end: var(--sp-6);
+  inline-size: var(--card-measure);
+  max-inline-size: calc(100% - var(--sp-12));
   max-block-size: 60%;
   display: flex;
   flex-direction: column;
-  background: var(--sheet);
-  border-radius: var(--r-surf);
-  box-shadow: var(--el2);
-  z-index: 20;
+  /* The popover's own padding is for menu items; the tray's rows draw their own
+   * insets and their hairlines have to reach the edges. */
+  padding: 0;
   overflow: hidden;
 }
 
 .upl-tray-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding-block: 8px;
-  padding-inline: 12px 8px;
   border-block-end: 1px solid var(--line);
+  flex: none;
 }
 
 .upl-tray-title {
-  font-size: 12.5px;
+  font-size: var(--fs-body);
   font-weight: 500;
   color: var(--fg);
   margin: 0;
@@ -51,10 +54,9 @@
 }
 
 .upl-tray-head-actions {
-  margin-inline-start: auto;
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--sp-1);
   flex: none;
 }
 
@@ -69,9 +71,9 @@
 .upl-row {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding-block: 9px;
-  padding-inline: 12px;
+  gap: var(--sp-3);
+  padding-block: var(--ctl-pad);
+  padding-inline: var(--sp-6);
   border-block-end: 1px solid var(--line);
 }
 
@@ -82,11 +84,11 @@
 .upl-row-head {
   display: flex;
   align-items: baseline;
-  gap: 8px;
+  gap: var(--sp-4);
 }
 
 .upl-row-name {
-  font-size: 12.5px;
+  font-size: var(--fs-body);
   color: var(--fg);
   font-weight: 450;
   min-inline-size: 0;
@@ -96,14 +98,18 @@
 }
 
 .upl-row-size {
-  margin-inline-start: auto;
-  font-size: 11px;
+  font-size: var(--fs-sm);
   color: var(--fg2);
   font-family: var(--mono);
   flex: none;
 }
 
-/* The progress bar. Present only while a real fraction is known. */
+/* The progress bar. Present only while a real fraction is known.
+ *
+ * The width transition reads `--dur-fade`, which the single
+ * `prefers-reduced-motion` block in `styles/motion.css` collapses to 1ms — so
+ * the local media query this file used to carry is gone along with the seven
+ * others like it. */
 .upl-bar {
   block-size: 3px;
   border-radius: 2px;
@@ -116,65 +122,67 @@
   block-size: 100%;
   background: var(--accent);
   border-radius: 2px;
-  transition: inline-size 120ms linear;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .upl-bar-fill {
-    transition: none;
-  }
+  transition: inline-size var(--dur-fade) linear;
 }
 
 .upl-row-foot {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-4);
   flex-wrap: wrap;
 }
 
 .upl-row-note {
-  font-size: 11px;
+  font-size: var(--fs-sm);
   color: var(--fg2);
 }
 
 .upl-row-actions {
-  margin-inline-start: auto;
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--sp-1);
   flex: none;
 }
 
 .upl-row-error {
   margin: 0;
   display: flex;
-  gap: 8px;
+  gap: var(--sp-4);
   flex-wrap: wrap;
-  font-size: 11px;
+  font-size: var(--fs-sm);
   color: var(--fg2);
 }
 
 .upl-row-error code {
   font-family: var(--mono);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   background: var(--sunken);
-  border-radius: 4px;
+  border-radius: var(--r-chip);
   padding-block: 1px;
-  padding-inline: 4px;
+  padding-inline: var(--sp-2);
+  /* An opaque identifier is not text in the document's language: without the
+   * isolation an RTL document reorders its segments on screen while the
+   * clipboard keeps the original. */
+  unicode-bidi: isolate;
+  direction: ltr;
 }
 
-/* The drop target, shown over the list while a drag is in progress. */
+/* The drop target, shown over the list while a drag is in progress.
+ *
+ * `--z-selbar`, not the tray's `--z-popover`: it floats inside the sheet over
+ * the rows, and it must sit *below* the tray — a dropzone that covered the
+ * queue would hide the transfers it is about to add to. */
 .upl-dropzone {
   position: absolute;
   inset: 0;
-  z-index: 30;
+  z-index: var(--z-selbar);
   display: flex;
   align-items: center;
   justify-content: center;
   background: color-mix(in srgb, var(--accent) 6%, var(--sheet));
   box-shadow: inset 0 0 0 2px var(--accent);
   border-radius: var(--r-sheet);
-  font-size: 13px;
+  font-size: var(--fs-row);
   font-weight: 500;
   color: var(--fg);
   pointer-events: none;

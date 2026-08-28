@@ -1,4 +1,5 @@
 import { useT } from '../../shared/i18n/index.tsx';
+import { Card, Push } from '../../shared/ui/layout.tsx';
 import { Button, Pill } from '../../shared/ui/primitives.tsx';
 
 /* The composer: drawn in full, wired to nothing, and honest about which.
@@ -42,7 +43,13 @@ export function AskComposer() {
   const t = useT();
 
   return (
-    <div className="ask-composer" data-state="unbuilt">
+    /* `Card` owns the sheet, the hairline and the radius — the recipe that was
+     * written out by hand in thirteen places across six stylesheets. The
+     * composer's *unbuilt*-ness is not carried on this box and never was: it is
+     * on the controls inside it, as `aria-disabled`, `tabIndex={-1}` and
+     * `data-state="unbuilt"`, which is where `docs/17 §6` puts it and where
+     * every assertion about it looks. */
+    <Card className="ask-panel ask-composer" padded={false}>
       <input
         className="ask-composer-input"
         type="text"
@@ -61,7 +68,7 @@ export function AskComposer() {
          * to a query that is not made. */}
         <Pill label="ask.composer.scope.libraries" icon="folder" tone="outline" />
         <Pill label="ask.composer.scope.anyDate" tone="outline" />
-        <span className="ask-composer-spacer" />
+        <Push />
         {/* The prototype's hint here reads "Hybrid retrieval · sources always
          * shown". Both halves are wrong for this build: retrieval is lexical in
          * M5 (`plans/M5-MVP-GA.md` D37) and no retrieval happens at all on this
@@ -83,6 +90,6 @@ export function AskComposer() {
           />
         </span>
       </div>
-    </div>
+    </Card>
   );
 }

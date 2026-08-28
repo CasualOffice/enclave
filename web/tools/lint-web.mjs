@@ -284,8 +284,51 @@ for (const file of files) {
   const lines = source.split('\n');
   filesScanned += 1;
 
-  for (const key of source.matchAll(/'((?:[a-z][A-Za-z0-9]*\.)+[A-Za-z0-9]+)'/g)) {
-    if (catalogKeys.has(key[1])) referencedKeys.add(key[1]);
+  /* The catalog is not a reference to itself.
+   *
+   * This rule was vacuous until now, and silently so. The scan below matches a
+   * single-quoted dotted identifier, and a catalog *declaration* is exactly
+   * that — `  'search.state.error.requestId': {` — so every key referenced
+   * itself, `referencedKeys` was always equal to `catalogKeys`, and the run
+   * reported "435 catalog key(s), 435 referenced" whatever the tree contained.
+   * A rule that cannot fail is the `ENC-543` shape one layer down, in the tool
+   * that exists to catch it.
+   *
+   * Found by a session that removed a key's last real use and expected the
+   * gate to say so. It did not. */
+  if (rel !== CATALOG_REL) {
+    /* Both quote styles.
+     *
+     * The scan used to accept single quotes only, which meant the commonest
+     * form of all — a JSX attribute, `label="upload.cancel"` — did not count as
+     * a reference. Invisible while the rule was vacuous; the moment the catalog
+     * stopped self-referencing it produced a hundred false orphans on keys that
+     * are rendered on screen. Backticks are deliberately still excluded: a
+     * template literal is a *computed* key, and `docs/14 §8` wants those
+     * spelled out precisely so this scan can see them. */
+    for (const key of source.matchAll(/['"]((?:[a-z][A-Za-z0-9]*\.)+[A-Za-z0-9]+)['"]/g)) {
+      if (catalogKeys.has(key[1])) referencedKeys.add(key[1]);
+    }
+
+    /* A key built from an enum — `` t(`library.status.${version.status}`) ``.
+     *
+     * The static prefix is a real reference to every key under it: the code can
+     * reach any of them and which one it reaches is a runtime value. Counting
+     * only the literal forms reported four live keys as dead, and deleting them
+     * on that evidence would have shipped a `library.status.…` placeholder into
+     * the peek panel.
+     *
+     * Narrow on purpose — the prefix must end at a dot, so `` `${a}.${b}` ``
+     * marks nothing and a whole-catalog wildcard is not expressible. A mapping
+     * written out as a `Record<Enum, MessageKey>` (see
+     * `entities/classification/model.ts`) is still the better shape, because it
+     * is exhaustive and the compiler checks it; this only stops the gate lying
+     * about the shape that is already in the tree. */
+    for (const prefix of source.matchAll(/`((?:[a-z][A-Za-z0-9]*\.)+)\$\{/g)) {
+      for (const key of catalogKeys.keys()) {
+        if (key.startsWith(prefix[1])) referencedKeys.add(key);
+      }
+    }
   }
 
   lines.forEach((line, index) => {

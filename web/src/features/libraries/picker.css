@@ -1,8 +1,13 @@
 /* The library picker.
  *
- * Follows the sidebar's nav-row rhythm rather than inventing a list style: 26 px
- * rows, 12.5 px labels, `--r-ctrl` corners, `--hover` on hover. Logical
- * properties only.
+ * The rows are `shared/ui/layout` `Row` — the same 28px line, `--r-ctrl`
+ * corners and `--hover` wash the sidebar uses, because they *are* the same
+ * thing and there were four hand-written implementations of it agreeing on
+ * eleven declarations and differing on the twelfth. What is left here is the
+ * page around them.
+ *
+ * Every dimension reads a token from `styles/scale.css`; logical properties
+ * only.
  */
 
 /* Quiet text is `--fg2`, never `--fg3` or `--fg4` (`ENC-680`).
@@ -15,14 +20,16 @@
  */
 
 .lib-picker {
-  padding-block: 20px;
-  padding-inline: 20px;
+  padding-block: var(--sp-10);
+  padding-inline: var(--sp-10);
+  /* A reading measure, not a spacing step: a picker wider than this puts the
+   * external-sharing tag half a screen away from the name it qualifies. */
   max-inline-size: 560px;
 }
 
 .lib-picker-title {
-  margin: 0 0 12px;
-  font-size: 12.5px;
+  margin: 0 0 var(--sp-6);
+  font-size: var(--fs-body);
   font-weight: 500;
   color: var(--fg2);
 }
@@ -35,70 +42,41 @@
 }
 
 .lib-picker-ws + .lib-picker-ws {
-  margin-block-start: 16px;
+  margin-block-start: var(--sp-8);
 }
 
 .lib-picker-ws-name {
-  margin: 0 0 4px;
-  font-size: 11px;
+  margin: 0 0 var(--sp-2);
+  font-size: var(--fs-sm);
   font-weight: 600;
   letter-spacing: 0.04em;
-  text-transform: uppercase;
   color: var(--fg2);
 }
 
-.lib-picker-lib {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  inline-size: 100%;
-  block-size: 28px;
-  padding-inline: 8px;
-  border: 0;
-  border-radius: var(--r-ctrl);
-  background: transparent;
-  color: var(--fg);
-  font-size: 12.5px;
-  font-weight: 450;
-  text-align: start;
-  cursor: pointer;
-}
-
-.lib-picker-lib:hover {
-  background: var(--hover);
-}
-
-.lib-picker-lib[aria-disabled='true'] {
-  color: var(--fg2);
+/* `.lib-picker-lib` is the row's *hook* and no longer its appearance.
+ *
+ * `tests/a11y/routes.spec.ts` waits on it before letting axe look at the
+ * populated picker, so the name stays on the line it names — but every
+ * declaration that used to sit under it (the flex box, the 28px height, the
+ * `--r-ctrl` corners, the `--hover` wash, the `aria-disabled` pair) is `Row`'s
+ * now. It carries no rules here on purpose: a selector that exists only so a
+ * gate can find something is honest about that, and adding a rule back to it
+ * would be the fifth copy of the row starting again.
+ *
+ * The one thing it does say is that a refused library is not a pointer target.
+ * Not the unbuilt treatment and not a dimming — `docs/17 §6`: a refusal keeps
+ * its colour and stays reachable. The reason itself lands with `ENC-674`. */
+.lib-picker-lib .ui-row[aria-disabled='true'] {
   cursor: default;
 }
 
-.lib-picker-lib[aria-disabled='true']:hover {
+.lib-picker-lib .ui-row[aria-disabled='true']:hover {
   background: transparent;
-}
-
-.lib-picker-lib-name {
-  min-inline-size: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.lib-picker-lib-tag {
-  margin-inline-start: auto;
-  flex: none;
-  font-size: 10.5px;
-  font-weight: 500;
-  color: var(--fg2);
-  background: var(--sunken);
-  border-radius: 999px;
-  padding-block: 1px;
-  padding-inline: 7px;
 }
 
 .lib-picker-none {
   margin: 0;
-  padding-inline: 8px;
-  font-size: 12px;
+  padding-inline: var(--sp-4);
+  font-size: var(--fs-ctl);
   color: var(--fg2);
 }

@@ -1,5 +1,6 @@
 import { useT } from '../../shared/i18n/index.tsx';
-import { Skeleton } from '../../shared/ui/primitives.tsx';
+import { Pill, Skeleton } from '../../shared/ui/primitives.tsx';
+import { Push, Row, Truncate } from '../../shared/ui/layout.tsx';
 import { Icon } from '../../shared/ui/icon-sprite.tsx';
 import { EmptyState, FailureState } from '../../shared/ui/surface-states.tsx';
 import { failureOf } from '../../shared/api/failure.ts';
@@ -54,7 +55,11 @@ function WorkspaceGroup({
            * the data lands (`docs/09 §11`). */}
           {[0, 1].map((index) => (
             <li key={index} className="lib-picker-lib" aria-hidden="true">
-              <Skeleton width="60%" />
+              {/* The skeleton reserves the loaded row's box, so nothing shifts
+                * when the data lands (`docs/09 §11`). */}
+              <Row unbuilt>
+                <Skeleton width="60%" />
+              </Row>
             </li>
           ))}
         </ul>
@@ -74,7 +79,7 @@ function WorkspaceGroup({
       {libraries.data !== undefined && libraries.data.items.length > 0 && (
         <ul className="lib-picker-libs">
           {libraries.data.items.map((library) => (
-            <li key={library.id}>
+            <li key={library.id} className="lib-picker-lib">
               {/* Rendered from the server's `capabilities.read`.
                *
                * A library the viewer may not read is not expected in this
@@ -82,23 +87,24 @@ function WorkspaceGroup({
                * the capability rather than from its presence, because "it was
                * in the list" is an inference and `capabilities` is an answer
                * (`docs/17 §1`). */}
-              <button
-                type="button"
-                className="lib-picker-lib"
+              <Row
                 aria-disabled={library.capabilities.read ? undefined : true}
                 onClick={library.capabilities.read ? () => onPick(library.id) : undefined}
               >
                 <Icon name="folder" size={14} />
-                <bdi className="lib-picker-lib-name" dir="auto">
-                  {library.name}
-                </bdi>
+                <Truncate>
+                  <bdi dir="auto">{library.name}</bdi>
+                </Truncate>
                 {/* External sharing is a fact about the container worth seeing
                  * before opening it. It comes from `settings`, which the server
                  * sent; nothing here derives it. */}
                 {library.settings.externalSharing !== 'DISABLED' && (
-                  <span className="lib-picker-lib-tag">{t('library.picker.external')}</span>
+                  <>
+                    <Push />
+                    <Pill label="library.picker.external" />
+                  </>
                 )}
-              </button>
+              </Row>
             </li>
           ))}
         </ul>
