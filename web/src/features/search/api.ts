@@ -53,10 +53,17 @@ const WireResponse = z.object({
     /**
      * Whether recall was reduced.
      *
-     * The server sends `true` on every request today and that is the honest
-     * value: the API process holds no vector index, so from here the store is
-     * not merely empty but unreachable. A client that could not tell reduced
-     * recall from complete recall would tell a user their document is gone.
+     * **This is now a decision, not a constant** (`ENC-698`). It used to be
+     * `true` on every request, and honestly so — the API process held no vector
+     * index, so from here the store was not merely empty but unreachable. It
+     * holds one now, so `degraded: true` means the store was reachable once and
+     * is not now, and `false` means retrieval ran as configured.
+     *
+     * The field kept its meaning while the value stopped being fixed, which is
+     * why nothing in this schema changed. What did have to change is
+     * `retrieval-notice.tsx`: it read anything-but-hybrid as *lexical* and so
+     * told a user semantic search was unavailable while semantic search was
+     * answering them (`ENC-675`).
      */
     degraded: z.boolean(),
   }),

@@ -353,7 +353,7 @@
   outline: 0;
   background: var(--hover);
   box-shadow:
-    0 0 0 1px var(--accent),
+    0 0 0 1px var(--focus-ring),
     0 0 0 4px var(--accent-ring);
 }
 

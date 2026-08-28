@@ -1553,9 +1553,19 @@ fn unavailable(error: &AuthError) -> Error {
 
 /// Maps a refresh failure that is neither replay nor an ordinary rejection.
 ///
-/// `NetworkNotAllowed` is the one that must keep its own status: `docs/05-API.md §3.2` promises
-/// `403 NETWORK_NOT_ALLOWED` for a client that has moved to a blocked network, and rendering it as
-/// a `503` would tell the user to retry something policy will refuse forever.
+/// `AuthError::ConditionalAccessDenied` is the one that must keep its own status: `docs/05-API.md
+/// §3.2` promises `403 NETWORK_NOT_ALLOWED` for a client that has moved to a blocked network, and
+/// rendering it as a `503` would tell the user to retry something policy will refuse forever. The
+/// code it carries is the stage's own, unchanged, so a session refused for its device or its
+/// authentication strength is told which — a caller who is told to change networks when the rule
+/// was about a second factor cannot act on what they were told (`ENC-709`).
+///
+/// This function does **not** audit, and by the time it runs it does not need to: the refusal was
+/// taken inside `PolicyEngine::reevaluate_conditional_access`, which recorded it against the tenant
+/// the stored refresh family names. Everything else reaching here is infrastructure and is a
+/// dependency failure rather than a decision about a caller — including a conditional-access
+/// evaluation that could not be *completed*, which arrives as `StorageUnavailable` and renders
+/// `503` rather than a denial nobody decided.
 fn refresh_failure(error: &AuthError) -> Error {
     match error.reason_code() {
         Some(code) => Error::denied(code),
