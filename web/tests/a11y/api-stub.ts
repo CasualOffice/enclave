@@ -85,6 +85,33 @@ function capabilities(index: number) {
   };
 }
 
+/**
+ * The reasons object beside it, as `content.rs` now sends it (`ENC-674`).
+ *
+ * Derived from the same `restricted` predicate the booleans are, so the two
+ * cannot disagree — a stub whose reasons named a capability it had reported as
+ * available would be testing markup against a state the server cannot produce.
+ *
+ * `shareExternal` is refused on every row and carries its own code, so at least
+ * one reason is on screen whatever the index — otherwise the a11y run would
+ * measure the denial treatment's contrast on two rows in three.
+ */
+function capabilityReasons(index: number): Record<string, string> {
+  const restricted = index % 3 === 0;
+  return {
+    shareExternal: 'EXTERNAL_SHARE_BLOCKED',
+    ...(restricted
+      ? {
+          download: 'PREVIEW_ONLY',
+          print: 'PREVIEW_ONLY',
+          export: 'PREVIEW_ONLY',
+          delete: 'ACCESS_DENIED',
+          sync: 'SYNC_NOT_PERMITTED',
+        }
+      : {}),
+  };
+}
+
 const OBLIGATIONS = { watermark: false, justificationRequired: [], approvalRequired: [] };
 
 /** A 1×1 transparent PNG, for the delivery routes. */
@@ -113,6 +140,23 @@ function containerCapabilities(index: number) {
   };
 }
 
+/**
+ * The container reasons, keyed off the same predicate as the booleans above.
+ *
+ * The second row refuses `create` and says why, which is what puts a *real*
+ * server-supplied denial sentence under the axe run rather than one this stub
+ * invented for the occasion.
+ */
+function containerCapabilityReasons(index: number): Record<string, string> {
+  return {
+    update: 'ACCESS_DENIED',
+    delete: 'ACCESS_DENIED',
+    manageMembers: 'ACCESS_DENIED',
+    managePermissions: 'ACCESS_DENIED',
+    ...(index % 2 === 0 ? {} : { create: 'ACCESS_DENIED' }),
+  };
+}
+
 function workspace(index: number) {
   return {
     id: `ws-${index}`,
@@ -122,6 +166,7 @@ function workspace(index: number) {
     visibility: 'MEMBERS_ONLY',
     revision: 1,
     capabilities: containerCapabilities(index),
+    capabilityReasons: containerCapabilityReasons(index),
     obligations: OBLIGATIONS,
     createdAt: new Date(Date.UTC(2026, 7, 20)).toISOString(),
     updatedAt: new Date(Date.UTC(2026, 7, 20)).toISOString(),
@@ -145,6 +190,7 @@ function library(index: number) {
       syncEnabled: true,
     },
     capabilities: containerCapabilities(index),
+    capabilityReasons: containerCapabilityReasons(index),
     obligations: OBLIGATIONS,
     createdAt: new Date(Date.UTC(2026, 7, 20)).toISOString(),
     updatedAt: new Date(Date.UTC(2026, 7, 20)).toISOString(),
@@ -181,6 +227,7 @@ function item(index: number) {
     status: 'AVAILABLE',
     revision: 1,
     capabilities: capabilities(index),
+    capabilityReasons: capabilityReasons(index),
     obligations: OBLIGATIONS,
     createdAt: modified,
     modifiedAt: modified,

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { CapabilityReasons } from '../capability/denial.ts';
 
 /* The wire shapes of `GET /libraries/{id}/items` and `GET /files/{id}`.
  *
@@ -81,6 +82,16 @@ export const Item = z.object({
   status: ItemStatus,
   revision: z.number(),
   capabilities: FileCapabilities,
+  /**
+   * Why each `false` above is `false` (`ENC-674`, `docs/05 §7`).
+   *
+   * Optional here and required on the server, and the asymmetry is deliberate.
+   * The server always sends the object, so its absence means an older build —
+   * and the honest rendering of that is the generic sentence, not a parse
+   * failure that blanks the listing. `entities/capability/denial.ts` sets out
+   * why this field takes the opposite answer from the booleans beside it.
+   */
+  capabilityReasons: CapabilityReasons.optional(),
   obligations: Obligations,
   createdAt: z.string(),
   modifiedAt: z.string(),
