@@ -483,6 +483,20 @@ const SPECS: &[Spec] = &[
         credential: Credential::Bearer,
         expect: Expect::ServedOrAbsent,
     },
+    Spec {
+        method: "POST",
+        path: "/api/v1/files/{id}/print",
+        target: "/api/v1/files/{file}/print",
+        // A token this suite cannot have — the seeded spine has no grant, and minting one would
+        // make this a functional test of the redemption rather than a check that the route is on
+        // the router. What it proves is the thing it exists to prove: the path resolves to a
+        // handler, the handler runs the chain, and the answer is a `404` rather than the `405` or
+        // the connection-refused an unregistered route gives. The redemption's actual behaviour is
+        // `crates/api/tests/delivery_routes.rs`.
+        body: Some(r#"{"token":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}"#),
+        credential: Credential::Bearer,
+        expect: Expect::ServedOrAbsent,
+    },
     // Sync (docs/05-API.md §13).
     Spec {
         method: "GET",
