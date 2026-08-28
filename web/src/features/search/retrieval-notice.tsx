@@ -43,19 +43,48 @@ import type { SearchDiagnostics } from './model.ts';
  *    word. That sentence is also the only useful remedy available — *try the
  *    words the document would use* — and it is a remedy the user can act on,
  *    which a retry button is not.
- * 3. **Two variants, because there are two facts.** `diagnostics` carries `mode`
- *    and `degraded` separately and they are not the same situation:
+ * 3. **Three variants, because there are three facts.** `diagnostics` carries
+ *    `mode` and `degraded` separately and they are not the same situation:
  *
  *      · `lexical`, not degraded — this deployment has no dense retrieval. A
  *        product state. Future tense, about the product, and it carries the D33
  *        `Later` chip, which is the marker this codebase already uses for
  *        "not written yet". Nothing is wrong and nothing will change today.
+ *      · `dense`, not degraded — the vector index answered, and the *keyword*
+ *        half did not. See below; this variant is new with `ENC-698`.
  *      · `degraded` — the vector store is unreachable and the query fell back.
  *        Present tense, about the system, no `Later` chip, and it says the
  *        recovery is automatic. It must not carry `Later`: a transient incident
  *        marked as a roadmap item is a lie in the other direction.
  *
- *    Collapsing them into one line would tell half the users the wrong tense.
+ *    Collapsing them into one line would tell some users the wrong tense.
+ *
+ * ── The `dense` variant, and the bug that made it necessary (`ENC-675`) ──────
+ *
+ * This file was written when `degraded: true` was a constant and every search
+ * this product could run was lexical. `ENC-698` gave the API process a vector
+ * index, so `mode` can now be `semantic` — which `api.ts` maps to `dense` —
+ * with `degraded: false`. That is the **healthy** path.
+ *
+ * `noticeFor` treated everything that was not `hybrid` as the `lexical` variant,
+ * so a healthy semantic search rendered *"Finding a document by what it means
+ * arrives in a later release"* — beneath results that had just been found by
+ * what they mean, with a `Later` chip on a feature that had shipped. A false
+ * statement, delivered by the component whose entire purpose is to keep the
+ * product from quietly overstating what its search did. The failure inverted
+ * itself the moment the thing it described stopped being true, which is exactly
+ * what `docs/09 §10`'s header exists to prevent, and is why `degraded` is a
+ * decision on the server rather than a literal.
+ *
+ * So `dense` says the true thing instead, and it is a real limitation rather
+ * than a formality: `crates/api/src/routes/search.rs` reports `semantic` and not
+ * `hybrid` precisely because `VectorIndex::candidates` runs a dense search
+ * alone. `docs/07 §5`'s sparse side is populated and never queried (`ENC-891`),
+ * so the exact term — a filename, a case number, a clause reference — is the
+ * thing this mode can miss. That is the opposite loss from the `lexical`
+ * variant's, and telling a user the wrong one sends them to the wrong query.
+ *
+ * It keeps the `Later` chip: hybrid fusion is unbuilt, not broken.
  * 4. **It sits with the results, not over them.** It is a caption on the result
  *    list, in the flow, immediately above row one — not a banner across the top
  *    of the screen and not a toast. A banner is chrome a user learns to skip; a
@@ -70,25 +99,63 @@ import type { SearchDiagnostics } from './model.ts';
  */
 
 /** Which notice a diagnostics block calls for, or `null` for a healthy hybrid search. */
-export type NoticeVariant = 'lexical' | 'degraded';
+export type NoticeVariant = 'lexical' | 'dense' | 'degraded';
 
 /**
  * Pure, and separate from the component, because two callers need the answer:
  * the notice renders it and the results header counts on it being absent for a
- * healthy search. `degraded` wins over `mode` — a fallback that landed on
- * lexical is an incident first and a mode second.
+ * healthy search.
+ *
+ * `degraded` wins over `mode`, and it wins over `dense` too — a fallback is an
+ * incident first and a mode second, whatever it landed on. Below that, the
+ * variant is the mode itself rather than "not hybrid", which is the distinction
+ * `ENC-675` turned on: `dense` and `lexical` lose opposite things and must not
+ * share a sentence.
  */
 export function noticeFor(diagnostics: SearchDiagnostics): NoticeVariant | null {
   if (diagnostics.degraded) return 'degraded';
-  if (diagnostics.mode !== 'hybrid') return 'lexical';
+  if (diagnostics.mode === 'lexical') return 'lexical';
+  if (diagnostics.mode === 'dense') return 'dense';
   return null;
 }
+
+/**
+ * The three sentences each variant is built from.
+ *
+ * A table rather than three ternaries in the JSX, because the previous version
+ * varied only the *last* line by variant and shared the other two — which is
+ * how the `dense` case would have been added as a third consequence under a
+ * heading ("Matching on words, not meaning") and a reassurance ("…by the words
+ * inside it") that are both false for it. Each variant owns all three lines, so
+ * adding one is a row here and the compiler asks for every field.
+ */
+const COPY = {
+  lexical: {
+    head: 'search.retrieval.head',
+    reassurance: 'search.retrieval.stillSearched',
+    consequence: 'search.retrieval.lexical',
+    later: true,
+  },
+  dense: {
+    head: 'search.retrieval.headDense',
+    reassurance: 'search.retrieval.stillSearchedDense',
+    consequence: 'search.retrieval.dense',
+    later: true,
+  },
+  degraded: {
+    head: 'search.retrieval.head',
+    reassurance: 'search.retrieval.stillSearched',
+    consequence: 'search.retrieval.degraded',
+    later: false,
+  },
+} as const satisfies Record<NoticeVariant, unknown>;
 
 export function RetrievalNotice({ diagnostics }: { diagnostics: SearchDiagnostics }) {
   const t = useT();
   const variant = noticeFor(diagnostics);
 
   if (variant === null) return null;
+  const copy = COPY[variant];
 
   return (
     /* `Card` with the `sunken` tone, which is the recipe this file used to write
@@ -107,15 +174,13 @@ export function RetrievalNotice({ diagnostics }: { diagnostics: SearchDiagnostic
        * screen reader is announced the same sentences in the same order. */}
       <div className="esr-notice-copy" data-notice={variant} role="status">
         <p className="esr-notice-head">
-          {t('search.retrieval.head')}
-          {/* Only on the product-state variant. `docs/17 §6`: the `Later` chip is
-           * future tense about the product, and an incident is neither. */}
-          {variant === 'lexical' && <LaterChip note="later.chip" />}
+          {t(copy.head)}
+          {/* Only on the product-state variants. `docs/17 §6`: the `Later` chip
+           * is future tense about the product, and an incident is neither. */}
+          {copy.later && <LaterChip note="later.chip" />}
         </p>
-        <p className="esr-notice-body">{t('search.retrieval.stillSearched')}</p>
-        <p className="esr-notice-body">
-          {t(variant === 'degraded' ? 'search.retrieval.degraded' : 'search.retrieval.lexical')}
-        </p>
+        <p className="esr-notice-body">{t(copy.reassurance)}</p>
+        <p className="esr-notice-body">{t(copy.consequence)}</p>
       </div>
     </Card>
   );

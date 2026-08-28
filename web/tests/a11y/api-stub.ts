@@ -42,6 +42,15 @@ export interface ApiPlan {
   readonly hang?: boolean;
   /** `diagnostics.degraded` on the search response. */
   readonly degraded?: boolean;
+  /**
+   * `diagnostics.mode` on the search response.
+   *
+   * The server's spellings, not the client's: `routes/search.rs` reports
+   * `semantic` when the vector index answered, and `api.ts` maps that to the
+   * view model's `dense`. Sending `dense` here would test a shape the server
+   * cannot produce (`ENC-675`).
+   */
+  readonly mode?: 'lexical' | 'semantic' | 'hybrid';
   /** How many rows `GET /workspaces` returns. `0` reaches the picker's empty state. */
   readonly workspaces?: number;
   /** How many rows `GET /workspaces/{id}/libraries` returns. */
@@ -357,7 +366,7 @@ export async function stubApi(page: Page, plan: ApiPlan = {}): Promise<void> {
       return json(route, {
         results: Array.from({ length: results }, (_unused, index) => hit(index)),
         page: { nextCursor: null, hasMore: false },
-        diagnostics: { mode: 'lexical', degraded: plan.degraded ?? false },
+        diagnostics: { mode: plan.mode ?? 'lexical', degraded: plan.degraded ?? false },
       });
     }
 

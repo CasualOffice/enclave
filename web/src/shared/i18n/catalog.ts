@@ -1216,6 +1216,22 @@ export const catalog = {
     description:
       'Second line, shown when this deployment has no semantic retrieval at all — a product state, so future tense about the product. Replace the quoted example with a natural pair in your language: two ways of saying the same thing that share no words.',
   },
+  'search.retrieval.headDense': {
+    message: 'Matching on meaning, not exact words',
+    description:
+      'Heading of the retrieval notice when the vector index answered and the keyword half did not (diagnostics.mode = semantic, degraded = false). The mirror image of search.retrieval.head — do not translate the two the same way, they describe opposite halves of a hybrid search. Not an error; no alarm vocabulary.',
+  },
+  'search.retrieval.stillSearchedDense': {
+    message: 'Every file you can open is still being searched — by what its contents are about.',
+    description:
+      'First line of the dense variant, and the reassuring one: coverage is unchanged and only the matching is narrower. Deliberately not the same sentence as search.retrieval.stillSearched, which promises matching "by the words inside it" — the exact thing this mode does not do. Keep it first in translation.',
+  },
+  'search.retrieval.dense': {
+    message:
+      'An exact phrase may be missed — a file name, a case number or a clause reference is best found by opening the folder it lives in. Matching on the exact words as well arrives in a later release.',
+    description:
+      'Second line of the dense variant, shown when semantic retrieval answered but keyword retrieval has not run (docs/07 §5 hybrid fusion, ENC-891). Future tense about the product, so it carries the Later chip. The loss is the opposite of search.retrieval.lexical’s: there, meaning is missed; here, the literal string is. Replace the examples with identifiers natural to your language — the point is short exact strings a reader would type verbatim.',
+  },
   'search.retrieval.degraded': {
     message:
       'A document that says “terminate for convenience” will not be found by searching “cancel the contract” right now. Finding a document by what it means is temporarily unavailable; it comes back on its own, and there is nothing to retry.',

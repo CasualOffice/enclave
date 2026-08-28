@@ -162,12 +162,22 @@ const SURFACES: readonly Surface[] = [
     api: { status: 403 },
   },
 
-  /* Search. Both retrieval notices are listed: the *lexical* one is a product
-   * state (this deployment has no dense retrieval) and the *degraded* one is an
-   * incident. They say different things and only one carries a `Later` chip, so
-   * both need a run. `degraded` now comes from the server's own diagnostics
-   * rather than from a URL knob, so the stub sets it. */
+  /* Search. All three retrieval notices are listed: *lexical* and *dense* are
+   * product states — this deployment has no dense retrieval, or has it and no
+   * keyword half — and *degraded* is an incident. They say different things and
+   * only the two product states carry a `Later` chip, so each needs a run.
+   * `degraded` and `mode` both come from the server's own diagnostics rather
+   * than from a URL knob, so the stub sets them.
+   *
+   * The `dense` row is new with `ENC-675`: it is the variant `ENC-698` made
+   * reachable, and it had been rendering the lexical copy. */
   { name: 'search, results (lexical)', url: '/search?q=agreement', ready: '.esr-hit' },
+  {
+    name: 'search, results (dense)',
+    url: '/search?q=agreement',
+    ready: '[data-notice="dense"]',
+    api: { mode: 'semantic' },
+  },
   {
     name: 'search, degraded fallback',
     url: '/search?q=agreement',
