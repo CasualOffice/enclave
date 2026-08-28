@@ -50,6 +50,9 @@ use sqlx::{PgConnection, Row};
 /// The role the application connects as, and the only role this gate has an opinion about.
 const APP_ROLE: &str = "enclave_app";
 
+/// The role the outbox drain, the tenant enumerator and the refresh-token lookups run as.
+const PLATFORM_ROLE: &str = "enclave_platform";
+
 /// Tables that carry a `tenant_id` column and are deliberately unreachable by `enclave_app`.
 ///
 /// Empty, deliberately — the same shape as `rls_coverage::EXEMPT` and for the same reason. An
@@ -426,4 +429,109 @@ async fn the_application_role_can_set_the_tenant_parameter() {
     );
 
     println!("{APP_ROLE} can SET and read back app.tenant_id.");
+}
+
+/// The two privileges a session refresh and a logout need, proved by *running the statements*.
+///
+/// `ENC-705`. `RefreshTokenStore::find_by_hash` and `revoke_returning` are the only callers of
+/// `DbPool::platform_connection` in `crates/db/src/auth_tokens.rs`, and they take it because a
+/// refresh token arrives as an opaque string with no tenant beside it: scoping the lookup would
+/// mean accepting a tenant from the caller, one layer from a request body (`CLAUDE.md` rule 3).
+///
+/// `0002_rls_policies.sql` granted `enclave_platform` nothing on `refresh_tokens`, so in a
+/// deployment that really separates the roles both statements failed with `permission denied` —
+/// sign-in worked and **staying** signed in did not. `0025` grants the two privileges.
+///
+/// # Why this runs the statements instead of reading `information_schema`
+///
+/// A catalogue query asserts that a grant exists. It does not assert that the statement the code
+/// actually issues is permitted by it, and those are different claims — a grant on the wrong
+/// object, or the right object under a search path that resolves elsewhere, satisfies the first
+/// and not the second. More to the point, the reason this defect survived is that **the harness
+/// connects as the cluster superuser**, which bypasses grants entirely: any assertion made on this
+/// connection without `SET ROLE` passes whether or not the migration ran. `SET ROLE` is what makes
+/// the assertion mean anything here.
+///
+/// Ignored by default because it needs a live PostgreSQL. CI runs it with `--include-ignored`.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL; CI runs it with --include-ignored"]
+async fn the_platform_role_can_read_and_revoke_refresh_tokens() {
+    let (_db, mut conn) = migrated_database().await;
+
+    // A literal rather than `format!`: the workspace refuses dynamic SQL strings, and it is right
+    // to — the role name is a constant, so nothing is gained by building it at run time.
+    sqlx::query("SET ROLE enclave_platform")
+        .execute(&mut conn)
+        .await
+        .unwrap_or_else(|e| panic!("could not assume {PLATFORM_ROLE}: {e}"));
+
+    // The shapes the two statements have, not the statements themselves: what is under test is the
+    // privilege, and binding a real token hash would test the schema instead. `WHERE false` keeps
+    // the UPDATE from touching a row while still requiring UPDATE to be permitted — PostgreSQL
+    // checks privilege before it evaluates the predicate.
+    let select = sqlx::query("SELECT id, tenant_id, token_hash FROM refresh_tokens WHERE false")
+        .fetch_all(&mut conn)
+        .await;
+    let update = sqlx::query("UPDATE refresh_tokens SET revoked_at = now() WHERE false")
+        .execute(&mut conn)
+        .await;
+
+    // Reset before asserting, so a failure does not leave the connection wedged for the harness.
+    if let Err(e) = sqlx::query("RESET ROLE").execute(&mut conn).await {
+        println!("warning: could not reset the session role: {e}");
+    }
+
+    assert!(
+        select.is_ok(),
+        "as {PLATFORM_ROLE}, SELECT on refresh_tokens failed: {}.          `RefreshTokenStore::find_by_hash` issues this on every refresh, so no session can be          renewed and every user is signed out when their access token expires (ENC-705).",
+        select.err().map_or_else(String::new, |e| e.to_string()),
+    );
+    assert!(
+        update.is_ok(),
+        "as {PLATFORM_ROLE}, UPDATE on refresh_tokens failed: {}.          `revoke_returning` issues this for both `revoke_family` and `revoke_all_for_subject`, so          logout fails and a stolen token cannot be revoked (ENC-705).",
+        update.err().map_or_else(String::new, |e| e.to_string()),
+    );
+
+    println!("{PLATFORM_ROLE} can SELECT and UPDATE refresh_tokens.");
+}
+
+/// The negative control: the privilege is granted, not inherited from being a superuser.
+///
+/// `docs/12-TESTING.md §1.2` — the assertion above is that two statements *succeed*, which succeeds
+/// for free on a connection that bypasses grants, and this whole defect existed because that is
+/// exactly the connection the harness uses. So this asserts that the same role is refused something
+/// it was deliberately **not** granted. If this passes while the test above passes, `SET ROLE` is
+/// doing real work and the grant is doing the rest.
+///
+/// `DELETE` is the probe because `0025` names its absence and gives the reason: `insert` and
+/// `rotate` carry their own `tenant_id` and go through `DbPool::begin`, so the platform role — which
+/// holds `BYPASSRLS` and therefore sees every tenant — has no business destroying these rows.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL; CI runs it with --include-ignored"]
+async fn the_platform_role_is_refused_what_it_was_not_granted() {
+    let (_db, mut conn) = migrated_database().await;
+
+    // A literal rather than `format!`: the workspace refuses dynamic SQL strings, and it is right
+    // to — the role name is a constant, so nothing is gained by building it at run time.
+    sqlx::query("SET ROLE enclave_platform")
+        .execute(&mut conn)
+        .await
+        .unwrap_or_else(|e| panic!("could not assume {PLATFORM_ROLE}: {e}"));
+
+    let deleted = sqlx::query("DELETE FROM refresh_tokens WHERE false").execute(&mut conn).await;
+
+    if let Err(e) = sqlx::query("RESET ROLE").execute(&mut conn).await {
+        println!("warning: could not reset the session role: {e}");
+    }
+
+    let error = deleted.err().map(|e| e.to_string()).unwrap_or_default();
+    assert!(
+        error.contains("permission denied"),
+        "as {PLATFORM_ROLE}, DELETE on refresh_tokens was permitted (or failed for another \
+         reason: {error:?}). Either 0025 granted more than it says, or this connection is not \
+         really running as that role — and if it is not, the test above proves nothing either, \
+         because the harness connects as the cluster superuser."
+    );
+
+    println!("{PLATFORM_ROLE} is refused DELETE on refresh_tokens, so the grant above is real.");
 }
