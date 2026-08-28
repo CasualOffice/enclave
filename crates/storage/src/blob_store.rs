@@ -117,6 +117,36 @@ pub trait BlobStore: PublicAccessCheck + Send + Sync {
     /// [`crate::StorageError::Key`] if the key is not canonical, or a provider failure.
     async fn delete(&self, key: &str) -> Result<()>;
 
+    /// Abandons a multipart upload, releasing the parts the provider is holding.
+    ///
+    /// `ENC-839`. [`delete`](Self::delete) removes a *completed* object; the parts of a multipart
+    /// upload that was never completed are invisible to `DeleteObject` and go on being billed. The
+    /// upload reaper marked such a row `EXPIRED` and released nothing — for every abandoned upload
+    /// over `multipart_threshold_bytes`, 16 MiB by default, which is most of what this product is
+    /// for.
+    ///
+    /// Takes the provider's `upload_id` rather than an [`UploadSession`] because that is all the
+    /// reaper has: `upload_sessions.multipart_id` is on the row and the part list is not. That is
+    /// also all `AbortMultipartUpload` needs.
+    ///
+    /// # Why this has a default, and what the default means
+    ///
+    /// Returning [`crate::StorageError::Unsupported`] rather than `Ok(())`. A store that cannot
+    /// abort must **say so**, because the caller's next act is to mark the row released: a default
+    /// that silently succeeded would turn "nothing was freed" into "everything was freed" and the
+    /// parts would be unreachable to every later pass, which is worse than the defect this closes.
+    ///
+    /// The default exists so that adding this verb does not touch the nine test doubles that
+    /// implement [`BlobStore`] and never multipart anything.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::StorageError::Unsupported`] when the store cannot abort, and any provider failure.
+    async fn abort_multipart(&self, key: &str, upload_id: &str) -> Result<()> {
+        let _ = (key, upload_id);
+        Err(crate::StorageError::Unsupported { capability: "aborting a multipart upload" })
+    }
+
     /// What this store supports — multipart, single-use URLs, object lock.
     ///
     /// Reports what was *observed* at connect time, not what the provider family is assumed to

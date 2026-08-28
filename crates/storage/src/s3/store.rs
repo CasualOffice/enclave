@@ -576,6 +576,21 @@ impl BlobStore for S3BlobStore {
         Ok(())
     }
 
+    async fn abort_multipart(&self, key: &str, upload_id: &str) -> Result<()> {
+        // The same provider call `abort_upload` makes, reached from the two values a reaper can
+        // read off a row. `abort_upload` keeps its `UploadSession` signature for callers that hold
+        // one and want the single-shot arm refused; this one is for callers that do not.
+        self.client
+            .abort_multipart_upload()
+            .bucket(&self.config.bucket)
+            .key(key)
+            .upload_id(upload_id)
+            .send()
+            .await
+            .map_err(|err| self.map_err("AbortMultipartUpload", Some(key), &err))?;
+        Ok(())
+    }
+
     async fn delete(&self, key: &str) -> Result<()> {
         let key = ObjectKey::parse(key)?;
         self.client

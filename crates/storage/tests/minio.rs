@@ -925,3 +925,76 @@ storage:
 
     store.delete(key.as_str()).await.expect("clean up");
 }
+
+/// An abandoned multipart upload's parts are released, and `DeleteObject` cannot do it.
+///
+/// `ENC-839`. The upload reaper deleted the staged key and marked the row `EXPIRED`, which frees a
+/// *completed* object. The parts of an upload that was never completed are invisible to
+/// `DeleteObject` and go on being billed — for every abandoned upload over
+/// `multipart_threshold_bytes`, 16 MiB in a deployment, which is most of what this product is for.
+///
+/// The test is in three acts because two of them are the control. Uploading a part and then
+/// deleting the key proves the leak is real against this provider rather than assumed from the S3
+/// documentation (`docs/12-TESTING.md §1.1` — test our integration, not a third party's
+/// correctness, and this *is* our integration: the reaper's choice of verb). Then the abort, and
+/// then the same listing again.
+#[tokio::test]
+#[ignore = "requires the dev-stack MinIO and TEST_S3_*; CI runs it with --include-ignored"]
+async fn an_abandoned_multipart_upload_is_released_by_abort_and_not_by_delete() {
+    let (config, admin, secrets) = fixture().await;
+    let bucket = config.bucket.clone();
+    let part_size = config.part_size_bytes as usize;
+    let store = S3BlobStore::connect_and_verify(config, &secrets).await.expect("connect");
+
+    let body: Vec<u8> = (0..part_size + 1024).map(|i| (i % 251) as u8).collect();
+    let key = new_key();
+    let session = store
+        .create_upload(UploadRequest::new(key.clone(), body.len() as u64))
+        .await
+        .expect("create_upload");
+    let UploadTarget::Multipart { upload_id, parts } = session.target.clone() else {
+        panic!("an object above the threshold must be multipart");
+    };
+
+    // One part uploaded, then abandoned — which is what a browser tab closing looks like.
+    put(&parts[0].url, body[..parts[0].length as usize].to_vec()).await;
+
+    let held = |admin: aws_sdk_s3::Client, bucket: String, key: String| async move {
+        admin
+            .list_multipart_uploads()
+            .bucket(bucket)
+            .prefix(key)
+            .send()
+            .await
+            .expect("list multipart uploads")
+            .uploads
+            .unwrap_or_default()
+            .len()
+    };
+
+    assert_eq!(
+        held(admin.clone(), bucket.clone(), key.as_str().to_owned()).await,
+        1,
+        "the provider is not holding the abandoned upload, so the rest of this test proves nothing"
+    );
+
+    // The control: the verb the reaper used to call. If this released the parts there would be no
+    // defect, and `abort_multipart` would be ceremony.
+    store.delete(key.as_str()).await.expect("delete");
+    assert_eq!(
+        held(admin.clone(), bucket.clone(), key.as_str().to_owned()).await,
+        1,
+        "DeleteObject released an incomplete multipart upload's parts, which would mean ENC-839 \
+         was never a defect on this provider — check before deleting the abort path"
+    );
+
+    // The fix, reached the way the reaper reaches it: from a key and an id off a row, with no
+    // `UploadSession` in hand.
+    store.abort_multipart(key.as_str(), &upload_id).await.expect("abort_multipart");
+    assert_eq!(
+        held(admin, bucket, key.as_str().to_owned()).await,
+        0,
+        "the parts are still held after abort_multipart, so every abandoned upload over the \
+         multipart threshold still leaks storage (ENC-839)"
+    );
+}
