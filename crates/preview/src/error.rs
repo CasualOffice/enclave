@@ -56,6 +56,14 @@ pub enum PreviewError {
     /// The object holding the source could not be fetched.
     #[error("the rendition source could not be read")]
     Source(#[source] anyhow::Error),
+
+    /// The operating system declined to provide randomness for a print capability.
+    ///
+    /// Carries nothing, because there is nothing to carry that is not already in the variant name,
+    /// and a capability is the one place where "we made do" is not an option: a token minted from a
+    /// degraded entropy source is worse than no token, and the caller can retry (`ENC-724`).
+    #[error("the operating system declined to provide entropy")]
+    Entropy,
 }
 
 impl From<PreviewError> for CoreError {

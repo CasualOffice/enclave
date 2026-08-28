@@ -378,6 +378,37 @@ async fn grant(
     .expect("insert acl entry");
 }
 
+/// Flips an existing ACL entry's effect, in place.
+///
+/// Not a second [`grant`]: `uq_acl_entry` is unique on
+/// `(tenant, resource_type, resource_id, principal_type, principal_id, action)`, so writing a
+/// `DENY` beside an `ALLOW` for the same triple is a `23505` rather than a revocation. What an
+/// administrator actually does is change the row, and that is what a test about a permission
+/// changing mid-flight has to do too.
+async fn flip(
+    conn: &mut PgConnection,
+    content: &Content,
+    user: UserId,
+    action: FileAction,
+    to: &str,
+) {
+    let affected = sqlx::query(
+        "UPDATE acl_entries SET effect = $1
+          WHERE tenant_id = $2 AND resource_type = 'FILE' AND resource_id = $3
+            AND principal_type = 'USER' AND principal_id = $4 AND action = $5",
+    )
+    .bind(to)
+    .bind(content.tenant.as_uuid())
+    .bind(content.file.as_uuid())
+    .bind(user.as_uuid())
+    .bind(Action::File(action).to_string())
+    .execute(&mut *conn)
+    .await
+    .expect("flip acl entry")
+    .rows_affected();
+    assert_eq!(affected, 1, "no ACL entry to flip — the test's setup did not grant one");
+}
+
 /// Builds the three routes under test, plus `download`, over a real chain and the counting store.
 ///
 /// `download` is registered because A2 is a statement about *pairs*: "export is independently
@@ -411,6 +442,7 @@ async fn app(
         .route("/api/v1/files/{id}/download", post(enclave_api::download::download))
         .route("/api/v1/files/{id}/export", post(routes::delivery::export))
         .route("/api/v1/files/{id}/print-token", post(routes::delivery::print_token))
+        .route("/api/v1/files/{id}/print", post(routes::delivery::print))
         .route("/api/v1/files/{id}/thumbnail", get(routes::delivery::thumbnail))
         .layer(Extension(blob))
         .layer(Extension(pipeline))
@@ -537,6 +569,34 @@ async fn post_print_token(app: &Router, bearer: &str, file: FileId) -> Answer {
         .body(Body::from("{}"))
         .expect("request");
     send(app, request).await
+}
+
+/// Spends a grant at `POST /files/{id}/print`.
+async fn post_print(app: &Router, bearer: &str, file: FileId, grant: &str) -> Answer {
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!("/api/v1/files/{}/print", file.as_uuid()))
+        .header("authorization", format!("Bearer {bearer}"))
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::json!({ "token": grant }).to_string()))
+        .expect("request");
+    send(app, request).await
+}
+
+/// Mints a grant and returns the token, failing loudly if the mint itself was refused.
+///
+/// A helper rather than three copies, and it asserts the `200` because every test below is about
+/// what happens to a *real* grant: a redemption suite whose mint silently returned `403` would be
+/// asserting that `null` cannot be redeemed twice.
+async fn mint_print(app: &Router, bearer: &str, file: FileId) -> String {
+    let answer = post_print_token(app, bearer, file).await;
+    assert_eq!(
+        answer.status,
+        StatusCode::OK,
+        "the mint was refused, so nothing below is about a redemption: {}",
+        answer.snippet()
+    );
+    answer.json()["token"].as_str().expect("a grant carries a token").to_owned()
 }
 
 async fn get_thumbnail(app: &Router, bearer: &str, file: FileId) -> Answer {
@@ -1413,4 +1473,319 @@ async fn the_real_router_serves_all_three_routes_rather_than_failing_opaquely() 
     assert!(print.json()["token"].as_str().is_some_and(|token| !token.is_empty()));
 
     drop(db);
+}
+
+// =============================================================================================
+// A20 / A21 — the redemption (`ENC-724`)
+// =============================================================================================
+
+/// **A print grant is spent by being redeemed, and what comes back is not the original.**
+///
+/// Every assertion here has its positive control in the same run, because each one is an absence:
+///
+/// * "the second redemption was refused" is satisfied by a route that refuses everything — so the
+///   *first* redemption must return `200` and the pipeline's bytes;
+/// * "no original left the building" is satisfied by a handler that did nothing — so the store's
+///   call list is asserted empty **while** the response carries a rendition, which is
+///   `docs/12-TESTING.md §4.2` A15's technique applied to the fourth delivery route.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL with the content and audit migrations; CI runs it with --include-ignored"]
+async fn a20_a_print_grant_is_spent_by_being_redeemed_and_serves_no_original() {
+    let db = TestDb::start().await.expect("start");
+    let fixtures = db.seed().await.expect("seed");
+    let (app, key, store) = app(&db, disabled_dlp()).await;
+
+    let printer = fixtures.alpha.member;
+    let content = Content::new(fixtures.alpha.id, fixtures.alpha.owner);
+    let mut admin = db.connect().await.expect("admin connection");
+    content.insert(&mut admin, "AVAILABLE", "CLEAN").await;
+    grant(&mut admin, &content, printer, FileAction::MetadataRead, "ALLOW").await;
+    grant(&mut admin, &content, printer, FileAction::Print, "ALLOW").await;
+
+    let bearer = token(&key, fixtures.alpha.id, printer);
+    let minted = mint_print(&app, &bearer, content.file).await;
+
+    let served = post_print(&app, &bearer, content.file, &minted).await;
+    assert_eq!(
+        served.status,
+        StatusCode::OK,
+        "a real grant, held by the person it was minted for, was not honoured: {}",
+        served.snippet()
+    );
+    assert_eq!(
+        served.content_type.as_deref(),
+        Some("image/png"),
+        "a redeemed print is a page image, not a document: {}",
+        served.snippet()
+    );
+    assert!(!served.bytes.is_empty(), "the redemption returned no bytes at all");
+    assert_eq!(
+        served.cache_control.as_deref(),
+        Some("private, no-store"),
+        "a printable page of a tenant's document must not be cached"
+    );
+    // The header that separates this from an export. `attachment` is what makes an artefact a
+    // take-away, which is what `file.export` is a separate permission for (rule 6).
+    assert_eq!(
+        served
+            .headers
+            .get(axum::http::header::CONTENT_DISPOSITION)
+            .map(|value| value.to_str().expect("ascii")),
+        Some("inline"),
+        "a redeemed print was served as an attachment, which is an export by another name"
+    );
+
+    // The second presentation. Not "an error" — the same `404` an id that never existed gets.
+    let replayed = post_print(&app, &bearer, content.file, &minted).await;
+    assert_eq!(
+        replayed.status,
+        StatusCode::NOT_FOUND,
+        "the same grant was honoured twice, which makes a print token a download: {}",
+        replayed.snippet()
+    );
+
+    // A token nobody minted is answered identically, so the `404` above cannot be read as "this
+    // one was real and is spent".
+    let invented = post_print(&app, &bearer, content.file, &"A".repeat(43)).await;
+    assert_eq!(invented.status, StatusCode::NOT_FOUND, "{}", invented.snippet());
+
+    // And a fresh grant still works, so none of the assertions above is passing because the route
+    // stopped answering.
+    let again = mint_print(&app, &bearer, content.file).await;
+    assert_ne!(again, minted, "two mints produced one capability");
+    let second_print = post_print(&app, &bearer, content.file, &again).await;
+    assert_eq!(
+        second_print.status,
+        StatusCode::OK,
+        "a second, freshly minted grant was refused, so this suite proves nothing: {}",
+        second_print.snippet()
+    );
+
+    // A15, extended to the redemption. Neither the mint nor the redemption holds a `BlobStore`, and
+    // this is the assertion from the store's side — the only side that can tell "not generated"
+    // from "generated and withheld".
+    assert!(
+        store.touched().is_empty(),
+        "the print path reached object storage: {:?}",
+        store.touched()
+    );
+}
+
+/// **The chain runs again at redemption**, so a permission withdrawn inside the grant's lifetime
+/// takes effect.
+///
+/// A grant is a decision about an earlier request. If the redemption trusted it, a `file.print`
+/// revoked ninety seconds ago would be honoured — which is why `CLAUDE.md` rule 1 admits no
+/// exception for an entry point that already had a decision taken for it.
+///
+/// The positive control is the redemption that happens *before* the revocation, over the same
+/// issuing path and the same file: without it this passes against a route that refuses everybody.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL with the content and audit migrations; CI runs it with --include-ignored"]
+async fn a_grant_does_not_survive_the_permission_it_was_minted_under() {
+    let db = TestDb::start().await.expect("start");
+    let fixtures = db.seed().await.expect("seed");
+    let (app, key, _store) = app(&db, disabled_dlp()).await;
+
+    let printer = fixtures.alpha.member;
+    let content = Content::new(fixtures.alpha.id, fixtures.alpha.owner);
+    let mut admin = db.connect().await.expect("admin connection");
+    content.insert(&mut admin, "AVAILABLE", "CLEAN").await;
+    grant(&mut admin, &content, printer, FileAction::MetadataRead, "ALLOW").await;
+    grant(&mut admin, &content, printer, FileAction::Print, "ALLOW").await;
+
+    let bearer = token(&key, fixtures.alpha.id, printer);
+
+    // The control: a grant minted and spent while the permission stands.
+    let allowed = mint_print(&app, &bearer, content.file).await;
+    let served = post_print(&app, &bearer, content.file, &allowed).await;
+    assert_eq!(served.status, StatusCode::OK, "{}", served.snippet());
+
+    // A second grant, minted while it was still permitted...
+    let doomed = mint_print(&app, &bearer, content.file).await;
+
+    // ...and the permission withdrawn before it is spent.
+    flip(&mut admin, &content, printer, FileAction::Print, "DENY").await;
+
+    let refused = post_print(&app, &bearer, content.file, &doomed).await;
+    assert_eq!(
+        refused.status,
+        StatusCode::FORBIDDEN,
+        "a grant outlived the permission it was minted under, so the redemption is trusting the \
+         token instead of asking the chain: {}",
+        refused.snippet()
+    );
+}
+
+/// **A21 — a colleague in the same tenant, holding `file.print` on the same file, still cannot
+/// spend somebody else's grant.**
+///
+/// This is the leg that isolates the redemption's own binding, and it is deliberately *not* a
+/// cross-tenant test. Both callers are in `tenant-alpha`, so row-level security matches the row for
+/// either of them, and both hold `file.print` on this file, so the chain allows both — the only
+/// thing that can refuse the thief is `actor_id` in the redeeming statement's `WHERE`.
+///
+/// The last assertion catches an implementation that checks the actor *after* the `UPDATE`: the
+/// rightful holder must still be able to spend the grant the thief was refused. A thief who could
+/// burn a colleague's token would hold a denial of service for the price of a stolen value.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL with the content and audit migrations; CI runs it with --include-ignored"]
+async fn a21_a_grant_is_bound_to_the_caller_it_was_minted_for() {
+    let db = TestDb::start().await.expect("start");
+    let fixtures = db.seed().await.expect("seed");
+    let (app, key, _store) = app(&db, disabled_dlp()).await;
+
+    let grantee = fixtures.alpha.member;
+    let colleague = fixtures.alpha.viewer;
+    let content = Content::new(fixtures.alpha.id, fixtures.alpha.owner);
+    let mut admin = db.connect().await.expect("admin connection");
+    content.insert(&mut admin, "AVAILABLE", "CLEAN").await;
+
+    // Both may print. The chain allows both callers; nothing about permissions separates them.
+    for user in [grantee, colleague] {
+        grant(&mut admin, &content, user, FileAction::MetadataRead, "ALLOW").await;
+        grant(&mut admin, &content, user, FileAction::Print, "ALLOW").await;
+    }
+
+    let grantee_bearer = token(&key, fixtures.alpha.id, grantee);
+    let colleague_bearer = token(&key, fixtures.alpha.id, colleague);
+
+    let minted = mint_print(&app, &grantee_bearer, content.file).await;
+
+    // The control first: the colleague can mint and spend a grant of their own, so the refusal
+    // below is about *this* grant rather than about this caller.
+    let theirs = mint_print(&app, &colleague_bearer, content.file).await;
+    let own = post_print(&app, &colleague_bearer, content.file, &theirs).await;
+    assert_eq!(
+        own.status,
+        StatusCode::OK,
+        "the colleague could not spend their own grant, so the theft assertion below proves \
+         nothing: {}",
+        own.snippet()
+    );
+
+    let stolen = post_print(&app, &colleague_bearer, content.file, &minted).await;
+    assert_eq!(
+        stolen.status,
+        StatusCode::NOT_FOUND,
+        "a different user in the same tenant, holding the same permission, spent someone else's \
+         print grant. Row-level security cannot refuse this — both rows are alpha's — so what is \
+         under test is the actor predicate in the redeeming statement: {}",
+        stolen.snippet()
+    );
+
+    // And the theft did not consume it.
+    let rightful = post_print(&app, &grantee_bearer, content.file, &minted).await;
+    assert_eq!(
+        rightful.status,
+        StatusCode::OK,
+        "the rightful holder could not spend their own grant after a colleague presented it — the \
+         refusal consumed it, which is a denial of service for the price of a stolen value: {}",
+        rightful.snippet()
+    );
+}
+
+/// T1 for the redemption: a grant minted in `tenant-beta` is a `404` in `tenant-alpha`, and it is
+/// indistinguishable from a value nobody ever minted.
+///
+/// Two mechanisms hold this and the test says which rather than implying one: the `tenant_id`
+/// predicate in the redeeming statement, and row-level security on the scoped connection. Either
+/// alone makes it pass. [`a21_a_grant_is_bound_to_the_caller_it_was_minted_for`] is the leg RLS
+/// cannot hold, and it is the one to read if the question is whether the query scopes itself.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL with the content and audit migrations; CI runs it with --include-ignored"]
+async fn t1_a_grant_minted_in_another_tenant_is_absent_rather_than_forbidden() {
+    let db = TestDb::start().await.expect("start");
+    let fixtures = db.seed().await.expect("seed");
+    let (app, key, _store) = app(&db, disabled_dlp()).await;
+
+    let mut admin = db.connect().await.expect("admin connection");
+
+    // A real grant in beta, minted by beta's own member over beta's own file — not a fabricated id.
+    let beta_content = Content::new(fixtures.beta.id, fixtures.beta.owner);
+    beta_content.insert(&mut admin, "AVAILABLE", "CLEAN").await;
+    grant(&mut admin, &beta_content, fixtures.beta.member, FileAction::MetadataRead, "ALLOW").await;
+    grant(&mut admin, &beta_content, fixtures.beta.member, FileAction::Print, "ALLOW").await;
+    let beta_bearer = token(&key, fixtures.beta.id, fixtures.beta.member);
+    let beta_grant = mint_print(&app, &beta_bearer, beta_content.file).await;
+
+    // Alpha's own caller, fully permitted on alpha's own file.
+    let alpha_content = Content::new(fixtures.alpha.id, fixtures.alpha.owner);
+    alpha_content.insert(&mut admin, "AVAILABLE", "CLEAN").await;
+    grant(&mut admin, &alpha_content, fixtures.alpha.member, FileAction::MetadataRead, "ALLOW")
+        .await;
+    grant(&mut admin, &alpha_content, fixtures.alpha.member, FileAction::Print, "ALLOW").await;
+    let alpha_bearer = token(&key, fixtures.alpha.id, fixtures.alpha.member);
+
+    let foreign = post_print(&app, &alpha_bearer, alpha_content.file, &beta_grant).await;
+    assert_eq!(
+        foreign.status,
+        StatusCode::NOT_FOUND,
+        "another tenant's print grant was honoured, or was answered with something other than a \
+         404: {}",
+        foreign.snippet()
+    );
+
+    // The control: alpha's own grant works, over the same route in the same run.
+    let mine = mint_print(&app, &alpha_bearer, alpha_content.file).await;
+    let served = post_print(&app, &alpha_bearer, alpha_content.file, &mine).await;
+    assert_eq!(
+        served.status,
+        StatusCode::OK,
+        "alpha could not spend alpha's own grant, so the cross-tenant 404 above proves nothing: {}",
+        served.snippet()
+    );
+
+    // Beta's grant still works for beta, so alpha's `404` was a boundary rather than a grant that
+    // alpha's attempt had quietly consumed.
+    let beta_served = post_print(&app, &beta_bearer, beta_content.file, &beta_grant).await;
+    assert_eq!(
+        beta_served.status,
+        StatusCode::OK,
+        "alpha's refused presentation consumed beta's grant: {}",
+        beta_served.snippet()
+    );
+}
+
+/// A redemption that carries no token is a `400`, and that is not a leak.
+///
+/// "You did not send a token" is a statement about the request. "Your token is unknown" would be a
+/// statement about what this tenant holds, and it is the `404` every real token failure gets. Two
+/// different questions, two different codes, on purpose.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL with the content and audit migrations; CI runs it with --include-ignored"]
+async fn a_redemption_with_no_token_is_a_validation_failure_rather_than_an_absence() {
+    let db = TestDb::start().await.expect("start");
+    let fixtures = db.seed().await.expect("seed");
+    let (app, key, _store) = app(&db, disabled_dlp()).await;
+
+    let printer = fixtures.alpha.member;
+    let content = Content::new(fixtures.alpha.id, fixtures.alpha.owner);
+    let mut admin = db.connect().await.expect("admin connection");
+    content.insert(&mut admin, "AVAILABLE", "CLEAN").await;
+    grant(&mut admin, &content, printer, FileAction::MetadataRead, "ALLOW").await;
+    grant(&mut admin, &content, printer, FileAction::Print, "ALLOW").await;
+    let bearer = token(&key, fixtures.alpha.id, printer);
+
+    for body in ["", "{}", r#"{"token":""}"#] {
+        let request = Request::builder()
+            .method("POST")
+            .uri(format!("/api/v1/files/{}/print", content.file.as_uuid()))
+            .header("authorization", format!("Bearer {bearer}"))
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .expect("request");
+        let answer = send(&app, request).await;
+        assert_eq!(
+            answer.status,
+            StatusCode::BAD_REQUEST,
+            "a body of `{body}` was not answered as a malformed request: {}",
+            answer.snippet()
+        );
+    }
+
+    // The control: a well-formed body with a token that simply does not exist is a `404`, so the
+    // `400`s above are about the shape of the request and nothing else.
+    let unknown = post_print(&app, &bearer, content.file, &"B".repeat(43)).await;
+    assert_eq!(unknown.status, StatusCode::NOT_FOUND, "{}", unknown.snippet());
 }

@@ -206,6 +206,10 @@ pub fn router(state: ApiState, delivery: Delivery) -> Router {
         .route("/api/v1/files/{id}/thumbnail", get(routes::delivery::thumbnail))
         .route("/api/v1/files/{id}/export", post(routes::delivery::export))
         .route("/api/v1/files/{id}/print-token", post(routes::delivery::print_token))
+        // The redemption (`ENC-724`). It holds the pipeline and no `BlobStore` either, and it asks
+        // `file.print` a second time rather than trusting the grant — a grant is a decision about
+        // an earlier request, not this one.
+        .route("/api/v1/files/{id}/print", post(routes::delivery::print))
         // Sync (docs/05-API.md §13). `reserve` extracts the `BlobStore` extension attached below —
         // it claims an ordinary upload session rather than a sync-only one, which is docs/10 §2's
         // "the sync client gets no privileged endpoint" held structurally rather than promised.

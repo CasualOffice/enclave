@@ -88,7 +88,7 @@ use crate::indexing::{index_pass, IndexPass, VectorStage};
 use crate::ocr::MountedOcr;
 use crate::scan::{scan_pass, ScanCursor, ScanPass};
 use crate::uploads::{released_a_full_batch, ReapPass};
-use crate::{coverage, epoch, invalidation, Result, Stop, Woke};
+use crate::{coverage, epoch, invalidation, print_tokens, Result, Stop, Woke};
 use enclave_dlp::detector::DetectorSet;
 
 /// The names [`Scheduler::scheduled`] reports and the loops log under.
@@ -108,6 +108,13 @@ pub const EPOCH: &str = "epoch";
 pub const COVERAGE: &str = "coverage";
 /// See [`INDEXING`]. `ENC-806` — the pass that had no caller in any binary for five milestones.
 pub const UPLOADS: &str = "upload-reaper";
+/// See [`INDEXING`]. `ENC-724` — dead print capabilities, on every deployment.
+///
+/// Unconditional, like [`INVALIDATION`] and [`EPOCH`] and unlike [`UPLOADS`]: `print_tokens` is
+/// written by any deployment that can mint a grant, which is all of them, whereas the upload reaper
+/// exists only where object storage is configured. The reasoning is in
+/// `crates/worker/src/print_tokens.rs`.
+pub const PRINT_TOKENS: &str = "print-token-reaper";
 
 /// How long each loop waits after a tick that found nothing to do.
 ///
@@ -173,6 +180,18 @@ pub struct Cadence {
     /// What it must not be is hours. `ENC-806` is the row for a reaper nothing ran at all, and the
     /// first thing anyone will do with a deployment that has one is watch whether the bytes go.
     pub uploads_idle: Duration,
+    /// How often dead print capabilities are deleted when there are none.
+    ///
+    /// Sixty seconds, and the number follows from the grant's own lifetime rather than from taste:
+    /// a print token lives 120 seconds, so a tenant's dead set is bounded by its mint rate times
+    /// this interval whatever it is, and sweeping at half the TTL keeps the table within one
+    /// lifetime's worth of rows without a batch ever being full in steady state.
+    ///
+    /// It buys table size and nothing else. An expired grant is refused by
+    /// `enclave_preview::print::redeem` before the sweep arrives and after it leaves, so this
+    /// interval cannot be wrong in the direction that matters — only in the direction of a larger
+    /// table.
+    pub print_tokens: Duration,
 }
 
 impl Default for Cadence {
@@ -185,6 +204,7 @@ impl Default for Cadence {
             epoch: Duration::from_secs(60),
             coverage: Duration::from_secs(60),
             uploads_idle: Duration::from_secs(600),
+            print_tokens: Duration::from_secs(60),
         }
     }
 }
@@ -835,7 +855,10 @@ impl Scheduler {
     /// throughput graph that never left zero.
     #[must_use]
     pub fn scheduled(&self) -> Vec<&'static str> {
-        let mut passes = vec![INVALIDATION, EPOCH];
+        // The three unconditional passes. `PRINT_TOKENS` is here rather than behind an `Option`
+        // because `print_tokens` is written by every deployment that can mint a grant — see
+        // `crates/worker/src/print_tokens.rs` for why it is not a limb of `UPLOADS`, which is not.
+        let mut passes = vec![INVALIDATION, EPOCH, PRINT_TOKENS];
         if self.scanning.is_some() {
             passes.insert(0, SCANNING);
         }
@@ -910,6 +933,14 @@ impl Scheduler {
             );
             tasks.push(tokio::spawn(async move {
                 epoch_loop(&pool, tenants.as_ref(), config, cadence, &stop).await;
+            }));
+        }
+
+        {
+            let (pool, tenants, cadence, stop) =
+                (pool.clone(), Arc::clone(&self.tenants), self.cadence.print_tokens, stop.clone());
+            tasks.push(tokio::spawn(async move {
+                print_tokens_loop(&pool, tenants.as_ref(), cadence, &stop).await;
             }));
         }
 
@@ -1334,6 +1365,34 @@ async fn epoch_loop(
     .await;
 }
 
+/// Deletes dead print capabilities on a fixed cadence.
+///
+/// Unlike [`invalidation_loop`] and [`epoch_loop`] this one can report [`Tick::Progressed`], and the
+/// condition is a *full batch* rather than any deletion at all: a pass that took three rows has
+/// finished the work there was, and coming straight round would spend a round trip per tenant to
+/// find nothing. A tenant that filled its batch has more, and draining it at the speed of the
+/// database beats draining it at the speed of [`Cadence::print_tokens`].
+///
+/// A failure warns and idles rather than propagating: one tenant's sweep failing must not stop
+/// every other tenant's table from being swept, and there is nothing to escalate — an unswept row
+/// is refused by the redemption exactly as a swept one is.
+async fn print_tokens_loop(pool: &DbPool, tenants: &dyn TenantSource, idle: Duration, stop: &Stop) {
+    run_loop(PRINT_TOKENS, idle, stop, move || async move {
+        let Some(tenants) = tenants_for(PRINT_TOKENS, tenants).await else { return Tick::Idle };
+        match print_tokens::sweep(pool, &tenants, stop).await {
+            Ok(outcome) => {
+                debug!(pass = PRINT_TOKENS, reaped = outcome.reaped, "swept");
+                if outcome.more_to_take {
+                    return Tick::Progressed;
+                }
+            }
+            Err(error) => warn!(pass = PRINT_TOKENS, %error, "the print-token sweep failed"),
+        }
+        Tick::Idle
+    })
+    .await;
+}
+
 /// Publishes each tenant's index coverage on a fixed cadence.
 ///
 /// Always [`Tick::Idle`]: this pass writes nothing and measures a level, so running it twice in a
@@ -1459,26 +1518,31 @@ mod tests {
         let tenants = FixedTenants::of(1);
 
         let bare = Scheduler::new(tenants.clone());
-        assert_eq!(bare.scheduled(), vec![INVALIDATION, EPOCH]);
+        assert_eq!(bare.scheduled(), vec![INVALIDATION, EPOCH, PRINT_TOKENS]);
 
         let with_indexing = Scheduler::new(tenants.clone()).with_indexing(RecordingRunner::new(
             Stop::new(),
             usize::MAX,
             indexed_one(),
         ));
-        assert_eq!(with_indexing.scheduled(), vec![INDEXING, INVALIDATION, EPOCH]);
+        assert_eq!(with_indexing.scheduled(), vec![INDEXING, INVALIDATION, EPOCH, PRINT_TOKENS]);
 
         let with_coverage = Scheduler::new(tenants)
             .with_coverage(Arc::new(SilentCensus), CoverageFloor::percent(80));
-        assert_eq!(with_coverage.scheduled(), vec![INVALIDATION, EPOCH, COVERAGE]);
+        assert_eq!(with_coverage.scheduled(), vec![INVALIDATION, EPOCH, PRINT_TOKENS, COVERAGE]);
     }
 
-    /// The two housekeeping passes are not optional, because neither has a dependency that could be
-    /// missing: both are PostgreSQL and nothing else.
+    /// The three housekeeping passes are not optional, because none has a dependency that could be
+    /// missing: all three are PostgreSQL and nothing else.
+    ///
+    ///  is the newest and the one most likely to be made conditional by mistake, since
+    /// the pass it sits beside in  —  — *is* conditional. It must not be:
+    /// is written by every deployment that can mint a grant, and a deployment with no object storage
+    /// still mints them ().
     #[test]
-    fn the_two_postgresql_only_passes_are_always_scheduled() {
+    fn the_postgresql_only_passes_are_always_scheduled() {
         let scheduler = Scheduler::new(FixedTenants::of(1));
-        for pass in [INVALIDATION, EPOCH] {
+        for pass in [INVALIDATION, EPOCH, PRINT_TOKENS] {
             assert!(scheduler.scheduled().contains(&pass), "{pass} was not scheduled");
         }
     }
@@ -1654,7 +1718,7 @@ mod tests {
             usize::MAX,
             cleared_one(),
         ));
-        assert_eq!(wired.scheduled(), vec![ANTIVIRUS, INVALIDATION, EPOCH]);
+        assert_eq!(wired.scheduled(), vec![ANTIVIRUS, INVALIDATION, EPOCH, PRINT_TOKENS]);
     }
 
     /// The loop visits every tenant, once per tick.
@@ -1767,7 +1831,7 @@ mod tests {
             usize::MAX,
             released_one(),
         ));
-        assert_eq!(wired.scheduled(), vec![INVALIDATION, EPOCH, UPLOADS]);
+        assert_eq!(wired.scheduled(), vec![INVALIDATION, EPOCH, PRINT_TOKENS, UPLOADS]);
     }
 
     /// The loop visits every tenant, once per tick.

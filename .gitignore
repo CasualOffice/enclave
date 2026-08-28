@@ -68,3 +68,6 @@ Thumbs.db
 # the rules above match `*.pem` and `*.key`. Found wiring the key provider into the binary
 # (`ENC-687`), where the directory first acquired a caller.
 /deploy/config/dev-keys/
+
+# Machine-local cargo config (shared target dir for agent worktrees)
+.cargo/

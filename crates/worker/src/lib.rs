@@ -118,6 +118,7 @@ pub mod error;
 pub mod indexing;
 pub mod invalidation;
 pub mod ocr;
+pub mod print_tokens;
 pub mod scan;
 pub mod schedule;
 pub mod tenants;

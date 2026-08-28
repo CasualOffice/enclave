@@ -1,6 +1,6 @@
 # 04 — Data Model
 
-> **Status:** Draft · **Version:** 2.0 · **Owner:** Platform Engineering · **Last updated:** 2026-08-29
+> **Status:** Draft · **Version:** 2.1 · **Owner:** Platform Engineering · **Last updated:** 2026-08-29
 > **Authoritative for:** all PostgreSQL DDL, tenant isolation, quotas. No other document defines schema.
 
 ## 1. Conventions
@@ -34,7 +34,7 @@
 | Workflows | `workflow_definitions`, `workflow_instances`, `workflow_steps` |
 | Audit | `audit_events`, `config_versions` |
 | Search | `index_manifests`, `retrieval_denylist`, `chunk_text` |
-| Delivery | `renditions`, `sync_devices`, `sync_cursors`, `editor_sessions`, `notifications` |
+| Delivery | `renditions`, `print_tokens`, `sync_devices`, `sync_cursors`, `editor_sessions`, `notifications` |
 | Platform | `events_outbox`, `idempotency_keys`, `quotas`, `quota_usage`, `storage_quotas`, `jobs` |
 
 ## 3. Tenant isolation (two independent layers)
@@ -1971,6 +1971,99 @@ silently re-enumerates a whole selection. `sync_change_log` is the exception bec
 retention-bounded derived feed whose 30-day window has a *specified* consequence —
 `410 CURSOR_TOO_OLD` and a scoped re-enumeration — rather than a silent loss.
 
+### 15.2 `print_tokens` — a capability with one use, held by the database (`ENC-724`)
+
+`docs/05-API.md §9`'s `POST /files/{id}/print-token` mints a 256-bit capability, returns it once and
+retains only its SHA-256. `ENC-720` kept the live grants in a `HashMap` inside one API process and
+said so; that made single use a property of a `Mutex` rather than of the system, so a grant minted on
+one replica could not be redeemed on another. This is the table that moves it.
+
+```sql
+CREATE TABLE print_tokens (
+    tenant_id    UUID NOT NULL REFERENCES tenants (id),
+    token_hash   TEXT NOT NULL CHECK (token_hash ~ '^[0-9a-f]{64}$'),
+    file_id      UUID NOT NULL,
+    version_id   UUID NOT NULL,
+    actor_type   TEXT NOT NULL CHECK (actor_type IN ('user','guest','service','mcp','system')),
+    actor_id     UUID,
+    session_id   UUID,
+    watermark    BOOLEAN NOT NULL,
+    issued_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at   TIMESTAMPTZ NOT NULL,
+    redeemed_at  TIMESTAMPTZ,
+    PRIMARY KEY (tenant_id, token_hash),
+    FOREIGN KEY (tenant_id, file_id)    REFERENCES files (tenant_id, id)         ON DELETE CASCADE,
+    FOREIGN KEY (tenant_id, version_id) REFERENCES file_versions (tenant_id, id) ON DELETE CASCADE,
+    CHECK (expires_at > issued_at),
+    CHECK (redeemed_at IS NULL OR redeemed_at >= issued_at)
+);
+
+CREATE INDEX idx_print_tokens_expiry ON print_tokens (tenant_id, expires_at);
+```
+
+**`redeemed_at` is nullable rather than a `redeemed BOOLEAN`, and that is the whole mechanism.** A
+redemption is one statement:
+
+```sql
+UPDATE print_tokens
+   SET redeemed_at = now()
+ WHERE tenant_id = $1 AND token_hash = $2
+   AND actor_type = $3 AND actor_id IS NOT DISTINCT FROM $4
+   AND session_id IS NOT DISTINCT FROM $5
+   AND redeemed_at IS NULL
+   AND expires_at > now()
+RETURNING file_id, version_id, watermark;
+```
+
+The predicate names the column the statement writes. Under `READ COMMITTED` — what the application
+connects at — the second of two concurrent redemptions blocks on the row lock, then re-evaluates its
+`WHERE` against the *updated* row, sees `redeemed_at` is no longer `NULL`, and matches nothing. It
+returns zero rows rather than an error, so the loser needs no special arm: zero rows is already the
+answer for a token that never existed. A `SELECT` followed by an `UPDATE` is the shape that lets both
+readers see `NULL` and both write — `plans/M2-ACCESS-DELIVERY.md` D18's finding about download
+budgets, one capability over. A `DELETE … RETURNING` would be correct on the race and would destroy
+the evidence in the same statement, collapsing "replayed" and "reaped" into one state.
+
+**Four failures, one answer.** A token never issued, one whose lifetime elapsed, one already redeemed
+and one minted in another tenant all make that statement return zero rows, so the endpoint has no arm
+that could distinguish them and `CLAUDE.md` rule 7 holds by construction rather than by discipline.
+`docs/12-TESTING.md §4.2` A20 proves it beside a real mint and a real first redemption, because a
+refusal asserted on its own is satisfied by a route that refuses everything.
+
+**Tenancy is not what stops a colleague.** `tenant_id` leads the key and RLS is enabled and forced,
+but a grant is bound to *one actor* and a second user in the same tenant is not that actor — a fact
+row-level security is blind to. The `actor_type`/`actor_id` pair is in the `WHERE` rather than checked
+after it, so a presentation by the wrong principal does not consume the grant on its way to being
+refused. A20's sibling row A21 uses a same-tenant thief for exactly this reason: a `tenant-beta` one
+would have been refused by RLS whether or not the predicate existed.
+
+**`session_id` is compared with `IS NOT DISTINCT FROM` and matched, not merely recorded.**
+`docs/06 §5.1` puts a session reference in the watermark, so a printed page is attributable to one
+sign-in and the grant behind it should be too. It costs a caller nothing: the `sid` claim is the
+refresh family, constant across every rotation within a login session, so an access token that
+rotates inside the 120-second window still carries the same value.
+
+**`actor_id` carries no foreign key.** It is polymorphic over `actor_type`, and PostgreSQL cannot
+express a key conditional on a sibling column — `acl_entries.resource_id` (`§9`) and
+`sync_scope_sequences.scope_id` (`§15.1`) carry the same limitation for the same reason. The `CHECK`
+bounds it to `enclave_core::ActorKind`'s five kinds, spelled in that enum's own wire strings so a
+value moves between this column, the `typ` access-token claim and `audit_events.actor_type` without
+translation. It is deliberately not `refresh_tokens`' uppercase three-value set, which would refuse an
+MCP client's grant.
+
+**`enclave_app` holds `DELETE` here, where `0018`–`0024` mostly withheld it**, and the difference is
+what the table is: a print token is a **live capability with a stated lifetime**, not a record. Who
+printed what is in `audit_events`, written inside the policy chain, and unreachable from this role by
+`UPDATE` or `DELETE` at all. Deleting a row after `expires_at` destroys nothing anybody can query —
+every statement that reads the table already refuses it — and *not* deleting leaves an unbounded
+table, one row per print, for ever. Same class as `sync_change_log` in `§15.1`: a bounded derived
+thing whose pruning is part of its specification. `crates/worker`'s `print-token-reaper` pass is what
+uses the grant, and it is a separate pass rather than a limb of `upload-reaper` because that one is
+wired only when object storage is configured, and a table that grows on every deployment cannot be
+reaped by a pass that some deployments do not run.
+
+`migrations/0027_print_tokens.sql` applies it.
+
 ## 16. Quotas and usage
 
 ```sql
@@ -2138,6 +2231,7 @@ CREATE INDEX idx_jobs_ready ON jobs (state, run_after) WHERE state = 'QUEUED';
 | `idempotency_keys` | 24 hours | No |
 | `refresh_tokens` (revoked/consumed) | 30 days | No |
 | `token_revocations` | Until `expires_at` | No |
+| `print_tokens` | Until `expires_at` (120 s), swept by the worker's `print-token-reaper` | No |
 | `renditions` | LRU eviction at the configured cache size | Yes |
 | `jobs` (terminal) | 30 days | Yes |
 
@@ -2153,6 +2247,7 @@ CREATE INDEX idx_jobs_ready ON jobs (state, run_after) WHERE state = 'QUEUED';
 
 | Version | Date | Change |
 |---|---|---|
+| 1.10 | 2026-08-29 | Added §15.2, `print_tokens` — the durable home of a print capability, and the single-use property moved out of one API process's `HashMap` and into PostgreSQL (`ENC-724`, closing the limit `ENC-720` recorded in its own source). The decision worth reading is that **`redeemed_at` is nullable rather than a `redeemed BOOLEAN`**: redemption is one `UPDATE … WHERE redeemed_at IS NULL … RETURNING`, whose predicate names the column it writes, so under `READ COMMITTED` the second of two concurrent redemptions re-checks the updated row and matches nothing — exactly one winner, across replicas, with the loser needing no arm of its own because zero rows is already the answer for a token that never existed. A `SELECT` then an `UPDATE` is the shape D18 forbids for download budgets; a `DELETE … RETURNING` would collapse *replayed* and *reaped* into one state. Expiry sits in the same predicate and against PostgreSQL's `now()` rather than a replica's, which is `crates/worker/src/invalidation.rs`'s clock finding restated. **Tenancy is not what stops a colleague**: a grant binds one actor, RLS is blind to that, and the `actor_type`/`actor_id` pair is in the `WHERE` rather than checked after it, so a wrong principal cannot burn a grant on its way to being refused — which is why `docs/12 §4.2` A21 uses a *same-tenant* thief. `session_id` is matched, not merely recorded, and costs nothing because `sid` is the refresh family and constant across rotation. `actor_id` carries no foreign key because it is polymorphic over `actor_type`, the limitation `acl_entries.resource_id` already has. `enclave_app` holds `DELETE` — a print token is a live capability with a stated lifetime, not a record; the record is in `audit_events` — and the sweep is its own worker pass rather than a limb of `upload-reaper`, which is wired only when object storage is configured. `migrations/0027_print_tokens.sql` applies it. |
 | 1.9 | 2026-08-27 | Added §15.1, sync as created — `sync_devices` and `sync_cursors` per §15, plus `sync_scope_sequences` and `sync_change_log`, which §15 did not model and without which `sync_cursors.cursor` counts nothing (`ENC-732`). The decision worth reading is that `seq` comes from a **transactional counter row** rather than a PostgreSQL `SEQUENCE` or a timestamp: the incrementing `UPDATE` holds a row lock to commit, so allocation order is commit order and the visible sequence is always a contiguous prefix — `nextval` neither locks nor rolls back, so two writers can take 5 and 6 and commit in the other order, after which a reader that saw 6 never sees 5. The cost, per-scope write serialisation, is why a scope is a library. The feed is appended by a **trigger on `files`** rather than by each writer, on the same completeness argument RLS makes about tenant predicates; the gap that leaves — an `acl_entries`-only revocation produces no entry — is `ENC-737` and is caught by `10-SYNC-AND-EDITING.md §5`'s re-evaluation at byte-fetch time. `sync_devices` is **not** `devices` (0001, Auth domain, written by nothing yet); reconciling them when device-bound tokens land is `ENC-736`. `enclave_app` holds `DELETE` on `sync_change_log` alone — deleting a counter row restarts a scope at 1 and every device holding a higher cursor stops receiving changes silently and permanently. `migrations/0023_sync_devices.sql` applies it. |
 | 1.9 | 2026-08-27 | Added §13.1, the three workflow tables as created — `workflow_definitions`, `workflow_instances`, `workflow_steps`, the schema behind `docs/05-API.md §16`'s eight endpoints (`ENC-739`). The reconciled form of `docs/15 §7`, under **Compliance** because an approval governs a document's lifecycle exactly as retention and a record declaration do, and because a top-level section would renumber `§§18`–`§20`, which three files cite by number. `§13.2` is reserved for the signing tables. **Four departures, all on §12.3's test** — storing a column the evaluator does not read is storing a promise: no `trigger` (five trigger kinds in `docs/15 §5`, none evaluated, so a stored trigger is a workflow that never starts — `ENC-745`); no `resource_type` or `assignee_type`, because a polymorphic reference cannot carry a foreign key and **the composite key is the discriminator**, which is strictly stronger than the `CHECK` would have been (`ENC-744`); and `step_type` without `AUTOMATION` or `CONDITION`, which is §12.3's `ALLOW` case exactly — a step with no evaluator instantiates `ASSIGNED` and stalls the instance with nobody able to decide it and nothing able to skip it. `SIGNATURE` **is** in the vocabulary, because `signature_requests.workflow_step_id` anchors on these rows. **Four columns `§7` does not have, each a security property.** The instance pins `allow_self_approval`, `delegation` and `on_new_version` from its definition, because otherwise one `UPDATE` on a template retroactively makes every in-flight approval under it self-approvable with nothing recording that the terms changed mid-flight — `docs/15 §2`'s determinism as a column, and the step rows freeze their quorum in `config` for the same reason, so the evaluator never re-reads the template. And `workflow_steps.decided_by`, without which an `APPROVED` step cannot distinguish *the assignee decided before delegating* from *the delegate decided* — which is the whole content of §4's requirement that a delegation never be a silent substitution. **`version_id` is `NOT NULL`** where §7 has it nullable: §2.1's first core property is that an approval approves what was actually reviewed, a nullable column is how an instance bound to nothing gets created, and NULLs being distinct would let `uq_workflow_instances_trigger` be evaded unboundedly. **`delegation` has two values and neither is a chain** — `FORBIDDEN` and `ONCE`, so an unbounded delegate chain is unstorable on every path including `psql`, which is §12.1's shape for keeping `ALLOW` out of an effect (`ENC-740`). One row per assignee per `(stage, position)`, so a quorum is a `count` rather than a running total a repaired row desynchronises. `enclave_app` holds no `DELETE`: an instance is the record of who was asked and what they said. `migrations/0024_workflows.sql` applies it. |
 | 2.0 | 2026-08-29 | §9: `acl_entries.principal_type` gains **`SHARE_LINK`**, and rule 2 gains its one exception (`ENC-879`). A share-link redemption is the only entry point in the product that arrives with a *credential and no principal*, and until now no row could name one — the vocabulary admitted five kinds and a redemption was none of them, so the chain could not return an allow for any caller a redemption could present. `SHARE_LINK` names `share_links.id`, so `principal_id` is now "the link" as well as "the user"; the alternative considered and rejected was fabricating a `GuestId`, which would write a principal nobody provisioned into `audit_events.actor_id` and make the one table an investigation depends on name an actor that does not exist. **`resource_type` is untouched**: a share link carries no ACL of its own, because the permission that governs a link is the permission on the thing it exposes. Records a sixth resolution rule that applies to no other principal kind — **a `SHARE_LINK` grant is live only while its link is** — because an `acl_entries` row outlives the `share_links` row it names, so without it revoking a link left every grant intact and `docs/12 §4.4` H4 quietly stopped being true; liveness is read in the same transaction as the decision rather than by deleting the ACL row at revocation, which would make revocation two writes that can half-succeed. The decision to argue with is that a `SHARE_LINK` principal expands to itself alone — **`EVERYONE` does not match it** — written out under §9's resolution rules; the group half of that expansion is held by `group_members.member_type`, which cannot store a share link, and `migrations/0027` fails if that ever changes. `migrations/0027_share_link_principal.sql` applies it, `NOT VALID` then `VALIDATE` because `acl_entries` is on the read path of every authorization decision and a widened `CHECK` does not need to hold `ACCESS EXCLUSIVE` for a table scan. `workspace_members.principal_type` is deliberately **not** widened: membership is a directory fact and a link bearer belongs to nothing. |
