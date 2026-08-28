@@ -108,8 +108,18 @@ const RECORD_FN: &str = "refuse";
 /// decision being taken.
 const ERROR_FILE: &str = "crates/core/src/error.rs";
 
-/// The engine function that audits inline.
-const ENFORCE_FN: &str = "enforce";
+/// The engine functions that audit inline.
+///
+/// A function may be listed here only if it calls `PolicyAuditSink::record_deny` on the same path
+/// that constructs the refusal, so that the `Err` this gate sees is provably preceded by a row. Both
+/// entries do; `PolicyEngine` holds the sink privately, so nothing outside `engine.rs` can be added
+/// to this list even by mistake.
+///
+/// `reevaluate_conditional_access` is the refresh path's single-stage re-evaluation (`ENC-709`). It
+/// is a second entry rather than a widening of the file-level rule: a future helper in `engine.rs`
+/// that refused *without* recording must still fail this gate, and it will, because it will not be
+/// named here.
+const AUDITING_ENGINE_FNS: &[&str] = &["enforce", "reevaluate_conditional_access"];
 
 /// The conversion from a stage's decision into the caller's error.
 const CONVERSION_FN: &str = "ensure_allowed";
@@ -279,12 +289,15 @@ pub(crate) const ACKNOWLEDGED: &[Acknowledged] = &[
         reason: "Renames a refusal `TokenService::refresh` already took, on the rotation path, \
                  which is on the policy-routing ALLOWLIST for the same reason the extractor above \
                  is acknowledged: the chain has not run, because refresh *is* the step that \
-                 produces the principal the chain presupposes. The one denial it carries a code \
-                 for is NETWORK_NOT_ALLOWED from the RefreshGuard — a conditional-access decision \
-                 taken inside `crates/auth`, where no tenant is in hand to key an audit chain by. \
-                 `ENC-687` is the row that owns the gap: it moves the refresh store into \
-                 PostgreSQL, at which point the family's tenant is known at the point of refusal \
-                 and this refusal can be recorded against it.",
+                 produces the principal the chain presupposes. **The conditional-access half is no \
+                 longer a gap** (`ENC-709`, closing `ENC-710`): `ChainRefreshGuard` takes that \
+                 decision inside `PolicyEngine::reevaluate_conditional_access`, which writes the \
+                 DENY row against the tenant the stored refresh family names — so by the time an \
+                 `AuthError::ConditionalAccessDenied` reaches this function the refusal is already \
+                 in `audit_events` and this really is a rename. What is left unaudited here is the \
+                 residue: a signing key that cannot be read and a store that did not answer, \
+                 neither of which is a decision about a caller, and neither of which has a verified \
+                 tenant to key a chain by when it fires before the family is resolved.",
     },
     Acknowledged {
         file: "crates/auth/src/error.rs",
@@ -439,8 +452,8 @@ pub(crate) fn liveness(sites: &[Site]) -> Result<()> {
     if !sites.iter().any(|site| site.position == Position::EngineAudits) {
         anyhow::bail!(
             "audit-coverage: nothing in {ENGINE_FILE} was classified as the engine's own audited \
-             refusal. `PolicyEngine::{ENFORCE_FN}` is the one place that records a denial inline; \
-             if it no longer constructs one, either the chain has been rewritten or this gate has \
+             refusal. {AUDITING_ENGINE_FNS:?} are the functions that record a denial inline; if \
+             none of them constructs one, either the chain has been rewritten or this gate has \
              stopped reading it."
         );
     }
@@ -629,7 +642,7 @@ impl SiteCollector<'_> {
             return Position::AuditedByHandler;
         }
         if self.file == ENGINE_FILE {
-            if function == ENFORCE_FN {
+            if AUDITING_ENGINE_FNS.contains(&function.as_str()) {
                 return Position::EngineAudits;
             }
             // `StageDecision::ensure_allowed`'s own body: the definition of the conversion, not a

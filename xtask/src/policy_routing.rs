@@ -107,7 +107,11 @@ pub(crate) const ALLOWLIST: &[Exemption] = &[
     Exemption {
         handler: "refresh",
         reason: "Refresh rotation. Same reason as login, plus reuse detection, which is a token \
-                 lifecycle control rather than a resource authorization decision (docs/03 §5).",
+                 lifecycle control rather than a resource authorization decision (docs/03 §5). It \
+                 is not policy-free: since ENC-709 the rotation runs the chain's conditional-access \
+                 stage through PolicyEngine::reevaluate_conditional_access, which audits its own \
+                 decision — a refresh is not an operation on a resource, so the stages after that \
+                 one have nothing to decide about it (crates/api/src/refresh_guard.rs).",
     },
     Exemption {
         handler: "openapi",

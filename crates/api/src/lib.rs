@@ -15,6 +15,7 @@ pub mod health;
 pub mod me;
 pub mod metrics_listener;
 pub mod preview;
+pub mod refresh_guard;
 pub mod refusal;
 pub mod routes;
 pub mod state;
@@ -29,6 +30,7 @@ use enclave_preview::PreviewPipeline;
 use enclave_storage::BlobStore;
 
 pub use edge::Edge;
+pub use refresh_guard::ChainRefreshGuard;
 pub use state::{unconfigured_stages, ApiState, VectorRetrieval};
 
 /// Builds the router.
