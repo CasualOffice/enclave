@@ -1239,6 +1239,65 @@ mod tests {
         assert!(accepted_mode(None).is_ok());
     }
 
+    /// **`ENC-698`.** The `0` [`plan`] passes on the no-index branch cannot change the answer.
+    ///
+    /// The one remaining literal in the retrieval decision, and this is what makes it inert rather
+    /// than lucky: [`Retrieval::decide`]'s `Unreachable` arm never reads either denylist argument,
+    /// so a process holding no index degrades whatever that tenant's denylist happens to hold. It is
+    /// asserted across the limit rather than at a single value, because the value that would matter
+    /// if the arm ever started reading them is the one just past it.
+    ///
+    /// It is also what proves [`no_index_in_this_process`]'s `Complete` arm is a fall-through and
+    /// not a possibility — the arm exists because [`DegradedReason`](enclave_search::DegradedReason)
+    /// has no constructor but `decide`, and this is the assertion that it can never be taken.
+    #[test]
+    fn a_process_with_no_index_degrades_whatever_the_denylist_holds() {
+        for entries in [0, 1, DEFAULT_DENYLIST_LIMIT - 1, DEFAULT_DENYLIST_LIMIT, usize::MAX] {
+            assert!(
+                matches!(
+                    Retrieval::decide(VectorStore::Unreachable, entries, DEFAULT_DENYLIST_LIMIT),
+                    Retrieval::Degraded(_)
+                ),
+                "an unreachable store must degrade with {entries} suppressions"
+            );
+        }
+        assert!(
+            no_index_in_this_process().is_ok(),
+            "the reason a process with no index gives must be constructible, or every search 500s"
+        );
+
+        // The control. Without it this passes against a `decide` that degrades unconditionally,
+        // which would make `degraded` carry no information at all — and it is the pairing the
+        // denylist count exists for: reachable, and past the limit, is the trigger `ENC-695`'s
+        // literal `0` disarmed.
+        assert_eq!(
+            Retrieval::decide(VectorStore::Available, 0, DEFAULT_DENYLIST_LIMIT),
+            Retrieval::Complete
+        );
+        assert!(matches!(
+            Retrieval::decide(
+                VectorStore::Available,
+                DEFAULT_DENYLIST_LIMIT + 1,
+                DEFAULT_DENYLIST_LIMIT
+            ),
+            Retrieval::Degraded(_)
+        ));
+    }
+
+    /// The two modes are two strings, and neither is the other.
+    ///
+    /// Trivial, and it is here because the failure it forbids is a one-character edit that no other
+    /// test in this file would catch: `diagnostics.mode` reporting `lexical` on a complete search
+    /// tells a client its recall was reduced when it was not, and `semantic` on the fallback is the
+    /// same lie the `degraded` flag exists to prevent.
+    #[test]
+    fn the_mode_a_search_reports_names_the_path_that_ran() {
+        assert_eq!(MODE_LEXICAL, "lexical");
+        assert_eq!(MODE_SEMANTIC, "semantic");
+        assert!(MODES.contains(&MODE_LEXICAL) && MODES.contains(&MODE_SEMANTIC));
+        assert_ne!(MODE_LEXICAL, MODE_SEMANTIC);
+    }
+
     #[test]
     fn the_candidate_budget_over_fetches_and_stops_at_the_documented_cap() {
         // `docs/07 §5`: 3x, capped at 200. A budget equal to the page size is the bug this guards —

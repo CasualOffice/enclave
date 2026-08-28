@@ -388,6 +388,16 @@ struct Harness {
 }
 
 async fn harness(db: &TestDb) -> Harness {
+    harness_with(db, None).await
+}
+
+/// The harness, with or without the dense-retrieval pair on the state.
+///
+/// `None` is the deployment every test above runs against: no vector index in the process, so the
+/// store is unreachable from here and the lexical fallback answers with `degraded: true`. `Some` is
+/// `ENC-698`'s new state, and the tests that pass one are the only place `Retrieval::Complete` is
+/// reachable in this file.
+async fn harness_with(db: &TestDb, vector: Option<enclave_api::VectorRetrieval>) -> Harness {
     let key = PrivateSigningKey::generate(Utc::now()).expect("generate signing key");
 
     // Three pools, each tiny. A search holds its own transaction open across the post-filter, which
@@ -410,8 +420,11 @@ async fn harness(db: &TestDb) -> Harness {
         Arc::new(enclave_audit::PgAuditSink::new(audit_pool, enclave_audit::ChainMode::Enabled)),
     );
 
-    let state =
+    let mut state =
         ApiState::new(policy, state_pool, ISSUER, AUDIENCE, KeySet::new([key.public().clone()]));
+    if let Some(vector) = vector {
+        state = state.with_vector_retrieval(vector);
+    }
     // Search reaches no delivery path: it returns rows and quotations, never bytes.
     Harness { app: router(state, enclave_api::Delivery::unconfigured()), key }
 }
@@ -871,4 +884,413 @@ async fn a_filter_that_cannot_be_applied_is_refused_rather_than_dropped() {
         post_search(&harness, fixtures.alpha.id, fixtures.alpha.member, query(TERM)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(!result_ids(&body).is_empty(), "{body}");
+}
+
+// ---------------------------------------------------------------------------------------------
+// The dense path (`ENC-698`)
+// ---------------------------------------------------------------------------------------------
+//
+// # What these prove that the tests above cannot
+//
+// Every test above runs on the lexical fallback, because until `ENC-698` that was the only path
+// this route had: `ApiState` held no vector index, so `Retrieval::decide` was handed a hardcoded
+// `VectorStore::Unreachable` and `Retrieval::Complete` was unreachable. Hardcoding
+// `diagnostics.degraded: false` was therefore the only way to make the flag wrong, and one test
+// caught it.
+//
+// That is no longer the interesting failure. With a store on the state the flag can be wrong in the
+// other direction — `false` while running lexically — and, far more seriously, the dense path is a
+// **second generator** whose candidates have to be post-filtered by the same code the first one's
+// are. `crates/search/src/vector.rs` is explicit that the emitted Milvus filter names neither
+// `acl_tokens` nor `barrier_tokens`, because nothing computes them: on this path the post-filter is
+// doing *all* of the access control rather than confirming any of it.
+//
+// # Why the store is a fake here, and where the live one is asserted against
+//
+// `docs/12-TESTING.md §1.2`'s recurring shape is an absence that passes for free. "The forbidden
+// file was not in the results" is exactly that assertion, and against a real Milvus on a machine
+// with no corpus it passes because *nothing* was in the results.
+//
+// `ProposesEverything` cannot pass for free: it returns a candidate for every file it was given,
+// unconditionally, including the one the caller may not read. If the post-filter stopped running,
+// `hidden` would appear — there is no other outcome. That is the same substitutability
+// `crates/search/src/vector.rs` was designed for and `crates/search/tests/postfilter.rs` uses; what
+// is new here is that the substitution happens at the **route**, so what is under test is the
+// handler's new dense arm rather than the crate's post-filter.
+//
+// The live-index half is not skipped and is not this file's:
+// `crates/search/tests/milvus.rs::s5_an_over_permissive_index_decides_nothing` writes real chunks
+// into a real collection, searches it with a real query vector and asserts the same drop. The two
+// together cover "a real store proposes it" and "the route drops it"; neither alone does.
+
+/// A vector index that proposes everything it was given, whatever the caller may see.
+///
+/// The point of a candidate generator in a post-filter test is that it is **wrong in the permissive
+/// direction**, which `crates/search/src/vector.rs` says an implementation is explicitly permitted
+/// to be. This one is maximally so: it never consults an ACL, a tenant or a denylist, and it hands
+/// back a candidate for every file id it holds.
+#[derive(Debug)]
+struct ProposesEverything {
+    /// What it proposes, with the excerpt each candidate carries.
+    files: Vec<(FileId, &'static str)>,
+    /// What it says about its own health, which is what `Retrieval::decide` turns on.
+    health: enclave_search::VectorStore,
+}
+
+#[async_trait]
+impl enclave_search::VectorIndex for ProposesEverything {
+    async fn candidates(
+        &self,
+        _query: enclave_search::VectorQuery<'_>,
+    ) -> Result<Vec<enclave_search::Candidate>, enclave_search::SearchError> {
+        Ok(self
+            .files
+            .iter()
+            .enumerate()
+            .map(|(rank, (file, body))| enclave_search::Candidate {
+                file_id: *file,
+                // Descending, so the page order is the index's and the trim has something to trim.
+                score: 1.0 - (rank as f32) / 100.0,
+                // `Unlocated`, which is what a dense hit carries: nothing matched at a position, so
+                // there is nothing for the API layer to mark up (`ENC-542`).
+                excerpt: Some(enclave_search::Excerpt::unlocated((*body).to_owned())),
+            })
+            .collect())
+    }
+
+    async fn reachability(&self) -> enclave_search::VectorStore {
+        self.health
+    }
+}
+
+/// A local embedding provider returning a fixed vector, so a route test needs no mounted weights.
+///
+/// Wrapped in a real `EmbeddingRouter::air_gapped` rather than implementing `Embedder` directly:
+/// the route's call goes through the router's own admission, so what these tests exercise is the
+/// wiring the binary builds and not a shortcut around it.
+#[derive(Debug)]
+struct FixedVector;
+
+/// The width every vector in this file has, and the one the active model declares.
+fn width() -> usize {
+    enclave_embeddings::ACTIVE.dimension as usize
+}
+
+#[async_trait]
+impl enclave_embeddings::EmbeddingProvider<enclave_embeddings::Local> for FixedVector {
+    fn model(&self) -> &enclave_embeddings::ModelId {
+        static ID: enclave_embeddings::ModelId = enclave_embeddings::ModelId::known("test-fixed");
+        &ID
+    }
+
+    fn dimensions(&self) -> usize {
+        width()
+    }
+
+    async fn embed(
+        &self,
+        batch: enclave_embeddings::TextBatch<enclave_embeddings::Local>,
+    ) -> enclave_embeddings::Result<Vec<enclave_embeddings::Embedding>> {
+        Ok(batch
+            .texts()
+            .iter()
+            .map(|_| enclave_embeddings::Embedding::new(vec![0.1; width()]))
+            .collect())
+    }
+
+    async fn availability(&self) -> enclave_embeddings::Availability {
+        enclave_embeddings::Availability::Ready
+    }
+}
+
+/// The pair the route needs, over a store that proposes `files` and reports `health`.
+fn dense(
+    files: Vec<(FileId, &'static str)>,
+    health: enclave_search::VectorStore,
+) -> enclave_api::VectorRetrieval {
+    enclave_api::VectorRetrieval::new(
+        Arc::new(ProposesEverything { files, health }),
+        Arc::new(enclave_embeddings::EmbeddingRouter::air_gapped(FixedVector)),
+    )
+}
+
+/// Everything one tenant's fixture holds, with the body each document carries.
+fn corpus_of(spine: &Spine) -> Vec<(FileId, &'static str)> {
+    spine.documents().into_iter().map(|(file, _, body)| (file, body)).collect()
+}
+
+/// **The assertion `CLAUDE.md` rule 5 is about, on the path that has no other control.**
+///
+/// The store proposes all three of alpha's files, including `hidden` — a file in the same folder,
+/// created by the same owner, containing the same word, differing only in that the library's grant
+/// does not reach it. Exactly two survive.
+///
+/// **Which layer this proves.** `hidden` is a **same-tenant** file and the caller is a member of
+/// that tenant with a grant on the library, so nothing about tenancy is doing the work here: not
+/// row-level security, not a `tenant_id` predicate, not `crates/authorization`'s refusal of a
+/// foreign-tenant reference. The only thing between the caller and `hidden` is
+/// `PostFilter::confirm` resolving `file.metadata_read` and finding no entry. `docs/12-TESTING.md
+/// §1.2` records that a cross-tenant assertion cannot tell those layers apart; this one does not
+/// have to, because there is only one layer left to hold it.
+///
+/// The controls are `readable` — same caller, same query, same folder, and it *is* returned — and
+/// `degraded: false`, which is what makes this a test of the dense arm rather than a test that
+/// silently ran the fallback.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL; CI runs it with --include-ignored"]
+async fn a_vector_candidate_the_caller_may_not_read_never_appears_and_one_they_may_does() {
+    let (db, fixtures, alpha, _beta) = setup().await;
+    let harness =
+        harness_with(&db, Some(dense(corpus_of(&alpha), enclave_search::VectorStore::Available)))
+            .await;
+
+    let (status, body) =
+        post_search(&harness, fixtures.alpha.id, fixtures.alpha.member, query(TERM)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // The store answered, so this is not the fallback wearing a passing test. Without this, every
+    // assertion below holds against a route that ignored the index entirely.
+    assert_eq!(body["diagnostics"]["degraded"], false, "the store is healthy: {body}");
+    assert_eq!(
+        body["diagnostics"]["mode"], "semantic",
+        "the mode must be the one that ran: {body}"
+    );
+
+    let mut returned = result_ids(&body);
+    returned.sort();
+    let mut expected = vec![alpha.readable.to_string(), alpha.titles_only.to_string()];
+    expected.sort();
+    assert_eq!(returned, expected, "the page must be exactly the confirmed hits: {body}");
+
+    let text = serde_json::to_string(&body).expect("render");
+    assert!(
+        !text.contains(&alpha.hidden.to_string()),
+        "a vector candidate the caller may not read reached them: {text}"
+    );
+    assert!(
+        !text.contains("redundancy list"),
+        "the hidden document's chunk reached the caller through a dense excerpt: {text}"
+    );
+
+    // S6 on this path too: the index proposed an excerpt for `titles_only` and `ContentRead` is
+    // what decides whether it is disclosed. The `readable` half is the control that stops this
+    // passing against a route that withholds every excerpt.
+    assert_eq!(
+        hit_for(&body, alpha.titles_only)["excerpt"],
+        serde_json::Value::Null,
+        "a dense excerpt was disclosed to a metadata-only caller: {body}"
+    );
+    let disclosed = hit_for(&body, alpha.readable)["excerpt"]
+        .as_str()
+        .expect("the readable hit must carry its dense excerpt");
+    assert!(disclosed.contains("review procedure"), "{disclosed}");
+    assert!(
+        !disclosed.contains("<em>"),
+        "a dense hit has no matched span, so it must carry no markup: {disclosed}"
+    );
+}
+
+/// **The cross-tenant half, and it is honest about which layers hold it.**
+///
+/// The store proposes **beta's** three file ids to an alpha caller — the shape a Milvus collection
+/// whose partition key was lost, or a restore that mixed two tenants, would actually produce, and
+/// one no query written here can produce by accident.
+///
+/// Three things hold this at once and the test cannot tell them apart: `PostFilter::confirm` stamps
+/// `ctx.tenant_id` on every `ResourceRef` it builds, so a foreign file id is resolved as a file of
+/// *alpha* that has no ACL rows; row-level security on `acl_entries` under `enclave_app`; and
+/// `hydrate`'s `f.tenant_id = $1`, which finds no row for it either. That is the shape
+/// `docs/12-TESTING.md §1.2` warns about, stated rather than claimed away — the test that *does*
+/// isolate one layer is the same-tenant one above.
+///
+/// The control is that alpha's own hits still come back, so this cannot pass because the request
+/// failed or because the dense arm returned nothing.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL; CI runs it with --include-ignored"]
+async fn a_vector_candidate_from_another_tenant_never_appears() {
+    let (db, fixtures, alpha, beta) = setup().await;
+
+    let mut proposed = corpus_of(&alpha);
+    proposed.extend(corpus_of(&beta).into_iter().map(|(file, _)| (file, "beta's own chunk")));
+    let harness =
+        harness_with(&db, Some(dense(proposed, enclave_search::VectorStore::Available))).await;
+
+    let (status, body) =
+        post_search(&harness, fixtures.alpha.id, fixtures.alpha.member, query(TERM)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let text = serde_json::to_string(&body).expect("render");
+    for foreign in [beta.readable, beta.hidden, beta.titles_only] {
+        assert!(
+            !text.contains(&foreign.to_string()),
+            "a candidate from another tenant reached the caller: {text}"
+        );
+    }
+    assert!(!text.contains("beta's own chunk"), "another tenant's chunk was quoted: {text}");
+
+    // The control: alpha's own confirmed hits are still there, so the absence above is a drop and
+    // not an empty page.
+    let mut returned = result_ids(&body);
+    returned.sort();
+    let mut expected = vec![alpha.readable.to_string(), alpha.titles_only.to_string()];
+    expected.sort();
+    assert_eq!(returned, expected, "{body}");
+}
+
+/// **The denylist drops a dense candidate too, and it is the same denylist.**
+///
+/// `docs/07-SEARCH-INDEXING.md §6.4`: revocation writes `retrieval_denylist` in the ACL's own
+/// transaction, and every query consults it — so a file whose grant is intact but whose row is
+/// present vanishes from search *before* any index update. `readable` is suppressed here with its
+/// ACL left exactly as it was, which is what makes this a test of the denylist rather than of the
+/// authorization resolution running beside it.
+///
+/// The control is `titles_only`, which is not suppressed and does come back.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL; CI runs it with --include-ignored"]
+async fn a_denylisted_file_is_dropped_from_a_dense_page_with_its_grant_untouched() {
+    let (db, fixtures, alpha, _beta) = setup().await;
+
+    let mut admin = db.connect().await.expect("admin connection");
+    sqlx::query(
+        "INSERT INTO retrieval_denylist (tenant_id, file_id, reason, added_at, clears_at)
+         VALUES ($1, $2, 'TEST_REVOCATION', now(), NULL)",
+    )
+    .bind(fixtures.alpha.id.as_uuid())
+    .bind(alpha.readable.as_uuid())
+    .execute(&mut admin)
+    .await
+    .expect("suppress the readable file");
+    let _ignored = admin.close().await;
+
+    let harness =
+        harness_with(&db, Some(dense(corpus_of(&alpha), enclave_search::VectorStore::Available)))
+            .await;
+    let (status, body) =
+        post_search(&harness, fixtures.alpha.id, fixtures.alpha.member, query(TERM)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let text = serde_json::to_string(&body).expect("render");
+    assert!(
+        !text.contains(&alpha.readable.to_string()),
+        "a suppressed file survived the dense path: {text}"
+    );
+    assert!(!text.contains("review procedure"), "its chunk was quoted anyway: {text}");
+    assert_eq!(
+        result_ids(&body),
+        vec![alpha.titles_only.to_string()],
+        "the control: an unsuppressed hit must still be returned: {body}"
+    );
+}
+
+/// **A store that is up, and a denylist past its limit, degrades — and the count is read.**
+///
+/// `docs/07-SEARCH-INDEXING.md §6.4` step 3. `ENC-695` passed `0` for the denylist size, which was
+/// inert only because unreachability outranked it; with a reachable store it would have said
+/// "invalidation is keeping up" about a tenant whose denylist had overflowed, silently disarming
+/// the third degradation trigger.
+///
+/// This is what makes `denylist::in_force` load-bearing rather than decorative: the store reports
+/// `Available`, so the *only* thing that can put this response on the fallback is the count.
+/// Restoring the literal `0` makes it fail.
+///
+/// The control is the same fixture before the overflow, which reports `degraded: false` — without
+/// it this passes against a route that degraded for any reason at all.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL; CI runs it with --include-ignored"]
+async fn a_denylist_past_its_limit_degrades_a_search_over_a_healthy_store() {
+    let (db, fixtures, alpha, _beta) = setup().await;
+
+    // The control first, on the same fixture and the same harness.
+    let harness =
+        harness_with(&db, Some(dense(corpus_of(&alpha), enclave_search::VectorStore::Available)))
+            .await;
+    let (status, body) =
+        post_search(&harness, fixtures.alpha.id, fixtures.alpha.member, query(TERM)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["diagnostics"]["degraded"], false, "the control must not be degraded: {body}");
+
+    // Past `DEFAULT_DENYLIST_LIMIT`, each row a real file, because `retrieval_denylist` has a
+    // composite foreign key into `files` and a denylist of ids nothing points at is not the state
+    // being tested. One statement each, so the fixture costs a fraction of a second rather than ten
+    // thousand round trips.
+    let mut admin = db.connect().await.expect("admin connection");
+    sqlx::query(
+        "INSERT INTO files
+           (id, tenant_id, workspace_id, library_id, parent_id, node_type, name, normalized_name,
+            mime_type, status, inherit_permissions, created_by, modified_by, created_at,
+            modified_at)
+         SELECT gen_random_uuid(), $1, $2, $3, NULL, 'FILE', 'bulk-' || g, 'bulk-' || g,
+                'application/pdf', 'AVAILABLE', FALSE, $4, $4, $5, $5
+           FROM generate_series(1, 10001) AS g",
+    )
+    .bind(fixtures.alpha.id.as_uuid())
+    .bind(alpha.workspace.as_uuid())
+    .bind(alpha.library.as_uuid())
+    .bind(fixtures.alpha.owner.as_uuid())
+    .bind(fixed_time())
+    .execute(&mut admin)
+    .await
+    .expect("bulk files");
+
+    sqlx::query(
+        "INSERT INTO retrieval_denylist (tenant_id, file_id, reason, added_at, clears_at)
+         SELECT $1, f.id, 'BULK_REVOCATION', now(), NULL
+           FROM files f
+          WHERE f.tenant_id = $1 AND f.name LIKE 'bulk-%'",
+    )
+    .bind(fixtures.alpha.id.as_uuid())
+    .execute(&mut admin)
+    .await
+    .expect("bulk suppressions");
+    let _ignored = admin.close().await;
+
+    let (status, body) =
+        post_search(&harness, fixtures.alpha.id, fixtures.alpha.member, query(TERM)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["diagnostics"]["degraded"], true,
+        "an overflowing denylist must degrade a healthy store: {body}"
+    );
+    assert_eq!(body["diagnostics"]["mode"], "lexical", "{body}");
+
+    // Degraded is a worse *recall* guarantee and never a worse *authorization* one (D25): the page
+    // still excludes `hidden` and still answers.
+    assert!(!result_ids(&body).is_empty(), "the fallback must still answer: {body}");
+    assert!(
+        !serde_json::to_string(&body).expect("render").contains(&alpha.hidden.to_string()),
+        "{body}"
+    );
+
+    // And the cause stays operator-facing, whichever trigger fired.
+    let diagnostics = serde_json::to_string(&body["diagnostics"]).expect("render");
+    for internal in ["Denylist", "denylist", "entries", "limit", "cause"] {
+        assert!(!diagnostics.contains(internal), "the cause is operator-facing: {diagnostics}");
+    }
+}
+
+/// **A store that is present and unreachable degrades, and is still post-filtered.**
+///
+/// The pair is on the state, so this is not the "no index in the process" branch — the handle is
+/// there and the store is down, which is the failure `plans/M3-DISCOVERY.md` D25 was written for.
+/// The fallback runs, says so, and drops exactly what it dropped before.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL; CI runs it with --include-ignored"]
+async fn an_unreachable_store_falls_back_and_the_page_is_still_post_filtered() {
+    let (db, fixtures, alpha, _beta) = setup().await;
+    let harness =
+        harness_with(&db, Some(dense(corpus_of(&alpha), enclave_search::VectorStore::Unreachable)))
+            .await;
+
+    let (status, body) =
+        post_search(&harness, fixtures.alpha.id, fixtures.alpha.member, query(TERM)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    assert_eq!(body["diagnostics"]["degraded"], true, "{body}");
+    assert_eq!(body["diagnostics"]["mode"], "lexical", "{body}");
+    assert!(!result_ids(&body).is_empty(), "the control: a flag on an empty page is free: {body}");
+    assert!(
+        !serde_json::to_string(&body).expect("render").contains(&alpha.hidden.to_string()),
+        "degraded mode is a worse recall guarantee, never a worse authorization one: {body}"
+    );
 }
