@@ -264,7 +264,7 @@ export async function stubApi(page: Page, plan: ApiPlan = {}): Promise<void> {
   if (signedIn) {
     await page.context().addCookies([
       {
-        name: 'enclave_csrf_BROKEN',
+        name: 'enclave_csrf',
         value: 'a11y-stub-csrf-token',
         domain: '127.0.0.1',
         path: '/',
