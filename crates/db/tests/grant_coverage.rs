@@ -591,3 +591,76 @@ async fn the_platform_role_can_resolve_a_custom_domain() {
 
     println!("{PLATFORM_ROLE} can resolve a custom domain and cannot rewrite the mapping.");
 }
+
+/// Every table the platform role reads, swept rather than sampled.
+///
+/// Two grants were found missing in one session — `refresh_tokens` (`ENC-705`) and `tenant_domains`
+/// (`ENC-686`) — each with correct code above it and a superuser underneath it, each unnoticed for
+/// months. That is a pattern, not two accidents, so this asserts the whole set at once instead of
+/// waiting for a third to be found the same way.
+///
+/// The list is derived from the four call sites of `DbPool::platform_connection`, which
+/// `.github/scripts/no_raw_pool.py` keeps exhaustive — that gate exists so
+/// `grep -rn platform_connection crates/` stays a complete list of the places isolation is stepped
+/// around. If a fifth appears, its tables belong here, and the assertion at the end is what makes
+/// forgetting noisy rather than silent.
+///
+/// | Call site | Reads |
+/// |---|---|
+/// | `auth_tokens::find_by_hash` | `refresh_tokens` |
+/// | `auth_tokens::revoke_returning` | `refresh_tokens` |
+/// | `routing::resolve_routed_tenant` | `tenant_domains`, `tenants` |
+/// | `tenants::active_tenants` | `tenants` |
+///
+/// `events_outbox` is here too: the outbox drain is the reason the platform role exists, and a
+/// regression there stops every event leaving the process while everything reports healthy.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL; CI runs it with --include-ignored"]
+async fn the_platform_role_can_read_every_table_its_code_reads() {
+    let (_db, mut conn) = migrated_database().await;
+
+    sqlx::query("SET ROLE enclave_platform")
+        .execute(&mut conn)
+        .await
+        .unwrap_or_else(|e| panic!("could not assume {PLATFORM_ROLE}: {e}"));
+
+    // `WHERE false` because the privilege is what is under test, not the data: PostgreSQL checks
+    // the privilege before it evaluates the predicate, so this reaches the same refusal a real
+    // query would and touches no row.
+    let mut refused = Vec::new();
+    for (table, why) in [
+        ("refresh_tokens", "no session can be refreshed and no user can log out (ENC-705)"),
+        ("tenant_domains", "custom-domain routing resolves nothing (ENC-686)"),
+        ("tenants", "the tenant enumerator idles forever while reporting healthy"),
+        ("events_outbox", "no event ever leaves the process"),
+    ] {
+        // A literal per table rather than a formatted string: the workspace refuses dynamic SQL,
+        // and a match is how the set stays greppable.
+        let statement = match table {
+            "refresh_tokens" => "SELECT 1 FROM refresh_tokens WHERE false",
+            "tenant_domains" => "SELECT 1 FROM tenant_domains WHERE false",
+            "tenants" => "SELECT 1 FROM tenants WHERE false",
+            "events_outbox" => "SELECT 1 FROM events_outbox WHERE false",
+            other => unreachable!("{other} is not in the swept set"),
+        };
+        if let Err(e) = sqlx::query(statement).fetch_all(&mut conn).await {
+            refused.push(format!("  {table}: {e} — {why}"));
+        }
+    }
+
+    if let Err(e) = sqlx::query("RESET ROLE").execute(&mut conn).await {
+        println!("warning: could not reset the session role: {e}");
+    }
+
+    assert!(
+        refused.is_empty(),
+        "{PLATFORM_ROLE} is refused {} of the tables its own code reads:\n{}\n\n\
+         Each of these fails with `permission denied` rather than returning no rows, which every \
+         caller upstream reads as an empty result. The development stack and this harness connect \
+         as the cluster superuser, so nothing else in the suite can see it.",
+        refused.len(),
+        refused.join("\n"),
+    );
+
+    println!("{PLATFORM_ROLE} can read all four tables its code reads.");
+}
