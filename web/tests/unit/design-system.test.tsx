@@ -288,6 +288,33 @@ describe('denied, unbuilt and busy are distinguishable by construction', () => {
     expect(built.container.querySelector('.ui-row')?.tagName).toBe('BUTTON');
   });
 
+  it('neutralises the variant an unbuilt control was applied to', () => {
+    /* The bug this catches, and why no gate did.
+     *
+     * `data-state="unbuilt"` did not reset `background`, so an unbuilt
+     * `variant="primary"` kept `var(--accent)` and `opacity: .45` faded the
+     * whole plate — washed-out `--on-accent` text on a washed-out accent, which
+     * was the least readable thing on the library's view bar in both themes.
+     *
+     * **axe cannot see it.** The control is `aria-disabled`, and WCAG exempts
+     * disabled controls from the contrast requirement, so all 94 accessibility
+     * surfaces passed over it. That exemption is why this is a source-level
+     * assertion rather than a rendered one.
+     *
+     * It is also `docs/17 §6` rather than only legibility: unbuilt must be
+     * *neutral*, and a faded brand colour is not. A user calibrating on "dimmed
+     * means not written yet" must not learn two appearances for one meaning
+     * depending on which variant the author happened to reach for. */
+    const css = withoutComments(read(join(SRC, 'shared/ui/primitives.css')));
+    const rule = css
+      .split('}')
+      .find((block) => block.includes(".ui-btn[data-state='unbuilt']") && block.includes('opacity'));
+
+    expect(rule, "no .ui-btn[data-state='unbuilt'] rule found").toBeDefined();
+    expect(rule).toMatch(/background:\s*var\(--sheet\)/);
+    expect(rule).not.toMatch(/--accent/);
+  });
+
   it('does not dim an unbuilt row, and never tints it with danger', () => {
     /* The rule the three copies of this treatment had already broken: one of
      * them added `opacity: .5` and the other two deliberately did not. The

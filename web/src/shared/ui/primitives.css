@@ -141,17 +141,35 @@
   background: var(--sheet);
 }
 
+/* Unbuilt neutralises the variant it was applied to.
+ *
+ * `background` is reset here and that is the point of the rule, not a detail of
+ * it. Without it `data-variant="primary"` kept `var(--accent)` underneath and
+ * `opacity: .45` faded the *whole control* — a washed-out accent plate carrying
+ * washed-out `--on-accent` text, which measured near-illegible in both themes.
+ * axe does not catch it, because the control is `aria-disabled` and disabled
+ * controls are exempt from the contrast rule — so it was invisible to every
+ * gate while being the least readable thing on the library's view bar.
+ *
+ * That makes it an `ENC-673` failure and not only a legibility one: `docs/17 §6`
+ * requires unbuilt to be **neutral**, and a faded brand colour is not neutral.
+ * The treatment has to look the same on a primary control and a ghost one, or
+ * a user calibrating on "dimmed means not written yet" learns two different
+ * appearances for one meaning.
+ *
+ * Never the denial colour, and never focusable — `tabIndex={-1}` is set by the
+ * component, not here, because focus order is behaviour. */
 .ui-btn[data-state='unbuilt'] {
   cursor: default;
   opacity: 0.45;
-  /* Never the denial colour, and never focusable — `tabIndex={-1}` is set by
-   * the component, not here, because focus order is behaviour. */
+  background: var(--sheet);
   box-shadow: var(--hairline);
   color: var(--fg3);
 }
 
 .ui-btn[data-state='unbuilt']:hover {
   background: var(--sheet);
+  filter: none;
 }
 
 .ui-btn[data-state='busy'] {
