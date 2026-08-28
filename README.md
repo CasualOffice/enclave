@@ -240,9 +240,25 @@ calls every registered route. Each of these is a tracker row rather than a surpr
 
 | Endpoint | Answers | Why |
 |---|---|---|
-| `POST /uploads` | `500` | The binary composes no object store, whatever `storage:` says (`ENC-770`). The delivery routes cannot serve a byte for the same reason. |
 | `POST /sync/devices` | `403` | Enrolling a device asks a question no composed authorization service can answer (`ENC-736`). |
 | The five `/admin/**` mutations | `403` | They require multi-factor authentication within 15 minutes, and no factor can be verified in this build (`ENC-771`, `ENC-688`). |
+
+`POST /uploads` is no longer on that list: `ENC-770` composed the real object store and the write
+path answers `201` with a signed `PutObject` URL. The row is deleted rather than reworded, because
+a quarantine that outlives its defect is how a stale limitation becomes folklore (`ENC-803`).
+
+**One limit is configuration rather than missing code, and it is the one most likely to be met
+first.** With `antivirus.provider: none` — the only workable setting on a machine with no scanner —
+what a delivery route will serve is decided by `antivirus.unsupported_policy`:
+
+- `BLOCK`, the default: every version is quarantined `SKIPPED`, and preview, download, print,
+  export and sync all answer `404`. **Uploads succeed and nothing can ever be read back.** Both
+  binaries say so at start-up, `enclave-api` at `error` level.
+- `ALLOW_WITH_FLAG`: versions are published `AVAILABLE`/`SKIPPED` and served, unscanned, with
+  `CONFIDENTIAL` and above still refused on rank (`ENC-828`).
+
+Neither is a bug; the first is rule 9 doing its job. `deploy/config/enclave.example.yaml` documents
+both beside the key.
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the full development workflow.
 

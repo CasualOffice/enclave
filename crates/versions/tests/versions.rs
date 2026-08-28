@@ -1150,3 +1150,129 @@ async fn committing_a_version_queues_it_for_indexing() {
     .expect("count the manifests");
     assert_eq!(absent, 0, "a version that was never committed has a manifest");
 }
+
+/// **`READABLE_PREDICATE` and `is_readable` accept exactly the same rows — asked of PostgreSQL.**
+///
+/// The two spellings of `CLAUDE.md` rule 9 are deliberately two: one is a `WHERE` fragment the
+/// delivery queries splice, the other a `const fn` that `GET /files/{id}` renders `isReadable`
+/// from. Two spellings of one rule is one too many, and the only thing that makes it safe is a test
+/// that runs *both* over the same rows and compares them.
+///
+/// # Why the whole cross-product, and why this test was rewritten rather than kept
+///
+/// It used to check the SQL half by looking for two substrings and the Rust half against a table
+/// built from the same `matches!` the function uses. That is precisely how `ENC-828` survived:
+/// `AVAILABLE`/`SKIPPED` — what every upload to a deployment with no antivirus engine becomes —
+/// was refused by both halves, so they agreed, wrongly, for four milestones while a substring check
+/// reported them in step.
+///
+/// So this sweeps all thirty `VersionStatus` x `AvStatus` combinations, writes each one to a real
+/// row, and asks the real predicate through the real query planner. A cross-product is what catches
+/// a pair drifting; two interesting cases catch only the cases that were interesting when they were
+/// written.
+///
+/// # The control
+///
+/// An agreement test is satisfiable by both halves saying *no* to everything — which is not
+/// hypothetical here: `readable_version` answered `None` for every version in every deployment for
+/// four milestones and every rule-9 assertion in the workspace passed (`ENC-641`). So the servable
+/// combinations are asserted by name and by count.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL; CI runs it with --include-ignored"]
+async fn the_two_spellings_of_readable_agree_against_a_real_database() {
+    const STATUSES: [&str; 6] =
+        ["PENDING", "SCANNING", "PROCESSING", "AVAILABLE", "QUARANTINED", "FAILED"];
+    const AV_STATUSES: [&str; 5] = ["PENDING", "CLEAN", "INFECTED", "SKIPPED", "ERROR"];
+
+    let (db, pool, alpha, _beta) = setup().await;
+    let committed = commit(&pool, &alpha, &alpha.new_version(VersionBump::Major)).await;
+    let version = committed.version.id;
+
+    // The query is built here, from the exported predicate, exactly as a caller writing its own
+    // read path would. A hand-retyped copy would make this test agree with itself.
+    let query = format!(
+        "SELECT 1 FROM file_versions WHERE tenant_id = $1 AND id = $2 AND {}",
+        enclave_versions::READABLE_PREDICATE
+    );
+
+    let mut admin = db.connect().await.expect("admin connection");
+    let mut servable: Vec<(&str, &str)> = Vec::new();
+
+    for status in STATUSES {
+        for av in AV_STATUSES {
+            // Written over the administrative connection because the immutability trigger freezes
+            // a version once it is `AVAILABLE`, and this sweep has to move it back out again.
+            sqlx::query(
+                "UPDATE file_versions SET status = $1, av_status = $2 \
+                  WHERE tenant_id = $3 AND id = $4",
+            )
+            .bind(status)
+            .bind(av)
+            .bind(alpha.tenant.as_uuid())
+            .bind(version.as_uuid())
+            .execute(&mut admin)
+            .await
+            .unwrap_or_else(|error| panic!("move the version to {status}/{av}: {error}"));
+
+            // The SQL half: the exported predicate, spliced, run by PostgreSQL.
+            let sql_says: bool = sqlx::query_scalar::<_, i32>(sqlx::AssertSqlSafe(query.clone()))
+                .bind(alpha.tenant.as_uuid())
+                .bind(version.as_uuid())
+                .fetch_optional(&mut admin)
+                .await
+                .expect("run the readable predicate")
+                .is_some();
+
+            // The Rust half: the record as the repository decodes it, through `is_readable`.
+            let mut tx = TenantScoped::begin(&pool, alpha.tenant).await.expect("begin");
+            let row: FileVersion =
+                VersionRepository::find(&mut tx, alpha.tenant, alpha.file, version)
+                    .await
+                    .expect("read the version")
+                    .expect("the version exists");
+            tx.commit().await.expect("commit");
+
+            assert_eq!(
+                row.status.as_str(),
+                status,
+                "the row did not take the status this iteration wrote"
+            );
+            assert_eq!(row.av.status.as_str(), av, "the row did not take the av_status");
+
+            assert_eq!(
+                row.is_readable(),
+                sql_says,
+                "{status}/{av}: FileVersion::is_readable says {} and READABLE_PREDICATE says {}. \
+                 The two spellings of CLAUDE.md rule 9 have drifted — GET /files/{{id}} will \
+                 report a readiness the delivery routes do not honour, which is ENC-825's defect \
+                 and how ENC-828 stayed invisible",
+                row.is_readable(),
+                sql_says
+            );
+
+            // And the free function both are defined in terms of, so a caller holding only the
+            // pair (`crates/worker`'s antivirus pass) cannot get a third answer.
+            assert_eq!(
+                enclave_versions::is_readable_pair(row.status, row.av.status),
+                sql_says,
+                "{status}/{av}: is_readable_pair disagrees with the SQL predicate"
+            );
+
+            if sql_says {
+                servable.push((status, av));
+            }
+        }
+    }
+
+    drop(admin);
+
+    // The control. Agreement is free if nothing is ever servable.
+    assert_eq!(
+        servable,
+        vec![("AVAILABLE", "CLEAN"), ("AVAILABLE", "SKIPPED")],
+        "exactly two of the thirty combinations are servable: a completed clean scan, and \
+         ALLOW_WITH_FLAG's published-but-uninspected version (ENC-828). AVAILABLE/PENDING is not \
+         among them — that is a scan which has not completed, which is the clause of rule 9 no \
+         configuration reaches (ENC-646)"
+    );
+}

@@ -299,14 +299,30 @@ async fn a_row_from_another_generator_is_a_miss() {
     drop(db);
 }
 
-/// Rule 9 on the rendering path: no unscanned version can be handed to a parser.
+/// Rule 9 on the rendering path: no version the antivirus policy has not published can be handed
+/// to a parser.
 ///
 /// The states are asserted as a set rather than one at a time, because the interesting failure is
-/// a filter that checks `status` and forgets `av_status` — which would admit `AVAILABLE`/`SKIPPED`
-/// and `AVAILABLE`/`ERROR`, the two states that mean *nobody looked*.
+/// a filter that checks `status` and forgets `av_status` — which would admit `AVAILABLE`/`ERROR`
+/// and `AVAILABLE`/`PENDING`, the two states that mean *nobody has an answer*.
+///
+/// # `AVAILABLE`/`SKIPPED` moved sides, and the distinction is the whole of `ENC-828`
+///
+/// It used to be in the refused list, described as "deliberately not scanned: nobody looked". The
+/// first half of that was right and the conclusion was wrong. `status` carries the antivirus
+/// **policy's** decision and `av_status` the **verdict**, and the pair is written by exactly one
+/// statement in the workspace — `crates/worker/src/antivirus.rs`'s `RECORD_SQL`, and only for
+/// `VersionDisposition::Publish`. So `AVAILABLE`/`SKIPPED` cannot mean anything except *a tenant
+/// on `docs/06 §6.2`'s `ALLOW_WITH_FLAG` asked for this to be published*, with the
+/// `CONFIDENTIAL`-and-above ceiling still refusing it on rank. Refusing it here made that setting
+/// a no-op and made a deployment with no scanner a write-only store.
+///
+/// The states that stay refused are the ones where **no decision exists**: `PENDING` is a scan
+/// that has not completed — rule 9's own words — and `ERROR` is one that failed. Neither is a
+/// tenant choosing anything, which is why they are not admitted beside `SKIPPED`.
 #[tokio::test]
 #[ignore = "requires a live PostgreSQL with migrations 0001–0007; CI runs it with --include-ignored"]
-async fn no_version_that_is_not_available_and_clean_can_be_rendered() {
+async fn no_version_the_antivirus_policy_did_not_publish_can_be_rendered() {
     let (db, fixtures, pool) = start().await;
     let alpha = fixtures.alpha.id;
     let spine = Spine::new(alpha);
@@ -320,9 +336,10 @@ async fn no_version_that_is_not_available_and_clean_can_be_rendered() {
         ("SCANNING", "PENDING", "antivirus has not finished"),
         ("PROCESSING", "CLEAN", "scanned, but not yet servable"),
         ("QUARANTINED", "INFECTED", "malware — the case that must never reach a parser"),
-        ("AVAILABLE", "SKIPPED", "deliberately not scanned: nobody looked"),
-        ("AVAILABLE", "ERROR", "the scan itself failed: nobody looked"),
-        ("AVAILABLE", "PENDING", "available before the scan finished"),
+        ("AVAILABLE", "ERROR", "the scan itself failed: nobody has an answer"),
+        ("AVAILABLE", "PENDING", "available before the scan finished — rule 9's first clause"),
+        ("SCANNING", "SKIPPED", "a policy decision does not survive the status being wound back"),
+        ("QUARANTINED", "SKIPPED", "what BLOCK writes: unscanned and refused"),
         ("FAILED", "CLEAN", "processing failed terminally"),
     ];
 
@@ -332,11 +349,25 @@ async fn no_version_that_is_not_available_and_clean_can_be_rendered() {
         assert!(readable.is_none(), "{status}/{av_status} produced a ReadableVersion — {why}");
     }
 
-    // The control: without it, a query that returned `None` for everything would pass.
+    // The controls: without them, a query that returned `None` for everything would pass — which
+    // is not hypothetical, it is what this function did for every version in every deployment for
+    // four milestones while every rule-9 assertion in the workspace stayed green (`ENC-641`).
+    //
+    // Two of them, because the two servable pairs are servable for *different* reasons: one is a
+    // completed clean scan, the other is a policy decision recorded against content nothing
+    // inspected. A single control would let the second silently stop working.
     let good = insert_version(&mut tx, alpha, &spine, "AVAILABLE", "CLEAN", now).await;
     assert!(
         repo::readable_version(&mut tx, alpha, good).await.expect("query").is_some(),
         "nothing is readable at all, so the assertions above mean nothing"
+    );
+
+    let published_unscanned =
+        insert_version(&mut tx, alpha, &spine, "AVAILABLE", "SKIPPED", now).await;
+    assert!(
+        repo::readable_version(&mut tx, alpha, published_unscanned).await.expect("query").is_some(),
+        "ALLOW_WITH_FLAG published this version and the rendering path refuses it, so the setting \
+         buys no availability at all — ENC-828"
     );
 
     tx.commit().await.expect("commit");

@@ -1348,10 +1348,20 @@ pub enum AntivirusProvider {
 /// at all, and a setting they cannot express is one they route around by other means.
 ///
 /// So the key exists in every profile. What stands between it and a silent production bypass is not
-/// its absence but its noise: `crates/worker` already logs at **error** level that *"nothing
-/// uploaded to this deployment will be readable"* when no engine scans, `AVAILABLE` still requires
-/// `av_status = 'CLEAN'`, and a version admitted this way is recorded `SKIPPED` — re-offered
-/// automatically the moment a scanning engine answers, rather than left to be rediscovered.
+/// its absence but its noise, and `ENC-828` is what makes the noise the *only* thing standing there:
+/// until then this key changed nothing at all, because `enclave_versions::READABLE_PREDICATE`
+/// refused `SKIPPED` and `ALLOW_WITH_FLAG` published versions no delivery route would serve. It now
+/// does what it says. What remains is:
+///
+/// * both binaries log at start-up, at **error** level under `BLOCK` and **warn** under
+///   `ALLOW_WITH_FLAG`, what this deployment will do with unscanned content;
+/// * `CONFIDENTIAL` and above are refused on rank alone, whatever this key says
+///   (`ScanPolicy::blocks_unsupported`), so the setting never reaches the content the rule exists
+///   to protect;
+/// * a version admitted this way is recorded `SKIPPED` and **never** `CLEAN`, so it stays
+///   distinguishable from scanned content forever and is re-offered automatically the moment a
+///   scanning engine answers, rather than left to be rediscovered;
+/// * the `enterprise` profile refuses `provider: none` outright (`docs/08-BYO-INFRA.md §19`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum UnsupportedPolicy {

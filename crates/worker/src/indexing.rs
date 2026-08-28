@@ -8,7 +8,7 @@
 //!
 //! Indexing reads file *content*, and `CLAUDE.md` rule 9 says nothing serves content before
 //! antivirus completes. [`enclave_preview::repo::readable_version`] already answers "may this
-//! version's bytes be read" with a query carrying `status = 'AVAILABLE' AND av_status = 'CLEAN'`,
+//! version's bytes be read" with a query carrying `enclave_preview::repo::READABLE_PREDICATE`,
 //! and returns `None` otherwise.
 //!
 //! This uses it rather than asking the question again. A second query deciding what is readable is

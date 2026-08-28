@@ -106,6 +106,6 @@ pub use limits::{ArchiveBudget, ArchiveLimits, LimitExceeded};
 pub use model::{EngineInfo, ScanHint, ScanVerdict};
 pub use outcome::{
     decide, AvStatus, Incident, IncidentKind, IncidentSeverity, Rescan, ScanOutcome, ScanPolicy,
-    UnsupportedPolicy, UploaderNotice, VersionDisposition,
+    UnsupportedPolicy, UploaderNotice, VersionDisposition, CONFIDENTIAL_RANK,
 };
 pub use scanner::AntivirusScanner;

@@ -31,15 +31,21 @@
 //!
 //! ## Two things the table does not show
 //!
-//! **`Publish` does not mean readable.** `AvStatus::Clean` is the only `av_status`
-//! `READABLE_PREDICATE` accepts, so the two policies that publish something else —
-//! `ALLOW_AND_RESCAN` (`AVAILABLE` / `PENDING`) and `ALLOW_WITH_FLAG` (`AVAILABLE` / `SKIPPED`) —
-//! produce a version that is `AVAILABLE` and that no read path will serve. That is a real
-//! disagreement between `enclave_antivirus::VersionDisposition::readable` and the database
-//! predicate, it errs closed, and it is *not* resolved here: admitting `PENDING` or `SKIPPED` to
-//! `READABLE_PREDICATE` would weaken rule 9, which `CLAUDE.md` says is a design conversation rather
-//! than a judgement call. Logged as `ENC-646` and pinned by
-//! `a_published_but_unscanned_version_is_still_not_served`.
+//! **`Publish` still does not quite mean readable, and the gap is now one case rather than two.**
+//! `READABLE_PREDICATE` accepts `AVAILABLE` with `CLEAN` **or** `SKIPPED`, so of the two policies
+//! that publish something other than a clean scan:
+//!
+//! * `ALLOW_WITH_FLAG` (`AVAILABLE` / `SKIPPED`) is served, and `ENC-828` is why. It is the only
+//!   pair this table can produce that reaches the predicate without a scan, it can be produced by
+//!   nothing but the `Publish` arm below, and refusing it made `docs/06 §6.2`'s `ALLOW_WITH_FLAG` a
+//!   no-op with a misleading name — a deployment on `antivirus.provider: none` accepted uploads and
+//!   could never read one back.
+//! * `ALLOW_AND_RESCAN` (`AVAILABLE` / `PENDING`) is still not, and that is the half of `ENC-646`
+//!   that stays open. `PENDING` is not a decision to publish unscanned content, it is the absence
+//!   of a verdict — `CLAUDE.md` rule 9's *"nothing is `AVAILABLE` before antivirus completes"* is
+//!   about exactly this state. So the disagreement between
+//!   `enclave_antivirus::VersionDisposition::readable` and the database predicate is narrower and
+//!   still errs closed. Pinned by `a_version_published_without_a_verdict_is_still_not_served`.
 //!
 //! **A `Hold` on a version that already carries a verdict writes nothing at all.** `Hold` means
 //! "leave it where it is and try again". For a fresh `PENDING` version the outcome's `av_status` is
@@ -703,6 +709,18 @@ mod tests {
         observed(VersionStatus::Scanning, AvStatus::Pending)
     }
 
+    /// Whether a delivery route would serve a version carrying this pair.
+    ///
+    /// Asked of [`enclave_versions::is_readable_pair`] — the function
+    /// [`enclave_versions::FileVersion::is_readable`] is, and the Rust twin of the predicate the
+    /// delivery queries splice — rather than restated as `status == AVAILABLE && av == CLEAN`. The
+    /// restatement is what `ENC-828` hid behind: a test that writes the rule out a second time
+    /// agrees with whatever the rule *was* when it was written, and a cross-product sweep over it
+    /// proves nothing at all.
+    fn readable(target: Target) -> bool {
+        enclave_versions::is_readable_pair(target.status, target.av_status)
+    }
+
     /// Every `av_status` the antivirus crate can produce is one the version vocabulary — and
     /// therefore the `CHECK` constraint — accepts.
     ///
@@ -739,17 +757,23 @@ mod tests {
         assert!(enclave_versions::READABLE_PREDICATE.contains(target.av_status.as_str()));
     }
 
-    /// And nothing else does. The whole of rule 9 at this pass's one write site.
+    /// The pair `Target::of` writes is readable **exactly** when the tenant's policy published the
+    /// version, for every verdict under every policy a deployment can express.
     ///
-    /// Both halves: the clean control above publishes, and every other verdict under every policy a
-    /// deployment can express targets a pair the predicate refuses. Without the control this passes
-    /// against a `Target::of` that never returns `AVAILABLE`/`CLEAN` at all.
+    /// The expected answer is `decide`'s own `disposition`, *minus* the one case rule 9 keeps
+    /// refusing — not a hand-written `Available && Clean`, which is what this assertion used to be
+    /// and which is why `ENC-828` was invisible from here: the test agreed with the predicate
+    /// because both were written from the same wrong idea of what "readable" meant.
+    ///
+    /// Readability is asked of a real [`FileVersion`], through `is_readable`, so this test and the
+    /// delivery routes cannot disagree about the answer.
     #[test]
-    fn no_verdict_but_clean_targets_a_readable_pair() {
+    fn a_target_is_readable_exactly_when_the_policy_published_it() {
         for unavailable in [UnavailablePolicy::Hold, UnavailablePolicy::AllowAndRescan] {
             for unsupported in [UnsupportedPolicy::Block, UnsupportedPolicy::AllowWithFlag] {
                 let policy = ScanPolicy { unsupported, unavailable, ..ScanPolicy::default() };
                 for verdict in [
+                    ScanVerdict::Clean,
                     ScanVerdict::Infected { signature: "Eicar-Test-Signature".into() },
                     ScanVerdict::Unsupported,
                     ScanVerdict::Error { retryable: true },
@@ -757,26 +781,34 @@ mod tests {
                 ] {
                     let decision = decide(&verdict, policy, None);
                     let target = Target::of(&decision, fresh()).expect("converts");
-                    let readable = target.status == VersionStatus::Available
-                        && target.av_status == AvStatus::Clean;
-                    assert!(
-                        !readable,
-                        "{verdict:?} under {unsupported:?}/{unavailable:?} became readable"
+
+                    // `Publish` with no verdict at all — `ALLOW_AND_RESCAN` — is the one case the
+                    // disposition and the predicate still disagree about. `ENC-646`'s open half.
+                    let expected = decision.disposition == VersionDisposition::Publish
+                        && decision.av_status != enclave_antivirus::AvStatus::Pending;
+
+                    assert_eq!(
+                        readable(target),
+                        expected,
+                        "{verdict:?} under {unsupported:?}/{unavailable:?} wrote {:?}/{:?}",
+                        target.status,
+                        target.av_status
                     );
                 }
             }
         }
     }
 
-    /// A published-but-unscanned version reaches `AVAILABLE` and is still refused by every read
-    /// path, because `av_status` is not `CLEAN`.
+    /// A version published with **no verdict** reaches `AVAILABLE` and is still refused by every
+    /// read path, because `av_status` is `PENDING`.
     ///
-    /// This is `ENC-646` pinned rather than fixed: `ALLOW_AND_RESCAN` is documented as trading a
-    /// malware window for availability, and against `READABLE_PREDICATE` it buys no availability at
-    /// all. It errs closed, so the assertion here is the safe direction and stays correct whichever
-    /// way that row is settled.
+    /// This is the open half of `ENC-646`. `ENC-828` settled the other half — `ALLOW_WITH_FLAG`
+    /// writes `SKIPPED`, which is a recorded decision that nothing inspected the content, and that
+    /// is served. `PENDING` is the absence of a decision, which is what `CLAUDE.md` rule 9's first
+    /// clause names, so `ALLOW_AND_RESCAN` still buys no availability. It errs closed; the
+    /// assertion here is the safe direction and stays correct whichever way that row is settled.
     #[test]
-    fn a_published_but_unscanned_version_is_still_not_served() {
+    fn a_version_published_without_a_verdict_is_still_not_served() {
         let policy =
             ScanPolicy { unavailable: UnavailablePolicy::AllowAndRescan, ..ScanPolicy::default() };
         let decision = decide(&ScanVerdict::Error { retryable: true }, policy, None);
@@ -785,7 +817,87 @@ mod tests {
         let target = Target::of(&decision, fresh()).expect("converts");
         assert_eq!(target.status, VersionStatus::Available);
         assert_eq!(target.av_status, AvStatus::Pending, "published without a verdict");
-        assert_ne!(target.av_status, AvStatus::Clean);
+        assert!(!readable(target), "AVAILABLE/PENDING reached a read path");
+
+        // The control, so the refusal above is not an artefact of `readable` answering `false` for
+        // everything: the same helper says yes to what `ALLOW_WITH_FLAG` writes.
+        let flagged =
+            ScanPolicy { unsupported: UnsupportedPolicy::AllowWithFlag, ..ScanPolicy::default() };
+        let published = decide(&ScanVerdict::Unsupported, flagged, None);
+        let target = Target::of(&published, fresh()).expect("converts");
+        assert_eq!(
+            (target.status, target.av_status),
+            (VersionStatus::Available, AvStatus::Skipped)
+        );
+        assert!(readable(target), "ENC-828: ALLOW_WITH_FLAG must buy availability");
+    }
+
+    /// **The `CONFIDENTIAL` ceiling survives `ENC-828`, at the write site.**
+    ///
+    /// `ALLOW_WITH_FLAG` now buys real availability, which makes this the assertion that matters:
+    /// the ceiling is applied on **rank alone**, before the policy value is consulted, so a tenant
+    /// that turned the setting on globally has not thereby published unscanned confidential
+    /// content. `docs/06 §6.2` calls `BLOCK` the default at `CONFIDENTIAL` and above; it is a
+    /// ceiling rather than a default precisely because a default is something an administrator
+    /// switches off by accident.
+    ///
+    /// Asserted through `Target::of` and `is_readable_pair` rather than on `decide`'s disposition,
+    /// because the disposition is not what a delivery route consults — the two columns are, and
+    /// this pass is what writes them.
+    ///
+    /// The control is the rank *below* the ceiling in the same loop: without it this passes against
+    /// a policy that refuses everything, which is exactly the state `ENC-828` fixed.
+    #[test]
+    fn allow_with_flag_still_refuses_confidential_content_at_the_write_site() {
+        let policy =
+            ScanPolicy { unsupported: UnsupportedPolicy::AllowWithFlag, ..ScanPolicy::default() };
+
+        for rank in [
+            enclave_antivirus::CONFIDENTIAL_RANK,
+            enclave_core::ClassificationRank::new(40),
+            enclave_core::ClassificationRank::new(50),
+        ] {
+            let decision = decide(&ScanVerdict::Unsupported, policy, Some(rank));
+            let target = Target::of(&decision, fresh()).expect("converts");
+            assert_eq!(target.status, VersionStatus::Quarantined, "rank {rank:?}");
+            assert_eq!(target.av_status, AvStatus::Skipped, "rank {rank:?}");
+            assert!(
+                !readable(target),
+                "rank {rank:?} is at or above the ceiling and became servable — ENC-828 was \
+                 supposed to buy availability for ordinary content and change nothing here"
+            );
+        }
+
+        // Below the ceiling, and unclassified, the same policy *does* publish. Without these the
+        // assertions above hold of a build in which ALLOW_WITH_FLAG does nothing at all.
+        for rank in [None, Some(enclave_core::ClassificationRank::new(20))] {
+            let decision = decide(&ScanVerdict::Unsupported, policy, rank);
+            let target = Target::of(&decision, fresh()).expect("converts");
+            assert!(readable(target), "rank {rank:?} is below the ceiling and was refused");
+        }
+    }
+
+    /// The workspace's two spellings of the readable rule are one string.
+    ///
+    /// `enclave_versions::READABLE_PREDICATE` gates `POST /files/{id}/download` and renders
+    /// `isReadable`; `enclave_preview::repo::READABLE_PREDICATE` gates preview, thumbnail, export,
+    /// indexing and the DLP content scan. Neither crate can import the other —
+    /// `enclave-versions` → `enclave-indexing` → `enclave-preview` is already an edge, so the
+    /// reverse is a cycle — and until `ENC-828` **nothing at all** held them together. They were
+    /// two hand-written strings, and the first build of `ENC-828`'s fix changed one of them:
+    /// `GET /files/{id}` answered `isReadable: true` and `GET /files/{id}/preview` answered `404`
+    /// for the same version in the same run, which is `ENC-825`'s defect arriving from the other
+    /// side.
+    ///
+    /// This crate depends on both, which makes it the only place the equality can be stated.
+    #[test]
+    fn the_two_crates_that_gate_reads_spell_one_predicate() {
+        assert_eq!(
+            enclave_preview::repo::READABLE_PREDICATE,
+            enclave_versions::READABLE_PREDICATE,
+            "the delivery routes and the metadata endpoint no longer agree about what is servable; \
+             a client will be told a preview works and then get a 404 (ENC-825, ENC-828)"
+        );
     }
 
     /// A `HOLD` on a fresh version changes nothing at all, so no write happens and the version waits

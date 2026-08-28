@@ -15,7 +15,7 @@
 //! "remember to check the status first" is not a mechanism.
 //!
 //! So [`ReadableVersion`] has private fields and exactly one constructor: [`readable_version`],
-//! whose query carries `status = 'AVAILABLE' AND av_status = 'CLEAN'` in its `WHERE` clause. The
+//! whose query splices [`READABLE_PREDICATE`] into its `WHERE` clause. The
 //! rendering service takes one by value. A caller who wants to render something unscanned cannot
 //! express the request — not because the check is thorough, but because the type that authorises it
 //! can only come from a row that passed the filter. This is `plans/M1-CONTENT-CORE.md` D13 ("no read
@@ -92,6 +92,10 @@ fn column<'r, T: sqlx::Decode<'r, sqlx::Postgres> + sqlx::Type<sqlx::Postgres>>(
 /// Returns `None` for a version that does not exist, belongs to another tenant, is still scanning,
 /// or was quarantined. One answer for all four, deliberately: distinguishing them would tell an
 /// uploader whether their malware landed (`CLAUDE.md` rule 7).
+///
+/// It returns `Some` for a version that is `AVAILABLE`/`SKIPPED` — published under `ALLOW_WITH_FLAG`
+/// with nothing having inspected it. That is a decision the tenant wrote down and `status` records;
+/// see [`READABLE_PREDICATE`] (`ENC-828`).
 ///
 /// # Errors
 ///
@@ -221,19 +225,43 @@ fn rendition_from_row(row: &sqlx::postgres::PgRow) -> Result<Rendition> {
     })
 }
 
-/// The `status`/`av_status` pair is the whole point — see the module documentation.
+/// The `status`/`av_status` pair, in the *same words* `enclave_versions` uses.
 ///
-/// `docs/03-LLD.md §15` and `plans/M1-CONTENT-CORE.md` D13: `AVAILABLE` alone is not enough, because
-/// `av_status` distinguishes "scanned clean" from "deliberately not scanned" and from "the scan
-/// itself failed". Only `CLEAN` means somebody looked and found nothing.
-const READABLE_VERSION_SQL: &str = "
-SELECT v.file_id, v.object_key, v.mime_type, v.size_bytes
-  FROM file_versions v
- WHERE v.tenant_id = $1
-   AND v.id = $2
-   AND v.status = 'AVAILABLE'
-   AND v.av_status = 'CLEAN'
-";
+/// # Why this constant exists rather than the text being inlined below
+///
+/// It is the workspace's second spelling of one rule, and until `ENC-828` nothing held the two
+/// together: `enclave_versions::READABLE_PREDICATE` gates `POST /files/{id}/download` and renders
+/// `isReadable`, this gates preview, thumbnail, export, indexing and the DLP content scan, and the
+/// two were separate hand-written strings. They drifted the moment one was edited — the very first
+/// build of `ENC-828`'s fix answered `isReadable: true` and `404` from the preview route in the
+/// same breath, which is `ENC-825`'s defect returning through the back door.
+///
+/// `crates/preview` cannot *import* the definition: `enclave-versions` depends on
+/// `enclave-indexing`, which depends on this crate, so the edge would be a cycle. What holds them
+/// together instead is a test in a crate that sees both —
+/// `crates/worker/src/antivirus.rs::the_two_crates_that_gate_reads_spell_one_predicate` — which is
+/// why the text here is byte-identical rather than merely equivalent, and why the query below reads
+/// `file_versions` unaliased.
+///
+/// # What the pair means
+///
+/// `docs/03-LLD.md §15` and `plans/M1-CONTENT-CORE.md` D13: `AVAILABLE` alone is not enough,
+/// because `av_status` distinguishes "scanned clean" from "the scan itself failed" and from "not
+/// scanned yet". `SKIPPED` — *deliberately* not scanned, under `docs/06 §6.2`'s `ALLOW_WITH_FLAG` —
+/// is admitted because `status` already carries that decision; `PENDING` and `ERROR` are not,
+/// because neither is a decision to publish. See `enclave_versions::READABLE_PREDICATE`'s
+/// documentation for the whole argument.
+pub const READABLE_PREDICATE: &str = "status = 'AVAILABLE' AND av_status IN ('CLEAN', 'SKIPPED')";
+
+const READABLE_VERSION_SQL: &str = concat!(
+    "
+SELECT file_id, object_key, mime_type, size_bytes
+  FROM file_versions
+ WHERE tenant_id = $1
+   AND id = $2
+   AND ",
+    "status = 'AVAILABLE' AND av_status IN ('CLEAN', 'SKIPPED')"
+);
 
 const FIND_SQL: &str = "
 SELECT r.version_id, r.profile, r.object_key, r.size_bytes, r.page_count,
@@ -265,3 +293,45 @@ UPDATE renditions
 
 /// Never called; keeps [`GeneratorVersion`] named in this module's signatures for rustdoc.
 const _: fn(GeneratorVersion) = |_| ();
+
+#[cfg(test)]
+mod tests {
+    // Assertions are the point of a test; the workspace warns on these constructs elsewhere.
+    #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+
+    use super::*;
+
+    /// The one constructor's query carries the one predicate — asserted on the text, because the
+    /// behavioural assertion (`crates/preview/tests/cache.rs`) needs a database and this does not.
+    ///
+    /// `concat!` takes only literals, so the predicate appears twice in this file. This is what
+    /// makes the second copy safe: an edit to either that does not touch the other fails here.
+    #[test]
+    fn the_only_constructor_filters_on_the_readable_predicate() {
+        assert!(
+            READABLE_VERSION_SQL.contains(READABLE_PREDICATE),
+            "the ReadableVersion query no longer carries the readable predicate; a quarantined or \
+             still-scanning version could be handed to a parser.\n{READABLE_VERSION_SQL}"
+        );
+        assert!(READABLE_VERSION_SQL.contains("tenant_id = $1"), "layer 1 is missing");
+    }
+
+    /// Rule 9's two clauses, on the predicate's own text.
+    ///
+    /// The cross-crate half — that this text is `enclave_versions::READABLE_PREDICATE` and not
+    /// merely something like it — is `crates/worker/src/antivirus.rs`, which can see both crates
+    /// where this one cannot (`enclave-versions` → `enclave-indexing` → `enclave-preview`).
+    #[test]
+    fn the_predicate_admits_only_published_content_with_a_settled_verdict() {
+        assert!(READABLE_PREDICATE.contains("'AVAILABLE'"));
+        assert!(READABLE_PREDICATE.contains("'CLEAN'"));
+        // `ALLOW_WITH_FLAG`: published, unscanned, and the tenant said so (`ENC-828`).
+        assert!(READABLE_PREDICATE.contains("'SKIPPED'"));
+        for refused in ["'PENDING'", "'ERROR'", "'INFECTED'", "'SCANNING'", "'QUARANTINED'"] {
+            assert!(
+                !READABLE_PREDICATE.contains(refused),
+                "{refused} reached the predicate that gates every rendition"
+            );
+        }
+    }
+}

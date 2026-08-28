@@ -532,6 +532,43 @@ jobs:
             echo "will see."
           } >> "$GITHUB_STEP_SUMMARY"
   # --------------------------------------------------------------------------
+  # Gate: no tracker ID appears twice. Static, and cheap.
+  #
+  # Separate from the rollup gate because the rollup *cannot* catch this: it
+  # deduplicates by ID with §3 winning, so a duplicated row is silently dropped
+  # from the count while both rows stay on the board -- including two rows with
+  # opposite statuses, which is the board asserting a thing and its negation.
+  # --------------------------------------------------------------------------
+  tracker-unique-ids:
+    name: 'RULE: every tracker ID appears exactly once'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: No tracker ID is used twice
+        run: python3 .github/scripts/tracker_unique_ids.py
+      - name: Explain on failure
+        if: failure()
+        run: |
+          {
+            echo "### FAILED - Duplicate tracker IDs"
+            echo ""
+            echo "A row appears twice in \`TRACKER.md\`. Two causes, and they need"
+            echo "different fixes:"
+            echo ""
+            echo "**The same row twice.** A merge kept both sides. That is correct for"
+            echo "two *distinct* rows and wrong for one row appearing on both sides of"
+            echo "a conflict. Delete the copy."
+            echo ""
+            echo "**Two unrelated rows sharing an ID.** Parallel sessions each take the"
+            echo "next free number from the copy they started with, so two sessions on"
+            echo "the same evening reach for the same one. Renumber the later row and"
+            echo "say so in it - somebody will meet the old ID in a commit message."
+            echo ""
+            echo "If the two rows disagree about status, decide from the code rather"
+            echo "than the table. A falsely closed row costs more than a redundant check."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # --------------------------------------------------------------------------
   # Gate: the tracker's rollup agrees with its rows. Static, and cheap.
   # --------------------------------------------------------------------------
   tracker-rollup:
@@ -970,6 +1007,7 @@ jobs:
       - api-contract
       - web-gates
       - tracker-rollup
+      - tracker-unique-ids
     runs-on: ubuntu-latest
     steps:
       - name: Fail unless every gate succeeded

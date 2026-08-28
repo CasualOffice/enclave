@@ -16,7 +16,7 @@
 //! **2. Nothing unscanned is ever parsed.** `CLAUDE.md` rule 9. Rendering is the read path that
 //! hands bytes to a parser, so it is the one where serving `SCANNING` content matters most.
 //! [`ReadableVersion`] has private fields and one constructor, whose query filters on
-//! `status = 'AVAILABLE' AND av_status = 'CLEAN'`. A caller cannot express a request to render
+//! [`repo::READABLE_PREDICATE`]. A caller cannot express a request to render
 //! something unscanned. See [`repo`].
 //!
 //! **3. A renderer cannot exceed its budget.** Document parsers are the widest attack surface in

@@ -82,8 +82,9 @@ db_enum! {
         Scanning => "SCANNING",
         /// Scanned clean; text extraction, renditions and indexing are still running.
         Processing => "PROCESSING",
-        /// Servable. The only status a read path accepts, and only together with
-        /// [`AvStatus::Clean`].
+        /// Servable. The only status a read path accepts, and only together with an `av_status`
+        /// [`READABLE_PREDICATE`] admits — [`AvStatus::Clean`], or [`AvStatus::Skipped`] when the
+        /// tenant's `unsupported_policy` published content nothing inspected.
         Available => "AVAILABLE",
         /// Antivirus found something. The row stays so that its owner can be told why.
         Quarantined => "QUARANTINED",
@@ -105,8 +106,12 @@ db_enum! {
         Clean => "CLEAN",
         /// Scanned, something found.
         Infected => "INFECTED",
-        /// Deliberately not scanned — the engine is disabled for this deployment
-        /// (`docs/08-BYO-INFRA.md`). Distinct from `CLEAN`: nobody looked.
+        /// Deliberately not scanned — the engine is disabled for this deployment, or it could not
+        /// open this container (`docs/08-BYO-INFRA.md`). Distinct from `CLEAN` and permanently so:
+        /// nobody looked. It is kept distinct rather than collapsed *because* such a version can be
+        /// served under `ALLOW_WITH_FLAG` — it is what the flag on the version is, what the
+        /// signature-update sweep in `crates/worker` keys on to re-offer it, and what stops
+        /// unscanned content becoming indistinguishable from scanned content forever after.
         Skipped => "SKIPPED",
         /// The scan itself failed. Also not `CLEAN`, for the same reason.
         Error => "ERROR",
@@ -136,10 +141,37 @@ db_enum! {
 /// content query splices *this text* rather than a retyped copy of it: "no read path serves
 /// unscanned content" is then one definition away from being checked instead of one review away
 /// from being forgotten. The column names are unqualified; every statement in this crate reads
-/// `file_versions` unaliased.
+/// `file_versions` unaliased. `#[macro_export]`ed so that a crate outside this one splices the
+/// definition into its own `const` instead of retyping it — `crates/sync` did retype it, and only
+/// a test comparing the two texts stood between that copy and silent drift (`ENC-828`).
+///
+/// # Why `SKIPPED` is admitted beside `CLEAN` (`ENC-828`, half of `ENC-646`)
+///
+/// `status` already carries the antivirus **policy decision**, and `av_status` carries the
+/// **verdict**. Those are different questions and this predicate asks both, which is why it is two
+/// conditions rather than one. `AVAILABLE` is written by exactly one statement in the workspace —
+/// `crates/worker/src/antivirus.rs`'s `RECORD_SQL`, from `Target::of`, and only for
+/// [`VersionDisposition::Publish`](enclave_antivirus::VersionDisposition::Publish). So the pair
+/// `AVAILABLE`/`SKIPPED` cannot arise except from `docs/06-SECURITY-DLP-ACCESS.md §6.2`'s
+/// `ALLOW_WITH_FLAG`, which an operator writes down: content nothing inspected, that the tenant
+/// asked to have published anyway, and that is still refused at `CONFIDENTIAL` and above on rank
+/// alone (`ScanPolicy::blocks_unsupported`). Refusing it *here* did not make the deployment safer;
+/// it made `ALLOW_WITH_FLAG` a no-op with a misleading name, and made a deployment with no scanner
+/// a write-only store — uploads succeeded and nothing could ever be read back.
+///
+/// What is **not** admitted, and the distinction is the whole of `CLAUDE.md` rule 9:
+///
+/// * `PENDING` — nobody has answered yet. `ALLOW_AND_RESCAN` publishes `AVAILABLE`/`PENDING`, and
+///   that half of `ENC-646` stays refused: it is a version whose scan has not *completed*, which
+///   is the clause rule 9 spells out.
+/// * `ERROR` — the scan failed. Not a decision to publish unscanned content, a failure to make one.
+/// * `INFECTED` — quarantined, and `status` says so too.
+/// * Any `av_status` at all while `status` is `SCANNING`, `PROCESSING`, `QUARANTINED`, `PENDING`
+///   or `FAILED`. "No read path serves `SCANNING` content" is unchanged and untouchable.
+#[macro_export]
 macro_rules! readable_predicate {
     () => {
-        "status = 'AVAILABLE' AND av_status = 'CLEAN'"
+        "status = 'AVAILABLE' AND av_status IN ('CLEAN', 'SKIPPED')"
     };
 }
 
@@ -148,6 +180,23 @@ pub(crate) use readable_predicate;
 /// The same fragment as a value — the SQL twin of [`FileVersion::is_readable`], exported so a
 /// caller writing its own read path can splice the one definition rather than invent a second.
 pub const READABLE_PREDICATE: &str = readable_predicate!();
+
+/// The rule itself, over the two columns and nothing else.
+///
+/// [`FileVersion::is_readable`] is this function applied to a record, and every other caller in the
+/// workspace that has a `(status, av_status)` pair in hand — `crates/worker`'s antivirus pass most
+/// of all — asks *this* rather than restating `status == AVAILABLE && av == CLEAN`. The restatement
+/// is what hid `ENC-828`: the pass's own test wrote the rule out a second time, so it agreed with
+/// the predicate for as long as both were wrong together, and a cross-product sweep over it proved
+/// nothing.
+///
+/// [`FileVersion`] is `#[non_exhaustive]`, so a crate outside this one cannot build a record to ask
+/// with; that is the practical reason this is a free function and not only a method.
+#[must_use]
+pub const fn is_readable_pair(status: VersionStatus, av_status: AvStatus) -> bool {
+    matches!(status, VersionStatus::Available)
+        && matches!(av_status, AvStatus::Clean | AvStatus::Skipped)
+}
 
 /// A version number, as the pair `docs/04-DATA-MODEL.md §8` stores it.
 ///
@@ -301,11 +350,18 @@ impl FileVersion {
     ///
     /// The Rust twin of [`READABLE_PREDICATE`], and the only place this crate answers the question.
     /// Both conditions are load-bearing: `AVAILABLE` alone would serve a row whose rescan came back
-    /// `INFECTED` before the status was moved, and `CLEAN` alone would serve one that is still
-    /// having its renditions built.
+    /// `INFECTED` before the status was moved, and an `av_status` alone would serve one that is
+    /// still having its renditions built.
+    ///
+    /// The `SKIPPED` arm is the one an editor is most likely to read as a mistake. It is not — see
+    /// [`READABLE_PREDICATE`]'s documentation for why `status` carrying the policy decision is what
+    /// makes it sound, and why `PENDING` and `ERROR` are *not* here beside it. The two spellings
+    /// are asserted to accept the same rows over the whole `VersionStatus` × `AvStatus`
+    /// cross-product, in this file against a literal table and in `crates/versions/tests` against a
+    /// real PostgreSQL query using the spliced predicate.
     #[must_use]
     pub const fn is_readable(&self) -> bool {
-        matches!(self.status, VersionStatus::Available) && matches!(self.av.status, AvStatus::Clean)
+        is_readable_pair(self.status, self.av.status)
     }
 
     /// The default encryption mode, matching the column's `DEFAULT 'PROVIDER'`.
@@ -377,13 +433,24 @@ mod tests {
         }
     }
 
+    /// The Rust half of the twin, over the whole cross-product, against a table written out.
+    ///
+    /// The SQL half is `crates/versions/tests/versions.rs::the_two_spellings_of_readable_agree_
+    /// against_a_real_database`, which runs the spliced predicate over the same thirty rows in
+    /// PostgreSQL. Two hand-picked cases are what let `ENC-828` survive: `AVAILABLE`/`SKIPPED` is
+    /// exactly the pair neither half happened to name.
     #[test]
     fn the_two_spellings_of_readable_agree() {
-        // The property that matters: `is_readable` and `READABLE_PREDICATE` accept the same rows.
-        // They are two languages, so this checks the pieces rather than executing the SQL — the
-        // integration test runs the predicate against a real database.
         assert!(READABLE_PREDICATE.contains(VersionStatus::Available.as_str()));
         assert!(READABLE_PREDICATE.contains(AvStatus::Clean.as_str()));
+        assert!(READABLE_PREDICATE.contains(AvStatus::Skipped.as_str()));
+        // And not by admitting the vocabulary wholesale: the three that must stay out, stay out.
+        for refused in [AvStatus::Pending, AvStatus::Infected, AvStatus::Error] {
+            assert!(
+                !READABLE_PREDICATE.contains(refused.as_str()),
+                "{refused} reached the predicate; rule 9's `SCANNING` clause is next"
+            );
+        }
 
         let base = FileVersion {
             id: VersionId::new_v7(),
@@ -406,7 +473,9 @@ mod tests {
         };
         assert!(base.is_readable());
 
-        // Neither half is sufficient on its own.
+        // Neither half is sufficient on its own, and the expectation is written out as a literal
+        // table rather than recomputed from the same `matches!` the function uses — a test that
+        // re-derives the answer agrees with any implementation, including the wrong one.
         for status in VersionStatus::all() {
             for av in AvStatus::all() {
                 let candidate = FileVersion {
@@ -414,10 +483,70 @@ mod tests {
                     av: AvScan { status: *av, ..AvScan::unscanned() },
                     ..base.clone()
                 };
-                let expected = *status == VersionStatus::Available && *av == AvStatus::Clean;
+                let expected = matches!(
+                    (status, av),
+                    (VersionStatus::Available, AvStatus::Clean)
+                        | (VersionStatus::Available, AvStatus::Skipped)
+                );
                 assert_eq!(candidate.is_readable(), expected, "{status}/{av}");
             }
         }
+    }
+
+    /// `CLAUDE.md` rule 9, stated as the property rather than as a list, so that a future member
+    /// added to either vocabulary has to be placed deliberately.
+    ///
+    /// The first clause — *nothing is `AVAILABLE` before antivirus completes* — is held by
+    /// `crates/worker`, which is the only writer of `AVAILABLE`. The clause this file can hold is
+    /// the second: **no read path serves `SCANNING` content**, for any antivirus verdict whatever.
+    #[test]
+    fn no_scanning_version_is_readable_whatever_its_verdict() {
+        let base_status = VersionStatus::Scanning;
+        for av in AvStatus::all() {
+            let version = FileVersion {
+                id: VersionId::new_v7(),
+                tenant_id: TenantId::new_v7(),
+                file_id: FileId::new_v7(),
+                object_key: "k".to_owned(),
+                storage_profile_id: Uuid::now_v7(),
+                size_bytes: 1,
+                checksum_sha256: "abc".to_owned(),
+                mime_type: "application/pdf".to_owned(),
+                number: VersionNumber::FIRST,
+                status: base_status,
+                av: AvScan { status: *av, ..AvScan::unscanned() },
+                approval_state: None,
+                encryption_mode: FileVersion::DEFAULT_ENCRYPTION_MODE.to_owned(),
+                encryption_key_ref: None,
+                created_by: UserId::new_v7(),
+                created_at: Utc::now(),
+                comment: None,
+            };
+            assert!(!version.is_readable(), "SCANNING/{av} was served");
+        }
+        // The positive control, without which the assertion above holds of a function that answers
+        // `false` for everything — which is what `READABLE_PREDICATE` did for `ENC-641`'s four
+        // milestones, correctly and invisibly.
+        let served = FileVersion {
+            id: VersionId::new_v7(),
+            tenant_id: TenantId::new_v7(),
+            file_id: FileId::new_v7(),
+            object_key: "k".to_owned(),
+            storage_profile_id: Uuid::now_v7(),
+            size_bytes: 1,
+            checksum_sha256: "abc".to_owned(),
+            mime_type: "application/pdf".to_owned(),
+            number: VersionNumber::FIRST,
+            status: VersionStatus::Available,
+            av: AvScan { status: AvStatus::Skipped, ..AvScan::unscanned() },
+            approval_state: None,
+            encryption_mode: FileVersion::DEFAULT_ENCRYPTION_MODE.to_owned(),
+            encryption_key_ref: None,
+            created_by: UserId::new_v7(),
+            created_at: Utc::now(),
+            comment: None,
+        };
+        assert!(served.is_readable(), "ALLOW_WITH_FLAG buys no availability at all — ENC-828");
     }
 
     #[test]

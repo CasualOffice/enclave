@@ -363,8 +363,18 @@ async fn build(db: &TestDb, delivery: enclave_api::Delivery) -> Harness {
 ///
 /// Separate from [`get`] because a preview answers PNG bytes, and parsing those as JSON panics —
 /// which would report a *successful* render as a test harness failure.
-async fn status_of(harness: &Harness, tenant: TenantId, user: UserId, uri: &str) -> StatusCode {
-    harness
+/// The status **and** what came back with it.
+///
+/// `status_of` on its own cannot tell a `200` that rendered from a `200` that did not, and
+/// `docs/12 §1.2` has this project's own history of exactly that: an agreement test that never
+/// looked at a body passed while nothing had been rendered at all.
+async fn fetch(
+    harness: &Harness,
+    tenant: TenantId,
+    user: UserId,
+    uri: &str,
+) -> (StatusCode, Option<String>, Vec<u8>) {
+    let response = harness
         .app
         .clone()
         .oneshot(
@@ -375,8 +385,19 @@ async fn status_of(harness: &Harness, tenant: TenantId, user: UserId, uri: &str)
                 .expect("request"),
         )
         .await
-        .expect("response")
-        .status()
+        .expect("response");
+
+    let status = response.status();
+    let media_type = response
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read the body")
+        .to_vec();
+    (status, media_type, bytes)
 }
 
 /// Mints a real access token — signed, with the real claim set, verified by the real verifier.
@@ -1354,17 +1375,26 @@ async fn the_file_response_and_the_preview_route_agree_about_every_version_state
             let claims_readable =
                 current["isReadable"].as_bool().expect("isReadable is a boolean on every response");
 
-            let answer = status_of(&harness, alpha.tenant, caller, &preview).await;
+            let (answer, media_type, body) = fetch(&harness, alpha.tenant, caller, &preview).await;
             let would_serve = answer != StatusCode::NOT_FOUND;
 
             // Not-404 is not good enough on its own: `503` is also not a `404`, and a delivery
             // path that is simply broken would satisfy an agreement written that loosely. The
-            // route that gets past rule 9 must produce an actual rendition.
+            // route that gets past rule 9 must produce an actual rendition — a status, a media
+            // type and bytes, all three.
             if would_serve {
                 assert_eq!(
                     answer,
                     StatusCode::OK,
-                    "{status}/{av}: the preview route got past rule 9 but did not serve — this                      test cannot tell 'agreed, and content flows' from 'agreed, and the delivery                      path is broken for everything'"
+                    "{status}/{av}: the preview route got past rule 9 but did not serve — this \
+                     test cannot tell 'agreed, and content flows' from 'agreed, and the delivery \
+                     path is broken for everything'"
+                );
+                assert_eq!(media_type.as_deref(), Some("image/png"), "{status}/{av}");
+                assert!(
+                    !body.is_empty() && body.starts_with(b"\x89PNG"),
+                    "{status}/{av}: a 200 carrying no rendition is an absence dressed as a \
+                     success, which is docs/12 §1.2's whole warning"
                 );
             }
 
@@ -1379,12 +1409,20 @@ async fn the_file_response_and_the_preview_route_agree_about_every_version_state
             // The independent half. Agreement alone would still hold if both endpoints had adopted
             // the *same wrong* rule, so `isReadable` is also checked against rule 9 as stated here,
             // in the test, rather than against anything the code computes.
+            //
+            // `AVAILABLE`/`SKIPPED` is servable and `AVAILABLE`/`PENDING` is not, and the pair is
+            // the whole of `ENC-828`: `status` carries the antivirus **policy's** decision and
+            // `av_status` the **verdict**, so `SKIPPED` under `AVAILABLE` is "a tenant on
+            // ALLOW_WITH_FLAG published content nothing inspected" — written down, deliberate, and
+            // still refused at CONFIDENTIAL and above on rank. `PENDING` under `AVAILABLE` is
+            // `ALLOW_AND_RESCAN` publishing before a scan *completed*, which is the clause rule 9
+            // spells out and which stays refused (`ENC-646`).
             assert_eq!(
                 claims_readable,
-                status == "AVAILABLE" && av == "CLEAN",
-                "{status}/{av}: isReadable is not CLAUDE.md rule 9. AVAILABLE alone is not \
-                 servable — SKIPPED and ERROR are published-but-unscanned, and both delivery \
-                 routes refuse them"
+                status == "AVAILABLE" && (av == "CLEAN" || av == "SKIPPED"),
+                "{status}/{av}: isReadable is not CLAUDE.md rule 9 as ENC-828 leaves it. \
+                 AVAILABLE alone is not servable — PENDING and ERROR are a scan that has not \
+                 completed and one that failed, and both delivery routes refuse them"
             );
 
             if would_serve {
@@ -1399,9 +1437,9 @@ async fn the_file_response_and_the_preview_route_agree_about_every_version_state
     // for every input and a metadata endpoint that reports nothing as readable — which is exactly
     // what an `UnconfiguredPipeline` would have produced here, silently, forever.
     assert_eq!(
-        served, 1,
-        "exactly one of the thirty combinations is servable — AVAILABLE/CLEAN — and if none is, \
-         this test agreed with itself about nothing"
+        served, 2,
+        "exactly two of the thirty combinations are servable — AVAILABLE/CLEAN and, since \
+         ENC-828, AVAILABLE/SKIPPED — and if none is, this test agreed with itself about nothing"
     );
 }
 
@@ -1450,12 +1488,26 @@ async fn the_upload_and_file_endpoints_describe_a_version_in_one_shape() {
          `version`, and the two are one shape on purpose (ENC-825, ENC-826)"
     );
 
-    // And the state both rows were opened for: published, unscanned, not servable.
+    // The state both rows were opened for: published and unscanned.
+    //
+    // `isReadable` here was `false` until `ENC-828`, and the flip is the point rather than an
+    // inconvenience. `AVAILABLE`/`SKIPPED` is what `docs/06-SECURITY-DLP-ACCESS.md §6.2`'s
+    // `ALLOW_WITH_FLAG` writes, and it now *is* served — a version that policy published which no
+    // route would serve made the setting a no-op. The default is still `BLOCK`, which writes
+    // `QUARANTINED`/`SKIPPED`, so this row cannot exist unless a deployment asked for it.
+    //
+    // What this test is actually for is unchanged and is the assertion above: the two endpoints
+    // render **one shape**, and `isReadable` comes from the predicate the delivery routes filter
+    // on rather than from a second reading of `status` and `avStatus`. That is exactly why this
+    // line needed no thought to keep true — it tracked the predicate, which is what `ENC-825`
+    // bought. Had `isReadable` been recomputed here, this would have silently disagreed with the
+    // route instead of failing.
     assert_eq!(current["status"], "AVAILABLE");
     assert_eq!(current["avStatus"], "SKIPPED");
     assert_eq!(
-        current["isReadable"], false,
-        "AVAILABLE without CLEAN is not readable, and reporting it as ready is what made a client \
-         draw a preview button over a 404"
+        current["isReadable"], true,
+        "ALLOW_WITH_FLAG published this version, so every delivery path serves it (ENC-828). The \
+         published-but-not-servable state is now AVAILABLE/PENDING, which the cross-product above \
+         covers"
     );
 }

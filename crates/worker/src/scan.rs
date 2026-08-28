@@ -439,7 +439,7 @@ async fn scan_version<E: Extractor, S: BlobStore + ?Sized>(
     version: VersionId,
 ) -> Result<core::result::Result<(), Unscannable>> {
     // Rule 9, through the one type that can express it. `ReadableVersion` has private fields and a
-    // single constructor whose query carries `status = 'AVAILABLE' AND av_status = 'CLEAN'`, so a
+    // single constructor whose query carries `enclave_preview::repo::READABLE_PREDICATE`, so a
     // scan of unscanned content is not something this function can be written to do.
     let readable = {
         let mut tx = pool.begin(tenant).await?;

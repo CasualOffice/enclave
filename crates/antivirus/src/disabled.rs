@@ -34,6 +34,14 @@
 //! * A tenant on `ALLOW_WITH_FLAG` publishes, flagged unscanned — and *still* blocks at
 //!   `CONFIDENTIAL` and above, because that ceiling is not a default one can switch off.
 //!
+//! That third bullet described an intention rather than the product until `ENC-828`:
+//! `enclave_versions::READABLE_PREDICATE` accepted `CLEAN` and nothing else, so a version this
+//! provider's policy deliberately *published* was refused by preview, download, export and sync
+//! alike. `ALLOW_WITH_FLAG` was a no-op with a misleading name, and a deployment on
+//! `antivirus.provider: none` was a write-only store — uploads succeeded and nothing could ever be
+//! read back. The predicate now admits `AVAILABLE`/`SKIPPED`, which nothing but the publish path
+//! can write; the `CLEAN` claim below is exactly as forbidden as it was.
+//!
 //! # Where it is refused
 //!
 //! `docs/08-BYO-INFRA.md §19`, enforced in `enclave-config`'s validation: the `enterprise` profile
