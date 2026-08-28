@@ -121,6 +121,15 @@ pub fn router(state: ApiState, delivery: Delivery) -> Router {
         .route("/api/v1/auth/sessions/{sid}", delete(routes::auth::revoke_session))
         // Identity (docs/05-API.md §3).
         .route("/api/v1/me", get(me::me))
+        // Bootstrap (docs/05-API.md §19). The first request a client makes and the only one it
+        // makes holding nothing, so it is registered beside `/me` rather than beside the health
+        // probes: it is an `/api/v1` surface with an authenticated half that reads a tenant's row
+        // and goes through the chain. It is *not* on the policy-routing allowlist, and must not be
+        // — an exemption is granted per handler, not per branch, so allowlisting it would exempt
+        // the half that reads tenant data. `crates/api/src/routes/bootstrap.rs` carries the
+        // argument, and `crates/api/tests/bootstrap.rs` carries the assertion the lint cannot
+        // make: that the authenticated half is refused when the chain refuses.
+        .route("/api/v1/bootstrap", get(routes::bootstrap::bootstrap))
         // Navigation — workspaces and libraries (docs/05-API.md §7.1). Registered before the file
         // surface because they are how a client *reaches* it: `GET /libraries/{id}/items` was
         // registered from M1 and nothing told a caller which id to pass, so the library picker in
@@ -232,6 +241,13 @@ pub fn router(state: ApiState, delivery: Delivery) -> Router {
         // Operational probes. On the policy-routing allowlist: no tenant, no actor, no resource.
         .route("/health/live", get(health::live))
         .route("/health/ready", get(health::ready))
+        // The third probe, and the one with two halves (docs/05-API.md §19). Outside `/api/v1`
+        // with its siblings, because an operator's probe configuration names `/health/**` and a
+        // report that lived under the versioned prefix would be the one dependency page nobody
+        // could find. Unlike them it is *not* allowlisted: the authenticated half reaches the
+        // chain, and the anonymous half discloses one word. `crates/api/src/health.rs` states what
+        // never appears on either — a host, a port, a URL, a bucket or a version.
+        .route("/health/dependencies", get(health::dependencies))
         // Attached here rather than at each route: axum extensions are per-router, and a layer on
         // one route would silently not apply to the other.
         .layer(Extension(store))
