@@ -30,15 +30,16 @@
 //! BYPASSRLS-backed reader of tenant metadata sitting in the crate every domain crate depends on,
 //! and the first caller wanting a display name would find it perfectly reasonable to add one.
 //!
-//! # What it does not yet do: verified custom domains
+//! # Verified custom domains, and why they are tried first
 //!
 //! `docs/05-API.md §3` and `docs/13-IDENTITY-SSO-SCIM.md` model a tenant reachable at its own
-//! domain, and `enclave_identity::TenantRepository::find_by_verified_domain` implements that
-//! lookup against `tenant_domains`. It is not reachable from here: `tenant_domains` **does** carry
-//! `tenant_id`, so it has a policy, and `0002` grants `enclave_platform` nothing on it — a query
-//! would fail with `permission denied` rather than resolve. Closing that needs a migration, which
-//! is `ENC-686`. Until then the routing key is the tenant **slug**, which `docs/04-DATA-MODEL.md
-//! §7` already calls "a routing key: it appears in custom-domain resolution".
+//! domain. That used to be unreachable from here — `tenant_domains` carries `tenant_id`, so `0002`
+//! gave it a policy and granted `enclave_platform` nothing on it, and the query failed with
+//! `permission denied` rather than resolving. `ENC-686` closed it: `migrations/0026` grants the
+//! `SELECT` and nothing else, and [`resolve_routed_tenant`] now tries the whole verified domain
+//! **before** the leftmost label. The order is the security content and the function's own comment
+//! carries why. The slug remains the fallback, which `docs/04-DATA-MODEL.md §7` already calls "a
+//! routing key: it appears in custom-domain resolution".
 
 use enclave_core::id::TenantId;
 use sqlx::Row as _;

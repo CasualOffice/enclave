@@ -7,25 +7,39 @@
 //! DELETE /api/v1/shares/{id}         → revoke
 //! ```
 //!
-//! # `GET /shares/{token}` is not here, and that is a finding rather than an omission
+//! # `GET /shares/{token}` is not here, and the reason has changed
 //!
-//! `ENC-692`. Redemption arrives with a token and nothing else, so resolving it *is* how the tenant
-//! is established — and no connection this crate may hold can do that.
-//! [`enclave_sharing::repo::find_by_digest`] writes its lookup with no `tenant_id` predicate and
-//! describes itself as resolving *"across every tenant"*, but `migrations/0008` puts
-//! `USING (tenant_id = current_setting('app.tenant_id')::uuid)` on `share_links` with `FORCE`, and
-//! row-level security is a property of the table rather than an opt-out a query can take. On a
-//! [`enclave_db::TenantScoped`] connection the lookup sees one tenant; on an unscoped one
-//! `current_setting` raises. The connection that would work is `DbPool::platform_connection`, which
-//! `.github/scripts/no_raw_pool.py` refuses outside `crates/db` and for which `crates/api`'s binary
-//! configures no URL.
+//! **This section used to give the tenant as the reason, and that reason has stopped being true.**
+//! It read: redemption arrives with a token and nothing else, so resolving it *is* how the tenant is
+//! established, and no connection this crate may hold can do that. Two things have landed since.
+//! `enclave_db::resolve_routed_tenant` resolves a verified custom domain and then a slug
+//! (`ENC-686`, with the `SELECT` it needs granted by `migrations/0026`), reached through the
+//! [`RoutedTenant`](crate::routes::auth::RoutedTenant) extractor `POST /api/v1/auth/login` has used
+//! since `ENC-685`; and `crates/api/src/main.rs` configures `database.platform_url` and warns when
+//! it is unset. So the tenant is available on an unauthenticated route, and the digest then resolves
+//! under [`enclave_db::TenantScoped`] with row-level security doing what `migrations/0008` wrote it
+//! to do. The correction is recorded rather than deleted, for `crates/api/src/routes/bootstrap.rs`'s
+//! reason: the conclusion survived and its justification did not, and a justification that changed
+//! shape has to be argued again.
 //!
-//! Registering the route anyway would produce either a permanent `503` or a redemption that
-//! silently only ever resolves same-tenant links — `ENC-170`'s shape, which this router exists not
-//! to repeat. The tracker row carries the two candidate designs. What *is* proved meanwhile is the
-//! half that matters most, and it is proved in `crates/api/tests/shares.rs`: a token minted in
-//! `tenant-alpha` and presented under `tenant-beta`'s scope is indistinguishable from one that was
-//! never minted, because RLS makes the row invisible rather than because anything compares ids.
+//! What blocks the route now is `ENC-879`, and it is in the chain rather than in the connection.
+//! **A redemption arrives with no principal.** [`enclave_core::Actor`] has no variant for the bearer
+//! of a link; `acl_entries.principal_type` admits `USER`, `GROUP`, `GUEST`, `SERVICE_ACCOUNT` and
+//! `EVERYONE`, none of which can name one; `enclave_authorization::classify` maps
+//! [`enclave_core::ResourceKind::Share`] to an unsupported target, so a share object cannot be asked
+//! about either; and `PrincipalSet::for_actor` refuses [`Actor::System`] deliberately, precisely so
+//! that a principal the ACL model cannot talk about does not fall through to `EVERYONE`. So
+//! `PolicyEngine::enforce` — which `CLAUDE.md` rule 1 requires this handler to call — has no answer
+//! but `deny`, for every principal a redemption could honestly present.
+//!
+//! Registering it anyway would refuse every redemption, which is `ENC-170`'s shape; and rendering
+//! that denial as anything but `404` would tell an anonymous caller that the token is live, which is
+//! rule 7. Both halves are asserted in `crates/api/tests/shares.rs`: the tenant half by a token
+//! minted in `tenant-alpha` and presented under `tenant-beta`'s scope, indistinguishable from one
+//! that was never minted because RLS makes the row invisible rather than because anything compares
+//! ids; and the principal half by
+//! `the_chain_can_authorize_no_principal_a_redemption_could_present`, which asks the real engine and
+//! carries its positive control in the same run.
 //!
 //! # Internal and external sharing are two permissions, and the split fails closed
 //!
