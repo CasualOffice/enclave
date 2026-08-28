@@ -666,6 +666,40 @@ impl EmbeddingProvider<Local> for FixedWidthLocal {
     }
 }
 
+/// A local provider that takes longer to answer than a connection may sit in a transaction.
+///
+/// `ENC-850`. The delay is the whole double: it stands in for a cold model load, a large batch, or
+/// a machine under load — every one of which is ordinary, and any one of which used to terminate
+/// the pass's connection with `25P03` because the transaction was still open while it happened.
+#[derive(Debug)]
+struct SlowLocal {
+    inner: FixedWidthLocal,
+    delay: Duration,
+}
+
+#[async_trait]
+impl EmbeddingProvider<Local> for SlowLocal {
+    fn model(&self) -> &ModelId {
+        self.inner.model()
+    }
+
+    fn dimensions(&self) -> usize {
+        self.inner.dimensions()
+    }
+
+    async fn embed(
+        &self,
+        batch: TextBatch<Local>,
+    ) -> core::result::Result<Vec<Embedding>, EmbeddingError> {
+        tokio::time::sleep(self.delay).await;
+        self.inner.embed(batch).await
+    }
+
+    async fn availability(&self) -> Availability {
+        self.inner.availability().await
+    }
+}
+
 /// A remote provider that fails the test on contact.
 ///
 /// Present in the router of every test below so that the S8 assertion is about *reaching* a remote
@@ -1317,4 +1351,76 @@ async fn text_an_indexing_pass_committed_is_text_lexical_search_finds() {
         "a document the pass indexed was not findable by a word the pass itself stored \
          (searched {word:?})"
     );
+}
+
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL with migrations 0001–0014; CI runs it with --include-ignored"]
+async fn the_pass_holds_no_transaction_while_it_embeds() {
+    // `ENC-850`. The pass used to open one transaction per file and keep it open across the object
+    // read, text extraction, OCR *and* the embed — then commit. Every one of those is unbounded by
+    // anything PostgreSQL knows about, and `idle_in_transaction_session_timeout` is 60 seconds by
+    // deliberate configuration, because a transaction left open holds its `SET LOCAL
+    // app.tenant_id`. So the database terminated the connection mid-embed with `25P03` and the pass
+    // returned a database error for work that had nothing to do with the database. It reached
+    // `main` and turned CI red; on a deployment it is a document that never indexes and an error
+    // that names the wrong subsystem.
+    //
+    // The timeout is shortened to a second rather than waited out, because what is under test is
+    // *that no transaction is open across the slow work*, not how long the timeout is. A test that
+    // slept for sixty seconds would assert the constant.
+    //
+    // **Watched to fail**: with the embed back inside the transaction this fails with
+    // `Indexing(Storage(Database(PgDatabaseError { code: "25P03", message: "terminating connection
+    // due to idle-in-transaction timeout" })))` — the exact error CI reported.
+    let db = TestDb::start().await.expect("start a test database");
+    let fixtures = db.seed().await.expect("seed the fixtures");
+    let pool = db
+        .pool_with_idle_in_transaction_timeout(Duration::from_secs(1))
+        .await
+        .expect("a pool that ends an idle transaction in a second");
+    let alpha = fixtures.alpha.id;
+    let mut conn = db.connect().await.expect("connection");
+    let (spine, version) =
+        a_file_on_a_spine(&mut conn, alpha, fixtures.alpha.owner, "AVAILABLE", "CLEAN").await;
+    enqueue(&mut conn, alpha, spine.file, version).await.expect("enqueue");
+
+    let writer = Arc::new(RecordingWriter::default());
+    let (inner, _calls) = FixedWidthLocal::new(ACTIVE.dimension as usize);
+    // Three times the timeout, so a pass that holds a transaction cannot finish inside it by luck
+    // on a fast machine — the failure this guards against must be deterministic, not a race.
+    let slow = SlowLocal { inner, delay: Duration::from_secs(3) };
+    let router = EmbeddingRouter::new(slow, Forbidden, LocalCeiling::at(RESTRICTED));
+    let stage = VectorStage::for_collection(
+        Box::new(router),
+        Box::new(FixedRank(RESTRICTED)),
+        Box::new(ArcWriter(Arc::clone(&writer))),
+        ACTIVE.dimension,
+    )
+    .expect("the stage is wired at the active model's width");
+    let store = Arc::new(RecordingStore::new(DOCUMENT));
+
+    let pass = index_pass(
+        &pool,
+        alpha,
+        &pipeline(),
+        None,
+        Some(&stage),
+        store.as_ref(),
+        versions(),
+        RenderBudget::default(),
+        10,
+        &Stop::new(),
+    )
+    .await
+    .expect("an embed slower than the idle-in-transaction timeout is ordinary, not a failure");
+
+    assert_eq!(pass.indexed, 1, "the document was not indexed");
+    assert_eq!(pass.embedded, 1, "the document was indexed but not embedded");
+
+    // The ordering argument is unchanged by the split, so it is asserted rather than assumed: the
+    // vectors were written, and the manifest that says so is committed.
+    assert_eq!(writer.written().len(), 1, "the vectors never reached the store");
+    assert_eq!(manifest_status(&mut conn, spine.file).await.0, "READY");
+
+    drop(db);
 }

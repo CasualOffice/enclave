@@ -408,6 +408,26 @@ impl TestDb {
         Ok(enclave_db::DbPool::connect(&config).await?)
     }
 
+    /// A pool whose connections are terminated after `idle` inside an open transaction.
+    ///
+    /// For `ENC-850`: a deployment's value is sixty seconds, which no test should wait for, and a
+    /// test that waited would be asserting the timeout's *duration* rather than that the code under
+    /// test does not hold a transaction across slow work. Shortening it to a second makes the
+    /// control fire immediately and asserts the property that actually matters.
+    ///
+    /// # Errors
+    ///
+    /// Connection failures.
+    pub async fn pool_with_idle_in_transaction_timeout(
+        &self,
+        idle: std::time::Duration,
+    ) -> Result<enclave_db::DbPool, HarnessError> {
+        let config = enclave_db::DbConfig::new(enclave_db::ConnectionUrl::new(self.url.clone()))
+            .with_application_role("enclave_app")
+            .with_idle_in_transaction_timeout(idle);
+        Ok(enclave_db::DbPool::connect(&config).await?)
+    }
+
     /// Opens a connection to this database.
     ///
     /// # Errors
