@@ -1,6 +1,6 @@
 # 09 — Production UX, File Views & White-Labeling
 
-> **Status:** Draft · **Version:** 2.1 · **Owner:** Design + Frontend · **Last updated:** 2026-08-25
+> **Status:** Draft · **Version:** 2.2 · **Owner:** Design + Frontend · **Last updated:** 2026-08-29
 > **Authoritative for:** application UX standards, view types, admin UX, branding, accessibility.
 > Localization mechanics live in `14-I18N-L10N.md`. **Token values** live in
 > `web/design-system/design-system-v2.html`, the visual reference, and are extracted to
@@ -163,6 +163,28 @@ by clicking something else.
 
 Focus is always visible, focus order follows visual order, and focus returns to the triggering
 element when a dialog closes.
+
+**What is implemented, and what this table does not say** (`ENC-702`). The map above is wired in
+`web/src/shared/keyboard/bindings.ts`, which is the single source both the handlers and the `?`
+reference read, so a binding cannot be advertised and absent. Six rows — `R M C S`, `L R` and `Del`
+— are **registered and deferred**: no endpoint renames, moves, copies, trashes or labels a file, so
+they carry the unbuilt treatment with the blocker named rather than firing into nothing.
+
+Three things this section leaves undefined, recorded rather than decided by whoever implemented it:
+
+- **`R` is bound twice.** Rename takes it on one row and the classification chord `L R` takes it on
+  the next, and the table does not say whether `L R` is a chord, a prefix or two keys. `ENC-896`.
+- **`Open` has no meaning for a file** in a product with no editor and no full-page preview route.
+  The client reads it as the peek at its Preview tab, since this section itself notes that the peek
+  *is* the preview surface — but that is a reading, not a statement of this document. `ENC-897`.
+- **Nothing binds `Home`, `End`, `PageUp` or `PageDown`.** In a 100 000-row list that leaves the end
+  of the list 100 000 keypresses away, which is the most consequential of the three silences.
+  `ENC-898`.
+
+`→ ←` resolve **along the writing direction, not across the screen**: *next* in Arabic or Hebrew is
+the key labelled `ArrowLeft`, and a tree that expands on the physical right key collapses a group
+for a user trying to open it. That is the keyboard form of `CLAUDE.md` rule 12's ban on physical
+`left`/`right`, and CI's `en-XB` mirrored locale is what catches it.
 
 ## 7. Details panel
 
@@ -382,5 +404,6 @@ Mechanics, locale negotiation, translation workflow and search-language handling
 
 | Version | Date | Change |
 |---|---|---|
+| 2.2 | 2026-08-29 | **§6's map is implemented, and three things it does not say are recorded** (`ENC-702`). The bindings live in one table that both the handlers and the `?` reference read, so none can be advertised and absent; the six that act on a file are registered and deferred, because no endpoint renames, moves, copies, trashes or labels one. What §6 leaves open is *stated here rather than settled by the implementation*: `R` is bound twice (Rename, and the `L R` chord — `ENC-896`); `Open` has no meaning for a file in a product with no editor or full-page preview route (`ENC-897`); and nothing binds `Home`/`End`/`PageUp`/`PageDown`, which leaves the end of a 100 000-row list 100 000 keypresses away (`ENC-898`). §15's "visible focus with a 3:1 contrast ratio" was **not** met and nothing was checking it: every `:focus-visible` rule drew `--accent-ring`, a 30–40% wash measuring 1.68–2.42:1 across the six theme × brand combinations, and axe does not measure focus-ring contrast (`ENC-895`). |
 | 2.1 | 2026-08-25 | **Seven contradictions with `web/design-system/` resolved before the shell was built** (`ENC-676`, `plans/M5-MVP-GA.md` D35). The design wins on appearance, this document wins on behaviour, and each conflict is annotated where it was settled rather than silently edited. §3's shell diagram **drew a top bar the design retired** — replaced, with a note, because a diagram is what a reader implements and this one was wrong for a milestone. §7's docked eleven-tab panel became the design's five-tab transient peek (D34); DLP and retention are inline on Details, Sharing is already a dialog, Comments defer with the milestone that owns them. §13's densities became 36/30 from 48/36. §6's keyboard map **overrules the design**, absorbing `J`/`K`, `⌘\`, `L R` and a disabled `⌘J`, because it is an accessibility commitment and the one surface a screen-reader user cannot work around. §5 now says a denied action is **shown, disabled and explained** rather than hidden, per `06 §24` — and notes that `capabilities` cannot yet supply the reason (`ENC-674`), so inventing one client-side is forbidden. §11 records that the reference shows **none** of the empty or error states, which is a gap in the reference rather than permission to ship three. |
 | 2.0 | 2026-08-18 | White-labeling model, brand contract, and the v2 design system as the token authority. |
