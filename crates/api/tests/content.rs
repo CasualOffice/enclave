@@ -1488,12 +1488,26 @@ async fn the_upload_and_file_endpoints_describe_a_version_in_one_shape() {
          `version`, and the two are one shape on purpose (ENC-825, ENC-826)"
     );
 
-    // And the state both rows were opened for: published, unscanned, not servable.
+    // The state both rows were opened for: published and unscanned.
+    //
+    // `isReadable` here was `false` until `ENC-828`, and the flip is the point rather than an
+    // inconvenience. `AVAILABLE`/`SKIPPED` is what `docs/06-SECURITY-DLP-ACCESS.md §6.2`'s
+    // `ALLOW_WITH_FLAG` writes, and it now *is* served — a version that policy published which no
+    // route would serve made the setting a no-op. The default is still `BLOCK`, which writes
+    // `QUARANTINED`/`SKIPPED`, so this row cannot exist unless a deployment asked for it.
+    //
+    // What this test is actually for is unchanged and is the assertion above: the two endpoints
+    // render **one shape**, and `isReadable` comes from the predicate the delivery routes filter
+    // on rather than from a second reading of `status` and `avStatus`. That is exactly why this
+    // line needed no thought to keep true — it tracked the predicate, which is what `ENC-825`
+    // bought. Had `isReadable` been recomputed here, this would have silently disagreed with the
+    // route instead of failing.
     assert_eq!(current["status"], "AVAILABLE");
     assert_eq!(current["avStatus"], "SKIPPED");
     assert_eq!(
-        current["isReadable"], false,
-        "AVAILABLE without CLEAN is not readable, and reporting it as ready is what made a client \
-         draw a preview button over a 404"
+        current["isReadable"], true,
+        "ALLOW_WITH_FLAG published this version, so every delivery path serves it (ENC-828). The \
+         published-but-not-servable state is now AVAILABLE/PENDING, which the cross-product above \
+         covers"
     );
 }
