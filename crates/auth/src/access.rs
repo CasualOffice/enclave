@@ -625,6 +625,48 @@ mod tests {
         ));
     }
 
+    /// `ENC-879`. A correctly signed token claiming `typ: "share_link"` is rejected at
+    /// verification, not merely never minted.
+    ///
+    /// [`AccessTokenIssuer::issue`] refuses the kind, so the only way to produce this token is the
+    /// way this test does: assemble the claims and sign them with the deployment's own key. That is
+    /// exactly the threat the check exists for — a *future* issuance path, or anything with access
+    /// to the signing key, must not be able to turn a JWT into a share-link bearer. If it could,
+    /// becoming one would be a matter of asking for a token instead of redeeming a link, skipping
+    /// the password, OTP, MFA and audience the link states (`ENC-694`).
+    #[test]
+    fn a_signed_token_claiming_to_be_a_share_link_is_refused_at_the_door() {
+        let f = fixture();
+
+        // The control, first: the identical claims with `typ: user` verify. Without it this test
+        // passes against a verifier that has stopped accepting anything.
+        let mut claims = f
+            .issuer
+            .issue(&f.key, template(ClientType::Web, None), f.now, Duration::minutes(10))
+            .expect("issue")
+            .claims;
+        assert!(f.verifier.verify(&sign(&f.key, &claims), f.now).is_ok());
+
+        claims.typ = ActorKind::ShareLink;
+        let refused = f.verifier.verify(&sign(&f.key, &claims), f.now);
+        assert!(
+            matches!(
+                refused,
+                Err(AuthError::ActorKindNotATokenSubject { kind: ActorKind::ShareLink })
+            ),
+            "a signed share-link token verified: {refused:?}"
+        );
+    }
+
+    /// Signs arbitrary claims with the deployment's real key, bypassing [`AccessTokenIssuer`].
+    ///
+    /// Only a test does this, and only to reach a code path issuance refuses to produce.
+    fn sign(key: &PrivateSigningKey, claims: &AccessTokenClaims) -> String {
+        let mut header = Header::new(TOKEN_ALGORITHM);
+        header.kid = Some(key.kid().to_string());
+        jsonwebtoken::encode(&header, claims, &key.encoding_key()).expect("sign")
+    }
+
     #[test]
     fn a_token_for_another_deployment_is_rejected() {
         let f = fixture();

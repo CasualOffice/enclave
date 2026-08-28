@@ -1265,10 +1265,15 @@ async fn every_unusable_link_is_the_same_answer_as_one_that_never_existed() {
     // alone — three of the four ids are alpha's own, so row-level security has nothing to say. The
     // *cross-tenant* leg is held twice: `share_targets` carries an explicit `tenant_id = $1`
     // predicate (layer 1) and runs on a `TenantScoped` connection where RLS excludes beta's row
-    // anyway (layer 2). Deleting the predicate would therefore leave this green, which is the shape
-    // nine crates in this repository have now hit; it is recorded rather than assumed away, and the
-    // unit test `a_share_reference_reaches_its_own_resolution_and_another_tenants_does_not` is what
-    // fails without the application check.
+    // anyway (layer 2).
+    //
+    // **Deleting that predicate was tried and failed nothing here** — the tenth time this repository
+    // has found that shape. `migrations/0008` `FORCE`s a policy on `share_links`, so beta's row is
+    // invisible on a scoped connection whether or not the statement mentions a tenant. The layer-1
+    // half is therefore held by
+    // `acl_resolution::the_share_lookup_filters_by_tenant_without_help_from_row_level_security`,
+    // which asks the same question on a connection with RLS out of the way and *does* fail. This
+    // test proves isolation; it does not prove there are two layers of it.
     let never = ShareLinkId::new_v7();
     let cases: [(&str, ShareLinkId); 4] = [
         ("a link that never existed", never),

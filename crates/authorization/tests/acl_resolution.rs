@@ -26,9 +26,10 @@
 
 use chrono::{DateTime, Duration, TimeZone as _, Utc};
 use enclave_authorization::{Effective, PgAclAuthorization};
+use enclave_authorization::{PrincipalKind, PrincipalSet};
 use enclave_core::{
     Action, Actor, AuthorizationService as _, FileAction, FileId, GroupId, LibraryId,
-    RequestContext, ResourceRef, StageDecision, TenantId, UserId, WorkspaceId,
+    RequestContext, ResourceRef, ShareLinkId, StageDecision, TenantId, UserId, WorkspaceId,
 };
 use enclave_testing::{Fixtures, TestDb};
 use sqlx::PgConnection;
@@ -672,4 +673,202 @@ async fn resolution_returns_effective_states_a_caller_can_reason_about() {
 
     assert_eq!(effective[0], Effective::Denied, "an explicit DENY read as merely ungranted");
     assert_eq!(effective[1], Effective::NotGranted, "a missing file read as explicitly denied");
+}
+
+/// `ENC-879`. The share-link lookup's own `tenant_id` predicate, isolated from row-level security.
+///
+/// # Why this one test uses the connection every other test here must not
+///
+/// This module's header says every read goes through the harness pool, which `SET ROLE
+/// enclave_app`s, because a read on the admin connection bypasses RLS and would pass whatever the
+/// policies said. That is right for a test asking *does isolation hold*. This test asks a different
+/// question — **does layer 1 hold on its own** — and the only way to ask it is to take layer 2 away.
+///
+/// It has to be asked, because deleting `s.tenant_id = $1` from `SHARE_TARGET_SQL` fails **nothing**
+/// otherwise: `migrations/0008` puts a `FORCE`d policy on `share_links`, so on a scoped connection
+/// beta's row is invisible whether or not the statement mentions a tenant. That shape has now been
+/// found in ten crates in this repository, and the lesson each time was that the behavioural test
+/// proved RLS and nothing else. So the mechanism is named rather than assumed: on the admin
+/// connection the predicate is the only filter there is, and this test is what fails when it goes.
+///
+/// It asserts nothing about isolation in production, where both layers are present. It asserts that
+/// there are two.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL with migration 0027 applied; CI runs it with --include-ignored"]
+async fn the_share_lookup_filters_by_tenant_without_help_from_row_level_security() {
+    let (db, fixtures) = setup().await;
+    let alpha = fixtures.alpha.id;
+    let beta = fixtures.beta.id;
+
+    let mut admin = db.connect().await.expect("admin connection");
+    let alpha_tree = Tree::new(alpha);
+    let beta_tree = Tree::new(beta);
+    alpha_tree.insert(&mut admin, fixtures.alpha.owner).await;
+    beta_tree.insert(&mut admin, fixtures.beta.owner).await;
+    let alphas = insert_share_link(&mut admin, alpha, alpha_tree.file, fixtures.alpha.owner).await;
+    let betas = insert_share_link(&mut admin, beta, beta_tree.file, fixtures.beta.owner).await;
+
+    // Confirm the bypass is real before relying on it: as the superuser, both rows are visible.
+    let both: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM share_links WHERE id = ANY($1::uuid[])")
+            .bind(vec![alphas.as_uuid(), betas.as_uuid()])
+            .fetch_one(&mut admin)
+            .await
+            .expect("count");
+    assert_eq!(both, 2, "the admin connection is not bypassing RLS, so this test proves nothing");
+
+    // The control: alpha's own link resolves under alpha.
+    let found = enclave_authorization::repo::share_targets(
+        &mut admin,
+        alpha,
+        &[alphas.as_uuid()],
+        Utc::now(),
+    )
+    .await
+    .expect("lookup");
+    assert!(found.contains_key(&alphas.as_uuid()), "alpha's own link did not resolve");
+
+    // The assertion: beta's link, asked under alpha, with nothing but the predicate in the way.
+    let leaked = enclave_authorization::repo::share_targets(
+        &mut admin,
+        alpha,
+        &[betas.as_uuid()],
+        Utc::now(),
+    )
+    .await
+    .expect("lookup");
+    assert!(
+        leaked.is_empty(),
+        "another tenant's share link resolved with row-level security out of the way, so the \
+         statement's own tenant_id predicate is not doing anything: {leaked:?}"
+    );
+}
+
+/// Writes a `share_links` row directly. The crate under test has no minting API of its own, and
+/// `enclave_sharing` would be a dependency cycle.
+async fn insert_share_link(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    file: FileId,
+    creator: UserId,
+) -> ShareLinkId {
+    let id = ShareLinkId::new_v7();
+    sqlx::query(
+        "INSERT INTO share_links
+           (id, tenant_id, resource_type, resource_id, token_hash, permission, allow_download,
+            audience, require_otp, require_mfa, download_count, created_by, created_at)
+         VALUES ($1, $2, 'FILE', $3, $4, 'VIEW', TRUE, 'INTERNAL', FALSE, FALSE, 0, $5, $6)",
+    )
+    .bind(id.as_uuid())
+    .bind(tenant.as_uuid())
+    .bind(file.as_uuid())
+    // A digest-shaped value, not a token: this crate never sees one, and a fixture that invented a
+    // plausible token would be a credential literal in a tracked file (`CLAUDE.md` rule 11).
+    .bind(format!("{:x}", id.as_uuid().as_u128()))
+    .bind(creator.as_uuid())
+    .bind(fixed_time())
+    .execute(&mut *conn)
+    .await
+    .expect("insert share link");
+    id
+}
+
+/// `ENC-879`. The `EVERYONE` refusal is written in *two* places, and this is the one that pins the
+/// SQL half.
+///
+/// `PrincipalSet::matches` refuses an `EVERYONE` entry for a link bearer, and so does the `WHERE`
+/// clause of `repo::acl_entries_by_action`. That redundancy is deliberate — see the constant's doc
+/// comment — but it has a cost worth naming: **no verdict-level test can tell which of the two is
+/// holding**, because either alone produces the same refusal. Breaking one leaves every such test
+/// green.
+///
+/// So this one does not look at a verdict. It asserts on the rows the query *returns*, which is the
+/// only thing that changes when the `WHERE` clause changes. Deleting `AND $9` from `ACL_ENTRIES_SQL`
+/// fails here and nowhere else.
+///
+/// It runs through the harness pool, which `SET ROLE enclave_app`s — a test of this query that ran
+/// as the superuser would be testing PostgreSQL's RLS bypass, which is the trap
+/// `crates/authorization/src/repo.rs`'s header records.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL with migration 0027 applied; CI runs it with --include-ignored"]
+async fn the_prefilter_does_not_even_fetch_an_everyone_row_for_a_link_bearer() {
+    let (db, fixtures) = setup().await;
+    let alpha = fixtures.alpha.id;
+    let tree = Tree::new(alpha);
+
+    let mut admin = db.connect().await.expect("admin connection");
+    tree.insert(&mut admin, fixtures.alpha.owner).await;
+    let link = ShareLinkId::new_v7();
+    grant(&mut admin, alpha, "LIBRARY", tree.library.as_uuid(), "EVERYONE", None, "ALLOW", None)
+        .await;
+    grant(
+        &mut admin,
+        alpha,
+        "FILE",
+        tree.file.as_uuid(),
+        "SHARE_LINK",
+        Some(link.as_uuid()),
+        "ALLOW",
+        None,
+    )
+    .await;
+    let _ignored = sqlx::Connection::close(admin).await;
+
+    let nodes = [
+        enclave_authorization::ChainNode::new(
+            enclave_authorization::AclResourceType::File,
+            tree.file.as_uuid(),
+        ),
+        enclave_authorization::ChainNode::new(
+            enclave_authorization::AclResourceType::Library,
+            tree.library.as_uuid(),
+        ),
+    ];
+
+    let pool = db.pool().await.expect("application-role pool");
+    let mut tx = enclave_db::TenantScoped::begin(&pool, alpha).await.expect("begin");
+
+    // The control, first. An ordinary member's fetch *does* bring back the `EVERYONE` row, so the
+    // row exists, the nodes are right, and the query works.
+    let member = PrincipalSet::for_actor(&Actor::User(fixtures.alpha.member)).expect("a principal");
+    let fetched = enclave_authorization::repo::acl_entries(
+        &mut tx,
+        alpha,
+        &ACTION.to_string(),
+        &nodes,
+        &member,
+        Utc::now(),
+    )
+    .await
+    .expect("fetch");
+    assert!(
+        fetched.iter().any(|entry| entry.principal.kind == PrincipalKind::Everyone),
+        "the EVERYONE row was not fetched for a member, so this fixture proves nothing: {fetched:?}"
+    );
+
+    // The finding: the same query, for a link bearer, does not bring the row back at all.
+    let bearer = PrincipalSet::for_actor(&Actor::LinkBearer(link)).expect("a principal");
+    let fetched = enclave_authorization::repo::acl_entries(
+        &mut tx,
+        alpha,
+        &ACTION.to_string(),
+        &nodes,
+        &bearer,
+        Utc::now(),
+    )
+    .await
+    .expect("fetch");
+    tx.commit().await.expect("commit");
+
+    assert!(
+        !fetched.iter().any(|entry| entry.principal.kind == PrincipalKind::Everyone),
+        "an EVERYONE row crossed the wire for a share-link bearer: {fetched:?}"
+    );
+    // And its own row did, so the narrowing is about `EVERYONE` and not about the query having
+    // stopped returning anything for this principal kind.
+    assert!(
+        fetched.iter().any(|entry| entry.principal.kind == PrincipalKind::ShareLink
+            && entry.principal.id == Some(link.as_uuid())),
+        "the link's own row was not fetched: {fetched:?}"
+    );
 }
