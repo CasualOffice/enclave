@@ -283,6 +283,48 @@ pub async fn catch_up(conn: &mut PgConnection, tenant: TenantId) -> Result<Catch
     })
 }
 
+/// How many of this tenant's files are suppressed **right now**.
+///
+/// `docs/07-SEARCH-INDEXING.md §6.4` step 3's input: past a configured size the denylist means
+/// invalidation is so far behind that the index is known to be wrong at scale, and retrieval
+/// degrades to lexical rather than burning over-fetch budget on candidates the post-filter is about
+/// to drop. [`crate::Retrieval::decide`] takes the number; this is where it comes from
+/// (`ENC-698` — until it, the search route passed a literal `0`, which was inert only because
+/// unreachability outranks denylist pressure and became wrong the moment a store was reachable).
+///
+/// # It counts what [`suppressed`] would drop, and that is load-bearing
+///
+/// The same `clears_at` clause, against the same clock. A count that included expired rows would
+/// degrade a tenant whose denylist is entirely stale — every file in it findable, none of them
+/// suppressed — which is a tenant getting *worse recall* because housekeeping has not run. `§6.4`
+/// puts the lift on `clears_at` alone and this reads the same rule; the assertion that they cannot
+/// drift is in this module's tests, over the SQL, because there is nowhere else to make it.
+///
+/// # Why a request may ask this and [`catch_up`] may not
+///
+/// [`catch_up`] is three filtered aggregates for an operator and belongs in housekeeping. This is
+/// one `count(*)` over one tenant's rows in a table that is small by construction — `§6.4` sizes it
+/// in thousands and calls anything larger a backlog — and the search path has no other way to learn
+/// the number the decision needs. It answers about the *tenant*, never about a file: there is
+/// deliberately no `file_id` in it, for the reason this module's tests assert about `catch_up`.
+///
+/// # Errors
+///
+/// Storage failures. Never a zero standing in for one — a failed read that reported an empty
+/// denylist would silently promote a tenant off the fallback during exactly the incident the
+/// fallback exists for.
+pub async fn in_force(conn: &mut PgConnection, tenant: TenantId) -> Result<usize, SearchError> {
+    let row = sqlx::query(IN_FORCE_SQL).bind(tenant.as_uuid()).fetch_one(&mut *conn).await?;
+    let count: i64 = row.try_get("in_force").map_err(|_| SearchError::MalformedRow {
+        column: "in_force",
+        reason: "missing or not a bigint",
+    })?;
+    usize::try_from(count).map_err(|_| SearchError::MalformedRow {
+        column: "in_force",
+        reason: "a count came back negative",
+    })
+}
+
 /// Lifts suppressions whose `clears_at` has passed, judged by the database's clock.
 ///
 /// The worker's housekeeping. Returns how many were lifted, so a sweep that finds nothing is
@@ -363,6 +405,18 @@ DELETE FROM retrieval_denylist
  WHERE tenant_id = $1 AND clears_at IS NOT NULL AND clears_at <= now()
 ";
 
+/// Suppressions in force for one tenant, by the same rule [`suppressed`] applies to a candidate.
+///
+/// The `WHERE` clause is [`SUPPRESSED_SQL`]'s minus the candidate join, and the test below is what
+/// keeps it that way: a count that used a different notion of "in force" from the drop would report
+/// pressure that no search is actually feeling, or miss pressure that every search is.
+const IN_FORCE_SQL: &str = "
+SELECT count(*) AS in_force
+  FROM retrieval_denylist
+ WHERE tenant_id = $1
+   AND (clears_at IS NULL OR clears_at > now())
+";
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
@@ -389,6 +443,37 @@ mod tests {
                 "{name} became conditional on a suppression's generation"
             );
         }
+    }
+
+    /// **`ENC-698`.** The degradation trigger counts exactly what the post-filter would drop.
+    ///
+    /// The tempting divergence is one clause in either direction, and both are wrong in a way that
+    /// is invisible from a call site. A count with no `clears_at` filter degrades a tenant whose
+    /// denylist is entirely expired — every one of those files is findable, nothing is being
+    /// suppressed, and the tenant loses dense retrieval because a sweep has not run. A count that
+    /// also consulted `indexed_seq` would make the trigger depend on a worker having reported back,
+    /// which is the conditional lift `docs/07 §6.4` refuses and which `ENC-520` guards for the read
+    /// and the lift.
+    #[test]
+    fn the_degradation_count_and_the_search_drop_mean_the_same_thing_by_in_force() {
+        let clause = "(clears_at IS NULL OR clears_at > now())";
+        assert!(
+            IN_FORCE_SQL.contains(clause),
+            "the count must apply the expiry rule `suppressed` applies: {IN_FORCE_SQL}"
+        );
+        // `suppressed` qualifies its columns; the substring compared is the rule, not the alias.
+        assert!(
+            SUPPRESSED_SQL.contains("d.clears_at IS NULL OR d.clears_at > now()"),
+            "the drop stopped judging expiry against the database clock: {SUPPRESSED_SQL}"
+        );
+        assert!(
+            !IN_FORCE_SQL.contains("indexed_seq") && !IN_FORCE_SQL.contains("suppression_seq"),
+            "the trigger became conditional on an index write having been confirmed"
+        );
+        assert!(
+            !IN_FORCE_SQL.contains("file_id"),
+            "the trigger grew a per-file projection, which is the oracle ENC-518 refuses"
+        );
     }
 
     /// No per-file freshness answer, asserted where it would be written.

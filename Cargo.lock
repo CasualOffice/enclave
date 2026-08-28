@@ -1822,6 +1822,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "enclave-authorization",
+ "enclave-config",
  "enclave-core",
  "enclave-db",
  "enclave-indexing",

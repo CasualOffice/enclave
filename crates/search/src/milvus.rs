@@ -199,6 +199,71 @@ impl MilvusConfig {
             consistency: ConsistencyLevel::Bounded,
         }
     }
+
+    /// The Milvus configuration a deployment's `search.milvus` section names, or `None` when it
+    /// names none.
+    ///
+    /// # Why it is here and not in a binary
+    ///
+    /// It was in `crates/worker/src/main.rs` and it was the **only** copy, so `crates/api` could not
+    /// reach it: the API process held no vector index, `Retrieval::decide` was handed a hardcoded
+    /// [`VectorStore::Unreachable`], and every search reported `degraded: true` whatever the store
+    /// was doing (`ENC-698`). The obvious fix — a second `milvus_config` beside the API's own
+    /// composition root — is the one this repository has a rule about: two spellings of one
+    /// composition drift, and the drift here is silent. A census counting a different collection
+    /// from the one the pass writes shows up as a coverage gauge that never rises; an API pointed at
+    /// a different endpoint from the worker's shows up as a search that finds nothing in a store
+    /// that is full.
+    ///
+    /// So it sits beside the type it builds, which is where
+    /// `enclave_storage::S3Config::from_operator_config` already puts the same relationship for
+    /// `storage.s3`. `crates/worker/src/main.rs` and `crates/api/src/main.rs` both call this and
+    /// neither has an opinion of its own about what the section means.
+    ///
+    /// # The dimension is an argument, and that is not a second spelling
+    ///
+    /// `search:` deliberately has no key for the embedding width (`docs/08-BYO-INFRA.md §15`): it is
+    /// fixed when the collection is created and a mismatch errors at neither end, so a configurable
+    /// width is a way to write that mistake down. It comes from
+    /// `enclave_embeddings::model::ACTIVE.dimension` — a crate this one deliberately does not
+    /// depend on, for the reason [`MilvusConfig::dimension`] gives — so the caller supplies it.
+    /// One constant read twice is not two definitions; what is shared here is everything a caller
+    /// could get *wrong*: which endpoint, which collection, which credential, and how patiently to
+    /// wait.
+    ///
+    /// It also matters least to the caller that has no collection to create: `crates/api` never
+    /// calls [`MilvusIndex::ensure_collection`] and never writes a chunk, so the value is inert
+    /// there. Passing the same constant anyway is what keeps it inert — a second number would be a
+    /// second answer to a question only one of the two processes asks.
+    ///
+    /// # Errors
+    ///
+    /// [`SearchError::VectorConfiguration`] for a `search.milvus.token` that resolved to something
+    /// that is not UTF-8.
+    pub fn from_operator_config(
+        config: &enclave_config::Config,
+        secrets: &enclave_config::ResolvedSecrets,
+        dimension: u32,
+    ) -> Result<Option<Self>, SearchError> {
+        let Some(section) = config.search.milvus.as_ref() else { return Ok(None) };
+
+        let mut milvus = Self::new(section.uri.to_string(), dimension);
+        if let Some(collection) = section.collection.as_ref() {
+            milvus.collection.clone_from(collection);
+        }
+        if let Some(token) = secrets.get("search.milvus.token") {
+            milvus.token = Some(
+                token
+                    .expose_str()
+                    .map_err(|_| SearchError::VectorConfiguration {
+                        reason: "search.milvus.token is not valid UTF-8",
+                    })?
+                    .to_owned(),
+            );
+        }
+
+        Ok(Some(milvus))
+    }
 }
 
 impl std::fmt::Debug for MilvusConfig {
