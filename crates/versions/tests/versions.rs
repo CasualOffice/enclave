@@ -1215,8 +1215,7 @@ async fn the_two_spellings_of_readable_agree_against_a_real_database() {
             .unwrap_or_else(|error| panic!("move the version to {status}/{av}: {error}"));
 
             // The SQL half: the exported predicate, spliced, run by PostgreSQL.
-            let sql_says: bool =
-                sqlx::query_scalar::<_, i32>(sqlx::AssertSqlSafe(query.clone()))
+            let sql_says: bool = sqlx::query_scalar::<_, i32>(sqlx::AssertSqlSafe(query.clone()))
                 .bind(alpha.tenant.as_uuid())
                 .bind(version.as_uuid())
                 .fetch_optional(&mut admin)

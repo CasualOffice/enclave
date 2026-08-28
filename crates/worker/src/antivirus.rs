@@ -821,13 +821,14 @@ mod tests {
 
         // The control, so the refusal above is not an artefact of `readable` answering `false` for
         // everything: the same helper says yes to what `ALLOW_WITH_FLAG` writes.
-        let flagged = ScanPolicy {
-            unsupported: UnsupportedPolicy::AllowWithFlag,
-            ..ScanPolicy::default()
-        };
+        let flagged =
+            ScanPolicy { unsupported: UnsupportedPolicy::AllowWithFlag, ..ScanPolicy::default() };
         let published = decide(&ScanVerdict::Unsupported, flagged, None);
         let target = Target::of(&published, fresh()).expect("converts");
-        assert_eq!((target.status, target.av_status), (VersionStatus::Available, AvStatus::Skipped));
+        assert_eq!(
+            (target.status, target.av_status),
+            (VersionStatus::Available, AvStatus::Skipped)
+        );
         assert!(readable(target), "ENC-828: ALLOW_WITH_FLAG must buy availability");
     }
 
