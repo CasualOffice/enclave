@@ -1,0 +1,230 @@
+/* The two keyboard surfaces: the command palette (`⌘K`) and the shortcut sheet
+ * (`?`).
+ *
+ * One stylesheet for both, because they are one shape — a scrim, a raised card
+ * on it, and a list — and two files would be two answers to the same three
+ * questions within a week. That is the ratio `ENC-853` was about.
+ *
+ * Every value is a token. Logical properties throughout: `inset-inline`,
+ * `padding-inline`, `text-align: start`. `en-XB` mirrors direction in CI and a
+ * `left` here would fail it, which is the point of the rule.
+ */
+
+.kbd-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-dialog);
+  display: flex;
+  justify-content: center;
+  /* Not centred vertically: a palette that grows downward as it filters would
+   * move its own first row on every keystroke if it were pinned to the middle.
+   * The reference's dialogs sit high for the same reason. */
+  align-items: flex-start;
+  padding-block-start: 12vh;
+  padding-inline: var(--sp-8);
+  background: color-mix(in srgb, var(--ink) 32%, transparent);
+}
+
+.kbd-palette,
+.kbd-sheet {
+  inline-size: 100%;
+  background: var(--sheet);
+  color: var(--fg);
+  border-radius: var(--r-sheet);
+  box-shadow: var(--el3);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  max-block-size: 76vh;
+}
+
+/* ---------------------------------------------------------- the palette */
+
+.kbd-palette {
+  max-inline-size: 560px;
+}
+
+.kbd-palette-input {
+  inline-size: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--fg);
+  font-family: inherit;
+  font-size: var(--fs-row);
+  padding: var(--sp-8) var(--sp-10);
+  box-shadow: inset 0 -1px 0 var(--line);
+}
+
+.kbd-palette-input::placeholder {
+  /* `--fg2`, not the reference's quieter grey: `ENC-863` measures `--fg4` at
+   * 3.47:1 on the sheet, and placeholder text is text. */
+  color: var(--fg2);
+}
+
+.kbd-palette-input:focus-visible {
+  /* The field fills the card's whole top edge, so a ring around it would trace
+   * the card. The card *is* the focus indication while the input holds focus,
+   * and the input holds it for the palette's entire life — `↑`/`↓` move
+   * `aria-activedescendant`, not DOM focus. */
+  outline: none;
+}
+
+.kbd-palette-list {
+  list-style: none;
+  margin: 0;
+  padding: var(--sp-3);
+  overflow-y: auto;
+  min-block-size: 0;
+}
+
+.kbd-palette-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: var(--sp-4) var(--sp-6);
+  border-radius: var(--r-ctrl);
+  cursor: default;
+  color: var(--fg);
+}
+
+/* The virtual cursor. `aria-selected` is the accessible truth and the
+ * appearance is keyed off it, so the highlight and the announcement cannot
+ * disagree — the same rule `.ui-iconbtn[aria-pressed]` follows. */
+.kbd-palette-item[aria-selected='true'] {
+  background: var(--selected);
+}
+
+.kbd-palette-item[aria-selected='true']::before {
+  content: '';
+  inline-size: 2px;
+  align-self: stretch;
+  border-radius: 2px;
+  background: var(--accent);
+  /* Pulled out of the flow so the row's text does not shift by 2px as the
+   * cursor moves down the list, which reads as the list vibrating. */
+  margin-inline-start: calc(-1 * var(--sp-4));
+  margin-inline-end: var(--sp-2);
+}
+
+/* An unbuilt command. Neutral, never the denial tint (`ENC-673`), and it keeps
+ * full text contrast — the `Later` chip carries the state, not a fade. A user
+ * who has to squint to read *why* something is unavailable has been told twice
+ * that it does not matter. */
+.kbd-palette-item[data-state='later'] {
+  color: var(--fg2);
+}
+
+.kbd-palette-label {
+  flex: 1;
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kbd-palette-key {
+  flex: none;
+}
+
+.kbd-palette-empty {
+  padding: var(--sp-12) var(--sp-10);
+  text-align: start;
+  color: var(--fg2);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-6);
+}
+
+.kbd-palette-empty p {
+  margin: 0;
+}
+
+/* ------------------------------------------------------ the shortcut sheet */
+
+.kbd-sheet {
+  max-inline-size: 620px;
+}
+
+.kbd-sheet-head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-6);
+  padding: var(--sp-10);
+  box-shadow: inset 0 -1px 0 var(--line);
+}
+
+.kbd-sheet-head h2 {
+  margin: 0;
+  font-family: var(--tight);
+  font-size: var(--fs-title);
+  font-weight: 600;
+}
+
+.kbd-sheet-intro {
+  margin: var(--sp-2) 0 0;
+  color: var(--fg2);
+  font-size: var(--fs-sm);
+}
+
+.kbd-sheet-head > div {
+  flex: 1;
+  min-inline-size: 0;
+}
+
+.kbd-sheet-cols,
+.kbd-sheet-row {
+  display: grid;
+  /* The key column is as wide as `⏎ / Space`, measured — not a step on the
+   * spacing scale, for the same reason the file list's column template is a
+   * literal. */
+  grid-template-columns: 120px minmax(0, 1fr);
+  gap: var(--sp-8);
+  padding-inline: var(--sp-10);
+}
+
+.kbd-sheet-cols {
+  padding-block: var(--sp-4);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  color: var(--fg2);
+  box-shadow: inset 0 -1px 0 var(--line);
+}
+
+.kbd-sheet-list {
+  margin: 0;
+  padding-block: var(--sp-4);
+  overflow-y: auto;
+  min-block-size: 0;
+}
+
+.kbd-sheet-row {
+  padding-block: var(--sp-4);
+  align-items: baseline;
+}
+
+.kbd-sheet-row dt,
+.kbd-sheet-row dd {
+  margin: 0;
+  min-inline-size: 0;
+}
+
+.kbd-sheet-row dd {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+/* A deferred binding. The chip says *later*; the sentence beside it names the
+ * blocker. Neither is dimmed below `--fg2`, which is the last step that carries
+ * text at 4.5:1 in the light theme (`ENC-680`, `ENC-863`). */
+.kbd-sheet-row[data-state='later'] dd {
+  color: var(--fg2);
+}
+
+.kbd-sheet-note {
+  flex-basis: 100%;
+  font-size: var(--fs-sm);
+  color: var(--fg2);
+}

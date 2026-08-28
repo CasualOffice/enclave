@@ -17,6 +17,7 @@ import { useT } from '../../shared/i18n/index.tsx';
  * predates it and kept the illegal import; the boundary rule in
  * `tools/lint-web.mjs` is what finally surfaced that. */
 import { useSearchString, useWriteSearchParams } from '../../shared/url-state.ts';
+import { onFocusRequest } from '../../shared/keyboard/focus-bus.ts';
 import { Field, Push } from '../../shared/ui/layout.tsx';
 import { Button, Kbd } from '../../shared/ui/primitives.tsx';
 import { useGroupedWindow } from '../../shared/list/use-grouped-window.ts';
@@ -223,6 +224,16 @@ export default function SearchScreen() {
   const focusInput = useCallback(() => {
     barRef.current?.querySelector('input')?.focus();
   }, []);
+
+  /* `/` from anywhere puts the caret here (`docs/09 §6`).
+   *
+   * The binding is global and this field is not; `focus-bus.ts` is the
+   * one-way announcement that lets `app/` ask without importing a screen and
+   * without this screen importing `app/` (`docs/17 §2`). Subscribing on mount
+   * is also what makes `/` work from another route: the global handler
+   * navigates here, this effect runs, and the *next* `/` is answered directly.
+   */
+  useEffect(() => onFocusRequest('search', focusInput), [focusInput]);
 
   const setScroller = useCallback(
     (node: HTMLDivElement | null) => {

@@ -1087,6 +1087,197 @@ export const catalog = {
     description:
       'Key cap for Ask, shown beside it in the sidebar. Same reasoning as key.commandK. The binding itself is registered and disabled until M7 (plans/M5-MVP-GA.md D33).',
   },
+  /* ------------------------------------------------------- the keyboard map
+   *
+   * `docs/09 §6`, key caps and actions. Every one of these is user-facing: the
+   * caps because `⌘` is not `Ctrl` and neither glyph is universal, the actions
+   * because they are the sentences the shortcut sheet and the command palette
+   * read out. `shared/keyboard/bindings.ts` is the table that orders them; this
+   * is only where the words live.
+   */
+  'key.slash': {
+    message: '/',
+    description:
+      'Key cap for the forward-slash key, which focuses search. Replace with the label printed on that key locally — it is not in the same place on every layout.',
+  },
+  'key.upDown': {
+    message: '↑ ↓',
+    description: 'Key caps for the up and down arrow keys, in the keyboard shortcut sheet.',
+  },
+  'key.leftRight': {
+    message: '→ ←',
+    description:
+      'Key caps for the right and left arrow keys, in docs/09 §6’s own order. In a right-to-left locale these keys keep their glyphs and swap meaning — the product follows writing direction, not screen direction — so a translator may reorder them.',
+  },
+  'key.enterSpace': {
+    message: '⏎ / Space',
+    description:
+      'Key caps for Enter and the space bar, which open and peek respectively. “Space” is a word rather than a glyph because the space bar has no printed symbol.',
+  },
+  'key.jk': {
+    message: 'J K',
+    description:
+      'Key caps for the J and K keys, which walk the list with the peek panel open. Letters on a Latin keyboard; on a non-Latin layout, name the physical keys a user would press.',
+  },
+  'key.commandA': {
+    message: '⌘A',
+    description: 'Key cap for select-all. Reads “Ctrl+A” on Windows and Linux.',
+  },
+  'key.rmcs': {
+    message: 'R M C S',
+    description:
+      'Key caps for Rename, Move, Copy and Share. The letters are mnemonics for the English words; if the product ever rebinds them per locale the translation should follow, and it does not yet.',
+  },
+  'key.lr': {
+    message: 'L R',
+    description:
+      'Key caps for applying a classification label, exactly as docs/09 §6 writes them. The document does not say whether that is a chord or two keys, and R is already bound to Rename one row above it; ENC-901 carries the contradiction.',
+  },
+  'key.delete': {
+    message: 'Del',
+    description:
+      'Key cap for the Delete key, which moves the selection to the trash. docs/09 §6 binds Del rather than Backspace deliberately. Name the key as it is printed locally.',
+  },
+  'key.iPin': {
+    message: 'I · ⌘\\',
+    description:
+      'Key caps for toggling the details panel and for pinning it open. The middle dot separates two bindings that act on one surface.',
+  },
+  'key.question': {
+    message: '?',
+    description: 'Key cap for the question-mark key, which opens the keyboard shortcut sheet.',
+  },
+  'kbd.action.palette': {
+    message: 'Command palette',
+    description: 'What ⌘K does, in the keyboard shortcut sheet.',
+  },
+  'kbd.action.focusSearch': {
+    message: 'Focus search',
+    description: 'What / does, in the keyboard shortcut sheet.',
+  },
+  'kbd.action.moveSelection': {
+    message: 'Move selection · Shift extends · ⌘ toggles',
+    description:
+      'What the up and down arrows do — docs/09 §6’s own wording. The middle dots separate three behaviours of one pair of keys.',
+  },
+  'kbd.action.expandCollapse': {
+    message: 'Expand or collapse a group · move between columns',
+    description:
+      'What the left and right arrows do. On a group header they expand and collapse; on a file row they move across its columns.',
+  },
+  'kbd.action.openPeek': {
+    message: 'Open · Space peeks',
+    description:
+      'What Enter and Space do on the focused row. “Peek” is the product’s word for the transient preview panel (docs/09 §7); keep it consistent with library.peek.label.',
+  },
+  'kbd.action.walk': {
+    message: 'Walk the list without closing the details panel',
+    description: 'What J and K do.',
+  },
+  'kbd.action.selectAll': {
+    message: 'Select everything in this view',
+    description:
+      'What ⌘A does. “This view” is the current listing, including the rows inside a collapsed group.',
+  },
+  'kbd.action.fileActions': {
+    message: 'Rename, Move, Copy, Share',
+    description: 'What R, M, C and S will do to the selection. Not yet built.',
+  },
+  'kbd.action.label': {
+    message: 'Apply a classification label',
+    description: 'What L R will do to the selection. Not yet built.',
+  },
+  'kbd.action.trash': {
+    message: 'Move to trash',
+    description: 'What Del will do to the selection. Not yet built.',
+  },
+  'kbd.action.details': {
+    message: 'Toggle the details panel · ⌘\\ pins it open',
+    description:
+      'What I does, and what pins the panel. A pinned panel stays open when the selection is cleared.',
+  },
+  'kbd.action.ask': {
+    message: 'Ask',
+    description: 'What ⌘J will do. Registered and disabled until M7 (docs/09 §6).',
+  },
+  'kbd.action.help': {
+    message: 'Keyboard shortcuts',
+    description: 'What ? does — it opens this sheet.',
+  },
+  'kbd.action.escape': {
+    message: 'Close the panel or dialog, clear the selection',
+    description:
+      'What Escape does, in docs/09 §6’s own order: the panel first, then the selection.',
+  },
+  'kbd.note.fileActions': {
+    message: 'Renaming, moving, copying and sharing arrive with the surfaces that perform them.',
+    description:
+      'Why R, M, C and S do nothing yet, shown under the Later chip in the shortcut sheet. It speaks about the product in the future tense and offers no remedy — this is the unbuilt treatment, never the denial one (docs/17 §6).',
+  },
+  'kbd.note.label': {
+    message: 'Applying a label arrives with the classification editor.',
+    description: 'Why L R does nothing yet. Same treatment as kbd.note.fileActions.',
+  },
+  'kbd.note.trash': {
+    message: 'The trash, and the undo that goes with it, arrive together.',
+    description:
+      'Why Del does nothing yet. It names the undo as well, because docs/09 §6 binds the two together and a trash without undo would be the wrong half to ship first.',
+  },
+  'kbd.note.ask': {
+    message: 'Ask arrives with the answer engine behind it.',
+    description: 'Why ⌘J does nothing yet.',
+  },
+  'palette.label': {
+    message: 'Commands',
+    description:
+      'Accessible name of the command palette dialog and of the list inside it, opened with ⌘K.',
+  },
+  'palette.input.label': {
+    message: 'Search commands and files',
+    description:
+      'Accessible name of the command palette’s input. The palette has no visible label — the placeholder is not one, because it disappears as soon as anything is typed.',
+  },
+  'palette.input.placeholder': {
+    message: 'Type a command, or search…',
+    description: 'Placeholder in the command palette’s input.',
+  },
+  'palette.empty': {
+    message: 'No command matches “{query}”.',
+    description:
+      'The command palette’s empty state, when nothing in the command list matches what was typed. "query" is the user’s text; it is quoted so an empty-looking query is still visible.',
+  },
+  'palette.empty.search': {
+    message: 'Search files instead',
+    description:
+      'The one action the palette’s empty state offers: hand what was typed to full search. docs/09 §11 requires an empty state to name the action that resolves it.',
+  },
+  'kbd.sheet.title': {
+    message: 'Keyboard shortcuts',
+    description: 'Title of the shortcut sheet dialog, opened with ?.',
+  },
+  'kbd.sheet.intro': {
+    message: 'Every part of this product can be operated without a mouse.',
+    description:
+      'One line under the shortcut sheet’s title, stating the commitment docs/09 §6 opens with.',
+  },
+  'kbd.sheet.close': {
+    message: 'Close',
+    description: 'Accessible name of the shortcut sheet’s close button.',
+  },
+  'kbd.sheet.column.keys': {
+    message: 'Keys',
+    description: 'Column header in the shortcut sheet.',
+  },
+  'kbd.sheet.column.action': {
+    message: 'Action',
+    description: 'Column header in the shortcut sheet.',
+  },
+  'files.row.details': {
+    message: 'Details for {name}',
+    description:
+      'Accessible name of the row-actions button at the end of a file row, which opens the details peek. "name" is the file name. The button is icon-only, so this is the only name it has.',
+  },
+
   'search.key.escape': {
     message: 'Esc',
     description:

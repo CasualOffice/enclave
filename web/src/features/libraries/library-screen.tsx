@@ -1,4 +1,5 @@
 import { useCallback, useMemo } from 'react';
+import { useKeyBindings } from '../../shared/keyboard/use-key-bindings.ts';
 import { useT } from '../../shared/i18n/index.tsx';
 import { useFormatters } from '../../shared/i18n/format.ts';
 import { Button, IconButton } from '../../shared/ui/primitives.tsx';
@@ -8,6 +9,7 @@ import { failureOf } from '../../shared/api/failure.ts';
 import { rowFromItem } from '../../entities/file/present.ts';
 import { reasonMessage } from '../../entities/capability/denial.ts';
 import type { Item } from '../../entities/file/api-model.ts';
+import type { FileRow } from '../../entities/file/model.ts';
 import { useUploadStore } from '../../entities/upload/store.ts';
 import { useUploadTarget } from '../../entities/upload/use-upload-target.ts';
 import { isActive } from '../../entities/upload/model.ts';
@@ -67,6 +69,9 @@ export default function LibraryScreen() {
   const folderId = folderIdRaw.length > 0 ? folderIdRaw : undefined;
   const density: DensityName = useSearchParam('density') === 'compact' ? 'compact' : 'default';
   const peekId = peekIdRaw.length > 0 ? peekIdRaw : undefined;
+  /* `⌘\` pins the panel (`docs/09 §6`, `§7`). URL state like everything else
+   * on this screen: a pinned panel is part of the view a link describes. */
+  const pinned = useSearchParam('pin') === '1';
 
   const setFolderId = useCallback(
     (id: string | undefined) => write({ folder: id ?? null, peek: null }),
@@ -146,6 +151,90 @@ export default function LibraryScreen() {
   );
 
   const closePeek = useCallback(() => setPeekId(undefined), [setPeekId]);
+
+  /* ------------------------------------------------- what the keyboard does */
+
+  /**
+   * `Enter` on a row.
+   *
+   * A folder opens — it is a real navigation and the listing endpoint takes a
+   * `parentId`. **A file has no open surface in M5**, and `docs/09 §6` does not
+   * say what "Open" means for one in a product that has no editor and no
+   * full-page preview route. It is not silent by accident: §6 itself notes that
+   * "`Space` opens the peek, which *is* the preview surface", so the nearest
+   * true reading of Open-a-file today is the peek at its Preview tab, which is
+   * a built endpoint (`GET /files/{id}/preview`) and a built surface.
+   *
+   * That reading is recorded rather than assumed — `ENC-902`. What is *not*
+   * done here is inventing a second destination and calling the binding
+   * finished: `Enter` and `Space` land on the same panel and differ only in
+   * which tab it opens, which is honest about the product having one preview
+   * surface rather than two.
+   */
+  const openRow = useCallback(
+    (row: FileRow) => {
+      if (row.isFolder) setFolderId(row.id);
+      else write({ peek: row.id, tab: 'preview' });
+    },
+    [setFolderId, write],
+  );
+
+  const peekRow = useCallback((row: FileRow) => setPeekId(row.id), [setPeekId]);
+
+  /** Replace the whole selection — `↑ ↓`, `Shift`-extend and `⌘A`. */
+  const select = useListViewStore((state) => state.select);
+  const clearSelection = useListViewStore((state) => state.clearSelection);
+
+  /* ------------------------------------- `I`, `⌘\` and `Esc` (`docs/09 §6`)
+   *
+   * Registered here rather than in `app/` because all three act on the details
+   * panel, and the panel is this screen's URL state. A global handler could
+   * only reach it by writing a sentinel into the query string — and
+   * `docs/09 §3` promises that query string is a link a user can send to a
+   * colleague, not a private protocol between two modules.
+   */
+  useKeyBindings(
+    useMemo(
+      () => ({
+        /* `I` toggles the panel. With nothing selected it opens on the first
+         * row, which is what the toolbar's own toggle already does — a details
+         * panel that opens empty when there is something to describe is a
+         * surface that has been opened and then wasted. */
+        i: (event: KeyboardEvent) => {
+          event.preventDefault();
+          if (peekIdRaw.length > 0) write({ peek: null, pin: null });
+          else write({ peek: ordered[0]?.id ?? null });
+        },
+        /* `⌘\` pins it open. Pinned means it survives the selection being
+         * cleared, which is the empty-but-present state `PeekPanel` already
+         * draws — so pinning is a real distinction here rather than a flag with
+         * no consequence. */
+        'mod+\\': (event: KeyboardEvent) => {
+          event.preventDefault();
+          write({ pin: pinned ? null : '1', peek: peekIdRaw.length > 0 ? peekIdRaw : (ordered[0]?.id ?? null) });
+        },
+        /* `Esc` — "Close panel/dialog, clear selection", in `docs/09 §6`'s own
+         * order, and the order is the whole meaning. A user with the panel open
+         * and three rows selected expects the panel to close; taking the
+         * selection instead, out from under a panel that stayed, is the wrong
+         * half. One press closes the topmost thing there is; a second reaches
+         * the next one down. A *pinned* panel is not closed by `Esc` — that is
+         * what pinning it means — so the selection is what clears. */
+        Escape: (event: KeyboardEvent) => {
+          if (peekIdRaw.length > 0 && !pinned) {
+            event.preventDefault();
+            write({ peek: null });
+            return;
+          }
+          if (selected.size > 0) {
+            event.preventDefault();
+            clearSelection();
+          }
+        },
+      }),
+      [peekIdRaw, pinned, ordered, selected.size, write, clearSelection],
+    ),
+  );
 
   const peekIndex = peekId === undefined ? -1 : ordered.findIndex((row) => row.id === peekId);
   const navigation =
@@ -354,6 +443,9 @@ export default function LibraryScreen() {
               onToggleGroup={toggleGroup}
               selected={selected}
               onToggleSelect={toggleSelected}
+              onSelect={select}
+              onOpen={openRow}
+              onPeek={peekRow}
               density={density}
               status={items.isPending ? 'loading' : 'ready'}
               filtersActive={false}

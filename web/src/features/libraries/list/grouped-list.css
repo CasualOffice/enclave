@@ -79,7 +79,7 @@
 }
 
 .egl-scroller:focus-visible {
-  outline: 2px solid var(--accent-ring);
+  outline: var(--focus-ring-w) solid var(--focus-ring);
   outline-offset: -2px;
 }
 
@@ -205,7 +205,7 @@
 }
 
 .egl-group:focus-visible {
-  outline: 2px solid var(--accent-ring);
+  outline: var(--focus-ring-w) solid var(--focus-ring);
   outline-offset: -2px;
   border-radius: var(--r-ctrl);
 }
@@ -213,7 +213,14 @@
 /* A collapsed group is the only row standing in for everything it hides, so it
  * is drawn back rather than forward — the reference's own treatment for
  * `Archive 96` (`color:var(--fg4);font-weight:400`). */
-.egl-group[aria-expanded='false'] {
+/* Keyed off the **row**, because that is where `aria-expanded` now lives.
+ *
+ * It used to sit on the `<button>` inside, which was fine while nothing could
+ * focus a row. A roving tab stop puts focus on the row, and a row whose
+ * expanded state is on a descendant is announced without it — so the state
+ * moved up and these two rules follow it. One attribute, one source of truth
+ * for both the announcement and the chevron. */
+.egl-grouprow[aria-expanded='false'] .egl-group {
   /* The recession is weight alone, because the colour step below `--fg2` does
    * not pass AA in the light theme (see the column-header rule, `ENC-680`).
    * The chevron's rotation and the count carry the rest of the signal. */
@@ -238,7 +245,7 @@
  * `styles/motion.css`. A horizontal chevron has to mirror; expressing it as a
  * direction-aware variable replaced a rule and its `:root:dir(rtl)` twin
  * (`specs/library.md` techniqueFixes #5). */
-.egl-group[aria-expanded='false'] .egl-group-chevron {
+.egl-grouprow[aria-expanded='false'] .egl-group-chevron {
   transform: rotate(var(--chev-collapsed));
 }
 
@@ -290,9 +297,61 @@
   white-space: nowrap;
 }
 
+/* --------------------------------------------------------- the focus ring */
+
+/* Everywhere focus can land inside the grid, which is now four kinds of place:
+ * the scroller, a group row, a file row, and a cell.
+ *
+ * `outline-offset: -2px` on the two full-width ones, because a row spans the
+ * scroller edge to edge and a positive offset would draw the ring underneath
+ * the neighbouring row and outside the clipped scroll box — half a ring, which
+ * is worse than none because it reads as a rendering fault rather than as
+ * focus. A cell is inset and takes the ring outside itself, where it is not
+ * clipped by anything.
+ *
+ * `--focus-ring` and not `--accent-ring`: the wash measures 1.68–2.42:1 across
+ * the six theme × brand combinations against `docs/09 §15`'s 3:1 floor. See
+ * `styles/tokens.css` and `tests/unit/focus-ring.test.ts`. */
+.egl-grouprow:focus-visible,
+.egl-row:focus-visible {
+  outline: var(--focus-ring-w) solid var(--focus-ring);
+  outline-offset: -2px;
+  /* Above the selected row's accent bar, which is `--z-accent`. Without this
+   * the bar paints over the ring's leading edge on exactly the rows a keyboard
+   * user is most likely to be on. */
+  z-index: var(--z-pinned);
+}
+
+.egl-row > [data-cursor]:focus-visible {
+  outline: var(--focus-ring-w) solid var(--focus-ring);
+  outline-offset: -1px;
+  border-radius: var(--r-ctrl);
+}
+
 .egl-cell-select {
   display: flex;
   justify-content: center;
+}
+
+/* The row-actions cell. Its button is `opacity: 0` until the row is hovered or
+ * something inside the row has focus — never `display: none`, which would put
+ * it out of a keyboard user's reach entirely. `:focus-within` here is what
+ * makes `→` onto this cell reveal the button before it is focused. */
+.egl-cell-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* The primitive reveals itself from its *direct* parent's `:hover` and
+ * `:focus-within`, which is the cell. The affordance `docs/09` describes is the
+ * **row** — a pointer anywhere along it brings the control out — so the row
+ * scope is added here rather than by widening the primitive's selector, which
+ * would make every reveal button in the product respond to an ancestor nobody
+ * chose. Focus is included for the same reason it is in `primitives.css`: a
+ * keyboard user arriving at the cell must see what they have reached. */
+.egl-row:hover .ui-iconbtn[data-reveal],
+.egl-row:focus-within .ui-iconbtn[data-reveal] {
+  opacity: 1;
 }
 
 .egl-name {

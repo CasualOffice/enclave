@@ -26,6 +26,18 @@ interface Surface {
    * milestone was fixing.
    */
   readonly api?: ApiPlan;
+  /**
+   * Keys to press before axe looks, for a surface that has no URL of its own.
+   *
+   * The command palette and the shortcut sheet are opened by `⌘K` and `?` and
+   * by nothing else — `docs/09 §5` and `§6` — so a list keyed only on URLs
+   * could not reach either, and two dialogs would ship unmeasured. The keys are
+   * pressed after `ready`, so the page underneath is confirmed first and the
+   * sign-in assertion below still means what it says.
+   */
+  readonly press?: readonly string[];
+  /** What must be on screen after `press`. */
+  readonly then?: string;
 }
 
 const SURFACES: readonly Surface[] = [
@@ -230,6 +242,38 @@ const SURFACES: readonly Surface[] = [
   },
   { name: 'admin dlp, fetch error', url: '/admin?surface=error', ready: '[data-state="error"]' },
   { name: 'admin dlp, denied', url: '/admin?surface=denied', ready: '[data-state="denied"]' },
+
+  /* The two keyboard surfaces (`ENC-702`). Neither has a route, so both are
+   * reached the only way a user can reach them. Three states between them,
+   * because the palette's filtered-empty state is the one `docs/09 §11` cares
+   * about and it is the one nobody looks at: it carries the action that
+   * resolves it, and its contrast has to be measured like any other.
+   *
+   * Note what axe *cannot* say about these, and what `tests/a11y/keyboard.spec.ts`
+   * is for: it reads a static tree and never presses a key, so it will happily
+   * pass a dialog that leaks focus, a trap that cannot be escaped, and a grid
+   * that cannot be walked. */
+  {
+    name: 'command palette, resting',
+    url: '/library?library=lib-1',
+    ready: '[role="treegrid"] .egl-row',
+    press: ['ControlOrMeta+k'],
+    then: '[data-surface="palette"] [role="dialog"]',
+  },
+  {
+    name: 'command palette, nothing matches',
+    url: '/library?library=lib-1',
+    ready: '[role="treegrid"] .egl-row',
+    press: ['ControlOrMeta+k', 'z', 'z', 'z', 'z'],
+    then: '[data-surface="palette"] [data-state="filtered-empty"]',
+  },
+  {
+    name: 'keyboard shortcut sheet',
+    url: '/library?library=lib-1',
+    ready: '[role="treegrid"] .egl-row',
+    press: ['?'],
+    then: '[data-surface="shortcuts"] [role="dialog"]',
+  },
 ];
 
 test('the surface list is not empty', () => {
@@ -262,6 +306,15 @@ for (const surface of SURFACES) {
       await stubApi(page, surface.api);
       await page.goto(surface.url);
       await page.waitForSelector(surface.ready, { timeout: 30_000 });
+
+      /* A surface with no URL: open it, then wait for it as well. Both waits
+       * are required — the first proves the page underneath is the page it
+       * should be, the second that the dialog actually opened rather than axe
+       * measuring the library list a second time. */
+      if (surface.press !== undefined) {
+        for (const key of surface.press) await page.keyboard.press(key);
+        await page.waitForSelector(surface.then ?? surface.ready, { timeout: 30_000 });
+      }
 
       /* The positive control for `ENC-677`, stated rather than implied.
        *
