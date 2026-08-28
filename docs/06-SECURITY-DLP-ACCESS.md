@@ -1,6 +1,6 @@
 # 06 — Security, DLP & Access Controls
 
-> **Status:** Draft · **Version:** 2.3 · **Owner:** Security Engineering · **Last updated:** 2026-08-22
+> **Status:** Draft · **Version:** 2.4 · **Owner:** Security Engineering · **Last updated:** 2026-08-28
 > **Authoritative for:** threat model, conditional access, DLP, antivirus, renditions, incidents, privileged operations.
 
 ## 1. Security model
@@ -137,8 +137,19 @@ Implementations: ClamAV (embedded or `clamd`), ICAP for enterprise gateways, and
 - `Infected` moves the version to `QUARANTINED`, blocks every read path including preview and
   search, raises a `CRITICAL` incident and notifies security. The uploader is told the upload failed
   policy — not which signature matched.
-- `Unsupported` (encrypted archives, exceeding depth limits) follows tenant policy:
-  `BLOCK` (default for `CONFIDENTIAL` and above) or `ALLOW_WITH_FLAG`.
+- `Unsupported` (encrypted archives, exceeding depth limits, or no engine configured at all)
+  follows tenant policy: `BLOCK` (default for `CONFIDENTIAL` and above) or `ALLOW_WITH_FLAG`.
+  - `BLOCK` moves the version to `QUARANTINED` with `av_status = 'SKIPPED'`. No read path serves it.
+  - `ALLOW_WITH_FLAG` moves it to `AVAILABLE` with `av_status = 'SKIPPED'`, and **every delivery
+    path serves it** — preview, download, print, export and sync alike. This is what the policy
+    means; a version it published that no route would serve is the setting failing to do anything
+    (`ENC-828`). `SKIPPED` is never rewritten to `CLEAN`: it is what keeps the version
+    distinguishable from scanned content and what the signature-update sweep below keys on.
+  - The `CONFIDENTIAL`-and-above ceiling is applied on rank alone and is not a default this policy
+    can switch off: unscanned content at or over that rank is `BLOCK`ed whatever the tenant set.
+  - A version whose scan has **not completed** is a different case with the opposite answer, and it
+    is the one clause of rule 9 the policy cannot reach: `AVAILABLE` with `av_status = 'PENDING'` —
+    what `ALLOW_AND_RESCAN` writes below — is refused by every read path.
 - Scanner outage follows `av.unavailable_policy`: `HOLD` (default — versions wait in `SCANNING`) or
   `ALLOW_AND_RESCAN`. `HOLD` is required for tenants under regulated profiles.
 - Archives are expanded to a configured depth (default 5) with total-size and entry-count caps, to

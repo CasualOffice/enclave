@@ -46,12 +46,16 @@ macro_rules! device_columns {
 ///
 /// # The `file_versions` join is the rule-9 predicate and nothing else
 ///
-/// The `AND` splices [`enclave_versions::READABLE_PREDICATE`] — the *same text* as
-/// `FileVersion::is_readable`'s SQL twin — rather than a retyped `status = 'AVAILABLE' AND
-/// av_status = 'CLEAN'`. `crates/versions/src/model.rs` exports it precisely so that a caller
-/// writing its own read path splices one definition instead of inventing a second, and a sync is a
-/// read path: a `LEFT JOIN` that missed the predicate would place scanning content on a laptop
-/// (`CLAUDE.md` rule 9).
+/// The `AND` splices [`enclave_versions::readable_predicate!`] — the *same text* as
+/// `FileVersion::is_readable`'s SQL twin. `crates/versions/src/model.rs` exports it precisely so
+/// that a caller writing its own read path splices one definition instead of inventing a second,
+/// and a sync is a read path: a `LEFT JOIN` that missed the predicate would place scanning content
+/// on a laptop (`CLAUDE.md` rule 9).
+///
+/// It is the macro and not the `const`, and that is the correction `ENC-828` made. `concat!` takes
+/// only literals, so this splice was a *retyped copy* of the predicate that a test compared against
+/// the export — which caught drift, but only after somebody had written the second copy and only if
+/// they ran that test. The macro makes the copy impossible instead of detectable.
 ///
 /// The join is `LEFT` so that a file whose version is *not* readable still produces a row. That is
 /// deliberate: an omitted row is a file that silently vanishes from a device, and the whole point
@@ -87,7 +91,7 @@ SELECT cl.seq,
   LEFT JOIN (SELECT id, tenant_id, size_bytes, checksum_sha256
                FROM file_versions
               WHERE ",
-    "status = 'AVAILABLE' AND av_status = 'CLEAN'",
+    enclave_versions::readable_predicate!(),
     ") v
          ON v.tenant_id = f.tenant_id
         AND v.id        = f.current_version_id

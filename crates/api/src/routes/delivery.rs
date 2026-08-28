@@ -51,7 +51,7 @@
 //!
 //! Every path reaches content through [`crate::preview::readable_version`], which returns a
 //! [`ReadableVersion`] — a type with private fields whose only constructor is a query filtering
-//! `status = 'AVAILABLE' AND av_status = 'CLEAN'`. Nothing here can express a request to render or
+//! `enclave_preview::repo::READABLE_PREDICATE`. Nothing here can express a request to render or
 //! grant something antivirus has not cleared.
 //!
 //! # Rule 8, on all three

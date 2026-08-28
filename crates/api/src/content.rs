@@ -108,10 +108,16 @@
 //! A metadata response and a delivery route must not disagree about the same version. Before
 //! `ENC-825` they did: `currentVersion` carried `{id, major, minor, status}`, and `status` is only
 //! *half* of rule 9's predicate. A deployment with its antivirus engine disabled records an
-//! admitted version `AVAILABLE` / `SKIPPED` (`ENC-828`), so this endpoint answered `AVAILABLE` —
+//! admitted version `AVAILABLE` / `SKIPPED`, so this endpoint answered `AVAILABLE` —
 //! indistinguishable, field for field, from a version that previews — while
 //! `GET /files/{id}/preview` answered `404`. A correct client drew a button that could not work,
 //! and could only discover that by pressing it.
+//!
+//! `ENC-828` then fixed the *other* side of that disagreement: `AVAILABLE` / `SKIPPED` is now
+//! served, because it is what `docs/06 §6.2`'s `ALLOW_WITH_FLAG` means and refusing it made the
+//! setting a no-op. Nothing in this module changed for it, which is the point — `isReadable` is the
+//! predicate's own answer, so it followed the predicate without an edit here. The pair that still
+//! disagrees is `AVAILABLE` / `PENDING` (`ENC-646`), and this endpoint reports it truthfully too.
 //!
 //! [`VersionState`] closes it, and closes it *structurally* rather than by adding a field someone
 //! must remember to compute: `isReadable` is rendered from
@@ -264,11 +270,15 @@ pub struct FileMetadata {
 /// `status` alone cannot answer the only question a client actually has — *will the preview
 /// button work?* — because `AVAILABLE` does not mean servable. `CLAUDE.md` rule 9 is two
 /// conditions, and the delivery routes filter on both:
-/// [`enclave_versions::READABLE_PREDICATE`] is `status = 'AVAILABLE' AND av_status = 'CLEAN'`. A
-/// version admitted by a deployment whose antivirus engine is disabled is recorded `AVAILABLE` /
-/// `SKIPPED` (`docs/08-BYO-INFRA.md`, `ENC-828`), which is `AVAILABLE` and is *not* servable — so
-/// this response used to be byte-identical for a file that previews and one that answers `404`,
+/// [`enclave_versions::READABLE_PREDICATE`] is both. A version whose scan has not completed is
+/// `AVAILABLE` / `PENDING` under `ALLOW_AND_RESCAN` (`ENC-646`) — `AVAILABLE`, and not servable —
+/// so this response used to be byte-identical for a file that previews and one that answers `404`,
 /// and the only way to tell them apart was to try.
+///
+/// `AVAILABLE` / `SKIPPED` was the other such pair until `ENC-828`, and it was the common one: it
+/// is what a deployment with `antivirus.provider: none` and `unsupported_policy: ALLOW_WITH_FLAG`
+/// records for *every* upload. That version is now served, so `isReadable` answers `true` for it —
+/// which is the same fact reported truthfully, not a relaxation here.
 ///
 /// [`is_readable`](Self::is_readable) is therefore rendered from
 /// [`FileVersion::is_readable`](enclave_versions::FileVersion::is_readable) — the Rust twin of

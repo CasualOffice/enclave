@@ -7,7 +7,7 @@
 //! # Why this is the most important code in the crate
 //!
 //! Every other read control in the platform — the policy chain, preview-versus-download
-//! separation, watermarking, short-TTL signed URLs, `av_status = 'CLEAN'` — assumes that the only
+//! separation, watermarking, short-TTL signed URLs, the antivirus verdict — assumes that the only
 //! way to reach an object's bytes is through a URL this process minted. A bucket with a public
 //! read policy removes that assumption in one line of someone else's Terraform, and nothing in the
 //! application will ever notice: uploads work, downloads work, audit rows are written, and the

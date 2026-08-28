@@ -418,7 +418,7 @@ fn profile_for(name: &str) -> Option<RenditionProfile> {
 /// Obtains the witness that a servable version exists behind this file, or reports absence.
 ///
 /// Returns `enclave_preview::ReadableVersion`, which has private fields and one constructor — a
-/// query filtering `status = 'AVAILABLE' AND av_status = 'CLEAN'`. That is what makes rule 9
+/// query splicing `enclave_preview::repo::READABLE_PREDICATE`. That is what makes rule 9
 /// structural on this path rather than remembered: the pipeline takes the witness by reference, so
 /// a caller cannot express a request to render something quarantined.
 ///

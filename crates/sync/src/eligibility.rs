@@ -146,8 +146,8 @@ pub struct Eligibility {
     /// Conditions 4 and 5: no stage attached an obligation this path cannot discharge — a
     /// `NO_SYNC` or `NO_DOWNLOAD` from conditional access or DLP.
     pub obligations_dischargeable: bool,
-    /// Condition 6: the current version is `AVAILABLE` with `av_status = 'CLEAN'`
-    /// (`enclave_versions::READABLE_PREDICATE`).
+    /// Condition 6: the current version passes `enclave_versions::READABLE_PREDICATE` — `AVAILABLE`
+    /// with a verdict the tenant's antivirus policy publishes.
     pub version_readable: bool,
 }
 

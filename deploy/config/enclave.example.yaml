@@ -191,8 +191,9 @@ audit:
   retention_days: 400
 
 antivirus:
-  # Nothing is AVAILABLE before antivirus completes (CLAUDE.md rule 9). The dev stack's ClamAV is
-  # behind the `av` Compose profile:
+  # Nothing is AVAILABLE before antivirus completes (CLAUDE.md rule 9), and what happens to content
+  # no engine could inspect is `unsupported_policy` below — read it before setting
+  # `provider: none`. The dev stack's ClamAV is behind the `av` Compose profile:
   #   docker compose -f deploy/compose/dev.yml --profile av up -d --wait
   #   export CLAMD_ADDR=tcp://localhost:3310
   provider: "clamav"
@@ -202,7 +203,36 @@ antivirus:
   timeout: "120s"
   # HOLD keeps an object in SCANNING until a scanner is reachable — the only value consistent with
   # rule 9. ALLOW_AND_RESCAN trades a malware window for availability and must be chosen.
+  #
+  # Note ALLOW_AND_RESCAN publishes AVAILABLE/PENDING, which no delivery route serves: it buys no
+  # availability today, and that gap is ENC-646. Use `unsupported_policy` below for a deployment
+  # with no scanner; use HOLD here for one whose scanner is merely down.
   unavailable_policy: "HOLD"
+
+  # What happens to content **no engine inspected** — because there is no engine
+  # (`provider: none`), or because this one could not open the container (an encrypted archive,
+  # something past `archive_depth`). This key is the difference between a laptop deployment that
+  # works and one that silently cannot serve a byte, so it is worth reading before changing
+  # `provider`.
+  #
+  #   BLOCK            (default) The version is QUARANTINED and recorded SKIPPED. Every delivery
+  #                    route — preview, download, print, export, sync — answers 404 for it,
+  #                    forever, until a scanning engine is configured and the rescan sweep clears
+  #                    it. With `provider: none` this applies to *everything*, which makes the
+  #                    deployment a **write-only store**: uploads succeed, nothing can be read
+  #                    back, and both binaries say so at start-up (`enclave-api` at error level).
+  #
+  #   ALLOW_WITH_FLAG  The version is published AVAILABLE and recorded SKIPPED — never CLEAN. Every
+  #                    delivery route serves it, and it is serving bytes **nothing inspected for
+  #                    malware**. `SKIPPED` is what keeps it distinguishable from scanned content
+  #                    and what the signature-update sweep keys on, so configuring an engine later
+  #                    re-scans the whole corpus rather than leaving it unexamined.
+  #
+  # Neither value reaches CONFIDENTIAL and above: unscanned content at or over that rank is
+  # quarantined on rank alone, whatever this says (`docs/06-SECURITY-DLP-ACCESS.md §6.2`). And the
+  # `enterprise` profile refuses `provider: none` outright, so this key cannot become a production
+  # bypass by itself (`docs/08-BYO-INFRA.md §19`).
+  unsupported_policy: "BLOCK"
 
 # ---------------------------------------------------------------------------------------------
 # Mounted volumes: OCR

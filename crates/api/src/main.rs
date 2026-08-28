@@ -172,6 +172,8 @@ async fn main() -> anyhow::Result<()> {
         tracing::warn!(stage = stage.as_str(), "policy stage is not enforcing");
     }
 
+    report_antivirus_posture(&config.antivirus);
+
     if config.profile == enclave_config::DeploymentProfile::Enterprise && !unenforcing.is_empty() {
         anyhow::bail!(
             "the enterprise profile refuses to start while {} policy stages are unconfigured: {}. \
@@ -700,6 +702,53 @@ const DLP_STAGE: &str = "dlp";
 /// is a collaborator of the token service. It is computed here for the same reason the DLP entry is:
 /// the value is a property of what this binary wired, not of what the crate offers.
 const REFRESH_GUARD_STAGE: &str = "refresh_guard";
+
+/// What `antivirus:` means for the routes *this* binary serves, said once, at start-up.
+///
+/// # Why the API says this at all when the worker is what scans
+///
+/// `crates/worker` composes the scanner and already reports what it will do with unscanned content.
+/// This binary composes none — and it is the one holding preview, download, export, thumbnail and
+/// sync. An operator debugging *"why does every preview answer 404"* is reading this log, not the
+/// worker's, and until `ENC-828` the answer was in neither: `antivirus.provider: none` under the
+/// default `BLOCK` makes the product a write-only store, and nothing on the read side said so.
+///
+/// It follows the `"policy stage is not enforcing"` lines above deliberately and in the same voice.
+/// Those exist because a deployment permitting everything looks, from the outside, exactly like one
+/// carefully allowing each request; this is the same class of fact about the same request path, and
+/// the two belong in one block an operator reads once.
+///
+/// Levels differ because the postures differ. `BLOCK` with no engine is `error`: nothing uploaded
+/// will ever be readable, which is a broken deployment whoever configured it. `ALLOW_WITH_FLAG` is
+/// `warn`: it works, and it serves bytes nothing inspected, which is a decision someone made and
+/// should be reminded of. A configured engine says nothing at all — a quiet log is what a correct
+/// deployment earns.
+fn report_antivirus_posture(antivirus: &enclave_config::AntivirusConfig) {
+    if antivirus.is_enabled() {
+        return;
+    }
+
+    match antivirus.unsupported_policy {
+        enclave_config::UnsupportedPolicy::AllowWithFlag => tracing::warn!(
+            provider = "none",
+            unsupported_policy = "ALLOW_WITH_FLAG",
+            "no antivirus engine is configured and `antivirus.unsupported_policy` publishes \
+             anyway: preview, download, export and sync will serve content **nothing has \
+             inspected for malware**, recorded SKIPPED rather than CLEAN. CONFIDENTIAL and above \
+             are still refused on rank, and every version admitted this way is rescanned once an \
+             engine is configured."
+        ),
+        enclave_config::UnsupportedPolicy::Block => tracing::error!(
+            provider = "none",
+            unsupported_policy = "BLOCK",
+            "no antivirus engine is configured and the default BLOCK policy quarantines every \
+             version, so **nothing uploaded to this deployment will ever be readable** — uploads \
+             succeed and every delivery route answers 404. Configure `antivirus.provider`, or set \
+             `antivirus.unsupported_policy: ALLOW_WITH_FLAG` to serve unscanned content \
+             deliberately."
+        ),
+    }
+}
 
 /// The policy stages still permitting everything **after this binary's wiring**.
 ///
