@@ -14,6 +14,7 @@
 //! handler here is checked exactly as one at the crate root is.
 
 pub mod auth;
+pub mod bootstrap;
 pub mod delivery;
 pub mod folders;
 pub mod libraries;
