@@ -6,6 +6,7 @@ import { Bar, Push, Tab, TabList } from '../../shared/ui/layout.tsx';
 import { FailureState } from '../../shared/ui/surface-states.tsx';
 import { failureOf } from '../../shared/api/failure.ts';
 import { rowFromItem } from '../../entities/file/present.ts';
+import { reasonMessage } from '../../entities/capability/denial.ts';
 import type { Item } from '../../entities/file/api-model.ts';
 import { useUploadStore } from '../../entities/upload/store.ts';
 import { useUploadTarget } from '../../entities/upload/use-upload-target.ts';
@@ -121,6 +122,11 @@ export default function LibraryScreen() {
    * (`docs/17 §1`). While the library metadata is still loading the control is
    * *busy* rather than denied: not knowing yet is not a refusal. */
   const canCreate = library.data?.capabilities.create === true;
+  /* …and the server explains it, too (`ENC-674`). The reason is looked up by the
+   * same key the boolean was read from, so the sentence and the refusal cannot
+   * come apart. `reasonMessage` handles the absent and the unrecognised code
+   * identically and neither of them guesses — see `entities/capability`. */
+  const uploadDenial = reasonMessage(library.data?.capabilityReasons?.['create']);
   const target = useUploadTarget(hasLibrary ? libraryId : undefined, folderId, canCreate);
 
   const { groups, ordered } = useMemo(
@@ -278,10 +284,13 @@ export default function LibraryScreen() {
            *   * `busy`    — the library's capabilities have not arrived. Not
            *                 knowing is not a refusal.
            *   * `denied`  — `capabilities.create` is `false`. Shown, focusable,
-           *                 not hidden (`docs/09 §5`). It carries **no reason**,
-           *                 because `capabilities` does not yet supply one
-           *                 (`ENC-674`) and a client-invented explanation of a
-           *                 policy decision is the client re-deriving it.
+           *                 not hidden (`docs/09 §5`), and it now carries **the
+           *                 server's reason**: `capabilityReasons.create` names
+           *                 a code and the catalog phrases it (`ENC-674`,
+           *                 `docs/14 §5`). Nothing here composes an explanation
+           *                 — a client-invented account of a policy decision is
+           *                 the client re-deriving it, which is the whole point
+           *                 of reading `capabilities` rather than a role.
            *   * `ready`   — opens the file picker.
            */}
           <Button
@@ -294,7 +303,7 @@ export default function LibraryScreen() {
                 ? { kind: 'busy' }
                 : canCreate
                   ? { kind: 'ready' }
-                  : { kind: 'denied', reason: t('library.upload.denied') }
+                  : { kind: 'denied', reason: t(uploadDenial) }
             }
           />
           <Button

@@ -136,14 +136,14 @@ use axum::Json;
 use enclave_core::{
     Action, AuthorizationService, ContainerAction, Error, FieldError, FileAction, FileId,
     LibraryId, Obligation, Obligations, PolicyDecision, ReasonCode, RequestContext, RequestId,
-    ResourceRef, ValidationCode,
+    ResourceRef, StageOutcome, ValidationCode,
 };
 use enclave_files::{ChildFilter, FileNode, FileRepository, NodeType, PageSize, Parent};
 use enclave_versions::{FileVersion, PageLimit, VersionNumber, VersionRepository};
 use serde::{Deserialize, Serialize};
 
 use crate::auth::Authenticated;
-use crate::error::ApiError;
+use crate::error::{ApiError, CapabilityReasons};
 use crate::state::ApiState;
 
 // ---------------------------------------------------------------------------------------------
@@ -199,6 +199,8 @@ pub struct Item {
     revision: i64,
     /// What this caller may attempt on this row, from the stage that will decide it.
     capabilities: Capabilities,
+    /// Why each `false` above is `false` (`ENC-674`). See [`CapabilityReasons`].
+    capability_reasons: CapabilityReasons,
     obligations: WireObligations,
     created_at: chrono::DateTime<chrono::Utc>,
     modified_at: chrono::DateTime<chrono::Utc>,
@@ -214,6 +216,7 @@ impl Item {
     pub(crate) fn new(
         node: &FileNode,
         capabilities: Capabilities,
+        capability_reasons: CapabilityReasons,
         obligations: WireObligations,
     ) -> Self {
         Self {
@@ -227,6 +230,7 @@ impl Item {
             status: node.status.as_str(),
             revision: node.revision,
             capabilities,
+            capability_reasons,
             obligations,
             created_at: node.created_at,
             modified_at: node.modified_at,
@@ -257,6 +261,8 @@ pub struct FileMetadata {
     acl_revision: i64,
     /// What this caller may attempt, from the same engine that will enforce it.
     capabilities: Capabilities,
+    /// Why each `false` above is `false` (`ENC-674`). See [`CapabilityReasons`].
+    capability_reasons: CapabilityReasons,
     obligations: WireObligations,
     governance: Governance,
     created_at: chrono::DateTime<chrono::Utc>,
@@ -620,7 +626,7 @@ pub async fn file_metadata(
     // and was refused by no grant. Same answer either way.
     let node = node.ok_or_else(|| ApiError::new(Error::NotFound, request_id))?;
 
-    let (capabilities, wire_obligations) =
+    let (capabilities, capability_reasons, wire_obligations) =
         capabilities_for(state.policy.authorization().as_ref(), &ctx, &resource, &obligations)
             .await
             .map_err(|error| ApiError::new(error, request_id))?;
@@ -638,6 +644,7 @@ pub async fn file_metadata(
         revision: node.revision,
         acl_revision: node.acl_revision,
         capabilities,
+        capability_reasons,
         obligations: wire_obligations,
         governance: Governance { on_legal_hold: node.on_legal_hold, is_record: node.is_record },
         created_at: node.created_at,
@@ -858,7 +865,9 @@ async fn readable_children(
     Ok(readable
         .into_iter()
         .zip(computed)
-        .map(|(node, (capabilities, obligations))| Item::new(node, capabilities, obligations))
+        .map(|(node, (capabilities, reasons, obligations))| {
+            Item::new(node, capabilities, reasons, obligations)
+        })
         .collect())
 }
 
@@ -890,7 +899,7 @@ pub(crate) async fn capabilities_for(
     ctx: &RequestContext,
     resource: &ResourceRef,
     enforced: &Obligations,
-) -> Result<(Capabilities, WireObligations), Error> {
+) -> Result<(Capabilities, CapabilityReasons, WireObligations), Error> {
     let batch = [(*resource, enforced.clone())];
     let mut computed = capabilities_for_many(authorization, ctx, &batch).await?;
     match computed.pop() {
@@ -899,7 +908,14 @@ pub(crate) async fn capabilities_for(
         // batch it was handed and never shortens it. If that ever stopped holding, the refusing
         // object is the safe one: a capability wrongly withheld costs a button, and the action
         // itself is enforced by the chain either way.
-        None => Ok((Capabilities::default(), WireObligations::default())),
+        //
+        // The reasons object is empty rather than filled with `ACCESS_DENIED`. On this branch
+        // nothing was decided, so there is no reason to report, and asserting one would be the
+        // client-facing half of the same invention this type exists to prevent — a sentence
+        // explaining a refusal that no stage made.
+        None => {
+            Ok((Capabilities::default(), CapabilityReasons::default(), WireObligations::default()))
+        }
     }
 }
 
@@ -982,7 +998,7 @@ async fn capabilities_for_many(
     authorization: &dyn AuthorizationService,
     ctx: &RequestContext,
     admitted: &[(ResourceRef, Obligations)],
-) -> Result<Vec<(Capabilities, WireObligations)>, Error> {
+) -> Result<Vec<(Capabilities, CapabilityReasons, WireObligations)>, Error> {
     if admitted.is_empty() {
         return Ok(Vec::new());
     }
@@ -991,11 +1007,12 @@ async fn capabilities_for_many(
     // obligations of the decision that admitted it cannot be zipped out of step by an edit here.
     let resources: Vec<ResourceRef> = admitted.iter().map(|(resource, _)| *resource).collect();
 
-    let mut computed: Vec<(Capabilities, WireObligations)> = admitted
+    let mut computed: Vec<(Capabilities, CapabilityReasons, WireObligations)> = admitted
         .iter()
         .map(|(_, enforced)| {
             (
                 Capabilities { metadata_read: true, ..Capabilities::default() },
+                CapabilityReasons::default(),
                 WireObligations {
                     watermark: enforced.contains(&Obligation::Watermark),
                     ..WireObligations::default()
@@ -1014,8 +1031,18 @@ async fn capabilities_for_many(
     // unanswered; both withhold a capability rather than offering one that will be refused, which
     // is the direction an absent verdict has to fail in.
     for ((name, action), decisions) in CAPABILITY_ACTIONS.iter().zip(grid) {
-        for ((capabilities, wire), decision) in computed.iter_mut().zip(decisions) {
+        for ((capabilities, reasons, wire), decision) in computed.iter_mut().zip(decisions) {
             if !decision.is_allowed() {
+                // `ENC-674`. This `continue` used to be the whole arm, and the stage's reason died
+                // here: the response said `download: false` and the client, having nothing else,
+                // had to compose an explanation of a decision it did not make.
+                //
+                // The code travels and nothing else does. `StageOutcome::Deny` carries a
+                // `ReasonCode` and has no field a rule name could be written into, so rule 10 holds
+                // by construction rather than by care taken at this line.
+                if let StageOutcome::Deny(code) = decision.outcome() {
+                    reasons.withheld(name, *code);
+                }
                 continue;
             }
             // The stage allowed, so this cannot be an `Err`; taking the obligations rather than
@@ -1035,8 +1062,8 @@ async fn capabilities_for_many(
         }
     }
 
-    for ((capabilities, _), (_, enforced)) in computed.iter_mut().zip(admitted) {
-        apply_obligations(capabilities, enforced);
+    for ((capabilities, reasons, _), (_, enforced)) in computed.iter_mut().zip(admitted) {
+        apply_obligations(capabilities, reasons, enforced);
     }
     Ok(computed)
 }
@@ -1071,31 +1098,82 @@ fn set_capability(capabilities: &mut Capabilities, action: FileAction) {
     }
 }
 
-/// Subtracts from `capabilities` whatever the enforced decision's obligations forbid.
+/// Turns one capability off and records why, but only if it was on.
+///
+/// The guard is what keeps the reason honest. `apply_obligations` runs *after* the authorization
+/// pass, so a capability that is already `false` here was refused by the ACL and already carries
+/// that stage's code; overwriting it would tell the caller an obligation took away something they
+/// were never granted. A capability that is `true` here was granted and is being taken away by this
+/// obligation, which makes the obligation the proximate reason and the right one to report.
+fn withdraw(
+    field: &mut bool,
+    reasons: &mut CapabilityReasons,
+    capability: &'static str,
+    code: ReasonCode,
+) {
+    if *field {
+        *field = false;
+        reasons.withheld(capability, code);
+    }
+}
+
+/// Subtracts from `capabilities` whatever the enforced decision's obligations forbid, recording the
+/// code for each subtraction (`ENC-674`).
 ///
 /// Only ever subtracts. An obligation is a restriction a stage attached to an *allow*, and one that
 /// could add a capability would be a stage granting access outside the authorization stage.
-fn apply_obligations(capabilities: &mut Capabilities, obligations: &Obligations) {
+///
+/// # Why the codes are chosen here and not taken from `Obligation::unsatisfied_code`
+///
+/// That method answers a different question — *what is the caller told when they fail to satisfy
+/// this obligation* — and it knows only the obligation. This site knows the **pair**: the
+/// obligation and the specific capability it is suppressing. The extra fact changes the answer, and
+/// on one pair it changes it from false to true.
+///
+/// `unsatisfied_code` maps [`Obligation::NoSync`] to `ACCESS_DENIED`, whose sentence is "You do not
+/// have access to this." For a file the caller may preview, download and print, that is simply
+/// untrue — the only thing they may not do is replicate it to a device, and `SYNC_NOT_PERMITTED`
+/// ("This file is available on the web only.") says exactly that. Reporting the generic code here
+/// would put a false statement in front of a user, which is the class of defect `ENC-673`–`ENC-675`
+/// exist to close, so the pair is mapped rather than the obligation.
+///
+/// [`Obligation::ReadOnly`] does report `ACCESS_DENIED`, and that is the weakest answer in this
+/// function: the vocabulary has no code for *you may read this but not change it*. `ENC-895` is
+/// where that is recorded — it is a change to a published enumeration in `docs/05-API.md §5`, which
+/// is wider than this row.
+fn apply_obligations(
+    capabilities: &mut Capabilities,
+    reasons: &mut CapabilityReasons,
+    obligations: &Obligations,
+) {
     for obligation in obligations {
         match obligation {
             // "Suppress every mutation path in the response — no edit affordance, no write
             // capability in the returned `capabilities` object" (`crates/core/src/policy.rs`).
             Obligation::ReadOnly => {
-                capabilities.edit = false;
-                capabilities.delete = false;
-                capabilities.share = false;
-                capabilities.share_external = false;
+                let code = ReasonCode::AccessDenied;
+                withdraw(&mut capabilities.edit, reasons, "edit", code);
+                withdraw(&mut capabilities.delete, reasons, "delete", code);
+                withdraw(&mut capabilities.share, reasons, "share", code);
+                withdraw(&mut capabilities.share_external, reasons, "shareExternal", code);
             }
             // Serve a rendition but never the original bytes. Print and export are here as well as
             // download because both yield content outside the viewer — collapsing them is the
             // mistake `CLAUDE.md` rule 6 is about.
             Obligation::NoDownload => {
-                capabilities.download = false;
-                capabilities.print = false;
-                capabilities.export = false;
-                capabilities.sync = false;
+                // `PREVIEW_ONLY` — "This file can be viewed but not downloaded" — is `docs/06 §24`'s
+                // own worked example, and it is exactly what this obligation means.
+                let egress = ReasonCode::PreviewOnly;
+                withdraw(&mut capabilities.download, reasons, "download", egress);
+                withdraw(&mut capabilities.print, reasons, "print", egress);
+                withdraw(&mut capabilities.export, reasons, "export", egress);
+                // Sync is suppressed by the same obligation but for a reason a user reads
+                // differently: the file is not leaving the web viewer at all. Its own code says so.
+                withdraw(&mut capabilities.sync, reasons, "sync", ReasonCode::SyncNotPermitted);
             }
-            Obligation::NoSync => capabilities.sync = false,
+            Obligation::NoSync => {
+                withdraw(&mut capabilities.sync, reasons, "sync", ReasonCode::SyncNotPermitted);
+            }
             // Shape nothing here: a watermark and a justification are reported in `obligations` for
             // the client to satisfy, and reclassification is the classification path's to apply.
             Obligation::Watermark
@@ -1187,8 +1265,12 @@ mod tests {
 
     /// The capabilities object as it would reach the wire, so comparisons are of rendered JSON
     /// rather than of a struct whose fields a future edit might add to unnoticed.
-    fn rendered(answer: &(Capabilities, WireObligations)) -> serde_json::Value {
-        serde_json::json!({ "capabilities": answer.0, "obligations": answer.1 })
+    fn rendered(answer: &(Capabilities, CapabilityReasons, WireObligations)) -> serde_json::Value {
+        serde_json::json!({
+            "capabilities": answer.0,
+            "capabilityReasons": answer.1,
+            "obligations": answer.2,
+        })
     }
 
     #[tokio::test]
@@ -1218,7 +1300,10 @@ mod tests {
         assert!(!computed[2].0.preview && !computed[2].0.edit && !computed[2].0.delete);
         // Every row survived the trim to get here, so every row can read metadata — and that is the
         // only field the three have in common.
-        assert!(computed.iter().all(|(capabilities, _)| capabilities.metadata_read));
+        assert!(computed.iter().all(|(capabilities, _, _)| capabilities.metadata_read));
+        // …and no row carries a reason for it, because it was never withheld (`ENC-674`). A reason
+        // for a capability the caller holds is a sentence about a refusal that did not happen.
+        assert!(computed.iter().all(|(_, reasons, _)| reasons.get("metadataRead").is_none()));
     }
 
     #[tokio::test]
@@ -1287,9 +1372,14 @@ mod tests {
         .expect("probe");
 
         assert!(!computed[0].0.download && computed[0].0.preview);
-        assert!(computed[0].1.watermark);
+        assert!(computed[0].2.watermark);
         assert!(computed[1].0.download, "a neighbour's obligation took a capability away");
-        assert!(!computed[1].1.watermark);
+        assert!(!computed[1].2.watermark);
+        // The reason travels per row for the same reason the obligation does (`ENC-674`). The
+        // neighbour holds `download`, so it must carry no reason for it — a reason on an available
+        // capability would render a refusal the server never made.
+        assert_eq!(computed[0].1.get("download"), Some(ReasonCode::PreviewOnly));
+        assert_eq!(computed[1].1.get("download"), None);
     }
 
     #[tokio::test]
@@ -1416,17 +1506,35 @@ mod tests {
         };
 
         let mut caps = full();
-        apply_obligations(&mut caps, &Obligations::from_iter([Obligation::ReadOnly]));
+        let mut why = CapabilityReasons::default();
+        apply_obligations(&mut caps, &mut why, &Obligations::from_iter([Obligation::ReadOnly]));
         assert!(!caps.edit && !caps.delete && !caps.share && !caps.share_external);
         assert!(caps.preview && caps.download, "read-only restricts writing, not reading");
+        // Every suppression names itself (`ENC-674`), and only the suppressions do: `preview` and
+        // `download` survived, so a reason for either would be an invented refusal.
+        assert_eq!(why.get("edit"), Some(ReasonCode::AccessDenied));
+        assert_eq!(why.get("shareExternal"), Some(ReasonCode::AccessDenied));
+        assert_eq!(why.get("preview"), None);
+        assert_eq!(why.get("download"), None);
+        assert_eq!(why.len(), 4, "one reason per capability actually taken away");
 
         let mut caps = full();
-        apply_obligations(&mut caps, &Obligations::from_iter([Obligation::NoDownload]));
+        let mut why = CapabilityReasons::default();
+        apply_obligations(&mut caps, &mut why, &Obligations::from_iter([Obligation::NoDownload]));
         assert!(!caps.download && !caps.print && !caps.export && !caps.sync);
         assert!(caps.preview, "a rendition is exactly what NoDownload still permits");
+        // `docs/06 §24`'s worked example, on the three content-egress capabilities.
+        assert_eq!(why.get("download"), Some(ReasonCode::PreviewOnly));
+        assert_eq!(why.get("print"), Some(ReasonCode::PreviewOnly));
+        assert_eq!(why.get("export"), Some(ReasonCode::PreviewOnly));
+        // Sync is suppressed by the same obligation and reported with its own code, because
+        // "available on the web only" is what a user needs to hear about a replica that will not
+        // appear. See `apply_obligations` for why this is not `Obligation::unsatisfied_code`.
+        assert_eq!(why.get("sync"), Some(ReasonCode::SyncNotPermitted));
 
         // Nothing an obligation can do turns a `false` into a `true`.
         let mut none = Capabilities::default();
+        let mut none_why = CapabilityReasons::default();
         for obligation in [
             Obligation::ReadOnly,
             Obligation::NoDownload,
@@ -1434,8 +1542,13 @@ mod tests {
             Obligation::Watermark,
             Obligation::RequireJustification,
         ] {
-            apply_obligations(&mut none, &Obligations::from_iter([obligation]));
+            apply_obligations(&mut none, &mut none_why, &Obligations::from_iter([obligation]));
         }
+        // …and an obligation cannot manufacture a reason for a capability it did not take away.
+        // Every field was already `false` on entry, so the suppression pass fired on none of them
+        // and the object stays empty — which is what stops a client being told an obligation
+        // refused something the ACL had already refused for a different reason.
+        assert_eq!(none_why.len(), 0);
         let rendered = serde_json::to_value(&none).expect("serialize");
         assert!(
             rendered.as_object().expect("object").values().all(|value| value == false),
