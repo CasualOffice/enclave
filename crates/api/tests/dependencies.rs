@@ -31,7 +31,7 @@
 //! test at all**, here or in `crates/api/src/health.rs`, which carries no `#[cfg(test)]` module.
 //!
 //! That sentence is written out rather than left implied because the defect this whole commit
-//! exists to fix was documentation in the present tense about tests that did not exist. `ENC-849`
+//! exists to fix was documentation in the present tense about tests that did not exist. `ENC-860`
 //! is the row: the mapping wants a unit test taking a constructed `DbError` and asserting the
 //! returned code, which needs no database and would cover the arm an outage actually reaches.
 

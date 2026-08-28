@@ -104,11 +104,23 @@ impl PublicAccessCheck for RecordingStore {
 impl BlobStore for RecordingStore {
     async fn create_upload(&self, request: UploadRequest) -> StorageResult<UploadSession> {
         self.state.lock().expect("lock").created.push(request.key.as_str().to_owned());
+        // The header the client must send back, reported the way a real store reports it — this is
+        // what `POST /uploads` puts in `requiredHeaders` (`ENC-820`, `ENC-821`).
+        let required_headers = request
+            .checksum_sha256
+            .map(|_| {
+                vec![enclave_storage::RequiredHeader {
+                    name: "x-amz-checksum-sha256".to_owned(),
+                    value: DIGEST_B64.to_owned(),
+                }]
+            })
+            .unwrap_or_default();
         Ok(UploadSession {
             key: request.key,
             content_length: request.content_length,
             target: UploadTarget::Single {
                 url: Url::parse("https://store.invalid/put").expect("url"),
+                required_headers,
             },
             expires_at: Utc::now() + Duration::minutes(15),
             completed_parts: Vec::new(),
@@ -444,12 +456,16 @@ async fn set_quota(pool: &DbPool, tenant: TenantId, limit: u64, mode: Enforcemen
 }
 
 /// A body for `POST /api/v1/uploads`.
+///
+/// `sha256` is required since `ENC-820` — it is the digest the object store is made to verify the
+/// body against, so an upload cannot be started without one.
 fn upload_body(library: LibraryId, name: &str, size: u64) -> serde_json::Value {
     serde_json::json!({
         "libraryId": library.to_string(),
         "name": name,
         "sizeBytes": size,
         "mimeType": "application/pdf",
+        "sha256": DIGEST_HEX,
     })
 }
 
@@ -890,6 +906,15 @@ async fn a_completed_upload_becomes_a_scanning_version_and_nothing_readable() {
     .await;
     assert_eq!(status, StatusCode::CREATED, "{issued}");
     let upload_id = issued["uploadId"].as_str().expect("uploadId").to_owned();
+
+    // `ENC-820`: the header the provider will verify the body against reaches the client, exactly
+    // as the store signed it. Without it on the wire, every `PUT` fails the signature check — and
+    // an upload path that issued no such header at all is the defect itself.
+    assert_eq!(
+        issued["requiredHeaders"]["x-amz-checksum-sha256"].as_str(),
+        Some(DIGEST_B64),
+        "the PUT's mandatory checksum header is not in the response: {issued}"
+    );
 
     let before = content_rows(&db, alpha).await;
     let charged_before = used_bytes(&db, alpha).await;

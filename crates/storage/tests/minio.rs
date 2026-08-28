@@ -60,7 +60,7 @@ use enclave_config::SecretRegistry;
 use enclave_core::{FileId, TenantId, VersionId};
 use enclave_storage::{
     BlobStore, ByteRange, ObjectKey, Probe, PublicAccessCheck, PublicAccessError, S3BlobStore,
-    S3Config, S3Flavor, StorageError, UploadRequest, UploadTarget, Verdict,
+    S3Config, S3Flavor, StorageError, UploadRequest, UploadSession, UploadTarget, Verdict,
 };
 
 /// Attached to every `#[ignore]` so the harness is named at the test rather than in a comment
@@ -142,12 +142,53 @@ fn http() -> Connector {
 /// under test is the *URL*, and a URL that the SDK would have signed differently is not evidence
 /// that a client can upload with it.
 async fn put(url: &url::Url, body: Vec<u8>) -> (u16, Option<String>) {
+    put_with(url, &[], body).await
+}
+
+/// The same, sending `headers` as well — the ones the session says the `PUT` must carry.
+///
+/// Separate rather than folded in so that a test can send the *wrong* headers, or none, which is
+/// the whole of what `a_lying_client_cannot_store_an_object_under_a_digest_it_declared` asserts.
+async fn put_with(
+    url: &url::Url,
+    headers: &[(&'static str, String)],
+    body: Vec<u8>,
+) -> (u16, Option<String>) {
     let mut request = Request::new(SdkBody::from(body));
     request.set_method("PUT").unwrap();
     request.set_uri(url.as_str()).unwrap();
+    for (name, value) in headers {
+        request.headers_mut().insert(*name, value.clone());
+    }
     let response = http().call(request).await.expect("the pre-signed PUT reached the endpoint");
     let etag = response.headers().get("etag").map(ToOwned::to_owned);
     (response.status().as_u16(), etag)
+}
+
+/// The headers a session says its `PUT` must carry, in the shape [`put_with`] takes.
+fn required(session: &UploadSession) -> Vec<(&'static str, String)> {
+    let UploadTarget::Single { required_headers, .. } = &session.target else {
+        panic!("required headers are a property of a single-shot session");
+    };
+    required_headers
+        .iter()
+        .map(|header| match header.name.as_str() {
+            "x-amz-checksum-sha256" => ("x-amz-checksum-sha256", header.value.clone()),
+            "content-type" => ("content-type", header.value.clone()),
+            other => panic!("this suite does not know how to send `{other}`"),
+        })
+        .collect()
+}
+
+/// Lowercase hex SHA-256 of `body`, computed here rather than taken from a constant.
+///
+/// A fixture digest beside a fixture body only asserts that the two agree with each other. What
+/// these tests need is the digest of the bytes actually sent, so that "the provider verified it"
+/// is a statement about the provider.
+fn sha256_hex(body: &[u8]) -> String {
+    use sha2::Digest as _;
+
+    sha2::Sha256::digest(body).iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 async fn get_status(url: &url::Url) -> u16 {
@@ -173,7 +214,7 @@ async fn store_an_object(store: &S3BlobStore, body: &[u8]) -> ObjectKey {
         .await
         .expect("create_upload");
 
-    let UploadTarget::Single { url } = &session.target else {
+    let UploadTarget::Single { url, .. } = &session.target else {
         panic!("these bodies are far below the multipart threshold: {:?}", session.target);
     };
     let (status, _) = put(url, body.to_vec()).await;
@@ -281,7 +322,7 @@ async fn a_single_shot_upload_round_trips_through_a_pre_signed_url() {
         .await
         .expect("create_upload");
 
-    let UploadTarget::Single { url } = &session.target else {
+    let UploadTarget::Single { url, .. } = &session.target else {
         panic!("a small object must not be multipart: {:?}", session.target);
     };
     let (status, _) = put(url, body.clone()).await;
@@ -376,6 +417,191 @@ async fn a_multipart_upload_round_trips() {
         .await
         .expect("collect");
     assert_eq!(tail, body[body.len() - 4..]);
+}
+
+// ---------------------------------------------------------------------------
+// The digest the provider computes. `ENC-820`.
+// ---------------------------------------------------------------------------
+
+/// **The test this fix exists for.** A client that declares one digest and sends other bytes must
+/// not be able to store the object at all.
+///
+/// It has to run against a real backend. The defect was never in Enclave's comparison — it was that
+/// MinIO computed no digest for an ordinary pre-signed `PUT` and `HeadObject` reported none, so the
+/// comparison had nothing on one side. A mocked store proves only that the mock was written to
+/// agree with whoever wrote it; what has to be observed is what MinIO actually does with the URL
+/// this code signs.
+///
+/// Four assertions, and the pairing matters (`docs/12 §1.2`):
+///
+/// 1. the honest client, sending the required header with the matching body, succeeds — without
+///    which "refused" could be the only answer this path knows;
+/// 2. `complete_upload` reports the provider's digest, which is what `enclave_uploads` compares
+///    against — a `None` here would put the whole chain back where it started;
+/// 3. the lying client, sending the declared digest over *different* bytes, is refused, and nothing
+///    is stored;
+/// 4. a client that simply omits the header is refused too, so the check cannot be opted out of.
+///    This is the one that fails if the header stops being *signed* rather than merely sent.
+#[tokio::test]
+#[ignore = "requires the dev-stack MinIO and TEST_S3_*; CI runs it with --include-ignored"]
+async fn a_lying_client_cannot_store_an_object_under_a_digest_it_declared() {
+    let (config, _admin, secrets) = fixture().await;
+    let store = S3BlobStore::connect_and_verify(config, &secrets).await.expect("connect");
+
+    let body = b"the quick brown fox jumps over the lazy dog".to_vec();
+    let declared = sha256_hex(&body);
+    let other_bytes = b"a document with entirely different content!".to_vec();
+    assert_eq!(other_bytes.len(), body.len(), "same length, so only the digest can refuse it");
+
+    // ---- 1. the honest client ----
+    let key = new_key();
+    let session = store
+        .create_upload(
+            UploadRequest::new(key.clone(), body.len() as u64)
+                .with_checksum_sha256(declared.clone()),
+        )
+        .await
+        .expect("create_upload");
+    let headers = required(&session);
+    let expected_b64 = headers
+        .iter()
+        .find(|(name, _)| *name == "x-amz-checksum-sha256")
+        .map(|(_, value)| value.clone())
+        .expect(
+            "the session did not tell the client to send a checksum header, so nothing will \
+             verify what it uploads",
+        );
+
+    let UploadTarget::Single { url, .. } = &session.target else {
+        panic!("a small object must not be multipart");
+    };
+    assert!(
+        url.query().unwrap_or_default().contains("x-amz-checksum-sha256"),
+        "the digest header is not in X-Amz-SignedHeaders, so a client could simply drop it: {url}"
+    );
+
+    let (status, _) = put_with(url, &headers, body.clone()).await;
+    assert_eq!(status, 200, "the honest client was refused");
+
+    // ---- 2. and the provider reports the digest back ----
+    let meta = store.complete_upload(&session).await.expect("complete_upload");
+    assert_eq!(meta.size_bytes, body.len() as u64);
+    let reported = meta
+        .checksum_sha256
+        .expect("HeadObject must report the digest the provider computed (ChecksumMode::ENABLED)");
+    assert_eq!(reported, expected_b64, "the provider's digest is not the one that was declared");
+
+    // ---- 3. the lying client ----
+    let lying_key = new_key();
+    let lying = store
+        .create_upload(
+            UploadRequest::new(lying_key.clone(), other_bytes.len() as u64)
+                .with_checksum_sha256(declared.clone()),
+        )
+        .await
+        .expect("create_upload");
+    let UploadTarget::Single { url: lying_url, .. } = &lying.target else {
+        panic!("a small object must not be multipart");
+    };
+    let (status, _) = put_with(lying_url, &required(&lying), other_bytes).await;
+    assert_ne!(
+        status, 200,
+        "MinIO stored a body whose SHA-256 is not the one signed into the URL. This is ENC-820: \
+         the digest recorded on the version would be the client's word about bytes it did not send"
+    );
+
+    // Nothing was stored, so there is no object for a later `complete` to head at either.
+    let err = store
+        .read_range(lying_key.as_str(), ByteRange::from(0))
+        .await
+        .expect_err("a refused PUT must leave no object behind");
+    assert!(matches!(err, StorageError::NotFound { .. }), "got: {err:?}");
+
+    // ---- 4. and the header cannot simply be omitted ----
+    let omitting = store
+        .create_upload(
+            UploadRequest::new(new_key(), body.len() as u64).with_checksum_sha256(declared),
+        )
+        .await
+        .expect("create_upload");
+    let UploadTarget::Single { url: bare_url, .. } = &omitting.target else {
+        panic!("a small object must not be multipart");
+    };
+    let (status, _) = put(bare_url, body).await;
+    assert_ne!(
+        status, 200,
+        "a PUT that omitted the signed checksum header succeeded, so a client can decline to be \
+         verified and still upload"
+    );
+}
+
+/// An upload above the multipart threshold, with a digest to verify, is refused before anything is
+/// signed — because this backend cannot verify one.
+///
+/// MinIO computes a *composite* checksum for a multipart upload (a checksum of the part checksums,
+/// suffixed `-N`), which is not the whole-object SHA-256 a version row records; and it answers
+/// `InvalidArgument` to AWS's `FULL_OBJECT` checksum type, verified by hand against
+/// `RELEASE.2025-04-22`. So there is nothing to fall back on, and issuing the session anyway would
+/// mean recording an unverified digest — `ENC-820` again with more bytes. `ENC-829` is the row for
+/// restoring large uploads under a scheme the provider can confirm.
+///
+/// Paired with its control: the same store, the same size, no digest asked for, is issued. A store
+/// that refused every multipart upload would pass the first assertion alone.
+#[tokio::test]
+#[ignore = "requires the dev-stack MinIO and TEST_S3_*; CI runs it with --include-ignored"]
+async fn a_multipart_upload_whose_digest_cannot_be_verified_is_refused_before_a_url_exists() {
+    let (config, _admin, secrets) = fixture().await;
+    let threshold = config.multipart_threshold_bytes;
+    let store = S3BlobStore::connect_and_verify(config, &secrets).await.expect("connect");
+
+    let size = threshold + 1;
+    let err = store
+        .create_upload(UploadRequest::new(new_key(), size).with_checksum_sha256(
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_owned(),
+        ))
+        .await
+        .expect_err("a digest this backend cannot verify must not produce a session");
+    assert!(
+        matches!(
+            err,
+            StorageError::ChecksumUnverifiable { content_length, threshold: reported }
+                if content_length == size && reported == threshold
+        ),
+        "got: {err:?}"
+    );
+
+    // The control: the same size, no digest asked for, is issued as usual. Internal writes take
+    // this path, and this process is its own client on them.
+    let session = store
+        .create_upload(UploadRequest::new(new_key(), size))
+        .await
+        .expect("a multipart upload with no digest to verify is still issued");
+    assert!(matches!(session.target, UploadTarget::Multipart { .. }));
+    store.abort_upload(&session).await.expect("abort_upload");
+}
+
+/// A digest the store cannot parse is refused rather than dropped.
+///
+/// The dangerous alternative is to forward it: the provider ignores a malformed
+/// `x-amz-checksum-sha256`, the `PUT` succeeds, and the upload is unverified with nobody told.
+#[tokio::test]
+#[ignore = "requires the dev-stack MinIO and TEST_S3_*; CI runs it with --include-ignored"]
+async fn a_malformed_declared_digest_is_refused_rather_than_quietly_dropped() {
+    let (config, _admin, secrets) = fixture().await;
+    let store = S3BlobStore::connect_and_verify(config, &secrets).await.expect("connect");
+
+    let err = store
+        .create_upload(UploadRequest::new(new_key(), 19).with_checksum_sha256("deadbeef"))
+        .await
+        .expect_err("a malformed digest must not reach the provider");
+    assert!(matches!(err, StorageError::MalformedChecksum), "got: {err:?}");
+
+    // The control: a well-formed one is accepted and produces a session.
+    let session = store
+        .create_upload(UploadRequest::new(new_key(), 19).with_checksum_sha256(sha256_hex(b"x")))
+        .await
+        .expect("a well-formed digest must still be accepted");
+    assert!(!required(&session).is_empty());
 }
 
 #[tokio::test]
