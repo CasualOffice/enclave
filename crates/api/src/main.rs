@@ -462,7 +462,9 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let mut state = ApiState::new(
-        policy,
+        // Cloned rather than moved: `build_auth_surface` below hands the *same* engine to the
+        // refresh guard, and the point of that is that there is one of them (`ENC-709`).
+        policy.clone(),
         db.clone(),
         &access_token_issuer(config),
         config.auth.access_token.audience.as_str(),
@@ -483,7 +485,7 @@ async fn main() -> anyhow::Result<()> {
     // deliberately not a start-up failure of *this* process for the reason `SigningKeys::choose`
     // gives: the refusal that matters is the one before it, and it is scoped to the configurations
     // that must not run at all.
-    match build_auth_surface(key_provider, config, &db) {
+    match build_auth_surface(key_provider, config, &db, &policy) {
         Ok(Some(surface)) => {
             tracing::info!(
                 issuer = config.auth.access_token.issuer.as_deref().unwrap_or_default(),
@@ -732,20 +734,26 @@ fn build_key_provider(
 /// `PgSessionFacts` — rotation, reuse detection, family revocation and the re-resolved
 /// `token_epoch` all against the authoritative store (`ENC-687`).
 ///
-/// The exception is [`enclave_auth::UnrestrictedRefreshGuard`], which permits every refresh.
-/// `docs/03-LLD.md §5.3` rule 3 wants conditional access re-evaluated at rotation, and that needs a
-/// `RequestContext` built from a refresh row — which needs an action and a resource for "refresh a
-/// session", and `enclave_core` has neither. That is `ENC-689`'s absence, so the guard is `ENC-709`
-/// and the honest thing to do here is to announce it in the start-up banner rather than invent a
-/// policy vocabulary in a composition function.
+/// The refresh guard is [`enclave_api::ChainRefreshGuard`] over the engine this binary already
+/// built, so `docs/03-LLD.md §5.3` rule 3 holds: a rotation is decided by the same
+/// `TenantConditionalAccess`, reading the same tenant's rules from the same cache, that decides
+/// every authenticated request (`ENC-709`). It replaces `UnrestrictedRefreshGuard`, which permitted
+/// every refresh and bounded "a user who leaves an allowed network loses access" at the *refresh*
+/// lifetime — fourteen days — rather than at one access-token lifetime.
 ///
-/// The MFA verifier is likewise the surface's own `UnavailableMfa`, which refuses every code
-/// (`ENC-688`). It is not a hole: an account with an enrolled factor cannot complete a login at
-/// all, which is the fail-closed direction.
+/// The engine is a parameter rather than something built here because there must be exactly one:
+/// two engines would be two rule caches, and an administrator watching a tightening take effect on
+/// requests and not on refreshes would have no way to tell which. `PolicyEngine` is `Clone` over
+/// `Arc`s, so passing it costs a refcount.
+///
+/// The exception that remains is the MFA verifier: the surface's own `UnavailableMfa`, which
+/// refuses every code (`ENC-688`). It is not a hole — an account with an enrolled factor cannot
+/// complete a login at all, which is the fail-closed direction.
 fn build_auth_surface(
     provider: Option<Arc<dyn enclave_auth::KeyProvider>>,
     config: &enclave_config::Config,
     db: &enclave_db::DbPool,
+    policy: &PolicyEngine,
 ) -> anyhow::Result<Option<enclave_api::routes::auth::AuthSurface>> {
     let Some(provider) = provider else { return Ok(None) };
 
@@ -785,7 +793,7 @@ fn build_auth_surface(
         provider,
         enclave_db::PgRefreshTokenStore::new(db.clone()),
         enclave_db::PgDenylist::new(db.clone()),
-        enclave_auth::UnrestrictedRefreshGuard,
+        enclave_api::ChainRefreshGuard::new(policy.clone()),
         // The same lifetime the issuer above uses, and it has to be: `absolute_expires_at` is
         // written as `auth_time + absolute_ttl`, and this is the divisor that recovers `auth_time`
         // from it. Two different values would report an authentication time that never happened.
@@ -824,13 +832,6 @@ const CONDITIONAL_ACCESS_STAGE: &str = "conditional_access";
 
 /// The prefix of [`unconfigured_stages`]'s entry for the stage `ENC-594` wired.
 const DLP_STAGE: &str = "dlp";
-
-/// The banner entry for the refresh-time conditional-access re-evaluation, which is not wired.
-///
-/// Not in [`unconfigured_stages`], because that list describes the stages `ApiState` finds and this
-/// is a collaborator of the token service. It is computed here for the same reason the DLP entry is:
-/// the value is a property of what this binary wired, not of what the crate offers.
-const REFRESH_GUARD_STAGE: &str = "refresh_guard";
 
 /// What `antivirus:` means for the routes *this* binary serves, said once, at start-up.
 ///
@@ -932,20 +933,16 @@ fn unenforcing_stages(dlp_mode: enclave_dlp::DlpMode) -> Vec<String> {
         stages.push(format!("{DLP_STAGE} ({dlp_mode} — {posture})"));
     }
 
-    // Not a policy *stage*, and announced here anyway (`ENC-687`). `docs/03-LLD.md §5.3` rule 3
-    // makes refresh the point at which conditional access is re-evaluated — it is what bounds "a
-    // user who moves outside an allowed network zone loses access within one access-token
-    // lifetime" — and this binary wires `UnrestrictedRefreshGuard`, which permits every refresh.
+    // There is deliberately no `refresh_guard` entry here any more (`ENC-709`). `ENC-687` added one
+    // because this binary wired `UnrestrictedRefreshGuard` and an operator reading a banner that
+    // listed `conditional_access` as wired, and said nothing about rotation, would reasonably
+    // conclude that a network rule bounded a session. It did not: it bounded each request, and the
+    // rotation renewed regardless, for up to the refresh lifetime.
     //
-    // An operator reading a banner that lists `conditional_access` as wired and says nothing here
-    // would reasonably conclude that a network rule applies for the whole life of a session. It
-    // applies to each request and not to the rotation, and that difference is a fourteen-day window
-    // rather than a ten-minute one. `ENC-709` closes it, behind `ENC-689`.
-    stages.push(format!(
-        "{REFRESH_GUARD_STAGE} (every refresh is permitted — a session outlives the \
-         network rule that allowed it, up to the refresh lifetime)"
-    ));
-
+    // `build_auth_surface` now wires `ChainRefreshGuard` over this process's one `PolicyEngine`,
+    // unconditionally — there is no configuration in which this binary constructs a permissive
+    // guard, so there is nothing left for the entry to be true about. A banner line that is no
+    // longer true is worse than no line, because it is the line an operator trusts.
     stages
 }
 
@@ -1102,13 +1099,22 @@ mod tests {
         assert!(entry.contains("inspects nothing"), "{entry}");
     }
 
-    /// The refresh guard is announced in every mode, because it is a property of the wiring rather
-    /// than of the DLP posture (`ENC-687`).
+    /// The refresh guard is announced in **no** mode, because it is wired (`ENC-709`).
     ///
-    /// It is asserted for all five modes and not just one, because the entry is pushed after the
-    /// DLP branch and a future edit that moved it inside one arm would leave four postures silent.
+    /// `ENC-687` asserted the opposite here, in all five DLP postures, and the entry it asserted was
+    /// true: `UnrestrictedRefreshGuard` permitted every refresh. `ChainRefreshGuard` re-evaluates
+    /// conditional access on every rotation, so the sentence has stopped being true and must stop
+    /// being printed — a banner line an operator has learned to trust is the worst place for a
+    /// stale claim.
+    ///
+    /// `docs/12-TESTING.md §1.2`: **an assertion about an absence passes for free.** "There is no
+    /// `refresh_guard` entry" holds against a function that returned an empty list, against one that
+    /// never ran, and against a renamed prefix. So each iteration asserts, in the same run, that the
+    /// stages which really are stubs *are* still announced — and all five modes are covered because
+    /// the removed line sat after the DLP branch, where an edit could restore it for one posture
+    /// only.
     #[test]
-    fn the_unwired_refresh_guard_is_announced_whatever_dlp_is_doing() {
+    fn the_refresh_guard_is_no_longer_announced_in_any_dlp_posture() {
         for mode in [
             DlpMode::Disabled,
             DlpMode::Monitor,
@@ -1117,11 +1123,18 @@ mod tests {
             DlpMode::Enforce,
         ] {
             let stages = unenforcing_stages(mode);
-            let entry = stages
-                .iter()
-                .find(|stage| stage.starts_with(REFRESH_GUARD_STAGE))
-                .unwrap_or_else(|| panic!("{mode}: every refresh is permitted and must be said"));
-            assert!(entry.contains("permitted"), "{entry}");
+            assert!(
+                !stages.iter().any(|stage| stage.starts_with("refresh_guard")),
+                "{mode}: refresh re-evaluates conditional access, so announcing it as unenforcing \
+                 would be a lie: {stages:?}"
+            );
+            // The positive control for that absence, in the same run.
+            assert!(
+                stages.iter().any(|stage| stage.starts_with("retention")),
+                "{mode}: the genuinely unconfigured stages must still be announced, or the \
+                 assertion above holds against an empty list"
+            );
+            assert!(stages.iter().any(|stage| stage.starts_with("classification")), "{mode}");
         }
     }
 
