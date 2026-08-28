@@ -171,13 +171,19 @@ pub fn router(state: ApiState, delivery: Delivery) -> Router {
         // reason is no longer the one `ENC-692` recorded. The tenant is now available on an
         // unauthenticated route: `enclave_db::resolve_routed_tenant` resolves a verified custom
         // domain and a slug (`ENC-686`), `main.rs` configures the platform URL it needs, and the
-        // `RoutedTenant` extractor is already how `POST /auth/login` gets a tenant. What blocks it
-        // is `ENC-879`: a redemption arrives with **no principal** the policy chain can name — there
-        // is no `Actor` variant for a link's bearer, no `acl_entries.principal_type` that could hold
-        // one, and `ResourceKind::Share` is an unsupported target — so `enforce` can only deny, for
-        // every caller. Registering a route that refuses every redemption is the ENC-170 shape this
-        // router already refuses to have, and a denial rendered as anything but `404` would confirm
-        // to an anonymous caller that the token is live (rule 7).
+        // `RoutedTenant` extractor is already how `POST /auth/login` gets a tenant. Nor is it
+        // `ENC-879` any more: the chain has an `Actor::LinkBearer`, `acl_entries` has a `SHARE_LINK`
+        // principal kind, `ResourceKind::Share` has a real target, and `enforce` returns a real
+        // allow for a redemption with the audit row naming the link.
+        //
+        // What blocks it now is **`ENC-694`**, and it is about the link rather than the caller: a
+        // link's password, OTP, MFA requirement and audience are stored and enforced by nothing, so
+        // a route registered today would authorise the redemption *correctly* and hand out access
+        // past every demand the link states. That is a worse failure than a `503`, because it is
+        // invisible. `ENC-896` is the second prerequisite — nothing writes the `SHARE_LINK` row when
+        // a link is minted, so every link would resolve to `NotGranted` and the route would be the
+        // ENC-170 shape for a different reason. A denial rendered as anything but `404` would
+        // confirm to an anonymous caller that the token is live (rule 7).
         // `crates/api/src/routes/shares.rs` carries the argument and the tests that hold it.
         .route("/api/v1/files/{id}/shares", get(routes::shares::list).post(routes::shares::create))
         .route("/api/v1/shares/{id}", patch(routes::shares::update).delete(routes::shares::revoke))

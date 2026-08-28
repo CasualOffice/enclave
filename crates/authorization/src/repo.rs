@@ -103,6 +103,32 @@ SELECT w.root_id, 'WORKSPACE', l.workspace_id, w.depth + 2, FALSE, FALSE
  ORDER BY 1, 4
 ";
 
+/// What each of a batch of share links points at (`ENC-879`).
+///
+/// A share link has no ACL of its own — `acl_entries.resource_type` has no `SHARE` value — because
+/// the permission that governs a link is the permission on the thing it exposes. So resolving a
+/// `ResourceKind::Share` reference means one extra hop: find the link's target, then walk *that*.
+///
+/// **Revoked and expired links resolve to nothing.** They are excluded here rather than compared
+/// afterwards, so a caller asking about a dead link gets an empty chain and therefore a refusal, on
+/// the same footing as a link that never existed (`CLAUDE.md` rule 7). This is *not* the redemption
+/// path's liveness check — that one lives in the `WHERE` clause of the `UPDATE` that spends the
+/// budget (`enclave_sharing::redeem`), because only a check inside the spending statement is safe
+/// under concurrency. This one exists so that an authorization question about a revoked link cannot
+/// come back `ALLOW`.
+///
+/// `expires_at` is compared against a bound instant rather than `now()` so that every stage of one
+/// request judges the link against the same moment, which is the argument `effective_actions_in_tx`
+/// makes for taking `now` as an argument at all.
+const SHARE_TARGET_SQL: &str = "
+SELECT s.id AS share_id, s.resource_type, s.resource_id
+  FROM share_links s
+ WHERE s.tenant_id = $1
+   AND s.id = ANY($2::uuid[])
+   AND s.revoked_at IS NULL
+   AND (s.expires_at IS NULL OR s.expires_at > $3)
+";
+
 /// A library's own chain: itself, then its workspace if it inherits.
 const LIBRARY_CHAIN_SQL: &str = "
 SELECT l.id AS root_id, l.workspace_id, l.inherit_permissions AS inherits
@@ -147,6 +173,15 @@ SELECT DISTINCT group_id FROM closure
 /// principal and expiry tests on what comes back, so a mistake here costs bytes rather than
 /// correctness.
 ///
+/// `$9` is [`PrincipalSet::matched_by_everyone`], and it is the one clause here that is *not*
+/// merely a prefilter. `ENC-879`: a share-link bearer is deliberately outside "everyone in this
+/// tenant", so an `EVERYONE` row must not reach it. The rule is re-applied in
+/// [`crate::resolve::PrincipalSet::matches`] as this module's header promises, and it is written
+/// twice on purpose — deleting either one must leave the other refusing, because a tenant-wide grant
+/// silently reaching a link bearer would extend every link into every internally-shared resource in
+/// the tenant. It is a bound predicate rather than two SQL strings so that the two paths cannot
+/// drift in anything but this one boolean.
+///
 /// `action = ANY($2)` rather than `action = $2` because the cost of resolution is ~80% fixed
 /// (ENC-145, `tests/authorize_many_cost.rs`): a transaction and three round trips, plus about
 /// 0.03 ms per extra candidate. Asking about ten actions in ten calls therefore costs ten times a
@@ -164,7 +199,7 @@ SELECT a.resource_type, a.resource_id, a.principal_type, a.principal_id, a.actio
    AND a.action = ANY($2::text[])
    AND (a.expires_at IS NULL OR a.expires_at > $5)
    AND (
-         a.principal_type = 'EVERYONE'
+         (a.principal_type = 'EVERYONE' AND $9)
       OR (a.principal_type = $6 AND a.principal_id = $7)
       OR (a.principal_type = 'GROUP' AND a.principal_id = ANY($8::uuid[]))
    )
@@ -239,6 +274,50 @@ pub async fn file_chains(
     }
 
     Ok(chains)
+}
+
+/// What each of a batch of live share links points at, as an ACL chain node (`ENC-879`).
+///
+/// Links absent from the returned map are unknown, revoked, expired, or in another tenant — four
+/// states this deliberately does not distinguish. See [`SHARE_TARGET_SQL`].
+///
+/// A row whose `resource_type` this release does not recognise is a **refusal**, not an error and
+/// not a guess: the same argument [`crate::resolve::AclResourceType::parse`] makes. `SHARE` is not
+/// one of the values, so a link pointing at another link resolves to nothing rather than recursing.
+///
+/// # Errors
+///
+/// Storage failures and unreadable rows.
+pub async fn share_targets(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    ids: &[Uuid],
+    now: DateTime<Utc>,
+) -> Result<HashMap<Uuid, ChainNode>> {
+    if ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let rows = sqlx::query(SHARE_TARGET_SQL)
+        .bind(tenant.as_uuid())
+        .bind(ids)
+        .bind(now)
+        .fetch_all(&mut *conn)
+        .await?;
+
+    let mut targets = HashMap::new();
+    for row in &rows {
+        let share: Uuid = column(row, "share_id")?;
+        let kind: String = column(row, "resource_type")?;
+        let resource: Uuid = column(row, "resource_id")?;
+        // `share_links.resource_type` spells `LIBRARY`, `FOLDER` and `FILE`, which are three of
+        // `AclResourceType`'s seven. An unrecognised value drops the link from the map and is
+        // therefore a refusal.
+        if let Some(kind) = AclResourceType::parse(&kind) {
+            let _replaced = targets.insert(share, ChainNode::new(kind, resource));
+        }
+    }
+    Ok(targets)
 }
 
 /// Collects the chains of a batch of libraries.
@@ -417,6 +496,7 @@ pub async fn acl_entries_by_action(
         .bind(direct.kind.as_str())
         .bind(direct.id)
         .bind(&groups)
+        .bind(principals.matched_by_everyone())
         .fetch_all(&mut *conn)
         .await?;
 

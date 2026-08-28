@@ -584,9 +584,16 @@ fn actor_type(actor: Actor) -> Result<&'static str, AuthError> {
         Actor::User(_) => Ok("USER"),
         Actor::Guest(_) => Ok("GUEST"),
         Actor::ServiceAccount(_) => Ok("SERVICE_ACCOUNT"),
-        Actor::McpClient(_) | Actor::System => Err(AuthError::Configuration(
-            "refresh_tokens.actor_type cannot hold an MCP client or the system actor",
-        )),
+        // `ENC-879`: a link bearer joins the two that were already refused, for a stronger reason
+        // than the column's `CHECK`. A refresh family outlives the link — fourteen days against a
+        // link that can be revoked in a second — so a redemption that acquired one would be a share
+        // link converted into a session that revoking the link no longer closes.
+        Actor::McpClient(_) | Actor::LinkBearer(_) | Actor::System => {
+            Err(AuthError::Configuration(
+                "refresh_tokens.actor_type cannot hold an MCP client, a share-link bearer or the \
+                 system actor",
+            ))
+        }
     }
 }
 
@@ -609,6 +616,10 @@ fn actor_id(actor: Actor) -> Uuid {
         Actor::Guest(id) => id.as_uuid(),
         Actor::ServiceAccount(id) => id.as_uuid(),
         Actor::McpClient(id) => id.as_uuid(),
+        // The link's own id. Unreachable in practice — `actor_type` above refuses the kind before
+        // this is called — but the honest value rather than a nil sentinel, because the two
+        // functions are read together and a sentinel here would suggest the column can hold one.
+        Actor::LinkBearer(id) => id.as_uuid(),
         Actor::System => Uuid::nil(),
     }
 }

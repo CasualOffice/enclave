@@ -26,7 +26,7 @@ use enclave_auth::{AccessTokenIssuer, Acr, AuthMethod, KeySet, PrivateSigningKey
 use enclave_authorization::PgAclAuthorization;
 use enclave_core::{
     Action, Actor, ClientType, Error, FileAction, FileId, GuestId, LibraryId, PolicyEngine,
-    RequestContext, ResourceKind, ResourceRef, ShareAction, TenantId, UserId, WorkspaceId,
+    RequestContext, ResourceRef, ShareAction, ShareLinkId, TenantId, UserId, WorkspaceId,
 };
 use enclave_db::{sql, DbPool, TenantScoped};
 use enclave_sharing::{redeem, ShareToken, SharingError};
@@ -36,6 +36,12 @@ use tower::ServiceExt as _;
 
 const ISSUER: &str = "https://enclave.test";
 const AUDIENCE: &str = "enclave-api";
+
+/// `PolicyDecision` and `Obligations` are both `#[must_use]` (`CLAUDE.md` rule 8), so an allow in a
+/// test has to be discharged rather than dropped — a test that dropped one would be a test that
+/// ignored a demand the chain made. Every stage in this fixture is `Unconfigured` or `Disabled`, so
+/// an obligation appearing at all means a stage has started deciding and the test should say so.
+const NO_OBLIGATION: &str = "no stage in this fixture issues an obligation";
 
 // ---------------------------------------------------------------------------------------------
 // Harness
@@ -64,11 +70,12 @@ async fn harness(db: &TestDb) -> Harness {
 
 /// The chain the routes above run behind, built separately so a test can ask it a question directly.
 ///
-/// Extracted for [`the_chain_can_authorize_no_principal_a_redemption_could_present`], which is about
-/// what the chain *decides* rather than about what a route answers. Asking a differently-composed
-/// engine would prove nothing about the endpoints, so there is one composition and both callers get
-/// it — in particular the real [`PgAclAuthorization`], because the whole question is what the ACL
-/// resolver does with a principal that is not in it.
+/// Extracted for the `ENC-879` tests below, which are about what the chain *decides* rather than
+/// about what a route answers — the redemption route is deliberately not registered, so there is no
+/// endpoint to ask. Asking a differently-composed engine would prove nothing about the endpoints
+/// that *are* registered, so there is one composition and every caller gets it — in particular the
+/// real [`PgAclAuthorization`], because the whole question is what the ACL resolver does with a
+/// principal that was not in it until now.
 async fn policy_engine(db: &TestDb) -> PolicyEngine {
     let authz_pool = db.pool().await.expect("authorization pool");
     let audit_pool = db.pool().await.expect("audit pool");
@@ -148,6 +155,9 @@ async fn call(
 struct Spine {
     tenant: TenantId,
     file: FileId,
+    /// The library above the file, so a test can place an `EVERYONE` grant on an *ancestor* rather
+    /// than on the file itself — which is how a tenant-wide grant is actually written.
+    library: LibraryId,
 }
 
 async fn spine(conn: &mut PgConnection, tenant: TenantId, owner: UserId, slug: &str) -> Spine {
@@ -206,7 +216,7 @@ async fn spine(conn: &mut PgConnection, tenant: TenantId, owner: UserId, slug: &
     .await
     .expect("insert file");
 
-    Spine { tenant, file }
+    Spine { tenant, file, library }
 }
 
 async fn grant(conn: &mut PgConnection, spine: Spine, user: UserId, action: Action) {
@@ -506,107 +516,146 @@ async fn another_tenants_share_token_is_indistinguishable_from_one_that_was_neve
     assert_eq!(listed["items"][0]["downloadCount"], 1);
 }
 
-/// `ENC-879` — the blocker on `GET /shares/{token}` that `ENC-692`'s row does not name.
+/// `ENC-879`, and **the rewrite of `the_chain_can_authorize_no_principal_a_redemption_could_present`**.
 ///
-/// `ENC-692` says the route cannot be registered because no connection can resolve a token to a
-/// tenant. **Both halves of that are now false**: `enclave_db::resolve_routed_tenant` resolves a
-/// verified custom domain and a slug (`ENC-686`, `migrations/0026`), `crates/api/src/main.rs`
-/// configures `database.platform_url`, and `RoutedTenant` has been an extractor since `ENC-685`. So
-/// the tenant is available and the token resolves under `TenantScoped` — which is what the test
-/// above proves, from both sides.
+/// # What this test used to assert, and why the inversion is the deliverable
 ///
-/// What is left is a third blocker, and it is in the chain rather than in the connection. A
-/// redemption arrives with **no principal**: `enclave_core::Actor` has no variant for the bearer of
-/// a link, `acl_entries.principal_type` has no kind that could name one (`USER`, `GROUP`, `GUEST`,
-/// `SERVICE_ACCOUNT`, `EVERYONE`), and `enclave_authorization::classify` maps
-/// `ResourceKind::Share` to an unsupported target. So `PolicyEngine::enforce` — which `CLAUDE.md`
-/// rule 1 requires the handler to call — has no answer but `deny`, for every principal a redemption
-/// could honestly present. A registered route would therefore refuse every redemption, which is
-/// `ENC-170`'s shape; and rendering that denial as anything but `404` would tell an anonymous
-/// caller that the token is live (rule 7).
+/// It asserted the *absence*. `PolicyEngine::enforce` could not return an allow for any caller a
+/// redemption could construct: `enclave_core::Actor` had no variant for the bearer of a link,
+/// `acl_entries.principal_type` admitted five kinds and none of them named one,
+/// `enclave_authorization::classify` mapped `ResourceKind::Share` to an unsupported target, and
+/// `PrincipalSet::for_actor` returned `None` for everything that was not a user, a guest or a
+/// service account. A registered `GET /shares/{token}` would therefore have refused every
+/// redemption, which is `ENC-170`'s shape.
+///
+/// It is **rewritten rather than deleted** because every leg it carried is still a live question,
+/// and three of them still have the same answer. What changed is that the chain now has a fourth
+/// answer available — `Actor::LinkBearer(ShareLinkId)`, matched by a `SHARE_LINK` `acl_entries` row
+/// (`migrations/0027`) — and the shortcuts below have to *stay* refused precisely because it exists.
+/// The fabricated `GuestId` leg is the one that changed meaning: the link's id is now a real
+/// principal identifier, so only the kind comparison in `PrincipalSet::matches` separates a link
+/// bearer from a guest nobody provisioned. That is the difference between an audit row that names
+/// the link and one that names a guest who does not exist.
 ///
 /// # What each leg proves, and which layer holds it
 ///
-/// This is the **policy-chain** layer throughout — not row-level security, and not a query
-/// predicate. Every leg runs in `tenant-alpha`'s own scope against `tenant-alpha`'s own file, so
-/// RLS hides nothing from any of them: the only thing that can produce a refusal here is the
-/// authorization stage's verdict on the principal. That is deliberate, because the cross-tenant
-/// property is already held by the test above, where RLS *is* the mechanism.
+/// The **policy chain** throughout — not row-level security, and not a query predicate. Every leg
+/// runs in `tenant-alpha`'s own scope against `tenant-alpha`'s own file, so RLS hides nothing from
+/// any of them and the authorization stage's verdict on the principal is the only thing that can
+/// produce a refusal. That is deliberate: the cross-tenant property is held by the test above, where
+/// RLS *is* the mechanism.
 ///
-/// The first assertion is the positive control and it runs first: the same action, the same
-/// resource and the same engine **allow** for a principal the ACL names. Without it, "the chain
-/// refused" is satisfied by an engine that refuses everything, a fixture whose grants never landed,
-/// or a resource reference that points at nothing.
+/// The positive control still runs **first**, and it is now the link bearer's own — because "the
+/// chain refused a redemption" was satisfied for free by the chain this rewrite replaces.
 #[tokio::test]
 #[ignore = "requires a live PostgreSQL; CI runs it with --include-ignored"]
-async fn the_chain_can_authorize_no_principal_a_redemption_could_present() {
+async fn the_chain_authorizes_the_link_bearer_a_redemption_presents() {
     let (db, fixtures, _pool, alpha, _beta) = setup().await;
     let harness = harness(&db).await;
     let policy = policy_engine(&db).await;
 
     // A real link, minted through the real endpoint, so the id below names a link that exists and
     // the question is about the principal rather than about a fabricated row.
-    let (status, created) = call(
-        &harness,
-        alpha.tenant,
-        fixtures.alpha.member,
-        "POST",
-        &format!("/api/v1/files/{}/shares", alpha.file),
-        // `INTERNAL`, because the fixture grants `file.share` and not `file.share_external`, and
-        // because the audience makes no difference to what follows: the chain's answer turns on the
-        // principal, and an `ANYONE` link would be refused by the same stage for the same reason.
-        Some(share_body("INTERNAL")),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED, "{created}");
-    let link_id: uuid::Uuid =
-        created["id"].as_str().expect("id").parse().expect("the endpoint returned a uuid");
+    //
+    // `INTERNAL`, because the fixture grants `file.share` and not `file.share_external`, and because
+    // the audience makes no difference to what follows: the chain's answer turns on the principal,
+    // and an `ANYONE` link would be decided by the same stage in the same way.
+    let link = mint(&harness, alpha, fixtures.alpha.member, "INTERNAL").await;
 
-    // The pair a redemption would ask: `share.read` — *inspect an existing share* — against the
-    // resource the link exposes, because `governing_resource` already establishes that the
-    // permission governing a link is the permission on its target.
-    const READ: Action = Action::Share(ShareAction::Read);
+    // The row that could not exist before this change. `file.preview` rather than `share.read`
+    // because it is what a redemption actually wants — to see the document — and because pairing it
+    // with a refused `file.download` below is `CLAUDE.md` rule 6 on the redemption path.
+    let mut admin = db.connect().await.expect("admin connection");
+    grant_to_link(&mut admin, alpha, link.id, Action::File(FileAction::Preview)).await;
+    let _ignored = sqlx::Connection::close(admin).await;
+
     let target = ResourceRef::file(alpha.tenant, alpha.file);
+    let bearer = bearer_ctx(alpha.tenant, link.id);
 
-    // The positive control, first and in the same run.
-    let mut named = RequestContext::system(alpha.tenant);
-    named.actor = Actor::User(fixtures.alpha.member);
-    let allowed = policy.enforce(&named, READ, &target).await;
+    // ---- The control, first. The chain allows the principal a redemption presents. -------------
+    policy
+        .enforce(&bearer, Action::File(FileAction::Preview), &target)
+        .await
+        .expect("the chain must be able to allow the principal a redemption presents")
+        .into_obligations()
+        .is_empty()
+        .then_some(())
+        .expect(NO_OBLIGATION);
+
+    // ---- The grant is one action, not a status. ------------------------------------------------
+    // Without this leg the control is satisfied by a chain that allows a link bearer anything once
+    // any row exists, and preview-versus-download is the rule that would go first.
+    let denied = policy.enforce(&bearer, Action::File(FileAction::Download), &target).await;
     assert!(
-        allowed.is_ok(),
-        "the chain refused a principal the ACL names, so every refusal below proves nothing: \
-         {allowed:?}"
+        matches!(denied, Err(Error::PolicyDenied { .. })),
+        "a preview grant must not carry download: {denied:?}"
     );
 
-    // And every principal a redemption could present is refused. Each is a shortcut somebody could
-    // reach for, named so that the refusal is legible as a decision rather than as an accident.
+    // ---- The shortcuts are still refused, and now they have to be. -----------------------------
+    // Each is something somebody could reach for instead of the variant, and each is refused for a
+    // reason worth stating rather than as an accident of there being no matching row.
     for (shortcut, actor) in [
-        ("the System actor a handler holding no principal would build", Actor::System),
         (
-            "a GuestId fabricated from the link's own id — which would also write that id into the \
-             audit row as though a guest had acted",
-            Actor::Guest(GuestId::from_uuid(link_id)),
+            "the System actor a handler holding no principal would build — `PrincipalSet::for_actor` \
+             still returns `None` for it, so it cannot even fall through to EVERYONE",
+            Actor::System,
+        ),
+        (
+            "a GuestId fabricated from the link's own id. This is the leg the design turns on: that \
+             id is now a real principal identifier, so only the kind comparison in \
+             `PrincipalSet::matches` separates a link bearer from a guest nobody provisioned — and \
+             a fabricated guest would write a false actor into the audit row",
+            Actor::Guest(GuestId::from_uuid(link.id.as_uuid())),
         ),
         ("a UserId nothing in the directory names", Actor::User(UserId::new_v7())),
+        (
+            "the bearer of a different link, so one SHARE_LINK row is not a grant to share links in \
+             general",
+            Actor::LinkBearer(ShareLinkId::new_v7()),
+        ),
     ] {
         let mut ctx = RequestContext::system(alpha.tenant);
         ctx.actor = actor;
-        let decision = policy.enforce(&ctx, READ, &target).await;
+        let decision = policy.enforce(&ctx, Action::File(FileAction::Preview), &target).await;
         assert!(
             matches!(decision, Err(Error::PolicyDenied { .. })),
             "the chain authorized {shortcut}, so a redemption could be built on it: {decision:?}"
         );
     }
 
-    // Asking about the *link* instead of its target is not a way round it. `classify` calls
-    // `ResourceKind::Share` unsupported — share links carry no `acl_entries` rows — so even the
-    // principal the control just proved is granted is refused here.
-    let link = ResourceRef::new(alpha.tenant, ResourceKind::Share, link_id);
-    let on_the_link = policy.enforce(&named, READ, &link).await;
+    // ---- The audit row names the link, honestly. -----------------------------------------------
+    // `CLAUDE.md` rule 10, and the reason an `Actor` variant was added rather than a `GuestId`
+    // fabricated: a fabricated principal writes a *false* actor into the one table an investigation
+    // depends on. The `Guest` leg above is the same claim from the other side.
+    let rows = audit_actors(&db, alpha.tenant).await;
+    let allowed = rows
+        .iter()
+        .find(|(kind, _, action, outcome)| {
+            kind == "share_link" && action == "file.preview" && outcome == "ALLOW"
+        })
+        .expect(
+            "the redemption's allow must be audited as a share_link actor; a row attributing it to \
+             a user or to the system is the false-actor problem this design exists to avoid",
+        );
+    assert_eq!(
+        allowed.1,
+        Some(link.id.as_uuid()),
+        "the audit row must name *which* link was used — that is the first question an \
+         investigation asks, and a row without it records an event nobody can attribute"
+    );
     assert!(
-        matches!(on_the_link, Err(Error::PolicyDenied { .. })),
-        "the chain answered a question about a share object, so `ENC-879` may be narrower than \
-         this test claims: {on_the_link:?}"
+        rows.iter().any(|(kind, id, action, outcome)| kind == "share_link"
+            && *id == Some(link.id.as_uuid())
+            && action == "file.download"
+            && outcome == "DENY"),
+        "the denial must be audited too, and as the same link: {rows:?}"
+    );
+
+    // The token itself appears nowhere. It exists once, in the response that minted it.
+    assert!(!format!("{rows:?}").contains(&link.raw), "the raw token reached the audit trail");
+    assert!(
+        !row_dump(&db, &link.id.to_string()).await.contains(&link.raw),
+        "the raw token reached the share_links row"
     );
 }
 
@@ -1029,4 +1078,436 @@ async fn the_share_actions_are_not_implied_by_reading_the_file() {
     assert!(rows.iter().any(|(a, o)| a == "share.read" && o == "DENY"), "{rows:?}");
     assert!(rows.iter().any(|(a, o)| a == "share.update" && o == "DENY"), "{rows:?}");
     assert!(rows.iter().any(|(a, o)| a == "share.revoke" && o == "DENY"), "{rows:?}");
+}
+
+// ---------------------------------------------------------------------------------------------
+// `ENC-879` — the chain can authorize the one principal a redemption can present
+//
+// The redemption **route is deliberately not registered**, and these tests call
+// `PolicyEngine::enforce` directly for that reason. `ENC-694` is still open: a link's password,
+// OTP, MFA requirement and audience are enforced by nothing, so an endpoint that authorised a
+// redemption today would hand out access past every demand the link states. This task makes the
+// chain *able to express* a link bearer; `ENC-694` makes the link's own conditions real; only then
+// does `ENC-692` register `GET /shares/{token}`.
+// ---------------------------------------------------------------------------------------------
+
+/// The link, and the raw token, minted through the real endpoint.
+struct MintedLink {
+    id: ShareLinkId,
+    raw: String,
+}
+
+async fn mint(harness: &Harness, spine: Spine, member: UserId, audience: &str) -> MintedLink {
+    let (status, created) = call(
+        harness,
+        spine.tenant,
+        member,
+        "POST",
+        &format!("/api/v1/files/{}/shares", spine.file),
+        Some(share_body(audience)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    MintedLink {
+        id: created["id"].as_str().expect("id").parse().expect("a ShareLinkId"),
+        raw: created["token"].as_str().expect("token").to_owned(),
+    }
+}
+
+/// Grants an action on a spine's file to the bearer of one link.
+///
+/// This is the row that could not exist before `ENC-879`: `acl_entries.principal_type` admitted
+/// five kinds and none of them was *the bearer of this link*, so `migrations/0027` is what makes
+/// this `INSERT` succeed rather than raise a `CHECK` violation.
+async fn grant_to_link(conn: &mut PgConnection, spine: Spine, link: ShareLinkId, action: Action) {
+    sqlx::query(
+        "INSERT INTO acl_entries
+           (id, tenant_id, resource_type, resource_id, principal_type, principal_id, action,
+            effect, granted_by, granted_at, expires_at)
+         VALUES ($1, $2, 'FILE', $3, 'SHARE_LINK', $4, $5, 'ALLOW', $6, $7, NULL)",
+    )
+    .bind(uuid::Uuid::new_v4())
+    .bind(sql(spine.tenant))
+    .bind(sql(spine.file))
+    .bind(link.as_uuid())
+    .bind(action.to_string())
+    .bind(uuid::Uuid::nil())
+    .bind(Utc::now())
+    .execute(&mut *conn)
+    .await
+    .expect("insert a SHARE_LINK acl entry");
+}
+
+/// A tenant-wide `EVERYONE` grant on the spine's *library*, which every member of the tenant holds.
+async fn grant_to_everyone(conn: &mut PgConnection, spine: Spine, action: Action) {
+    sqlx::query(
+        "INSERT INTO acl_entries
+           (id, tenant_id, resource_type, resource_id, principal_type, principal_id, action,
+            effect, granted_by, granted_at, expires_at)
+         VALUES ($1, $2, 'LIBRARY', $3, 'EVERYONE', NULL, $4, 'ALLOW', $5, $6, NULL)",
+    )
+    .bind(uuid::Uuid::new_v4())
+    .bind(sql(spine.tenant))
+    .bind(sql(spine.library))
+    .bind(action.to_string())
+    .bind(uuid::Uuid::nil())
+    .bind(Utc::now())
+    .execute(&mut *conn)
+    .await
+    .expect("insert an EVERYONE acl entry");
+}
+
+/// The context a redemption would build: the tenant established by routing, and the *link* as the
+/// principal.
+///
+/// `RequestContext::system` is the starting point only because it is the one constructor that fills
+/// the network and device fields with the weakest possible values, which is exactly right here —
+/// nothing about a redemption is evidence of anything. The actor is then the link.
+fn bearer_ctx(tenant: TenantId, link: ShareLinkId) -> RequestContext {
+    let mut ctx = RequestContext::system(tenant);
+    ctx.actor = Actor::LinkBearer(link);
+    ctx.client = ClientType::Web;
+    ctx
+}
+
+fn member_ctx(tenant: TenantId, user: UserId) -> RequestContext {
+    let mut ctx = RequestContext::system(tenant);
+    ctx.actor = Actor::User(user);
+    ctx.client = ClientType::Web;
+    ctx
+}
+
+/// Every audit row's actor, action and outcome, so a test can assert *who* a row names.
+type AuditActor = (String, Option<uuid::Uuid>, String, String);
+
+async fn audit_actors(db: &TestDb, tenant: TenantId) -> Vec<AuditActor> {
+    let mut conn = db.connect().await.expect("connect");
+    sqlx::query_as(
+        "SELECT actor_type, actor_id, action, outcome FROM audit_events
+          WHERE tenant_id = $1 ORDER BY sequence",
+    )
+    .bind(sql(tenant))
+    .fetch_all(&mut conn)
+    .await
+    .expect("read audit rows")
+}
+
+/// `ENC-879`, and the decision most worth disagreeing with in review.
+///
+/// An `EVERYONE` grant is how *"all staff may read the handbook library"* is written. It must not
+/// silently become *"and so may anyone holding any share link into this tenant"*.
+///
+/// Three legs, and the first is the control for the second:
+///
+/// * the identical `EVERYONE` row grants an ordinary member — so the row is live and the fixture is
+///   not simply broken;
+/// * it does not grant the link bearer;
+/// * the link bearer is nonetheless allowed through its *own* row — so the refusal is about
+///   `EVERYONE` and not about the principal being unable to hold any permission at all.
+///
+/// **Which layer holds it: the chain**, in two places — `PrincipalSet::matches` and the `WHERE`
+/// clause of `repo::acl_entries_by_action`. Not row-level security, which cannot tell two
+/// principals of one tenant apart, and not the migration, which only makes the `SHARE_LINK` row
+/// storable. Both legs run inside `tenant-alpha`, so RLS is satisfied throughout and has nothing to
+/// contribute either way.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL; CI runs it with --include-ignored"]
+async fn a_tenant_wide_grant_does_not_reach_a_share_link_bearer() {
+    let (db, fixtures, _pool, alpha, _beta) = setup().await;
+    let harness = harness(&db).await;
+    let policy = policy_engine(&db).await;
+
+    let link = mint(&harness, alpha, fixtures.alpha.member, "INTERNAL").await;
+
+    let mut admin = db.connect().await.expect("admin connection");
+    grant_to_everyone(&mut admin, alpha, Action::File(FileAction::Download)).await;
+    grant_to_link(&mut admin, alpha, link.id, Action::File(FileAction::Preview)).await;
+    let _ignored = sqlx::Connection::close(admin).await;
+
+    let file = ResourceRef::file(alpha.tenant, alpha.file);
+
+    // Leg 1 — the control. `EVERYONE` reaches a member of this tenant. The `viewer` fixture holds
+    // no grant of its own on this file, so if this fails the row is simply not working.
+    let member = member_ctx(alpha.tenant, fixtures.alpha.viewer);
+    policy
+        .enforce(&member, Action::File(FileAction::Download), &file)
+        .await
+        .expect("an EVERYONE grant must reach a member of the tenant")
+        .into_obligations()
+        .is_empty()
+        .then_some(())
+        .expect(NO_OBLIGATION);
+
+    // Leg 2 — the finding. The same row does not reach the link bearer.
+    let bearer = bearer_ctx(alpha.tenant, link.id);
+    let refused = policy.enforce(&bearer, Action::File(FileAction::Download), &file).await;
+    assert!(
+        matches!(refused, Err(Error::PolicyDenied { .. })),
+        "an EVERYONE grant reached a share-link bearer, which would extend every link in this \
+         tenant to everything the tenant shares internally: {refused:?}"
+    );
+
+    // Leg 3 — the bearer is not simply unable to hold anything. Its own row still grants.
+    policy
+        .enforce(&bearer, Action::File(FileAction::Preview), &file)
+        .await
+        .expect("the link's own SHARE_LINK row must still grant it")
+        .into_obligations()
+        .is_empty()
+        .then_some(())
+        .expect(NO_OBLIGATION);
+}
+
+/// `ENC-879` and `CLAUDE.md` rule 7, on the redemption principal.
+///
+/// A link that never existed, a revoked one, an expired one and another tenant's must all be one
+/// answer. The test says **which layer** holds each, because "it refused" and "the right thing
+/// refused" are different claims and this repository has repeatedly found the second to be false
+/// while the first was true.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL; CI runs it with --include-ignored"]
+async fn every_unusable_link_is_the_same_answer_as_one_that_never_existed() {
+    let (db, fixtures, _pool, alpha, beta) = setup().await;
+    let harness = harness(&db).await;
+    let policy = policy_engine(&db).await;
+
+    let live = mint(&harness, alpha, fixtures.alpha.member, "INTERNAL").await;
+    let revoked = mint(&harness, alpha, fixtures.alpha.member, "INTERNAL").await;
+    let expired = mint(&harness, alpha, fixtures.alpha.member, "INTERNAL").await;
+    let betas = mint(&harness, beta, fixtures.beta.member, "INTERNAL").await;
+
+    let mut admin = db.connect().await.expect("admin connection");
+    for link in [&live, &revoked, &expired] {
+        grant_to_link(&mut admin, alpha, link.id, Action::File(FileAction::Preview)).await;
+    }
+    // Beta's link is granted preview on *beta's* file, so the cross-tenant leg below presents a
+    // link that genuinely works somewhere — not one that would have been refused anyway.
+    grant_to_link(&mut admin, beta, betas.id, Action::File(FileAction::Preview)).await;
+
+    sqlx::query("UPDATE share_links SET revoked_at = $2 WHERE id = $1")
+        .bind(revoked.id.as_uuid())
+        .bind(Utc::now())
+        .execute(&mut admin)
+        .await
+        .expect("revoke");
+    sqlx::query("UPDATE share_links SET expires_at = $2 WHERE id = $1")
+        .bind(expired.id.as_uuid())
+        .bind(Utc::now() - Duration::hours(1))
+        .execute(&mut admin)
+        .await
+        .expect("expire");
+    let _ignored = sqlx::Connection::close(admin).await;
+
+    let file = ResourceRef::file(alpha.tenant, alpha.file);
+    let preview = Action::File(FileAction::Preview);
+
+    // The control, first: the live link works. Every refusal below is measured against it.
+    policy
+        .enforce(&bearer_ctx(alpha.tenant, live.id), preview, &file)
+        .await
+        .expect("the live link must work, or nothing below distinguishes anything")
+        .into_obligations()
+        .is_empty()
+        .then_some(())
+        .expect(NO_OBLIGATION);
+
+    // Each of the four, asked about alpha's file inside alpha's tenant.
+    //
+    // **This is the leg that found a real defect.** The revoked and expired links were *allowed*
+    // on the first run: their `acl_entries` rows still named them, and nothing in the chain read
+    // `share_links.revoked_at`. `docs/12 §4.4` H4 requires revocation to close a link "including
+    // for an already-open session", and an authorization stage that answers `ALLOW` for a revoked
+    // credential is that requirement failing at the layer that decides. The fix is
+    // `AclResolver::link_principal_is_live`, which reads liveness in the same transaction as the
+    // decision — not a second write at revocation time, which could half-succeed.
+    //
+    // **Which layer holds each:** the *unknown* and *revoked/expired* legs are held by the chain
+    // alone — three of the four ids are alpha's own, so row-level security has nothing to say. The
+    // *cross-tenant* leg is held twice: `share_targets` carries an explicit `tenant_id = $1`
+    // predicate (layer 1) and runs on a `TenantScoped` connection where RLS excludes beta's row
+    // anyway (layer 2).
+    //
+    // **Deleting that predicate was tried and failed nothing here** — the tenth time this repository
+    // has found that shape. `migrations/0008` `FORCE`s a policy on `share_links`, so beta's row is
+    // invisible on a scoped connection whether or not the statement mentions a tenant. The layer-1
+    // half is therefore held by
+    // `acl_resolution::the_share_lookup_filters_by_tenant_without_help_from_row_level_security`,
+    // which asks the same question on a connection with RLS out of the way and *does* fail. This
+    // test proves isolation; it does not prove there are two layers of it.
+    let never = ShareLinkId::new_v7();
+    let cases: [(&str, ShareLinkId); 4] = [
+        ("a link that never existed", never),
+        ("a revoked link", revoked.id),
+        ("an expired link", expired.id),
+        ("another tenant's link", betas.id),
+    ];
+    for (what, id) in cases {
+        let outcome = policy.enforce(&bearer_ctx(alpha.tenant, id), preview, &file).await;
+        assert!(
+            matches!(outcome, Err(Error::PolicyDenied { .. })),
+            "{what} was not refused: {outcome:?}"
+        );
+    }
+
+    // Beta's link, asked about beta's own file, under **alpha's** tenant. Held by
+    // `PolicyEngine::enforce`'s stage-1 comparison — the application layer, before any query — and
+    // it is `NotFound` rather than a policy denial, because a `403` would confirm that beta's file
+    // exists (`CLAUDE.md` rule 7).
+    let cross = policy
+        .enforce(
+            &bearer_ctx(alpha.tenant, betas.id),
+            preview,
+            &ResourceRef::file(beta.tenant, beta.file),
+        )
+        .await;
+    assert!(
+        matches!(cross, Err(Error::NotFound)),
+        "a cross-tenant reference must be 404, never 403: {cross:?}"
+    );
+
+    // And beta's link *does* work inside beta, so the refusals above are about alpha's scope and
+    // not about beta's link being broken.
+    policy
+        .enforce(
+            &bearer_ctx(beta.tenant, betas.id),
+            preview,
+            &ResourceRef::file(beta.tenant, beta.file),
+        )
+        .await
+        .expect("beta's link must work in beta")
+        .into_obligations()
+        .is_empty()
+        .then_some(())
+        .expect(NO_OBLIGATION);
+}
+
+/// `ENC-879`. The chain can now be asked about the **link itself**, not only about the file.
+///
+/// `docs/05-API.md §10`'s `PATCH` and `DELETE` are operations on a link. Before this change
+/// `classify` mapped `ResourceKind::Share` to `Target::Unsupported`, so the chain denied every such
+/// question and `crates/api/src/routes/shares.rs` had to resolve the link's target by hand before
+/// asking. The resolver does it now: a share reference walks the ACL of whatever the link exposes.
+///
+/// The control is first. The refusal that follows is about the link being revoked, and the
+/// mechanism is `repo::share_targets`' liveness filter — **not** RLS, since both legs run inside
+/// alpha and differ only in `revoked_at`.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL; CI runs it with --include-ignored"]
+async fn a_share_reference_resolves_to_the_acl_of_what_the_link_exposes() {
+    let (db, fixtures, _pool, alpha, beta) = setup().await;
+    let harness = harness(&db).await;
+    let policy = policy_engine(&db).await;
+
+    let live = mint(&harness, alpha, fixtures.alpha.member, "INTERNAL").await;
+    let dead = mint(&harness, alpha, fixtures.alpha.member, "INTERNAL").await;
+
+    let mut admin = db.connect().await.expect("admin connection");
+    sqlx::query("UPDATE share_links SET revoked_at = $2 WHERE id = $1")
+        .bind(dead.id.as_uuid())
+        .bind(Utc::now())
+        .execute(&mut admin)
+        .await
+        .expect("revoke");
+    let _ignored = sqlx::Connection::close(admin).await;
+
+    // `setup` granted the member `share.update` on alpha's *file*. Asking about the *link* must
+    // reach the same row, because that is what "the permission that governs a link is the
+    // permission on the thing it exposes" means.
+    let member = member_ctx(alpha.tenant, fixtures.alpha.member);
+    policy
+        .enforce(
+            &member,
+            Action::Share(ShareAction::Update),
+            &ResourceRef::share(alpha.tenant, live.id),
+        )
+        .await
+        .expect("a share reference must resolve through the file the link points at")
+        .into_obligations()
+        .is_empty()
+        .then_some(())
+        .expect(NO_OBLIGATION);
+
+    // A revoked link resolves to nothing, so the same caller with the same grant is refused.
+    let refused = policy
+        .enforce(
+            &member,
+            Action::Share(ShareAction::Update),
+            &ResourceRef::share(alpha.tenant, dead.id),
+        )
+        .await;
+    assert!(
+        matches!(refused, Err(Error::PolicyDenied { .. })),
+        "a revoked link must resolve to nothing: {refused:?}"
+    );
+
+    // A link id from another tenant, asked inside alpha, is `PolicyDenied` and not an allow —
+    // held by the **query**, whose `tenant_id = $1` predicate is layer 1, with RLS behind it as
+    // layer 2. A reference that *names* beta's tenant is stage 1 of the engine, and is `NotFound`.
+    let betas = mint(&harness, beta, fixtures.beta.member, "INTERNAL").await;
+    let smuggled = policy
+        .enforce(
+            &member,
+            Action::Share(ShareAction::Update),
+            &ResourceRef::share(alpha.tenant, betas.id),
+        )
+        .await;
+    assert!(matches!(smuggled, Err(Error::PolicyDenied { .. })), "{smuggled:?}");
+    let named = policy
+        .enforce(
+            &member,
+            Action::Share(ShareAction::Update),
+            &ResourceRef::share(beta.tenant, betas.id),
+        )
+        .await;
+    assert!(matches!(named, Err(Error::NotFound)), "{named:?}");
+}
+
+/// `ENC-879`. A link bearer is not a token subject, at the mint and at the door.
+///
+/// If a signed access token could assert `typ: "share_link"`, then becoming a link bearer would be
+/// a matter of asking for a token instead of redeeming a link — skipping the password, the OTP, the
+/// MFA requirement and the audience the link states, which is the whole of `ENC-694`. The refusal
+/// is therefore at issuance *and* at verification, not merely "we never mint one".
+#[test]
+fn no_access_token_can_assert_the_share_link_actor_kind() {
+    let key = PrivateSigningKey::generate(Utc::now()).expect("generate signing key");
+    let now = Utc::now();
+    let template = TokenTemplate {
+        sub: ShareLinkId::new_v7().as_uuid(),
+        tid: TenantId::new_v7().as_uuid(),
+        sid: uuid::Uuid::new_v4(),
+        typ: enclave_core::ActorKind::ShareLink,
+        scp: Vec::new(),
+        amr: vec![AuthMethod::Pwd],
+        auth_time: now,
+        acr: Acr::SingleFactor,
+        dev: None,
+        cli: ClientType::Web,
+        epoch: 1,
+        max_cls: None,
+    };
+    let issuer = AccessTokenIssuer::new(ISSUER, AUDIENCE);
+    let refused = issuer.issue(&key, template.clone(), now, Duration::minutes(10));
+    assert!(
+        matches!(
+            refused,
+            Err(enclave_auth::AuthError::ActorKindNotATokenSubject {
+                kind: enclave_core::ActorKind::ShareLink
+            })
+        ),
+        "a share-link access token was minted: {refused:?}"
+    );
+
+    // The control: every other kind still mints, so the refusal is about this kind and not about
+    // `issue` having stopped working.
+    for kind in enclave_core::ActorKind::all() {
+        if *kind == enclave_core::ActorKind::ShareLink {
+            continue;
+        }
+        let candidate = TokenTemplate { typ: *kind, ..template.clone() };
+        assert!(
+            issuer.issue(&key, candidate, now, Duration::minutes(10)).is_ok(),
+            "{kind} stopped being issuable"
+        );
+    }
 }

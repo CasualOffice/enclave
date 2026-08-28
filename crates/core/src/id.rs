@@ -199,6 +199,21 @@ define_id! {
 }
 
 define_id! {
+    /// A share link (`share_links.id`).
+    ///
+    /// The identifier of the **link**, never of the token that opens it. `enclave_sharing` keeps
+    /// only a SHA-256 digest of the token and hands callers the row's id, so this is the one value
+    /// that can name a redemption in an ACL row, an audit row or a log line without any of them
+    /// carrying a live credential (`CLAUDE.md` rule 10).
+    ///
+    /// It exists as its own type rather than as the bare `Uuid` `ShareLink::id` carries because
+    /// [`Actor::LinkBearer`](crate::Actor::LinkBearer) puts it on a public boundary, and a bare
+    /// `Uuid` there would let a `FileId` — the very resource the link exposes — be passed as the
+    /// principal permitted to read it.
+    ShareLinkId
+}
+
+define_id! {
     /// A refresh-token family (`sid`).
     ///
     /// Correlation only — never a server-side session lookup. It exists so that audit can stitch a
@@ -267,6 +282,7 @@ mod tests {
             ChunkId,
             ClassificationId,
             DeviceId,
+            ShareLinkId,
             SessionId,
             RequestId,
         );

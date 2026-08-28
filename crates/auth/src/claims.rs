@@ -9,7 +9,7 @@ use chrono::{DateTime, TimeZone as _, Utc};
 use enclave_core::{
     Actor, ActorKind, AuthStrength, ClassificationRank, ClientType, DeviceContext, DevicePosture,
     GuestId, McpClientId, NetworkContext, RequestContext, RequestId, ScopeSet, ServiceAccountId,
-    SessionId, TenantId, UserId,
+    SessionId, ShareLinkId, TenantId, UserId,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -178,6 +178,15 @@ impl AccessTokenClaims {
                 Actor::ServiceAccount(ServiceAccountId::from_uuid(self.sub))
             }
             ActorKind::McpClient => Actor::McpClient(McpClientId::from_uuid(self.sub)),
+            // A share link is not a token subject, and this arm is *not* where that is enforced:
+            // [`AccessTokenIssuer::issue`] refuses to mint such a token and
+            // `AccessTokenVerifier::check_claims` refuses to accept one, so no
+            // [`VerifiedAccessToken`] can reach here holding this kind. This function is a pure
+            // projection of the claims — it says what the token says — and making it lie about a
+            // `typ` it was handed would move the refusal somewhere nobody can test it by name.
+            // `ENC-879`: a link bearer is established only by redeeming a token on the redemption
+            // path, never by presenting a JWT.
+            ActorKind::ShareLink => Actor::LinkBearer(ShareLinkId::from_uuid(self.sub)),
             // `System` has no subject; a token asserting one would be lying, and the identifier is
             // dropped rather than smuggled through.
             ActorKind::System => Actor::System,

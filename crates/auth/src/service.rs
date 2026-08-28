@@ -415,8 +415,18 @@ where
     }
 
     /// Whether this client is one that receives a refresh token at all.
+    ///
+    /// `Actor::LinkBearer` is in the exclusion list and it is the one that matters most (`ENC-879`):
+    /// a refresh family lasts fourteen days and survives the link being revoked, so a redemption
+    /// that came back with one would be a share link laundered into a session. A link bearer never
+    /// reaches this path in any case — `AccessTokenIssuer::issue` refuses to mint an access token
+    /// for the kind at all — but the exclusion is written here as well, because this function is
+    /// where somebody looks to answer "who gets fourteen days?".
     const fn issues_refresh_token(actor: Actor) -> bool {
-        !matches!(actor, Actor::ServiceAccount(_) | Actor::McpClient(_) | Actor::System)
+        !matches!(
+            actor,
+            Actor::ServiceAccount(_) | Actor::McpClient(_) | Actor::LinkBearer(_) | Actor::System
+        )
     }
 
     /// The response to a detected replay: destroy the family, then deny what it issued.

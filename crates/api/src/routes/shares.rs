@@ -22,24 +22,34 @@
 //! reason: the conclusion survived and its justification did not, and a justification that changed
 //! shape has to be argued again.
 //!
-//! What blocks the route now is `ENC-879`, and it is in the chain rather than in the connection.
-//! **A redemption arrives with no principal.** [`enclave_core::Actor`] has no variant for the bearer
-//! of a link; `acl_entries.principal_type` admits `USER`, `GROUP`, `GUEST`, `SERVICE_ACCOUNT` and
-//! `EVERYONE`, none of which can name one; `enclave_authorization::classify` maps
-//! [`enclave_core::ResourceKind::Share`] to an unsupported target, so a share object cannot be asked
-//! about either; and `PrincipalSet::for_actor` refuses [`Actor::System`] deliberately, precisely so
-//! that a principal the ACL model cannot talk about does not fall through to `EVERYONE`. So
-//! `PolicyEngine::enforce` — which `CLAUDE.md` rule 1 requires this handler to call — has no answer
-//! but `deny`, for every principal a redemption could honestly present.
+//! **`ENC-879` was the second reason, and it has now gone the same way.** It read: a redemption
+//! arrives with no principal, so [`enclave_core::Actor`] has no variant for the bearer of a link,
+//! `acl_entries.principal_type` has no kind that could name one, `classify` maps
+//! [`enclave_core::ResourceKind::Share`] to an unsupported target, and `PolicyEngine::enforce` — which
+//! `CLAUDE.md` rule 1 requires this handler to call — has no answer but `deny`. All four are fixed:
+//! `Actor::LinkBearer(ShareLinkId)`, a `SHARE_LINK` principal kind (`migrations/0027`), a real target
+//! for a share reference, and a `PrincipalSet` that a `SHARE_LINK` row matches and `EVERYONE`
+//! deliberately does not. `crates/api/tests/shares.rs` asserts an *allow* for the principal a
+//! redemption presents, with the audit row naming the link.
 //!
-//! Registering it anyway would refuse every redemption, which is `ENC-170`'s shape; and rendering
-//! that denial as anything but `404` would tell an anonymous caller that the token is live, which is
-//! rule 7. Both halves are asserted in `crates/api/tests/shares.rs`: the tenant half by a token
-//! minted in `tenant-alpha` and presented under `tenant-beta`'s scope, indistinguishable from one
-//! that was never minted because RLS makes the row invisible rather than because anything compares
-//! ids; and the principal half by
-//! `the_chain_can_authorize_no_principal_a_redemption_could_present`, which asks the real engine and
-//! carries its positive control in the same run.
+//! **What blocks it now is `ENC-694`, and it is about the link rather than about the caller.** A
+//! link's password, OTP, MFA requirement and audience are stored and enforced by nothing. A route
+//! registered today would therefore authorise the redemption *correctly* — the chain would decide,
+//! audit and allow — and hand out access past every demand the link states, which is a worse failure
+//! than the one this section was originally written about: a `503` is visible, and a link whose
+//! password is ignored is not. `ENC-896` is the second prerequisite: nothing writes a `SHARE_LINK`
+//! `acl_entries` row when a link is minted, so every link in a real deployment currently resolves to
+//! `NotGranted` and a registered route would refuse every redemption for a *different* reason.
+//!
+//! Rendering any of those denials as anything but `404` would tell an anonymous caller that the
+//! token is live, which is rule 7 — asserted in `crates/api/tests/shares.rs` on both halves: the
+//! tenant half by a token minted in `tenant-alpha` and presented under `tenant-beta`'s scope,
+//! indistinguishable from one that was never minted because RLS makes the row invisible rather than
+//! because anything compares ids; and the principal half by
+//! `the_chain_authorizes_the_link_bearer_a_redemption_presents`, the rewrite of the test that used
+//! to prove the absence, which now proves the capability and keeps every shortcut it refused —
+//! `Actor::System`, a `UserId` nothing names, the bearer of a *different* link, and a `GuestId`
+//! fabricated from this link's own id, which is the leg the whole design turns on.
 //!
 //! # Internal and external sharing are two permissions, and the split fails closed
 //!
@@ -733,9 +743,15 @@ fn satisfy(obligations: &Obligations, justification: Option<&str>) -> Result<(),
 fn author(ctx: &RequestContext) -> Result<UserId, Refused> {
     match ctx.actor {
         Actor::User(id) => Ok(id),
-        Actor::Guest(_) | Actor::ServiceAccount(_) | Actor::McpClient(_) | Actor::System => {
-            Err(Refused::actor(ReasonCode::AccessDenied))
-        }
+        // A link bearer least of all (`ENC-879`): `share_links.created_by` would then name the link
+        // itself, and a link that minted a link is a chain nobody can attribute to a person. The
+        // one caller in the product that holds a `share_links.id` is the one that must not be
+        // written into that column.
+        Actor::Guest(_)
+        | Actor::ServiceAccount(_)
+        | Actor::McpClient(_)
+        | Actor::LinkBearer(_)
+        | Actor::System => Err(Refused::actor(ReasonCode::AccessDenied)),
     }
 }
 

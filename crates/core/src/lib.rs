@@ -153,7 +153,8 @@ pub use error::{
 };
 pub use id::{
     ChunkId, ClassificationId, DeviceId, FileId, GroupId, GuestId, IdParseError, LibraryId,
-    McpClientId, RequestId, ServiceAccountId, SessionId, TenantId, UserId, VersionId, WorkspaceId,
+    McpClientId, RequestId, ServiceAccountId, SessionId, ShareLinkId, TenantId, UserId, VersionId,
+    WorkspaceId,
 };
 pub use policy::{
     AssumedClassification, ClassificationOutcome, ClassificationPolicy, ClassificationRank,

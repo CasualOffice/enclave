@@ -319,9 +319,14 @@ fn satisfy(obligations: &Obligations) -> Result<(), Refused> {
 fn author(ctx: &RequestContext) -> Result<UserId, Refused> {
     match ctx.actor {
         Actor::User(id) => Ok(id),
-        Actor::Guest(_) | Actor::ServiceAccount(_) | Actor::McpClient(_) | Actor::System => {
-            Err(Refused::actor(ReasonCode::AccessDenied))
-        }
+        // A link bearer least of all (`ENC-879`): `Actor::subject_id` answers `Some` with a
+        // `share_links.id`, which is a real row in the wrong table entirely. Creating a folder is a
+        // directory member's act.
+        Actor::Guest(_)
+        | Actor::ServiceAccount(_)
+        | Actor::McpClient(_)
+        | Actor::LinkBearer(_)
+        | Actor::System => Err(Refused::actor(ReasonCode::AccessDenied)),
     }
 }
 
