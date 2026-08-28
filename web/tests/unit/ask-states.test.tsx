@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { cleanup, render, within } from '@testing-library/react';
+import { cleanup, render } from '@testing-library/react';
 import AskScreen from '../../src/features/ask/ask-screen.tsx';
 import { I18nProvider } from '../../src/shared/i18n/index.tsx';
 import { catalog } from '../../src/shared/i18n/catalog.ts';
@@ -24,10 +24,20 @@ function mount(search: string) {
 
 afterEach(cleanup);
 
+/* The state blocks are `shared/ui/surface-states` now, and it renders its
+ * heading as `<p class="surface-state-title">` rather than as an `<h2>` — the
+ * screen's own `<h1 class="ask-heading">` is its heading, and a state block
+ * inside it is a message rather than a section. So the title is asserted by the
+ * shared class instead of by role. The claim is the same claim: this state, on
+ * this screen, says exactly this sentence. */
+function title(container: HTMLElement): string {
+  return container.querySelector('.surface-state-title')?.textContent ?? '';
+}
+
 describe('the four states', () => {
   it('empty (new): says what the surface is for, and marks the missing action', () => {
-    const { container, getByRole } = mount('');
-    expect(getByRole('heading', { level: 2 }).textContent).toBe(catalog['ask.empty.title'].message);
+    const { container } = mount('');
+    expect(title(container)).toBe(catalog['ask.empty.title'].message);
 
     /* The `Later` chip sits in the slot where `docs/09 §11`'s "one action that
      * starts it" would be. Both halves are asserted: the marker, and the
@@ -68,14 +78,12 @@ describe('the four states', () => {
 
   it('empty (filtered): names the count outside scope and offers the way back', () => {
     const { container, getByRole } = mount('?surface=scope-empty');
-    expect(getByRole('heading', { level: 2 }).textContent).toBe(
-      catalog['ask.state.scopeEmpty.title'].message,
-    );
+    expect(title(container)).toBe(catalog['ask.state.scopeEmpty.title'].message);
 
     /* The count is the whole point of the state: it distinguishes an over-narrow
      * scope from an empty workspace. Matched loosely because the digits are
      * `Intl`-grouped and the grouping is the locale's business, not the test's. */
-    const body = container.querySelector('.ask-state-body');
+    const body = container.querySelector('.surface-state-body');
     expect(body?.textContent).toMatch(/outside the current scope/);
     expect(body?.textContent).toMatch(/\d/);
 
@@ -85,14 +93,18 @@ describe('the four states', () => {
   it('error: what failed, a retry, and a copyable request ID', () => {
     const { container, getByRole } = mount('?surface=error');
     const alert = getByRole('alert');
-    expect(within(alert).getByRole('heading', { level: 2 }).textContent).toBe(
-      catalog['ask.state.error.title'].message,
-    );
+    expect(title(alert as HTMLElement)).toBe(catalog['ask.state.error.title'].message);
     expect(alert.textContent).toContain(catalog['ask.state.error.body'].message);
     expect(getByRole('button', { name: catalog['ask.state.error.retry'].message }));
 
-    const requestId = container.querySelector('.ask-request-id code');
+    /* The shared request-ID row, which is also the one whose `<code>` is
+     * direction-isolated. Ask's own copy was not, so the same identifier
+     * rendered correctly on the library screen and reversed here. */
+    const requestId = container.querySelector('.surface-state-rid code');
     expect(requestId?.textContent).toMatch(/^[0-9A-Z]{26}$/);
+    // And it is copyable, which is the other half of what `docs/09 §11` asks of
+    // an error state — a request ID a user cannot copy is one they mistype.
+    expect(getByRole('button', { name: catalog['surface.error.copy'].message }));
   });
 
   it('a failure is not a denial: the error state is the only one with an action', () => {
@@ -102,15 +114,23 @@ describe('the four states', () => {
      *
      * Asserted as a contrast so neither half passes alone. */
     const enabled = (search: string) =>
-      [...mount(search).container.querySelectorAll('button')].filter(
-        (button) => button.getAttribute('aria-disabled') !== 'true',
-      ).length;
+      [...mount(search).container.querySelectorAll('button')]
+        .filter((button) => button.getAttribute('aria-disabled') !== 'true')
+        .map((button) => button.textContent);
 
-    expect(enabled('?surface=error')).toBe(1);
+    /* Two, and they are named rather than counted: retry, and the button that
+     * copies the request ID. The count moved from one to two when the shared
+     * error state replaced Ask's copy — asserting the labels instead pins
+     * *which* actions a failure offers, which is the claim that matters. A
+     * denial would offer neither (`docs/17 §7`). */
+    expect(enabled('?surface=error')).toEqual([
+      catalog['ask.state.error.retry'].message,
+      catalog['surface.error.copy'].message,
+    ]);
     cleanup();
-    expect(enabled('')).toBe(0);
+    expect(enabled('')).toEqual([]);
     cleanup();
-    expect(enabled('?surface=loading')).toBe(0);
+    expect(enabled('?surface=loading')).toEqual([]);
   });
 });
 

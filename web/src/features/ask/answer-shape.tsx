@@ -1,6 +1,7 @@
 import { useT } from '../../shared/i18n/index.tsx';
 import { useFormatters } from '../../shared/i18n/format.ts';
 import { Icon } from '../../shared/ui/icon-sprite.tsx';
+import { Push } from '../../shared/ui/layout.tsx';
 
 /* The shape of an answer, with none of its content.
  *
@@ -46,64 +47,70 @@ export function AnswerShape() {
   const ordinals = SOURCE_WIDTHS.map((_, index) => format.count(index + 1));
 
   return (
-    <section className="ask-panel ask-shape" aria-labelledby="ask-shape-caption">
-      <b className="ask-shape-caption" id="ask-shape-caption">
-        {t('ask.shape.caption')}
-      </b>
+    <section
+      className="ask-panel ask-shape enc-enter-panel"
+      aria-labelledby="ask-shape-caption"
+    >
+      <div className="ask-panel-inner">
+        <b className="ask-shape-caption" id="ask-shape-caption">
+          {t('ask.shape.caption')}
+        </b>
 
-      <div aria-hidden="true" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-        <div className="ask-wire-turn">
-          <span className="ask-wire-badge">
-            <Icon name="user" size={11} />
-          </span>
-          <div className="ask-wire-lines">
-            <span className="ask-wire-line">
-              <span className="ask-wire-bar" style={{ inlineSize: '54%' }} />
+        <div aria-hidden="true" className="ask-turns">
+          <div className="ask-wire-turn">
+            <span className="ask-wire-badge">
+              <Icon name="user" size={11} />
             </span>
-          </div>
-        </div>
-
-        <div className="ask-wire-turn">
-          <span className="ask-wire-badge" data-tone="accent">
-            <Icon name="spark" size={11} />
-          </span>
-          <div className="ask-wire-lines">
-            {ANSWER_LINES.map((line, lineIndex) => (
-              <span className="ask-wire-line" key={lineIndex}>
-                {line.map((width, barIndex) => (
-                  <span
-                    className="ask-wire-bar"
-                    key={barIndex}
-                    style={{ inlineSize: `${width}%` }}
-                  />
-                ))}
-                {/* A citation marker closes the first and last line, which is
-                 * where they land in a real answer: one per claim. */}
-                {lineIndex !== 1 && (
-                  <span className="ask-wire-cite">{ordinals[lineIndex === 0 ? 0 : 1]}</span>
-                )}
+            <div className="ask-wire-lines">
+              <span className="ask-wire-line">
+                <span className="ask-wire-bar" style={{ inlineSize: '54%' }} />
               </span>
-            ))}
+            </div>
+          </div>
 
-            {/* The source list: ordinal, document, and the deep-link glyph that
-             * opens it at the passage. `docs/09 §10`, drawn. */}
-            <ol className="ask-wire-sources">
-              {SOURCE_WIDTHS.map((width, index) => (
-                <li className="ask-wire-source" key={index}>
-                  <span className="ask-wire-cite">{ordinals[index]}</span>
-                  <Icon name="file" size={12} />
-                  <span className="ask-wire-bar" style={{ inlineSize: `${width}%` }} />
-                  <Icon name="ext" size={11} />
-                </li>
+          <div className="ask-wire-turn">
+            <span className="ask-wire-badge" data-tone="accent">
+              <Icon name="spark" size={11} />
+            </span>
+            <div className="ask-wire-lines">
+              {ANSWER_LINES.map((line, lineIndex) => (
+                <span className="ask-wire-line" key={lineIndex}>
+                  {line.map((width, barIndex) => (
+                    <span
+                      className="ask-wire-bar"
+                      key={barIndex}
+                      style={{ inlineSize: `${width}%` }}
+                    />
+                  ))}
+                  {/* A citation marker closes the first and last line, which is
+                   * where they land in a real answer: one per claim. */}
+                  {lineIndex !== 1 && (
+                    <span className="ask-wire-cite">{ordinals[lineIndex === 0 ? 0 : 1]}</span>
+                  )}
+                </span>
               ))}
-            </ol>
+
+              {/* The source list: ordinal, document, and the deep-link glyph
+               * that opens it at the passage. `docs/09 §10`, drawn. */}
+              <ol className="ask-wire-sources">
+                {SOURCE_WIDTHS.map((width, index) => (
+                  <li className="ask-wire-source" key={index}>
+                    <span className="ask-wire-cite">{ordinals[index]}</span>
+                    <Icon name="file" size={12} />
+                    <span className="ask-wire-bar" style={{ inlineSize: `${width}%` }} />
+                    {/* The trailing spacer, as the shared element rather than a
+                     * fifth hand-written `margin-inline-start: auto`. */}
+                    <Push />
+                    <Icon name="ext" size={11} />
+                  </li>
+                ))}
+              </ol>
+            </div>
           </div>
         </div>
-      </div>
 
-      <p className="ask-state-body">
-        {t('ask.shape.body')}
-      </p>
+        <p className="ask-panel-body">{t('ask.shape.body')}</p>
+      </div>
     </section>
   );
 }

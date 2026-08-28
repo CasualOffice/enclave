@@ -1,8 +1,10 @@
-import { memo } from 'react';
+import { memo, type CSSProperties } from 'react';
 import { useT } from '../../shared/i18n/index.tsx';
 import { useFormatters } from '../../shared/i18n/format.ts';
 import { FileIcon } from '../../shared/ui/icons.tsx';
-import { CLASSIFICATION_KEY } from '../../entities/classification/model.ts';
+import { Push } from '../../shared/ui/layout.tsx';
+import { Avatar } from '../../shared/ui/primitives.tsx';
+import { ClassificationChip } from '../../entities/classification/chip.tsx';
 import { kindForMime, segmentExcerpt, type SearchResult } from './model.ts';
 
 /* One result.
@@ -50,7 +52,7 @@ import { kindForMime, segmentExcerpt, type SearchResult } from './model.ts';
  */
 function Excerpt({ excerpt }: { excerpt: string }) {
   return (
-    <bdi className="esr-excerpt" dir="auto">
+    <bdi className="esr-excerpt ui-truncate" dir="auto">
       {segmentExcerpt(excerpt).map((segment, index) =>
         segment.matched ? (
           <mark key={index} className="esr-match">
@@ -107,7 +109,15 @@ export const ResultRow = memo(function ResultRow({
 
   return (
     <div
-      className="esr-row"
+      /* The entrance, from `styles/motion.css`: rise 4px and fade over
+       * `--dur-card`, staggered `--stagger-card` (30ms) per row, which is the
+       * prototype's `i * 0.03s` for search hits exactly. `--stagger-cap` holds
+       * the twelfth row's delay for every row after it, so a 400-result set
+       * finishes arriving in 360ms rather than twelve seconds — and the whole
+       * thing degrades to opacity-only under `prefers-reduced-motion` without
+       * this file knowing, because the tokens are what get rewritten. */
+      className="esr-row enc-enter enc-stagger-card"
+      style={{ '--i': index } as CSSProperties & Record<'--i', number>}
       role="listitem"
       data-active={active || undefined}
       /* The list is virtualized, so thirty of two hundred rows are in the DOM
@@ -133,21 +143,28 @@ export const ResultRow = memo(function ResultRow({
           <FileIcon className="esr-icon" kind={kindForMime(result.mimeType)} />
           {/* `dir="auto"` and isolation on the title too: a file name mixing
            * scripts must not rearrange the row around it (`docs/14 §7`). */}
-          <bdi className="esr-title" dir="auto">
+          <bdi className="esr-title ui-truncate" dir="auto">
             {result.title}
           </bdi>
           {/* No badge when the server sent no classification. An invented
             * `Unclassified` on a document somebody labelled `RESTRICTED` in the
-            * database is the disclosure this badge exists to prevent. */}
+            * database is the disclosure this badge exists to prevent.
+            *
+            * `ClassificationChip` is **the** badge (`docs/09 §16a`). This file
+            * used to draw its own — a fourth copy of the pill, the dot and the
+            * two `color-mix` ratios, which had already drifted to a different
+            * height and a different type size than the other three. Locking the
+            * palette and duplicating the component locks nothing. */}
           {result.classification !== undefined && (
-            <span className="esr-classification" data-level={result.classification}>
-              {t(CLASSIFICATION_KEY[result.classification])}
-            </span>
+            <ClassificationChip level={result.classification} />
           )}
           {location.length > 0 && (
-            <span className="esr-location">
-              <bdi dir="auto">{location}</bdi>
-            </span>
+            <>
+              <Push />
+              <span className="esr-location">
+                <bdi dir="auto">{location}</bdi>
+              </span>
+            </>
           )}
         </span>
 
@@ -156,18 +173,22 @@ export const ResultRow = memo(function ResultRow({
             {result.workspace}
           </bdi>
           <span className="esr-sep" aria-hidden="true" />
-          <bdi className="esr-path" dir="auto">
+          <bdi className="esr-path ui-truncate" dir="auto">
             {result.path}
           </bdi>
           {/* The owner is not on the wire either. The separator goes with it:
-            * a dangling ' · ' reads as a value that failed to load. */}
+            * a dangling ' · ' reads as a value that failed to load.
+            *
+            * `Avatar` rather than a fifth hand-rolled circle. Its initials are
+            * the server's — never split off a display name here, because
+            * `docs/14 §6` is explicit that name order is not universal. */}
           {result.ownerName !== undefined && (
             <>
               <span className="esr-sep" aria-hidden="true" />
-              <span className="esr-owner" data-tone={result.ownerTone} aria-hidden="true">
-                {result.ownerInitials}
-              </span>
-              <bdi className="esr-ownername" dir="auto">
+              {result.ownerInitials !== undefined && result.ownerTone !== undefined && (
+                <Avatar initials={result.ownerInitials} tone={result.ownerTone} />
+              )}
+              <bdi className="esr-ownername ui-truncate" dir="auto">
                 {result.ownerName}
               </bdi>
             </>

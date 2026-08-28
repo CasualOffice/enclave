@@ -189,11 +189,19 @@ async function run(id: string): Promise<void> {
       return;
     }
 
-    /* Step 2 — the bytes, straight to the store. Never through the API. */
+    /* Step 2 — the bytes, straight to the store. Never through the API.
+     *
+     * The headers are the server's `requiredHeaders`, passed through unread.
+     * They used to be one hand-threaded `Content-Type` built from `row.mimeType`
+     * (`ENC-821`); `ENC-820` signs `x-amz-checksum-sha256` into the URL as well,
+     * and the whole set is now named on the `201`. Sending the map rather than
+     * reconstructing any of it is the point: what was signed is a set of exact
+     * strings, and a `PUT` that omits one or alters it fails the provider's
+     * signature check with a `403` that reads as a permission problem. */
     await putBytes(
       issued.uploadUrl,
       file,
-      row.mimeType,
+      issued.requiredHeaders,
       (sent) => patch(id, { progress: row.sizeBytes === 0 ? 1 : sent / row.sizeBytes }),
       controller.signal,
     );
@@ -245,13 +253,31 @@ const POLL_LIMIT = 90;
 /**
  * Watch a handed-off upload until the server says its bytes may be served.
  *
- * Polls `GET /files/{id}/versions` — **not** `GET /uploads/{id}`, which reports
- * `SCANNING` and never changes (`ENC-826`), and **not** `GET /files/{id}`,
- * whose `currentVersion` carries no `isReadable` (`ENC-825`).
+ * Polls `GET /files/{id}/versions`, which is **no longer the only endpoint that
+ * can answer.** This comment used to justify the choice by asserting two server
+ * limitations, and both stopped being true on 2026-08-28:
  *
- * There is no push channel for this; `docs/05` registers no events endpoint the
- * client can subscribe to, so a poll is the honest implementation rather than a
- * placeholder for one.
+ *   - `GET /uploads/{id}` reported `SCANNING` and never moved (`ENC-826`). It
+ *     now carries the committed `version` — with `status`, `avStatus` and
+ *     `isReadable` — and `fileId`, beside its own `state`. The session's own
+ *     `state` is *still* terminal at `SCANNING`, truthfully, because handing the
+ *     object to antivirus is the last transition the session makes; the version
+ *     beside it is what finishes the story. Read both, never one instead of the
+ *     other (`docs/05 §8.1`).
+ *   - `GET /files/{id}`'s `currentVersion` carried no `isReadable` (`ENC-825`).
+ *     It does now, and `entities/file/api-model.ts` names it.
+ *
+ * **A false explanation of a correct workaround is how the next person concludes
+ * the workaround is load-bearing**, which is why this is corrected rather than
+ * left. The poll itself still works and still reads the server's own predicate,
+ * so it is now a *choice* rather than a necessity — moving it to
+ * `GET /uploads/{id}` is `ENC-848`, and it is left to a session that can drive a
+ * real upload against a running binary. Doing it blind would be trading a
+ * verified request for an unverified one on the path `CLAUDE.md` rule 9 guards.
+ *
+ * There is no push channel for this either way; `docs/05` registers no events
+ * endpoint the client can subscribe to, so a poll is the honest implementation
+ * rather than a placeholder for one.
  */
 function poll(id: string, fileId: string, attempt = 0): void {
   if (attempt >= POLL_LIMIT) {

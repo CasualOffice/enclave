@@ -89,7 +89,12 @@ describe('Home, success', () => {
     const data = buildHome(MORNING);
     const { container } = renderWith(<HomeView data={data} now={MORNING} />);
 
-    const badges = [...container.querySelectorAll('.home-classification')];
+    /* `.ui-classification`, not `.home-classification`: the badge is
+     * `entities/classification`'s single implementation now. Home held the
+     * second copy of the locked `--c-*` palette, which is the drift
+     * `docs/09 §16a` exists to prevent — a user who learns Restricted's shade on
+     * the library list must read it identically here. */
+    const badges = [...container.querySelectorAll('.ui-classification')];
     expect(badges).toHaveLength(data.recent.length);
 
     const levels = badges.map((badge) => badge.getAttribute('data-level'));

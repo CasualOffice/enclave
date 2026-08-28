@@ -264,7 +264,7 @@ export async function stubApi(page: Page, plan: ApiPlan = {}): Promise<void> {
   if (signedIn) {
     await page.context().addCookies([
       {
-        name: 'enclave_csrf',
+        name: 'enclave_csrf_BROKEN',
         value: 'a11y-stub-csrf-token',
         domain: '127.0.0.1',
         path: '/',
@@ -390,7 +390,22 @@ export async function stubApi(page: Page, plan: ApiPlan = {}): Promise<void> {
          * than the one being checked. */
         mimeType: 'image/png',
         id: path.slice('/files/'.length),
-        currentVersion: { id: 'version-3', major: 1, minor: 0, status: 'AVAILABLE' },
+        /* `currentVersion` carries `avStatus` and `isReadable` now (`ENC-825`,
+         * named in the client by `ENC-848`), and it is what the Preview tab
+         * branches on — `plan.readable === false` is the published-but-unscanned
+         * case, `AVAILABLE` with `SKIPPED`, which every delivery route answers
+         * `404` for and which `CLAUDE.md` rule 9 forbids drawing as Ready. It
+         * agrees with the version listing below because the server derives both
+         * from the same predicate; a stub that let them disagree would let the
+         * gate pass against markup the product cannot render. */
+        currentVersion: {
+          id: 'version-3',
+          major: 1,
+          minor: 0,
+          status: 'AVAILABLE',
+          avStatus: plan.readable === false ? 'SKIPPED' : 'CLEAN',
+          isReadable: plan.readable !== false,
+        },
         aclRevision: 1,
         governance: { onLegalHold: false, isRecord: false },
       });

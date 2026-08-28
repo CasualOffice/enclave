@@ -110,12 +110,32 @@ export const ItemPage = z.object({
 export type ItemPage = z.infer<typeof ItemPage>;
 
 /** The version a read path would serve. */
+/**
+ * The version `GET /files/{id}` currently points at.
+ *
+ * `avStatus` and `isReadable` were added by `ENC-825` and are named here now
+ * (`ENC-848`). Before them `status: "AVAILABLE"` was byte-identical for a file
+ * that previews and one every delivery route answers `404` for, and the only
+ * way to tell those apart was to press the button — so the peek panel had to
+ * fetch `GET /files/{id}/versions` on every peek purely to reach `isReadable`.
+ *
+ * `docs/05 §7`: **`isReadable` is the field to branch on.** It is the server's
+ * own readable predicate — the same one the delivery routes filter on, not a
+ * restatement of it — so it cannot drift from them. `status` and `avStatus` are
+ * for the *message*, never for the decision: they are what turns "not available"
+ * into `Scanning`, `Published but unscanned` or `Quarantined` instead of an
+ * unexplained spinner.
+ */
 export const CurrentVersion = z.object({
   id: z.string(),
   major: z.number(),
   minor: z.number(),
   status: z.enum(['PENDING', 'SCANNING', 'PROCESSING', 'AVAILABLE', 'QUARANTINED', 'FAILED']),
+  avStatus: z.enum(['PENDING', 'CLEAN', 'INFECTED', 'SKIPPED', 'ERROR']),
+  isReadable: z.boolean(),
 });
+
+export type CurrentVersion = z.infer<typeof CurrentVersion>;
 
 /**
  * `GET /files/{id}` — what the peek panel reads.

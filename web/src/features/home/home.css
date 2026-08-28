@@ -1,48 +1,49 @@
 /* Home.
  *
- * Every value is lifted from the `data-screen-label="Home"` block of
+ * Layout is lifted from the `data-screen-label="Home"` block of
  * `web/design-system/enclave-client-prototype.html`, which is authoritative for
- * appearance. Every *property name* is logical, which that block is not: it is
- * `margin-left:auto`, `padding:12px 14px` with an implied direction and
- * `text-overflow` on physically-anchored boxes throughout. `en-XB` mirrors
- * direction in CI and the `lint:i18n` gate fails on a physical property, so the
- * rule is copy its values, never its property names (`docs/17 §8`).
+ * appearance; every *property name* is logical, which that block is not
+ * (`docs/17 §8`). Every *dimension* is a token from `styles/scale.css` — this
+ * file held roughly ninety px literals and a private copy of four shared
+ * recipes, and the literals are what made the reference's density unreachable:
+ * a screen whose padding is written out cannot be tightened without finding
+ * every number first.
  *
- * Two things in here are duplicated from `features/libraries/list/
- * grouped-list.css` rather than imported, because a feature may not import
- * another feature (`docs/17 §2`): the classification badge and the file-kind
- * icon tints. Both know what a classification and a file kind are, so both
- * belong in `entities/`, and the duplication is the signal that says so. It is
- * reported rather than resolved here.
+ * ## What is no longer here, and where it went
  *
- * The badge's text mix is 70%, not the prototype's 82%. 82% measures 3.68:1
- * against its own tint and axe fails it; 70% is the ratio `grouped-list.css`
- * already ships and the two must not disagree, because a user reading the same
- * label on two screens must not see two colours.
+ * | was | now |
+ * |---|---|
+ * | `.home-state*`, `.home-state-figure`, `.home-request-id` (~70 lines) | `shared/ui/surface-states` |
+ * | `.home-classification` and its five `--c-*` bindings (~51 lines) | `entities/classification/chip` |
+ * | the raised-card recipe, written out three times | `shared/ui/layout` `Card` |
+ * | `.home-section-title`'s blanket `text-transform` | `Eyebrow`, behind a `:lang()` allowlist |
+ * | four skeleton boxes | `Skeleton` with a `shape` |
+ * | `margin-inline-start: auto`, twice | `Push` |
+ * | the truncation idiom, four times | `Truncate` |
+ * | `@keyframes home-in` + a local `prefers-reduced-motion` block | `styles/motion.css` |
+ *
+ * The classification badge mattered most of those: `design-system.test.tsx`
+ * asserts that `--c-pub … --c-restr` are read in exactly one stylesheet, and
+ * this file was the second reader. Locking a palette (`docs/09 §16a`) and then
+ * duplicating the component that paints it locks nothing.
+ *
+ * ## Density
+ *
+ * The reference runs 36px rows, 26px controls, 12.5px body text and 6–8px gaps.
+ * This screen ran 66px attention cards, a 24px greeting, 41px recent rows and
+ * 28px section gaps — measurably looser than the product it belongs to, which
+ * reads as a different application rather than as a home page. Every box below
+ * is now on the shared scale, so the two agree by construction.
  *
  * ---------------------------------------------------------------------------
  * **Secondary text is `--fg2`, never `--fg3` or `--fg4`.**
  *
- * The prototype reaches for `--fg3` and `--fg4` for every muted line on this
- * screen — the date line, the section eyebrows, the file extension, the
- * timestamp. Measured against the surfaces they actually sit on, in the light
- * theme:
- *
- *     --fg3 on --sheet   4.32:1      --fg4 on --sheet   2.45:1
- *     --fg3 on --sunken  3.78:1      --fg4 on --sunken  2.14:1
- *     --fg3 on --canvas  4.03:1      --fg4 on --canvas  2.28:1
- *
- * All six are under `docs/09 §15`'s 4.5:1 for text, and axe reports every one
- * of them as a serious violation. `--fg2` clears it at 5.98–6.83:1 in light and
- * 8.20–9.31:1 in dark. `docs/09` wins over the reference on behaviour and
- * accessibility is behaviour, so the tone ladder here is one step darker than
- * the reference's throughout. `--fg3` survives only on the file-kind icon,
- * which is a graphical object held to 3:1 and clears it at 4.32:1.
- *
- * This is a token-level problem rather than a Home-level one — the same pair
- * fails wherever it is used — and it is reported rather than fixed here,
- * because `styles/tokens.css` is extracted from the reference and is not this
- * screen's to edit.
+ * Measured against the surfaces they sit on, `--fg3` reaches 3.78–4.32:1 and
+ * `--fg4` 2.14–2.45:1 — all under `docs/09 §15`'s 4.5:1 for text, and axe
+ * reports every one as serious. `--fg2` clears at 5.98–6.83:1 light and
+ * 8.20–9.31:1 dark. `--fg3` survives only on the file-kind icon, a graphical
+ * object held to 3:1. This is a token-level problem (`ENC-700`) and is recorded
+ * here rather than fixed, because `styles/tokens.css` is not this screen's.
  * ---------------------------------------------------------------------------
  */
 
@@ -50,125 +51,65 @@
   flex: 1;
   min-block-size: 0;
   overflow: auto;
-  padding-block: 28px 40px;
-  padding-inline: 32px;
+  padding-block: var(--sp-10) var(--sp-16);
+  padding-inline: var(--sp-10);
 }
 
-/* 860px, centred — the prototype's measure. Long enough for a file name to
- * matter, short enough that the eye does not have to travel to the timestamp. */
+/* `--page-measure` (860px), centred. Long enough for a file name to matter,
+ * short enough that the eye does not have to travel to the timestamp. */
 .home-page {
-  max-inline-size: 860px;
+  max-inline-size: var(--page-measure);
   margin-inline: auto;
   display: flex;
   flex-direction: column;
-  gap: 28px;
+  gap: var(--sp-8);
 }
 
 /* ------------------------------------------------------------------ heading */
 
-/* Both lines carry an explicit line box. `line-height: normal` resolves
- * differently per font stack and per fallback, and the loading skeleton has to
- * reserve exactly this height — a reserved box computed from a font that has
- * not loaded yet is the layout shift `docs/09 §11` forbids. */
+/* Both lines carry a line box computed from tokens, so the loading skeleton can
+ * reserve exactly this height from the same two values. `line-height: normal`
+ * resolves differently per font stack, and a reserved box computed from a font
+ * that has not loaded yet is the layout shift `docs/09 §11` forbids. */
 .home-greeting {
   margin: 0;
   font-family: var(--tight);
-  font-size: 24px;
-  line-height: 32px;
+  font-size: var(--fs-display);
+  line-height: var(--lh-tight);
   font-weight: 600;
-  letter-spacing: -0.022em;
+  letter-spacing: var(--ls-tight);
 }
 
 .home-subline {
-  margin-block: 4px 0;
+  margin-block: var(--sp-2) 0;
   margin-inline: 0;
   color: var(--fg2);
-  font-size: 12.5px;
-  line-height: 18px;
-}
-
-/* ------------------------------------------------------------------- motion
- *
- * The prototype staggers Home's four blocks in with `encIn .25s`, which ramps
- * opacity from 0 alongside a 4px rise. The stagger is worth keeping — it is the
- * one place on this screen where motion says something, namely which block to
- * read first — but the opacity ramp is not, and not for taste:
- *
- * **A colour measured mid-fade is not the colour that ships.** axe computes
- * contrast from the composited pixel, so a run that lands inside those 250 ms
- * reports `--fg2` as a washed-out grey and fails the surface for a violation
- * that does not exist a quarter-second later. It failed exactly that way here:
- * `2.12:1` on the date line, `2.06:1` on a section eyebrow, in a screen whose
- * settled values are 6.83:1 and 5.98:1.
- *
- * The right fix is for the accessibility run to emulate `prefers-reduced-motion:
- * reduce`, which switches every animation in the product off — that is reported
- * rather than done, because `tests/a11y/routes.spec.ts` is not this screen's.
- * Moving the entrance to transform alone makes the question moot: there is no
- * moment at which this screen's text is a different colour than it settles at.
- */
-
-@keyframes home-in {
-  from {
-    transform: translateY(4px);
-  }
-  to {
-    transform: none;
-  }
-}
-
-.home-in {
-  animation: home-in 0.2s cubic-bezier(0.32, 0.72, 0, 1) both;
-}
-
-.home-in[data-step='1'] {
-  animation-delay: 0.05s;
-}
-.home-in[data-step='2'] {
-  animation-delay: 0.1s;
-}
-.home-in[data-step='3'] {
-  animation-delay: 0.15s;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .home-in {
-    animation: none;
-  }
+  font-size: var(--fs-body);
+  line-height: var(--lh-body);
 }
 
 /* ----------------------------------------------------------------- sections */
 
+/* The head is a strip, not a heading: `Eyebrow` renders the `<h2>` inside it and
+ * the `Later` chip sits beside that rather than inside it, so the heading's
+ * accessible name stays the section's name. A chip folded into the `<h2>` makes
+ * "Continue working" announce as "Continue working Later". */
 .home-section-head {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-block-end: 10px;
-  min-block-size: 18px;
-}
-
-.home-section-title {
-  margin: 0;
-  font-size: 11px;
-  font-weight: 500;
-  color: var(--fg2);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
+  gap: var(--sp-4);
+  margin-block-end: var(--sp-3);
+  min-block-size: var(--sp-8);
 }
 
 /* One muted line where a list would be, when a single section is empty and the
- * rest of the screen is not. The whole-screen empty state is a different thing
- * and lives in `states.tsx`; collapsing the two would tell a user with three
- * approvals waiting that their workspace is quiet. */
+ * rest of the screen is not. `Card` draws the box; only the type is Home's. The
+ * whole-screen empty state is a different thing and lives in `states.tsx` —
+ * collapsing the two would tell a user with three approvals waiting that their
+ * workspace is quiet. */
 .home-section-empty {
-  margin: 0;
-  padding-block: 13px;
-  padding-inline: 14px;
-  border-radius: var(--r-surf);
-  box-shadow: var(--hairline);
-  background: var(--sheet);
   color: var(--fg2);
-  font-size: 12.5px;
+  font-size: var(--fs-body);
 }
 
 /* --------------------------------------------------- needs your attention */
@@ -179,18 +120,16 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--sp-3);
 }
 
+/* `Card` owns the sheet, the hairline and the radius; this owns the row. */
 .home-card {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding-block: 12px;
-  padding-inline: 14px;
-  border-radius: var(--r-surf);
-  box-shadow: var(--hairline);
-  background: var(--sheet);
+  gap: var(--sp-4);
+  padding-block: var(--sp-3);
+  padding-inline: var(--sp-5);
 }
 
 .home-card-main {
@@ -198,32 +137,24 @@
   min-inline-size: 0;
 }
 
-/* Explicit line boxes on both lines, because the loading skeleton has to
- * reserve exactly this and `line-height: normal` is a different number per
- * font stack. `docs/09 §11`: the reserved box and the loaded box are one box. */
+/* `display: flex` so the `Truncate` inside becomes a block-level flex item —
+ * `text-overflow` does nothing on an inline box. Explicit line boxes on both
+ * lines, because the skeleton reserves exactly this (`docs/09 §11`). */
 .home-card-title {
+  display: flex;
   font-weight: 500;
-  font-size: 13px;
-  line-height: 18px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  font-size: var(--fs-row);
+  line-height: var(--lh-tight);
 }
 
 .home-card-sub {
   display: flex;
   align-items: baseline;
-  gap: 5px;
+  gap: var(--sp-3);
   min-inline-size: 0;
   color: var(--fg2);
-  font-size: 12px;
-  line-height: 16px;
-}
-
-.home-card-sub-who {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-size: var(--fs-ctl);
+  line-height: var(--lh-tight);
 }
 
 .home-card-sub time {
@@ -235,68 +166,45 @@
  * size as the text beside it is text, and it is held to the same 4.5:1. */
 .home-card-sub time::before {
   content: '·';
-  margin-inline-end: 5px;
+  margin-inline-end: var(--sp-3);
 }
 
-/* Fixed measure so the skeleton and the loaded row put their action in the same
- * place. The `Later` chip `Button` renders is a sibling of the button, so this
- * box holds both. */
+/* A reserved measure rather than a scale step, and deliberately so: it exists
+ * only to make the skeleton's action box and the loaded row's action cluster
+ * land in the same place, so it is the width of `Approve` plus its `Later` chip
+ * and nothing else. It moves with the type ramp, not with the spacing scale. */
 .home-card-actions {
   display: flex;
   align-items: center;
   justify-content: end;
-  gap: 6px;
+  gap: var(--sp-3);
   flex: none;
   min-inline-size: 132px;
-}
-
-/* The release note is the `aria-describedby` target, and here it is only that.
- *
- * `Button` renders the one-word chip *and* the sentence beside every unbuilt
- * control. On a surface with one such control that is right — the empty state
- * below reads "Upload a file · Later · Arrives in a later release" and it is
- * worth the room. On a list of four attention cards it is the same sentence
- * four times down the inline-end edge, which is precisely how a marker "becomes
- * wallpaper" — `primitives.tsx` says so in the comment above the prop that
- * exists to prevent it.
- *
- * So the chip stays visible on every card, the sentence stays in the
- * accessibility tree on every card, and it is shown to the eye only where it
- * does not repeat. Nothing is removed from anyone: a screen reader still reads
- * "Approve, dimmed, Arrives in a later release" per control. */
-.home-card-actions .ui-later-note {
-  position: absolute;
-  inline-size: 1px;
-  block-size: 1px;
-  overflow: hidden;
-  clip-path: inset(50%);
-  white-space: nowrap;
 }
 
 /* --------------------------------------------------------- continue working */
 
 .home-recent {
+  overflow: hidden;
+}
+
+.home-recent-list {
   list-style: none;
   margin: 0;
   padding: 0;
-  border-radius: var(--r-surf);
-  box-shadow: var(--hairline);
-  overflow: hidden;
-  background: var(--sheet);
 }
 
-/* `min-block-size`, not `block-size`: the row has to be one declared height so
- * the skeleton and the loaded row agree — the loaded row's tallest child is a
- * 21px line box and the skeleton's is a 20px bar, and a pixel per row is three
- * pixels of shift by the fourth. A minimum rather than a fixed height so
- * `docs/09 §15`'s 200% font scaling still grows the row instead of clipping it. */
+/* `min-block-size`, not `block-size`: the row is `--row-h` so it scans as a list
+ * row anywhere else in the product does, and a *minimum* rather than a fixed
+ * height so `docs/09 §15`'s 200% font scaling grows the row instead of clipping
+ * it. The padding is what it grows from. */
 .home-recent-row {
   display: flex;
   align-items: center;
-  gap: 10px;
-  min-block-size: 41px;
-  padding-block: 10px;
-  padding-inline: 14px;
+  gap: var(--sp-4);
+  min-block-size: var(--row-h);
+  padding-block: var(--sp-1);
+  padding-inline: var(--sp-6);
   box-shadow: inset 0 -1px 0 var(--line);
 }
 
@@ -304,15 +212,18 @@
   box-shadow: none;
 }
 
+/* The four tints are duplicated from `features/libraries/list/grouped-list.css`
+ * rather than imported, because a feature may not import another feature
+ * (`docs/17 §2`). The icon knows what a file kind is, so it belongs in
+ * `entities/file` — that extraction is owned elsewhere and the duplication is
+ * left here as the signal that says so. Only the box is tokenised. */
 .home-file-icon {
-  inline-size: 16px;
-  block-size: 16px;
+  inline-size: var(--icon-md);
+  block-size: var(--icon-md);
   flex: none;
   color: var(--fg3);
 }
 
-/* The four tints from the prototype, matched to `grouped-list.css` so one file
- * kind is one colour across the product. */
 .home-file-icon[data-kind='pdf'] {
   color: #d0453a;
 }
@@ -327,85 +238,24 @@
 }
 
 .home-recent-name {
+  display: flex;
   min-inline-size: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   font-weight: 450;
-  line-height: 20px;
+  font-size: var(--fs-body);
+  line-height: var(--lh-tight);
 }
 
 .home-recent-ext {
   color: var(--fg2);
-  font-size: 12px;
+  font-size: var(--fs-ctl);
 }
 
 .home-recent-when {
-  margin-inline-start: auto;
   color: var(--fg2);
-  font-size: 11.5px;
+  font-size: var(--fs-meta);
   font-family: var(--mono);
   flex: none;
   white-space: nowrap;
-}
-
-/* ------------------------------------------------------- classification badge
- *
- * The palette is locked (`docs/09 §16a`) and colour is never the only carrier:
- * the badge always renders its label as text (`docs/09 §15`), which is why the
- * level comes in as a catalog key from `entities/classification`.
- */
-
-.home-classification {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  block-size: 20px;
-  padding-inline: 7px 8px;
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0;
-  white-space: nowrap;
-  flex: none;
-  background: color-mix(in srgb, var(--cc) 11%, transparent);
-  color: color-mix(in srgb, var(--cc) 70%, var(--fg));
-}
-
-.home-classification::before {
-  content: '';
-  inline-size: 6px;
-  block-size: 6px;
-  border-radius: 50%;
-  background: var(--cc);
-  flex: none;
-}
-
-.home-classification[data-level='public'] {
-  --cc: var(--c-pub);
-}
-.home-classification[data-level='internal'] {
-  --cc: var(--c-int);
-}
-.home-classification[data-level='confidential'] {
-  --cc: var(--c-conf);
-}
-.home-classification[data-level='highlyConfidential'] {
-  --cc: var(--c-hconf);
-}
-.home-classification[data-level='restricted'] {
-  --cc: var(--c-restr);
-}
-
-/* An absence, not a sixth level, so it takes no colour from the scale. */
-.home-classification[data-level='unclassified'] {
-  background: transparent;
-  box-shadow: var(--hairline);
-  color: var(--fg2);
-}
-
-.home-classification[data-level='unclassified']::before {
-  display: none;
 }
 
 /* -------------------------------------------------------------- recent asks */
@@ -415,18 +265,19 @@
   margin: 0;
   padding: 0;
   display: flex;
-  gap: 8px;
+  gap: var(--sp-3);
   flex-wrap: wrap;
 }
 
+/* A pill, not a card: full radius, no padding block, the control height. */
 .home-ask {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  block-size: 28px;
-  padding-inline: 12px;
-  border-radius: 999px;
-  font-size: 12.5px;
+  gap: var(--sp-3);
+  block-size: var(--ctl-h);
+  padding-inline: var(--sp-5);
+  border-radius: var(--r-pill);
+  font-size: var(--fs-body);
   background: var(--sheet);
   color: var(--fg2);
   box-shadow: var(--hairline);
@@ -435,112 +286,18 @@
 
 .home-ask-icon {
   color: var(--accent);
-}
-
-.home-ask-text {
-  min-inline-size: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* ------------------------------------------------------------------- states */
-
-/* The whole-screen states. The composition matches `features/libraries/list`'s
- * so a user meets one empty state in this product, not two — and the figure is
- * the mark's own construction drawn from tokens rather than an illustration, so
- * it re-themes with everything else. */
-
-.home-state {
-  flex: 1;
-  min-block-size: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  padding-block: 64px;
-  padding-inline: 32px;
-  text-align: center;
-}
-
-.home-state-figure {
-  inline-size: 44px;
-  block-size: 44px;
-  border-radius: 11px;
-  box-shadow: inset 0 0 0 1px var(--line-strong);
-  position: relative;
-  margin-block-end: 4px;
-  color: var(--fg4);
-}
-
-.home-state-figure::after {
-  content: '';
-  position: absolute;
-  inset-block-start: 13.75px;
-  inset-inline-start: 13.75px;
-  inline-size: 22px;
-  block-size: 22px;
-  border-radius: 0 5.5px 5.5px 5.5px;
-  box-shadow: inset 0 0 0 1px var(--line-strong);
-}
-
-:dir(rtl) .home-state-figure::after {
-  border-radius: 5.5px 0 5.5px 5.5px;
-}
-
-.home-state[data-tone='error'] .home-state-figure,
-.home-state[data-tone='error'] .home-state-figure::after {
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 34%, transparent);
-}
-
-.home-state-title {
-  font-size: 15px;
-  font-weight: 600;
-  letter-spacing: -0.02em;
-  margin: 0;
-}
-
-.home-state-body {
-  color: var(--fg2);
-  font-size: 12.5px;
-  max-inline-size: 46ch;
-  margin: 0;
-}
-
-.home-state-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-block-start: 6px;
-}
-
-.home-request-id {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  margin-block-start: 10px;
-  margin-inline: 0;
-  font-size: 11.5px;
-  color: var(--fg2);
-}
-
-.home-request-id code {
-  font-family: var(--mono);
-  font-size: 11px;
-  padding-block: 2px;
-  padding-inline: 6px;
-  border-radius: 4px;
-  background: var(--sunken);
-  color: var(--fg2);
-  user-select: all;
+  flex: none;
 }
 
 /* ---------------------------------------------------------------- skeletons */
 
 /* Every skeleton sits inside the real element it is standing in for, so the box
  * model is not "matched" — it is the same box, and there is nothing left to
- * drift. Only the contents differ. */
+ * drift. Only the contents differ.
+ *
+ * The line heights below are `font-size × line-height` read off the same two
+ * tokens the real text reads, so the reserved box cannot fall out of step with
+ * the loaded one when the ramp moves. */
 
 .home-skel-line {
   display: flex;
@@ -552,61 +309,30 @@
 }
 
 .home-skel-line[data-line='greeting'] {
-  block-size: 32px;
+  block-size: calc(var(--fs-display) * var(--lh-tight));
 }
 
 .home-skel-line[data-line='subline'] {
-  block-size: 18px;
-  margin-block-start: 4px;
-}
-
-.home-skel-line[data-line='section'] {
-  block-size: 16px;
+  block-size: calc(var(--fs-body) * var(--lh-body));
+  margin-block-start: var(--sp-2);
 }
 
 .home-skel-line[data-line='title'] {
-  block-size: 18px;
+  block-size: calc(var(--fs-row) * var(--lh-tight));
 }
 
 .home-skel-line[data-line='sub'] {
-  block-size: 16px;
+  block-size: calc(var(--fs-ctl) * var(--lh-tight));
 }
 
 .home-skel-line[data-line='name'] {
-  block-size: 20px;
   flex: 1;
   min-inline-size: 0;
 }
 
-.home-skel-avatar {
-  inline-size: 26px;
-  block-size: 26px;
-  border-radius: 50%;
-  background: var(--sunken);
-  flex: none;
-}
-
-.home-skel-block {
-  block-size: 20px;
-  border-radius: 999px;
-  background: var(--sunken);
-  flex: none;
-}
-
-.home-skel-when {
-  margin-inline-start: auto;
-}
-
-.home-skel-action {
-  block-size: 28px;
-  inline-size: 84px;
-  border-radius: var(--r-ctrl);
-  background: var(--sunken);
-  flex: none;
-}
-
-.home-skel-ask {
-  block-size: 28px;
-  border-radius: 999px;
-  background: var(--sunken);
+/* An ask is `--ctl-h` tall and the shared pill skeleton is `--sp-10`. The
+ * reserved box has to be the *real* box (`docs/09 §11`), so this one is raised
+ * to the control height rather than the section shifting when data lands. */
+.home-asks .ui-skeleton {
+  block-size: var(--ctl-h);
 }

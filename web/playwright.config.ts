@@ -48,6 +48,16 @@ export default defineConfig({
       use: { ...devices['Desktop Chrome'], viewport: { width: 1440, height: 900 } },
     },
     {
+      /* Not a gate — it asserts nothing. `tests/shots` writes one PNG per
+       * surface so a design change can be looked at beside
+       * `tools/prototype-shot.mjs`'s capture of the reference, at the same
+       * 1440×900 viewport. Run explicitly with `--project=shots`. */
+      name: 'shots',
+      testMatch: /shots\/.*\.spec\.ts/,
+      retries: 0,
+      use: { ...devices['Desktop Chrome'], viewport: { width: 1440, height: 900 } },
+    },
+    {
       name: 'bench',
       testMatch: /bench\/.*\.spec\.ts/,
       retries: 0,
