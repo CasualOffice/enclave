@@ -253,6 +253,23 @@ jobs:
         # our mock behaves the way we assumed S3 does, which is the belief under test.
         run: |
           set -euo pipefail
+          # Pull before running, with retries. `docker run` pulls implicitly and gives up on the
+          # first failure: a registry that answers `unexpected EOF` mid-layer exits 125, and 125 is
+          # indistinguishable in the checks list from a test that found a defect. It has already
+          # cost one green pull request an hour of diagnosis. `ENC-140` records that this image has
+          # no mirror on ghcr.io, quay.io under either plausible org, or public.ecr.aws, so there
+          # is no second source to fall back to — only a second attempt.
+          pull() {
+            for attempt in 1 2 3; do
+              if docker pull "$1"; then return 0; fi
+              echo "::warning title=Image pull failed::$1 (attempt $attempt of 3)"
+              sleep $(( attempt * 10 ))
+            done
+            echo "::error title=Image pull failed after 3 attempts::$1 — this is a registry fault, not a test failure"
+            return 1
+          }
+          pull quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z
+          pull quay.io/minio/mc:RELEASE.2025-04-16T18-13-26Z
           docker run -d --name enclave-minio \
             -e MINIO_ROOT_USER=enclave \
             -e MINIO_ROOT_PASSWORD=enclave-dev-secret \
@@ -801,6 +818,23 @@ jobs:
         # one, and the job would then fail with an error about credentials rather than the bucket.
         run: |
           set -euo pipefail
+          # Pull before running, with retries. `docker run` pulls implicitly and gives up on the
+          # first failure: a registry that answers `unexpected EOF` mid-layer exits 125, and 125 is
+          # indistinguishable in the checks list from a test that found a defect. It has already
+          # cost one green pull request an hour of diagnosis. `ENC-140` records that this image has
+          # no mirror on ghcr.io, quay.io under either plausible org, or public.ecr.aws, so there
+          # is no second source to fall back to — only a second attempt.
+          pull() {
+            for attempt in 1 2 3; do
+              if docker pull "$1"; then return 0; fi
+              echo "::warning title=Image pull failed::$1 (attempt $attempt of 3)"
+              sleep $(( attempt * 10 ))
+            done
+            echo "::error title=Image pull failed after 3 attempts::$1 — this is a registry fault, not a test failure"
+            return 1
+          }
+          pull quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z
+          pull quay.io/minio/mc:RELEASE.2025-04-16T18-13-26Z
           docker run -d --name enclave-minio-reach \
             -e MINIO_ROOT_USER=enclave \
             -e MINIO_ROOT_PASSWORD=enclave-dev-secret \
