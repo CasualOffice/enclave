@@ -167,8 +167,26 @@ pub enum AuthError {
 
     /// Conditional access refused the refresh (K6). Raised by the configured
     /// [`crate::service::RefreshGuard`], not by this crate's own logic.
-    #[error("refresh is not permitted from this network")]
-    NetworkNotAllowed,
+    ///
+    /// # Why it carries the code rather than naming the network
+    ///
+    /// It used to be `NetworkNotAllowed`, a variant with no payload, because the only refusal the
+    /// specification names for this path is `docs/05-API.md §3.2`'s `403 NETWORK_NOT_ALLOWED`. That
+    /// is the *common* refusal and not the only possible one: the stage's effects also produce
+    /// `DEVICE_NOT_MANAGED` and `STEP_UP_REQUIRED` (`crates/conditional_access/src/rules.rs`), and
+    /// a session refused for its authentication strength that was told to change networks is a user
+    /// who cannot act on what they were told.
+    ///
+    /// So the code is carried through unchanged from the stage that decided it, which is the same
+    /// vocabulary an authenticated request gets for the same rule (`ENC-709`). One variant rather
+    /// than one per code, because two spellings of one refusal drift; the code is a closed
+    /// enumeration and never a rule name, so `docs/05-API.md §5`'s "denials never disclose which
+    /// policy matched" still holds — see [`crate::service::RefreshGuard`].
+    #[error("conditional access refused the refresh")]
+    ConditionalAccessDenied(
+        /// The reason code the stage decided, verbatim.
+        ReasonCode,
+    ),
 
     /// **K9.** A revocation store could not answer and the token holds privileged scopes, so the
     /// check failed closed.
@@ -247,7 +265,7 @@ impl AuthError {
     pub const fn reason_code(&self) -> Option<ReasonCode> {
         match self {
             Self::SessionReplay => Some(ReasonCode::SessionReplay),
-            Self::NetworkNotAllowed => Some(ReasonCode::NetworkNotAllowed),
+            Self::ConditionalAccessDenied(code) => Some(*code),
             Self::DeviceMismatch | Self::DeviceBindingRequired => {
                 Some(ReasonCode::DeviceNotManaged)
             }
