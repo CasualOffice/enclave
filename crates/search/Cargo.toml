@@ -10,6 +10,14 @@ authors.workspace      = true
 
 [dependencies]
 enclave-core = { workspace = true }
+# `MilvusConfig::from_operator_config` (`ENC-880`). The conversion from the `search.milvus` section
+# to this crate's client settings used to live in `crates/worker/src/main.rs`, where `crates/api`
+# could not reach it — so the API process held no vector index and every search reported itself
+# degraded (`ENC-698`). It lives beside the type it builds, exactly as
+# `enclave_storage::S3Config::from_operator_config` does, so two binaries reading one section cannot
+# come to mean two different things by it. `enclave-config` depends only on `enclave-core`, so this
+# adds no cycle.
+enclave-config = { workspace = true }
 enclave-db   = { workspace = true }
 # The post-filter publishes its drop counts where it computes them (`postfilter.rs`), so the drop
 # ratio has exactly one producer. `observability` depends only on `core`, so this adds no cycle.

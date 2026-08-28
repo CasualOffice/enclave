@@ -67,7 +67,8 @@ pub use degraded::{
     Cause, DegradedReason, Retrieval, SearchResults, VectorStore, DEFAULT_DENYLIST_LIMIT,
 };
 pub use denylist::{
-    catch_up, confirm_indexed, lift_expired, suppress, suppressed, CatchUp, SuppressionSeq,
+    catch_up, confirm_indexed, in_force, lift_expired, suppress, suppressed, CatchUp,
+    SuppressionSeq,
 };
 pub use error::SearchError;
 pub use excerpt::{Excerpt, Highlights};

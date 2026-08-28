@@ -1,6 +1,6 @@
 # 08 — BYO Infrastructure & Configuration
 
-> **Status:** Draft · **Version:** 2.5 · **Owner:** Platform Engineering · **Last updated:** 2026-08-25
+> **Status:** Draft · **Version:** 2.6 · **Owner:** Platform Engineering · **Last updated:** 2026-08-29
 > **Authoritative for:** provider traits, BYO infrastructure, configuration model and precedence.
 
 ## 1. Principle
@@ -698,6 +698,23 @@ which is the honest value for a deployment where nothing embedded; and dense ret
 nothing. The worker says so once at start-up rather than leaving it to be inferred from an empty
 collection.
 
+**Which processes need the mount, and what happens to the one that does not have it.** The worker
+mounts it to embed *documents*. `enclave-api` mounts it to embed a *query*, because a vector index
+you cannot form a query for is not a vector index — `VectorIndex::candidates` takes an embedding, so
+an API replica with a Milvus endpoint and no weights can probe the store and never read it
+(`ENC-698`). It is the same directory and the same two files; whether both processes see it is a
+scheduling decision, not a configuration one.
+
+The API therefore builds dense retrieval only when **both** `search.milvus` and `embedding_model`
+are set, and it does **not** refuse to start when they are not. What it does instead is answer:
+`POST /api/v1/search` falls back to lexical search over PostgreSQL and reports
+`diagnostics.degraded: true`, which is the state `09-UX-WHITE-LABELING.md §10`'s results header
+renders. A deployment that mounted the model on the worker alone gets exactly that, and gets a
+warning at boot naming the key that is missing — without it, "search is degraded" has no visible
+cause anywhere. A mount that is *configured and broken* is still a start-up failure, as it is in the
+worker, and it cannot fire for a deployment that has not asked for dense search because it is only
+reached when `search.milvus` is set as well.
+
 **Changing the model later is a reindex, not a configuration edit** (`07-SEARCH-INDEXING.md §9`). The
 collection's dense width is fixed when it is created, so a different width needs a new collection and
 every chunk of every tenant re-embedded. The worker reads the collection's width back from the server
@@ -736,6 +753,7 @@ Maker/checker approval may be required per scope (`06-SECURITY-DLP-ACCESS.md §2
 
 | Version | Date | Change |
 |---|---|---|
+| 2.6 | 2026-08-29 | `§18.1` says which processes need the mount and what a deployment that gives it to only one of them gets. `enclave-api` now loads the same weights to embed a search query, because a vector index a process cannot form a query for is not one it can read; it builds dense retrieval only when `search.milvus` and `embedding_model` are both set, and answers lexically with `diagnostics.degraded: true` — never a refusal to start — when they are not (`ENC-698`). |
 | 2.5 | 2026-08-25 | `§18.1` is new: how an operator produces the mounted `bge-m3` model, reproducibly. The conversion step exists because this build compiles `rten` without its ONNX parser — an enabled parser nobody uses is still a parser inside a customer's trust boundary — so `rten-convert` closes the gap once, at the version the `rten` crate in `Cargo.lock` names. `§15`'s `embedding:` block is replaced by a top-level `embedding_model` path: Q14 settled *which* model, so what a deployment supplies is the weights and not a name, and a top-level key makes the field and `ENCLAVE_EMBEDDING_MODEL` one spelling. `provider` and `batch_size` are gone rather than left unread — an inert key is a claim an operator acts on. A mounted model with `search.provider: none` is now refused at startup, because nothing else would report it (`ENC-661`). |
 | 2.4 | 2026-08-22 | `§15` gains a modelled `storage:` and `search:` section and a `metrics:` section. `storage.profile: "tenant-default"` is replaced by a deployment-wide `storage.s3` block, because `§4`'s `storage_profiles` table does not exist and the key named a row nothing could resolve (`ENC-562`); `search.milvus` carries the URI and token, and never the embedding width (`ENC-563`). `server.metrics_port` / `server.metrics_bind` move to `metrics.api_port` / `metrics.worker_port` / `metrics.bind` and the old keys are refused at startup — both binaries read the single old key, so one file on one host made the second process to start die with `Address already in use` (`ENC-566`). |
 | 2.3 | 2026-08-22 | Earlier revisions predate this table. |

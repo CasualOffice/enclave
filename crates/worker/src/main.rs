@@ -627,6 +627,13 @@ async fn vector_stage(
 /// two cheap objects; two *configurations* would be a census counting a different collection from
 /// the one the pass writes, and the symptom of that is a coverage gauge that never rises.
 ///
+/// **It is no longer this crate's function.** `ENC-698` found the same sentence one process along:
+/// `crates/api` could not reach the conversion, so the API held no vector index and every search
+/// reported `degraded: true` whatever the store was doing. The body moved to
+/// [`MilvusConfig::from_operator_config`], beside the type it builds and where both binaries can
+/// call it — this is now a two-line adapter that supplies the width and the `anyhow` context the
+/// composition root wants.
+///
 /// # The dimension is not configuration
 ///
 /// [`ACTIVE.dimension`](enclave_embeddings::model::ACTIVE) supplies it and `search:` deliberately
@@ -634,7 +641,8 @@ async fn vector_stage(
 /// is fixed when the collection is created and a mismatch errors at neither end, so a configurable
 /// width is a way to write that mistake down. What this value is *for* is creating the collection;
 /// checking an existing one against it is [`MilvusIndex::dense_width`]'s job, because a value we
-/// supplied cannot check itself.
+/// supplied cannot check itself. It stays here, and is passed, because `enclave-search` does not
+/// depend on `enclave-embeddings` and must not start.
 ///
 /// # Errors
 ///
@@ -643,18 +651,8 @@ fn milvus_config(
     config: &enclave_config::Config,
     secrets: &enclave_config::ResolvedSecrets,
 ) -> anyhow::Result<Option<MilvusConfig>> {
-    let Some(section) = config.search.milvus.as_ref() else { return Ok(None) };
-
-    let mut milvus = MilvusConfig::new(section.uri.to_string(), ACTIVE.dimension);
-    if let Some(collection) = section.collection.as_ref() {
-        milvus.collection.clone_from(collection);
-    }
-    if let Some(token) = secrets.get("search.milvus.token") {
-        milvus.token =
-            Some(token.expose_str().context("search.milvus.token is not valid UTF-8")?.to_owned());
-    }
-
-    Ok(Some(milvus))
+    MilvusConfig::from_operator_config(config, secrets, ACTIVE.dimension)
+        .context("read the vector store this deployment's `search.milvus` names")
 }
 
 /// The scanner this deployment configured, or a refusal to start.
