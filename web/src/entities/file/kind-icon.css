@@ -1,0 +1,64 @@
+/* The four file-kind tints, named once.
+ *
+ * The values are the reference's, from `specs/library.md §4A(b)` and the
+ * prototype's `.fi.pdf` / `.doc` / `.xls` / `.ppt` rules — `web/design-system/`
+ * is authoritative for values (`CLAUDE.md`, TypeScript conventions). What was
+ * *not* the reference's is that they were raw hex literals repeated in three
+ * feature stylesheets with no name attached, so nothing in the tree could say
+ * what `#3B6FD4` was for or change it in one place.
+ *
+ * ## Both themes, measured
+ *
+ * The four were chosen against the light sheet only, so they were re-measured
+ * against the dark one before being kept. A tinted glyph is a *graphical object*
+ * and `WCAG 1.4.11` asks 3:1 of it — not the 4.5:1 that text needs, because the
+ * colour is reinforcement and the file type is also written out in the row
+ * (`docs/09 §15`).
+ *
+ *   tint            light (#FFFFFF)   dark (#161615)
+ *   pdf #D0453A         4.57              3.96
+ *   doc #3B6FD4         4.76              3.80
+ *   xls #2E8B57         4.25              4.27
+ *   ppt #D2591C         4.05              4.47
+ *
+ * All eight clear 3:1, so there is **one definition and no dark override**. That
+ * is the finding rather than a shortcut: the two reds gain contrast in dark and
+ * the two blues lose it, and the worst case (`doc`, 3.80:1) still clears the
+ * bar the glyph has to meet. Inventing a second set of hexes to even the numbers
+ * out would put values in the tree that the reference never chose, which is a
+ * worse trade than a glyph that is slightly quieter in dark.
+ *
+ * `plain`/`markdown` and anything unrecognised stay `--fg3` — 4.84:1 light and
+ * 5.22:1 dark — because "no particular kind" is the absence of a tint rather
+ * than a fifth colour.
+ */
+
+:root {
+  --kind-pdf: #d0453a;
+  --kind-doc: #3b6fd4;
+  --kind-xls: #2e8b57;
+  --kind-ppt: #d2591c;
+}
+
+.enc-kind-icon {
+  inline-size: var(--icon-md);
+  block-size: var(--icon-md);
+  flex: none;
+  color: var(--fg3);
+}
+
+.enc-kind-icon[data-kind='pdf'] {
+  color: var(--kind-pdf);
+}
+
+.enc-kind-icon[data-kind='doc'] {
+  color: var(--kind-doc);
+}
+
+.enc-kind-icon[data-kind='xls'] {
+  color: var(--kind-xls);
+}
+
+.enc-kind-icon[data-kind='ppt'] {
+  color: var(--kind-ppt);
+}

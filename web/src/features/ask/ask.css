@@ -4,19 +4,37 @@
  * (`data-screen-label="Ask"`), which is authoritative for appearance. Every
  * property name here is logical — the prototype is `left`, `margin-left:auto`
  * and `padding-left` throughout, and `en-XB` mirrors direction in CI. Copy its
- * values, never its property names (`docs/17 §8`).
+ * values, never its property names (`docs/17 §8`) — and every dimension is now a
+ * token from `styles/scale.css` rather than the literal it was.
  *
- * The whole file turns on one distinction, and it is a security one
- * (`docs/17 §6`, `plans/M5-MVP-GA.md` D33): **unbuilt, busy and denied must be
- * visually unmistakable for one another.** They are given three different
- * visual languages rather than three shades of grey:
+ * ## What left this file
+ *
+ * `.ask-state`, `.ask-figure` (with its private `Figure` helper, identical to
+ * four other copies), `.ask-state-title`, `.ask-state-body`,
+ * `.ask-state-actions` and `.ask-request-id` are `shared/ui/surface-states`.
+ * The request-ID rule mattered most: three of the seven copies in the tree
+ * carried `unicode-bidi: isolate; direction: ltr` on the `<code>` and four did
+ * not, so the same identifier rendered correctly on three screens and reversed
+ * on four. The shared one is isolated, and it is the only one left.
+ *
+ * The local `@keyframes`/`prefers-reduced-motion` pair is `styles/motion.css`.
+ * `design-system.test.tsx` asserts there is exactly one reduced-motion block in
+ * the tree and no keyframe under `features/` — eight per-file blocks were eight
+ * chances for a new animation to ship without one.
+ *
+ * ## The distinction the rest of the file turns on, and it is a security one
+ *
+ * `docs/17 §6`, `plans/M5-MVP-GA.md` D33: **unbuilt, busy and denied must be
+ * visually unmistakable for one another.** Three visual languages, not three
+ * shades of grey:
  *
  *   unbuilt — a DASHED hairline and flat, static fill. Dashed reads as a sketch
  *             of a thing rather than the thing, which is exactly the claim.
  *             Neutral greys only; never `--danger`, never `--warn`.
- *   busy    — a SHIMMERING skeleton (`.ui-skeleton`). Motion says "in flight".
- *             Nothing unbuilt on this surface animates, so a user never has to
- *             wait to find out which one they are looking at.
+ *   busy    — a PULSING skeleton (`.ui-skeleton`). Motion says "in flight".
+ *             Nothing unbuilt on this surface animates once it has arrived, so
+ *             a user never has to wait to find out which one they are looking
+ *             at. This is why `.ask-wire-bar` below is **not** `Skeleton`.
  *   denied  — a SOLID hairline with an inset `--danger` ring, full colour, kept
  *             focusable (`.ui-btn[data-state='denied']` in `primitives.css`).
  *             This surface renders none, and a test asserts it.
@@ -37,20 +55,20 @@
 .ask-head {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding-block: 10px 0;
-  padding-inline: 16px 14px;
-  min-block-size: 38px;
+  gap: var(--sp-4);
+  padding-block: var(--sp-5) 0;
+  padding-inline: var(--sp-8) var(--sp-7);
+  min-block-size: var(--bar-h);
   color: var(--fg3);
-  font-size: 12.5px;
+  font-size: var(--fs-body);
 }
 
 .ask-heading {
   margin: 0;
   font-family: var(--tight);
-  font-size: 13px;
+  font-size: var(--fs-row);
   font-weight: 500;
-  letter-spacing: -0.01em;
+  letter-spacing: var(--ls-body);
   color: var(--fg);
 }
 
@@ -65,8 +83,8 @@
   min-block-size: 0;
   display: flex;
   flex-direction: column;
-  padding-block: 20px;
-  padding-inline: 28px;
+  padding-block: var(--sp-8);
+  padding-inline: var(--sp-12);
 }
 
 .ask-body {
@@ -74,8 +92,8 @@
   min-block-size: 0;
   display: flex;
   flex-direction: column;
-  gap: 22px;
-  padding-block-end: 22px;
+  gap: var(--sp-8);
+  padding-block-end: var(--sp-8);
   overflow: auto;
 }
 
@@ -92,72 +110,16 @@
   margin-block-end: auto;
 }
 
-/* ------------------------------------------------------------ state blocks */
-
-.ask-state {
+/* The state blocks are centred in the column rather than filling it.
+ *
+ * Not `fill`: on the unbuilt surface the state block and the answer's shape are
+ * siblings in this scroller, and a filling state would take the column's free
+ * space and squash the shape it is standing next to. `--card-measure` is the
+ * named width of a centred card, which is what this is. */
+.ask-body .surface-state {
+  inline-size: 100%;
+  max-inline-size: var(--card-measure);
   margin-inline: auto;
-  max-inline-size: 46ch;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  text-align: center;
-  gap: 6px;
-}
-
-/* The prototype's own Ask figure: a 40px accent-soft tile holding the spark.
- * `docs/09 §11`'s empty state wants the surface to say what it is for, and the
- * product's own icon for "ask" does more of that than an abstract mark. */
-.ask-figure {
-  inline-size: 40px;
-  block-size: 40px;
-  border-radius: 12px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  margin-block-end: 8px;
-  background: var(--accent-soft);
-  color: var(--accent);
-  flex: none;
-}
-
-/* The error figure is the list's treatment (`grouped-list.css`), so a failed
- * read looks the same wherever it happens. Duplicated rather than imported:
- * features do not import each other (`docs/17 §2`), and this is the second
- * caller that wants it — the signal that the four-state scaffold belongs in
- * `shared/ui`, which is reported rather than moved here. */
-.ask-figure[data-tone='error'] {
-  border-radius: 11px;
-  background: transparent;
-  color: var(--fg4);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 34%, transparent);
-}
-
-.ask-figure[data-tone='neutral'] {
-  background: transparent;
-  color: var(--fg3);
-  box-shadow: inset 0 0 0 1px var(--line-strong);
-}
-
-.ask-state-title {
-  margin: 0;
-  font-family: var(--tight);
-  font-size: 18px;
-  font-weight: 600;
-  letter-spacing: -0.02em;
-}
-
-.ask-state-body {
-  margin: 0;
-  color: var(--fg2);
-  font-size: 12.5px;
-  line-height: 1.5;
-}
-
-.ask-state-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-block-start: 10px;
 }
 
 /* The empty state's action slot, occupied by an honest statement that the
@@ -169,30 +131,10 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  margin-block-start: 12px;
+  gap: var(--sp-4);
+  margin: var(--sp-3) 0 0;
   color: var(--fg2);
-  font-size: 12px;
-}
-
-.ask-request-id {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  margin-block-start: 12px;
-  font-family: var(--mono);
-  font-size: 11px;
-  color: var(--fg2);
-}
-
-.ask-request-id code {
-  background: var(--sunken);
-  padding: 2px 6px;
-  border-radius: 4px;
-  /* A request ID is an opaque token, not prose: it must not reorder beside an
-   * RTL interface (`docs/14 §7`). */
-  unicode-bidi: isolate;
-  direction: ltr;
+  font-size: var(--fs-ctl);
 }
 
 /* ------------------------------------------------------- the answer's shape */
@@ -201,63 +143,75 @@
  * deep links. That promise is made here, in the shape, while there is nothing
  * to put in it — the layout without a word of content, because a plausible
  * sentence with a fabricated citation would be the one thing this surface must
- * never do.
+ * never do. */
+
+/* The measure everything in the column shares — the wireframe, the loading
+ * panel and the composer.
  *
- * Dashed, flat and motionless: it must not be mistaken for a skeleton, which
- * would say an answer is arriving. */
+ * `62ch` is a reading measure rather than a point on the spacing scale: it is
+ * set in characters on purpose, so it tracks the type rather than the grid, and
+ * `--prose-measure`'s 46ch is a paragraph inside a state block rather than a
+ * panel. It is the one non-scalar length left in this file. */
 .ask-panel {
-  margin: 0;
   inline-size: 100%;
   max-inline-size: 62ch;
   margin-inline: auto;
+}
+
+/* The contents of a panel. Split from the box above so the loading state can be
+ * a `Card` — which owns the sheet, the hairline and the radius that used to be
+ * written out here — while the wireframe is deliberately none of those. */
+.ask-panel-inner {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 14px;
-  border-radius: var(--r-surf);
+  gap: var(--sp-5);
+  padding: var(--sp-6);
 }
 
 /* Dashed: the wireframe. A stronger stroke than the product's `--line-strong`
  * hairline on purpose — at a hairline's opacity the dashes do not resolve and
- * the frame reads as an ordinary panel, which is the one thing it must not. */
+ * the frame reads as an ordinary panel, which is the one thing it must not.
+ *
+ * It is not a `Card`, and that is the point: a card has a sheet and a hairline,
+ * and this must not be mistaken for a real panel with real content in it. */
 .ask-shape {
   border: 1px dashed color-mix(in srgb, var(--fg4) 75%, transparent);
-}
-
-/* Solid hairline: a real panel with real content on its way into it. The two
- * frames differ before a word of either is read, which is the point. */
-.ask-loading {
-  box-shadow: var(--hairline);
+  border-radius: var(--r-surf);
 }
 
 /* The prose beside the wireframe runs the full width of the panel and starts at
- * the inline start, unlike the centred state blocks it borrows its type from.
- * `start`, not `left`: `en-XB` mirrors direction in CI, and the `lint:i18n`
- * gate refuses `textAlign` in a style object at all — logical or not — so this
- * belongs here rather than inline. */
-.ask-shape .ask-state-body,
-.ask-panel .ask-state-body {
-  text-align: start;
+ * the inline start, unlike the centred state blocks it borrows its type from. */
+.ask-panel-body {
+  margin: 0;
+  color: var(--fg2);
+  font-size: var(--fs-body);
+  line-height: var(--lh-body);
 }
 
 .ask-shape-caption {
   display: block;
   color: var(--fg2);
-  font-size: 11.5px;
+  font-size: var(--fs-meta);
   font-weight: 500;
   letter-spacing: 0;
+}
+
+.ask-turns {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
 }
 
 .ask-wire-turn {
   display: flex;
   align-items: flex-start;
-  gap: 8px;
+  gap: var(--sp-4);
 }
 
 .ask-wire-badge {
-  inline-size: 20px;
-  block-size: 20px;
-  border-radius: 50%;
+  inline-size: var(--sp-10);
+  block-size: var(--sp-10);
+  border-radius: var(--r-dot);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -276,21 +230,27 @@
   min-inline-size: 0;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding-block-start: 5px;
+  gap: var(--sp-3);
+  padding-block-start: var(--sp-1);
 }
 
 .ask-wire-line {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--sp-2);
 }
 
-/* Flat. Never `.ui-skeleton` — that shimmers, and a shimmer here would claim an
- * answer is on its way. */
+/* Flat, and **never** `.ui-skeleton`.
+ *
+ * `Skeleton` pulses, and a pulse is this product's *busy* signal
+ * (`docs/17 §6`). A wireframe that shimmered would claim an answer is seconds
+ * away, which is the one thing Ask may not say — so this bar stays a plain box
+ * even though it is shaped like the shared primitive. The distinction is a
+ * security treatment, not a style one, and `ask-states.test.tsx` asserts that
+ * the unbuilt screen renders zero `.ui-skeleton`. */
 .ask-wire-bar {
-  block-size: 8px;
-  border-radius: 4px;
+  block-size: var(--sp-4);
+  border-radius: var(--r-chip);
   background: var(--g200);
   flex: none;
 }
@@ -299,15 +259,15 @@
  * against `--fg` rather than left at the raw accent, the same recipe the pills
  * use, because the raw accent on its own 10% tint is under 4.5:1. */
 .ask-wire-cite {
-  min-inline-size: 16px;
-  block-size: 16px;
-  padding-inline: 4px;
-  border-radius: 5px;
+  min-inline-size: var(--icon-md);
+  block-size: var(--icon-md);
+  padding-inline: var(--sp-2);
+  border-radius: var(--r-chip);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: var(--fs-micro);
   font-weight: 600;
   background: var(--accent-soft);
   color: color-mix(in srgb, var(--accent) 78%, var(--fg));
@@ -320,40 +280,29 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding-block-start: 2px;
+  gap: var(--sp-2);
+  padding-block-start: var(--sp-1);
 }
 
 .ask-wire-source {
   display: flex;
   align-items: center;
-  gap: 8px;
-  block-size: 24px;
-  padding-inline: 6px;
+  gap: var(--sp-4);
+  block-size: var(--ctl-h-sm);
+  padding-inline: var(--sp-3);
   border-radius: var(--r-ctrl);
   color: var(--fg3);
 }
 
-/* The deep-link glyph at the end of each source row. It draws the affordance
- * `docs/09 §10` requires without inventing a target for it. */
-.ask-wire-source > :last-child {
-  margin-inline-start: auto;
-}
-
 /* ------------------------------------------------------------- the composer */
 
+/* `Card` owns the sheet, the hairline and the radius; this owns the stack. */
 .ask-composer {
-  inline-size: 100%;
-  max-inline-size: 62ch;
-  margin-inline: auto;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding-block: 8px 6px;
-  padding-inline: 10px 8px;
-  border-radius: var(--r-surf);
-  background: var(--sheet);
-  box-shadow: var(--hairline);
+  gap: var(--sp-3);
+  padding-block: var(--sp-4) var(--sp-3);
+  padding-inline: var(--sp-5) var(--sp-4);
 }
 
 /* Present but inert. Not `disabled`, because a disabled input is announced as
@@ -365,7 +314,7 @@
   border: 0;
   background: transparent;
   font: inherit;
-  font-size: 12.5px;
+  font-size: var(--fs-body);
   color: var(--fg2);
   outline: 0;
   inline-size: 100%;
@@ -379,33 +328,15 @@
 .ask-composer-foot {
   display: flex;
   align-items: center;
-  gap: 6px;
-}
-
-.ask-composer-spacer {
-  flex: 1;
+  gap: var(--sp-3);
 }
 
 /* `<Button>` emits its release note as a sibling after the control. `row-reverse`
  * is a logical direction — it follows the inline axis and mirrors in RTL — so
- * the note reads ahead of the button without the DOM being reordered. */
+ * the chip reads ahead of the button without the DOM being reordered. */
 .ask-send-slot {
   display: flex;
   align-items: center;
   flex-direction: row-reverse;
-  gap: 8px;
-}
-
-/* ------------------------------------------------------------------ motion */
-
-.ask-state,
-.ask-shape {
-  animation: ui-in 0.25s both;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .ask-state,
-  .ask-shape {
-    animation: none;
-  }
+  gap: var(--sp-4);
 }

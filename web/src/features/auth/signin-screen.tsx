@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 import { useT } from '../../shared/i18n/index.tsx';
 import { Icon } from '../../shared/ui/icon-sprite.tsx';
+import { Field } from '../../shared/ui/layout.tsx';
 import { AccessLoader, Mark } from '../../shared/ui/mark.tsx';
 import { Button, READY, type ControlState } from '../../shared/ui/primitives.tsx';
+import { RequestId } from '../../shared/ui/surface-states.tsx';
 import { outcomeOf, signIn, type SignInOutcome } from './sign-in.ts';
 import { oidcStartPath, WORKSPACE_FIXTURE } from './workspace.ts';
 import './signin.css';
@@ -131,9 +133,20 @@ export default function Screen() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
 
-  const emailRef = useRef<HTMLInputElement>(null);
-  const passwordRef = useRef<HTMLInputElement>(null);
+  /* The form, not the two inputs.
+   *
+   * `Field` owns the `<input>` — one box, one focus ring — and does not take a
+   * ref, so the empty-field focus below goes through the form's own element
+   * collection instead. That is the platform's index of named controls, it
+   * cannot get out of step with what is rendered, and it does not require the
+   * primitive to grow a prop for one caller. */
+  const formRef = useRef<HTMLFormElement>(null);
   const inFlight = useRef(false);
+
+  function focusField(name: string): void {
+    const field = formRef.current?.elements.namedItem(name);
+    if (field instanceof HTMLInputElement) field.focus();
+  }
 
   /* A fresh page load after sign-in, not a client-side route change: the
    * session cookie the server just set has to be picked up by a new bootstrap,
@@ -157,11 +170,11 @@ export default function Screen() {
      * for a recognised address would be an enumeration oracle that never
      * reached the network at all. */
     if (email.trim() === '') {
-      emailRef.current?.focus();
+      focusField('email');
       return;
     }
     if (password === '') {
-      passwordRef.current?.focus();
+      focusField('password');
       return;
     }
 
@@ -206,7 +219,7 @@ export default function Screen() {
     <main className="sgn">
       <div className="sgn-backdrop" aria-hidden="true" />
 
-      <section className="sgn-card ui-in" data-signin-state={stateName(phase)}>
+      <section className="sgn-card enc-enter" data-signin-state={stateName(phase)}>
         {/* 34 px: `Mark` picks the middle optical cut for it, which is the one
          * `logo.svg` is drawn at. The mark is never scaled from another cut
          * (`web/public/BRAND.md`), and it is aria-hidden because the heading
@@ -233,15 +246,20 @@ export default function Screen() {
           </div>
         ) : (
           <>
-            <form className="sgn-form" onSubmit={onSubmit} noValidate>
+            <form className="sgn-form" ref={formRef} onSubmit={onSubmit} noValidate>
               <div className="sgn-field">
                 <label className="sgn-label" htmlFor="sgn-email">
                   {t('auth.email.label')}
                 </label>
-                <input
+                {/* `Field size="lg"` is the 36px control this screen wants, with
+                  * the one focus ring the tree now has. The visible label above
+                  * stays — it is what a voice-control user says and what a
+                  * pointer user clicks — and `Field`'s own accessible name is
+                  * the same catalog key, so the two cannot disagree. */}
+                <Field
+                  label="auth.email.label"
+                  size="lg"
                   id="sgn-email"
-                  ref={emailRef}
-                  className="sgn-input"
                   type="email"
                   name="email"
                   inputMode="email"
@@ -263,10 +281,10 @@ export default function Screen() {
                 <label className="sgn-label" htmlFor="sgn-password">
                   {t('auth.password.label')}
                 </label>
-                <input
+                <Field
+                  label="auth.password.label"
+                  size="lg"
                   id="sgn-password"
-                  ref={passwordRef}
-                  className="sgn-input"
                   type="password"
                   name="password"
                   autoComplete="current-password"
@@ -325,15 +343,22 @@ export default function Screen() {
                * `Later` chip on it. No remedy is offered, because there is
                * nothing this user can do about our release schedule — and
                * offering one is precisely what would make it read as a refusal. */}
+              {/* The note is the **release sentence**, not the chip's word.
+                * D33 splits the marker in two — a one-word chip that is visible
+                * and a sentence reached through `aria-describedby` — and this
+                * screen had `note: 'later.chip'`, so a screen-reader user asking
+                * why the control was disabled was told "Later" while the
+                * sentence sat in a separate paragraph nothing pointed at. One
+                * note, owned by the primitive, as on every other unbuilt
+                * control in the product. */}
               <div className="sgn-later">
                 <Button
                   label="auth.continueWithPasskey"
                   icon="shield"
                   size="lg"
-                  state={{ kind: 'unbuilt', note: 'later.chip' }}
+                  state={{ kind: 'unbuilt', note: 'auth.passkey.later' }}
                 />
               </div>
-              <p className="sgn-later-note">{t('auth.passkey.later')}</p>
             </div>
           </>
         )}
@@ -402,33 +427,12 @@ function Answer({ outcome, onRetry }: { outcome: SignInOutcome; onRetry: () => v
           <Button label="auth.error.retry" size="sm" onClick={onRetry} />
         </div>
       )}
-      <RequestId value={outcome.requestId} />
+      {/* The shared row, which is **direction-isolated**. This screen held one
+        * of the four copies that omitted `unicode-bidi: isolate; direction:
+        * ltr`, so an RTL reader saw a correct request ID rendered with its
+        * segments reversed and read out a string that did not match the one the
+        * copy button put on the clipboard. */}
+      <RequestId requestId={outcome.requestId} />
     </div>
-  );
-}
-
-/** The correlation ID `docs/09 §11` requires on a failure, copyable. */
-function RequestId({ value }: { value: string }) {
-  const t = useT();
-  if (value === '') return null;
-
-  return (
-    <p className="sgn-request-id">
-      <span>{t('auth.error.requestId')}</span>
-      <code>{value}</code>
-      <Button
-        label="auth.error.copy"
-        size="sm"
-        variant="ghost"
-        onClick={() => {
-          /* An accelerator, not the only route: the id is `user-select: all`
-           * text as well, because a non-secure context and an old browser both
-           * have no clipboard API and support still needs the string. */
-          const clipboard: Clipboard | undefined = navigator.clipboard;
-          if (clipboard === undefined) return;
-          void clipboard.writeText(value);
-        }}
-      />
-    </p>
   );
 }

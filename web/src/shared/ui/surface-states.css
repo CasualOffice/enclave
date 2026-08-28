@@ -1,70 +1,139 @@
-/* The shared state panels.
+/* The four states, one stylesheet.
  *
- * Geometry is the prototype's card: `padding-block: 20px`, `border-radius:
- * var(--r-surf)` (10px) and `box-shadow: var(--hairline)` — the same box the
- * attention cards and the recents container use, so a state panel sits in a
- * section without changing that section's measure.
+ * Geometry is the prototype's, by way of the four feature copies this replaces:
+ * a 44px mark, a 15px/600 heading, a 12.5px body held to a 46ch measure, and a
+ * 10px gap down the stack. Two of the four copies had drifted to a 52ch and a
+ * 62ch measure for the same paragraph.
  *
- * Logical properties throughout. The prototype's markup writes `padding: 0 8px
- * 0 7px` and `margin-left: auto`; the *values* are the reference and the
- * property names are not (`docs/17 §8`), because `en-XB` mirrors direction in
- * CI and a physical property fails it.
+ * Every dimension reads a token from `styles/scale.css`. The figure's `13.75px`
+ * inset and `5.5px` inner radius are the two exceptions and stay literal, with
+ * the reason below: they are a construction of the mark rather than points on a
+ * scale, and rounding them to the grid would draw a different mark.
+ *
+ * Logical properties throughout. The prototype's markup writes `margin-left:
+ * auto` and `text-align:right`; the *values* are the reference and the property
+ * names are not (`docs/17 §8`) — `en-XB` mirrors direction in CI and a physical
+ * property fails the build.
  */
 
-/* Text tones in the light theme, and why so few of them.
+/* ## Which greys may carry text, and why it is not all four
  *
- * `--fg3` is `#7A7A74` on `--sheet`, which computes to **4.31:1** — under AA's
- * 4.5 for text below 18.66px, and everything here is 11–13px. `--fg4` is 2.3:1
- * and is worse. The prototype uses both for text throughout; that is `ENC-700`,
- * a known defect in the reference rather than a pattern to copy, and
- * `grouped-list.css` already made the same call for the same reason.
+ * `--fg3` is `#72726C`, which is **4.84:1** on `--sheet` and clears AA. `--fg4`
+ * is `#8A8A84`, which is **3.47:1** — under AA's 4.5 for text below 18.66px,
+ * and everything on a state block is 11–15px.
  *
- * So text carries `--fg2` (6.83:1) or `--fg`, and `--fg3`/`--fg4` are left for
- * *graphical* objects — icons and rules — which need 3:1 under WCAG 1.4.11 and
- * clear it comfortably. In the dark theme `--fg3` is 5.2:1 and would be legal;
- * one rule for both themes is simpler than a tone that is correct in one.
+ * So `--fg4` carries *graphical* objects only: the figure's rule, an icon, a
+ * separator. Those need 3:1 under WCAG 1.4.11 and clear it. Text carries
+ * `--fg2` (6.83:1), `--fg3` or `--fg`.
+ *
+ * This is a real divergence from the reference, which uses all four greys for
+ * text, and it is `ENC-700`. It is recorded rather than resolved because
+ * resolving it is a design decision: darkening `--fg4` to `#767670` would reach
+ * 4.57:1 but puts it within four units of `--fg3`, collapsing two steps of the
+ * ramp into one. Three text greys that are legible beats four where the
+ * quietest cannot be read.
  */
-
 
 .surface-state {
   box-sizing: border-box;
-  padding-block: 20px;
-  padding-inline: 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-5);
+  padding-block: var(--sp-10);
+  padding-inline: var(--sp-8);
   border-radius: var(--r-surf);
   background: var(--sheet);
   box-shadow: var(--hairline);
-  text-align: start;
+  text-align: center;
+  /* The block is a state, and a state arriving is a change of what the surface
+   * is saying. It fades in rather than appearing, on the shortest of the
+   * entrance durations — long enough to read as a transition, short enough that
+   * a fast error is not slowed down by its own presentation. */
+  animation: enc-fade var(--dur-fade) var(--ease-enter) both;
 }
 
-.surface-state-title {
-  margin: 0;
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--fg);
+/* A state that replaces a whole column rather than sitting inside a section.
+ *
+ * The distinction was four different paddings in four stylesheets. It is one
+ * attribute: a filling state centres itself in the space it was given and drops
+ * the card, because a card drawn around the entire content area is a border
+ * around nothing. */
+.surface-state[data-fill] {
+  flex: 1;
+  min-block-size: 0;
+  justify-content: center;
+  padding-inline: var(--sp-16);
+  border-radius: 0;
+  box-shadow: none;
 }
 
-/* The error tone is a **ring**, not tinted text.
+/* ------------------------------------------------------------------- figure */
+
+/* The mark's own construction, at rest: a bounded field with a window inside it
+ * (`web/public/BRAND.md`). Drawn from tokens rather than shipped as a raster —
+ * an empty state that ships an image is an empty state nobody re-themes, and
+ * this one has to survive three brands and two themes.
  *
- * `--danger` (#C0392B) is 3.40:1 on the dark sheet, so a title painted with it
- * fails AA in the dark theme — measured, not guessed. Every other surface in
- * this tree already marks an error with `inset 0 0 0 1px color-mix(in srgb,
- * var(--danger) 34%, transparent)` and leaves the text alone, for exactly this
- * reason; this now does the same.
+ * `13.75px` and `5.5px` are the mark's proportions (44 × 5/16 and 44 × 1/8),
+ * not spacing. They are literal here because a token would imply they move with
+ * the scale, and they do not: they move with the figure's size or not at all. */
+.surface-state-figure {
+  inline-size: 44px;
+  block-size: 44px;
+  border-radius: 11px;
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+  position: relative;
+  margin-block-end: var(--sp-2);
+  color: var(--fg3);
+  flex: none;
+}
+
+.surface-state-figure::after {
+  content: '';
+  position: absolute;
+  inset-block-start: 13.75px;
+  inset-inline-start: 13.75px;
+  inline-size: 22px;
+  block-size: 22px;
+  border-radius: 0 5.5px 5.5px 5.5px;
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+}
+
+/* The window's square corner is the one at the mark's leading edge, so it
+ * mirrors with the writing direction. `border-radius` has no logical form. */
+:dir(rtl) .surface-state-figure::after {
+  border-radius: 5.5px 0 5.5px 5.5px;
+}
+
+/* ------------------------------------------------------------------- tones */
+
+/* The error tone is a **ring**, never tinted text.
  *
- * Nothing is lost semantically. Colour is never the only carrier
- * (`docs/09 §15`): the title says what happened, and the ring reinforces it.
+ * `--danger` (#C0392B) is 3.40:1 on the dark sheet, so a heading painted with
+ * it fails AA in the dark theme — measured, not guessed. The ring is a
+ * graphical object and needs 3:1, which it clears in both themes.
  *
- * Never a `--c-*` token here either: those are the locked classification
+ * Nothing is lost semantically: colour is never the only carrier
+ * (`docs/09 §15`), the heading says what happened and the ring reinforces it.
+ *
+ * Never a `--c-*` token here either. Those are the locked classification
  * palette, and a failure that borrowed "Confidential" red would erode the one
  * colour code in this product that has to stay unambiguous. */
-.surface-state[data-tone='error'] {
+.surface-state[data-tone='error'] .surface-state-figure,
+.surface-state[data-tone='error'] .surface-state-figure::after {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 34%, transparent);
+}
+
+.surface-state[data-tone='error']:not([data-fill]) {
   box-shadow:
     var(--hairline),
     inset 0 0 0 1px color-mix(in srgb, var(--danger) 34%, transparent);
 }
 
-/* Unbuilt is neutral and sunken, and shares no colour, no class and no border
- * with the denial treatment (`docs/17 §6`, test F2). */
+/* Unbuilt is neutral and sunken. It shares no colour, no class, no border and
+ * no attribute value with the denial treatment — `docs/17 §6`, and test F2
+ * asserts the class sets are disjoint rather than trusting this comment. */
 .surface-state[data-tone='unbuilt'] {
   background: var(--sunken);
   box-shadow: none;
@@ -75,42 +144,63 @@
   color: var(--fg2);
 }
 
+/* ------------------------------------------------------------------- text */
+
+.surface-state-title {
+  margin: 0;
+  font-size: var(--fs-head);
+  font-weight: 600;
+  letter-spacing: var(--ls-tight);
+  color: var(--fg);
+}
+
 .surface-state-body {
   margin: 0;
-  margin-block-start: 4px;
-  font-size: 12.5px;
-  line-height: 1.45;
+  font-size: var(--fs-body);
+  line-height: var(--lh-body);
   color: var(--fg2);
-  max-inline-size: 62ch;
+  max-inline-size: var(--prose-measure);
 }
 
 .surface-state-actions {
   display: flex;
   align-items: center;
-  gap: 10px;
+  justify-content: center;
+  gap: var(--sp-4);
   flex-wrap: wrap;
-  margin-block-start: 12px;
+  margin-block-start: var(--sp-1);
 }
+
+/* --------------------------------------------------------- request id, code */
 
 .surface-state-rid,
 .surface-state-code {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--sp-3);
   margin: 0;
-  font-size: 11.5px;
+  font-size: var(--fs-meta);
   color: var(--fg2);
 }
 
 .surface-state-code {
-  margin-block-start: 10px;
+  margin-block-start: var(--sp-1);
 }
 
+/* Direction-isolated, and left-to-right regardless of the document.
+ *
+ * A request ID is an opaque token, not text in the user's language. Without the
+ * isolation an RTL document reorders its segments on screen while the clipboard
+ * keeps the original — so the user reads one string and pastes another. Four of
+ * the seven copies of this rule omitted it. */
 .surface-state-rid code,
 .surface-state-code code {
   font-family: var(--mono);
-  font-size: 11.5px;
+  font-size: var(--fs-meta);
   color: var(--fg2);
+  unicode-bidi: isolate;
+  direction: ltr;
+  user-select: all;
 }
 
 .surface-state-rid-label {

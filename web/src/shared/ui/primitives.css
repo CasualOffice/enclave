@@ -10,19 +10,14 @@
  * `text-align:right` throughout, and `en-XB` mirrors direction in CI. Copy its
  * values, never its property names (`docs/17 §8`).
  *
- * The z-index scale for the whole application, in one place, because an
- * undocumented one becomes `z-index: 9999`:
+ * The z-index ladder used to be prose in this comment. It is now
+ * `--z-accent … --z-toast` in `styles/scale.css`, for the reason a prose
+ * ladder always ends up needing: two floating surfaces independently arrived at
+ * `z-index: 20` because neither author could read a comment from the file they
+ * were editing. A scale nothing can reference is a scale nothing obeys.
  *
- *   1  in-surface accents (a selected row's bar)
- *   2  pinned rows inside a scroller (group headers)
- *   3  a scroller's own sticky chrome (column headers)
- *   10 the floating selection bar
- *   20 popovers and menus
- *   30 dialogs and their scrim
- *   40 the command palette
- *   50 toasts
- *
- * Nothing may invent a value outside it.
+ * Geometry likewise: every size, space and type step below reads a token from
+ * `styles/scale.css`, and a literal px here is a value that escaped it.
  */
 
 /* ------------------------------------------------------------------ button */
@@ -31,24 +26,28 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  block-size: 28px;
-  padding-inline: 10px;
+  gap: var(--sp-3);
+  /* 26px, not 28. The reference uses `height:26px` on 63 controls and 28 on
+   * eight; this was 28 and every button in the tree sat two pixels taller than
+   * the design it was extracted from. `docs/09 §13`'s density brief — "not
+   * wasting space" — is decided two pixels at a time. */
+  block-size: var(--ctl-h);
+  padding-inline: var(--ctl-pad-lg);
   border-radius: var(--r-ctrl);
   border: 0;
   font: inherit;
-  font-size: 12.5px;
+  font-size: var(--fs-body);
   font-weight: 500;
-  letter-spacing: -0.006em;
+  letter-spacing: var(--ls-body);
   white-space: nowrap;
   cursor: pointer;
   background: var(--sheet);
   color: var(--fg);
   box-shadow: var(--hairline);
   transition:
-    transform 120ms cubic-bezier(0.32, 0.72, 0, 1),
-    background-color 120ms ease,
-    filter 120ms ease;
+    transform var(--dur-fade) var(--ease-enter),
+    background-color var(--dur-fade) var(--ease-enter),
+    filter var(--dur-fade) var(--ease-enter);
 }
 
 .ui-btn:hover {
@@ -97,15 +96,18 @@
 }
 
 .ui-btn[data-size='sm'] {
-  block-size: 24px;
-  padding-inline: 8px;
-  font-size: 12px;
+  block-size: var(--ctl-h-sm);
+  padding-inline: var(--ctl-pad-sm);
+  font-size: var(--fs-ctl);
 }
 
+/* 36px, and the one place the scale is deliberately left behind: this size
+ * exists for a form's submit control on the sign-in screen, which is the only
+ * surface in the product that is not dense on purpose. */
 .ui-btn[data-size='lg'] {
-  block-size: 36px;
-  padding-inline: 14px;
-  font-size: 13px;
+  block-size: var(--row-h);
+  padding-inline: var(--sp-7);
+  font-size: var(--fs-row);
   border-radius: calc(var(--r-ctrl) + 2px);
 }
 
@@ -139,17 +141,35 @@
   background: var(--sheet);
 }
 
+/* Unbuilt neutralises the variant it was applied to.
+ *
+ * `background` is reset here and that is the point of the rule, not a detail of
+ * it. Without it `data-variant="primary"` kept `var(--accent)` underneath and
+ * `opacity: .45` faded the *whole control* — a washed-out accent plate carrying
+ * washed-out `--on-accent` text, which measured near-illegible in both themes.
+ * axe does not catch it, because the control is `aria-disabled` and disabled
+ * controls are exempt from the contrast rule — so it was invisible to every
+ * gate while being the least readable thing on the library's view bar.
+ *
+ * That makes it an `ENC-673` failure and not only a legibility one: `docs/17 §6`
+ * requires unbuilt to be **neutral**, and a faded brand colour is not neutral.
+ * The treatment has to look the same on a primary control and a ghost one, or
+ * a user calibrating on "dimmed means not written yet" learns two different
+ * appearances for one meaning.
+ *
+ * Never the denial colour, and never focusable — `tabIndex={-1}` is set by the
+ * component, not here, because focus order is behaviour. */
 .ui-btn[data-state='unbuilt'] {
   cursor: default;
   opacity: 0.45;
-  /* Never the denial colour, and never focusable — `tabIndex={-1}` is set by
-   * the component, not here, because focus order is behaviour. */
+  background: var(--sheet);
   box-shadow: var(--hairline);
   color: var(--fg3);
 }
 
 .ui-btn[data-state='unbuilt']:hover {
   background: var(--sheet);
+  filter: none;
 }
 
 .ui-btn[data-state='busy'] {
@@ -173,8 +193,8 @@
 .ui-denial {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  font-size: 11.5px;
+  gap: var(--sp-4);
+  font-size: var(--fs-meta);
   /* Full colour, never dimmed: a denial is information, and greying it out is
    * how it stops being read. */
   color: var(--fg2);
@@ -184,7 +204,7 @@
   border: 0;
   background: transparent;
   font: inherit;
-  font-size: 11.5px;
+  font-size: var(--fs-meta);
   font-weight: 500;
   color: var(--accent);
   cursor: pointer;
@@ -201,8 +221,8 @@
   align-items: center;
   block-size: 18px;
   padding-inline: 7px;
-  border-radius: 999px;
-  font-size: 10.5px;
+  border-radius: var(--r-pill);
+  font-size: var(--fs-xs);
   font-weight: 500;
   letter-spacing: 0;
   background: var(--sunken);
@@ -233,7 +253,8 @@
  * `clip-path: inset(50%)`, never a physical offset: `left: -9999px` is wrong
  * under RTL and is the reason the shared utility below exists at all.
  */
-.ui-later-note {
+.ui-later-note,
+.ui-sr-only {
   position: absolute;
   inline-size: 1px;
   block-size: 1px;
@@ -245,23 +266,51 @@
 /* -------------------------------------------------------------- icon button */
 
 .ui-iconbtn {
-  inline-size: 26px;
-  block-size: 26px;
+  inline-size: var(--ctl-h);
+  block-size: var(--ctl-h);
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  flex: none;
   border-radius: var(--r-ctrl);
   border: 0;
   background: transparent;
   color: var(--fg3);
   cursor: pointer;
   padding: 0;
-  transition: background-color 120ms ease;
+  transition: background-color var(--dur-fade) var(--ease-enter);
 }
 
 .ui-iconbtn:hover {
   background: var(--hover);
   color: var(--fg);
+}
+
+/* A toggle that is currently on — the peek-panel switch, a density selector.
+ *
+ * `features/libraries/library.css` grew a second icon button
+ * (`.library-iconbtn`, 26 lines) for exactly this one rule, which is the
+ * cheapest possible way for two implementations to appear. The state belongs on
+ * the primitive: `aria-pressed` is the accessible truth, so styling from it
+ * means the appearance and the announcement cannot disagree. */
+.ui-iconbtn[aria-pressed='true'] {
+  background: var(--selected);
+  color: var(--fg);
+}
+
+/* An icon button whose row reveals it on hover. Never `display:none` and never
+ * `visibility:hidden` — a hidden button is not reachable by keyboard, and the
+ * row-actions control is the only way to reach a row's menu without a pointer.
+ * `:focus-visible` brings it back for exactly that reason. */
+.ui-iconbtn[data-reveal] {
+  opacity: 0;
+  transition: opacity var(--dur-fade) var(--ease-enter);
+}
+
+.ui-iconbtn[data-reveal]:focus-visible,
+:hover > .ui-iconbtn[data-reveal],
+:focus-within > .ui-iconbtn[data-reveal] {
+  opacity: 1;
 }
 
 /* --------------------------------------------------------------------- pill */
@@ -270,10 +319,10 @@
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  block-size: 20px;
-  padding-inline: 8px;
-  border-radius: 999px;
-  font-size: 11px;
+  block-size: var(--sp-10);
+  padding-inline: var(--sp-4);
+  border-radius: var(--r-pill);
+  font-size: var(--fs-sm);
   font-weight: 500;
   letter-spacing: 0;
   white-space: nowrap;
@@ -318,13 +367,13 @@
 /* ------------------------------------------------------------------ avatar */
 
 .ui-avatar {
-  inline-size: 20px;
-  block-size: 20px;
-  border-radius: 50%;
+  inline-size: var(--sp-10);
+  block-size: var(--sp-10);
+  border-radius: var(--r-dot);
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 9.5px;
+  font-size: var(--fs-micro);
   font-weight: 600;
   letter-spacing: 0;
   flex: none;
@@ -333,9 +382,9 @@
 }
 
 .ui-avatar[data-size='lg'] {
-  inline-size: 26px;
-  block-size: 26px;
-  font-size: 11px;
+  inline-size: var(--ctl-h);
+  block-size: var(--ctl-h);
+  font-size: var(--fs-sm);
 }
 
 /* The four tints are token pairs so they flip with the theme. Taking the
@@ -377,8 +426,9 @@
 .ui-kbd {
   font-family: var(--mono);
   font-size: 10px;
-  padding: 1px 4px;
-  border-radius: 4px;
+  padding-block: 1px;
+  padding-inline: var(--sp-2);
+  border-radius: var(--r-chip);
   background: var(--sunken);
   color: var(--fg2);
   box-shadow: inset 0 -1px 0 var(--line-strong);
@@ -387,67 +437,52 @@
 
 /* ---------------------------------------------------------------- skeleton */
 
+/* One skeleton, one animation.
+ *
+ * There were three — `.ui-skeleton`, `.egl-skeleton-bar`, `.esr-skeleton` —
+ * with three separately-declared keyframes (`ui-shimmer`, `egl-shimmer`,
+ * `esr-shimmer`) that were the same six lines, and three per-file
+ * `prefers-reduced-motion` blocks to switch them off.
+ *
+ * A single opacity pulse, not a gradient sweep. The prototype's `encSh` slides
+ * a 200%-wide gradient, which repaints the whole skeleton every frame; on a
+ * 400-row list that is measurable against `docs/09 §2`'s 60fps budget, and
+ * `specs/library.md §A` already specifies the pulse instead. One composited
+ * property, the same reading.
+ *
+ * The reduced-motion answer lives in `styles/motion.css` with every other one. */
 .ui-skeleton {
+  display: block;
   block-size: 10px;
-  border-radius: 4px;
-  background: linear-gradient(90deg, var(--sunken) 25%, var(--g150) 50%, var(--sunken) 75%);
-  background-size: 200% 100%;
-  animation: ui-shimmer 1.4s linear infinite;
+  border-radius: var(--r-chip);
+  background: var(--sunken);
+  animation: enc-pulse var(--dur-shimmer) var(--ease-standard) infinite;
 }
 
-@keyframes ui-shimmer {
-  to {
-    background-position: -200% 0;
-  }
+/* A skeleton shaped like the thing it is reserving. `docs/09 §11` and
+ * `docs/17 §8`: the reserved box and the real box are the same box, so nothing
+ * shifts when data lands. */
+.ui-skeleton[data-shape='pill'] {
+  block-size: var(--sp-10);
+  border-radius: var(--r-pill);
 }
 
-/* ------------------------------------------------------------------ motion */
-
-/* The prototype's two entrances, named. `docs/09 §12`: 120-200 ms, standard
- * easing, only on enter/exit, expansion and position change. */
-@keyframes ui-in {
-  from {
-    opacity: 0;
-    transform: translateY(4px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
+.ui-skeleton[data-shape='circle'] {
+  inline-size: var(--sp-10);
+  block-size: var(--sp-10);
+  border-radius: var(--r-dot);
 }
 
-.ui-in {
-  animation: ui-in 0.25s both;
-}
-
-/* `docs/09 §12` and `docs/17`: reduced motion keeps opacity and removes the
- * rest. A shimmer and a rise are both decoration on top of something that
- * already communicates without them. */
-@media (prefers-reduced-motion: reduce) {
-  .ui-skeleton {
-    animation: none;
-    background: var(--sunken);
-  }
-
-  .ui-in {
-    animation: none;
-  }
-
-  .ui-btn,
-  .ui-iconbtn {
-    transition: none;
-  }
+.ui-skeleton[data-shape='text'] {
+  block-size: var(--sp-6);
 }
 
 /* --------------------------------------------------------------- utilities */
 
 /* Visually hidden, still announced. For live regions and for the label of a
- * control whose visible form is an icon. */
-.ui-sr-only {
-  position: absolute;
-  inline-size: 1px;
-  block-size: 1px;
-  overflow: hidden;
-  clip-path: inset(50%);
-  white-space: nowrap;
-}
+ * control whose visible form is an icon. Declared with `.ui-later-note` above,
+ * which is the same clip and was the fourth copy of it in the tree.
+ *
+ * `clip-path: inset(50%)`, never a physical offset: `left: -9999px` is wrong
+ * under RTL, which is why one utility exists rather than four hand-rolled
+ * spans. */

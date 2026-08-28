@@ -1,0 +1,151 @@
+/* Space, size, type and depth — the geometry half of the token layer.
+ *
+ * `tokens.css` beside this file carries colour, radii and the font families, all
+ * extracted from `web/design-system/enclave-client-prototype.html`. It carried
+ * nothing else: before this file existed the tree had **no** spacing scale, no
+ * size scale and no type ramp, and every dimension in `web/src` was a raw px
+ * literal — roughly 700 of them across ten feature stylesheets, with the same
+ * 44px state figure written out four times and the body font size `12.5px`
+ * appearing in all ten files.
+ *
+ * The values are the prototype's, counted rather than chosen. Where a number
+ * below looks arbitrary it is because the reference uses it that often:
+ * `height:26px` appears 63 times in the prototype and is the product's control
+ * height; `font-size:12.5px` appears 61 times and is its body size.
+ *
+ * ## The rule these tokens exist to make enforceable
+ *
+ * `docs/09 §13` commits to an 8px spacing scale, a 4px radius scale and a type
+ * ramp. A commitment expressed as literals cannot be checked and cannot be
+ * changed — a density switch that has to find 700 numbers is a density switch
+ * nobody ships. Expressed here, `[data-density='compact']` is four lines.
+ */
+
+:root {
+  /* ---- Space ---------------------------------------------------------------
+   * The 8pt grid of `docs/09 §13`, with the half-steps the prototype actually
+   * uses. `gap:8px` (54×) and `gap:6px` (49×) are the two commonest values in
+   * the reference by a wide margin, so `--sp-3`/`--sp-4` carry most of the
+   * layout and everything else is punctuation. */
+  --sp-1: 2px;
+  --sp-2: 4px;
+  --sp-3: 6px;
+  --sp-4: 8px;
+  --sp-5: 10px;
+  --sp-6: 12px;
+  --sp-7: 14px;
+  --sp-8: 16px;
+  --sp-10: 20px;
+  --sp-12: 24px;
+  --sp-16: 32px;
+
+  /* ---- Type ramp -----------------------------------------------------------
+   * Named for the role each size plays, because a ramp named `--fs-1 … --fs-8`
+   * tells a reader nothing about which step a count belongs on.
+   *
+   * `docs/09 §13` says "a type ramp of six sizes". The reference uses nine below
+   * 18px, which is a real divergence and is recorded here rather than resolved
+   * silently: collapsing 11px/11.5px and 12px/12.5px would bring it to seven,
+   * and the two pairs are visibly different at the sizes involved. The list
+   * below is what the prototype does. */
+  --fs-micro: 9.5px; /* avatar initials */
+  --fs-xs: 10.5px; /* counts, keyboard chips, timestamps in mono */
+  --fs-sm: 11px; /* column headers, pills, eyebrow labels */
+  --fs-meta: 11.5px; /* group headers, request IDs */
+  --fs-ctl: 12px; /* button labels, filter chips */
+  --fs-body: 12.5px; /* meta text and most controls — the commonest size */
+  --fs-row: 13px; /* row titles; the document's own size */
+  --fs-title: 14px; /* panel and dialog titles */
+  --fs-head: 15px; /* a state block's heading */
+  --fs-display: 22px; /* stat tiles */
+
+  --lh-tight: 1.35;
+  --lh-body: 1.45;
+  --ls-tight: -0.02em; /* headings */
+  --ls-body: -0.006em; /* the document default */
+
+  /* ---- Control sizes -------------------------------------------------------
+   * Three heights and no more. Every actionable box in the reference is one of
+   * these, and a fourth would be a fourth thing to keep aligned.
+   *
+   * `--ctl-h` is the default: 26px, the reference's dominant control height,
+   * used by the Filter/Display/Upload cluster, every icon button, every menu
+   * item and every selection-bar action. `--ctl-h-sm` is the 24px form the
+   * reference reserves for controls that sit inside another control's row
+   * (Share, New, Open preview). `--ctl-h-lg` is the 28px segmented tab. */
+  --ctl-h-sm: 24px;
+  --ctl-h: 26px;
+  --ctl-h-lg: 28px;
+  --ctl-pad-sm: 8px;
+  --ctl-pad: 9px;
+  --ctl-pad-lg: 10px;
+
+  /* ---- Row and bar geometry ------------------------------------------------
+   * `docs/09 §13`: two densities, Default 36px and Compact 30px, named as the
+   * Display popover names them. Everything that scans as a list reads `--row-h`
+   * so the switch is one attribute on the scroller. */
+  --row-h: 36px;
+  --row-h-head: 30px; /* the sticky column header */
+  --row-h-group: 28px; /* a group header inside the list */
+  --bar-h: 38px; /* the location bar's minimum */
+
+  /* ---- Icons ---------------------------------------------------------------
+   * 14px at 1.8 stroke is the product's icon: 45 of the prototype's icons are
+   * that size and 30 of its symbols carry that stroke. The other four steps
+   * exist because a 14px glyph inside a 20px pill is too big and inside a 44px
+   * figure is too small. */
+  --icon-xs: 10px;
+  --icon-sm: 11px;
+  --icon: 14px;
+  --icon-md: 16px;
+  --icon-lg: 18px;
+  --icon-xl: 32px;
+  --icon-stroke: 1.8;
+
+  /* ---- Radii ---------------------------------------------------------------
+   * `--r-ctrl` / `--r-surf` / `--r-sheet` live in `tokens.css` because they are
+   * tenant-editable through the branding API (`docs/09 §18`) and a brand block
+   * overrides them. These three are not: a pill is a pill at every radius
+   * setting, and a 4px skeleton corner is a texture rather than a shape. */
+  --r-pill: 999px;
+  --r-chip: 4px;
+  --r-dot: 50%;
+
+  /* ---- Fixed measures ------------------------------------------------------
+   * The handful of dimensions that are structural rather than scalar. Each was
+   * a magic number in exactly one file before it was named here, which meant
+   * the prototype's own 232px sidebar and the app's were two unrelated facts. */
+  --shell-nav-w: 232px;
+  --peek-w: 372px;
+  --peek-w-min: 320px;
+  --peek-w-max: 520px;
+  --page-measure: 860px; /* the reading width of a centred page */
+  --prose-measure: 46ch; /* a paragraph inside a state block */
+  --card-measure: 360px; /* a centred card: sign-in, the upload tray */
+
+  /* ---- Layers --------------------------------------------------------------
+   * The stacking ladder, named. It was prose in a comment at the head of
+   * `shared/ui/primitives.css` — accurate, and unreachable from CSS, which is
+   * why two floating surfaces independently arrived at `z-index: 20` and
+   * neither author knew the other existed. Same ladder, now a value.
+   *
+   * A z-index written inline is a number whose only meaning is "larger than the
+   * one I saw last". Nothing may invent a value outside this list. */
+  --z-accent: 1; /* an in-surface accent, e.g. a selected row's bar */
+  --z-pinned: 2; /* rows pinned inside a scroller: group headers */
+  --z-sticky: 3; /* a scroller's own sticky chrome: column headers */
+  --z-selbar: 10; /* the floating selection bar */
+  --z-popover: 20; /* popovers, menus, the upload tray */
+  --z-dialog: 30; /* dialogs and their scrim */
+  --z-palette: 40; /* the command palette */
+  --z-toast: 50; /* toasts */
+}
+
+/* Compact density, the second of the two `docs/09 §13` names.
+ *
+ * One declaration, because every list row in the tree reads `--row-h`. The
+ * group header and the sticky header do not shrink: they are already at 28 and
+ * 30, and a 24px group header stops reading as a heading. */
+:root[data-density='compact'] {
+  --row-h: 30px;
+}

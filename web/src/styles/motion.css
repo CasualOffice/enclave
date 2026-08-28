@@ -1,0 +1,299 @@
+/* Motion — the tokens, the keyframes, and the reduced-motion answer.
+ *
+ * Extracted from `web/design-system/enclave-client-prototype.html`, which is the
+ * reference (`web/design-system/README.md`). Every duration, easing, travel
+ * distance and stagger step below is a value that file already uses; nothing
+ * here is invented. Before this file existed
+ * `grep -c "transition\|--motion\|cubic-bezier" src/styles/tokens.css` returned
+ * **0** while the prototype ran a consistent language across eight keyframes —
+ * so the product had motion nowhere and the reference had it everywhere, and
+ * every screen that wanted an entrance had to re-derive one.
+ *
+ * ## The language, in one paragraph
+ *
+ * Things enter by rising 4px and fading in over 220ms on
+ * `cubic-bezier(.2,.7,.3,1)` — an ease that decelerates hard and overshoots
+ * nothing. Lists stagger that entrance by 20ms per row, capped at the twelfth,
+ * so a 400-row list finishes its entrance in 240ms rather than eight seconds.
+ * Panels slide 14px along the inline axis. Popovers and the selection bar pop
+ * from 8px below at 97% scale. Nothing animates in place on a data update
+ * (`docs/09 §12`), and nothing here runs longer than 350ms except the three
+ * indeterminate loops at the bottom.
+ *
+ * ## Why the values are tokens and not literals
+ *
+ * `docs/09 §12` budgets 120–200ms and requires every animation to degrade under
+ * `prefers-reduced-motion`. A component that writes `.22s cubic-bezier(…)`
+ * inline satisfies neither claim checkably: the budget cannot be read off the
+ * tree, and the degradation has to be remembered once per component. Expressed
+ * as tokens, the reduced-motion answer is **one block** that rewrites the
+ * tokens, and every component inherits it without knowing it exists.
+ */
+
+:root {
+  /* ---- Easings ------------------------------------------------------------
+   * Two, and they are not interchangeable. `--ease-enter` is the prototype's
+   * signature curve and belongs on anything arriving; `--ease-standard` is the
+   * material-standard curve the prototype reserves for the indeterminate loops,
+   * where a symmetric ease reads as a pulse rather than an arrival. */
+  --ease-enter: cubic-bezier(0.2, 0.7, 0.3, 1);
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* ---- Durations, by role -------------------------------------------------
+   * Named for what they animate, not for how long they take, so a component
+   * picks a role and inherits the budget. All inside `docs/09 §12`'s 120–200ms
+   * band except `--dur-prose` and `--dur-bar`, which the prototype uses for a
+   * paragraph revealing itself and for a determinate progress width — neither
+   * is an interaction response. */
+  --dur-fade: 150ms; /* encFade — text and tint swaps */
+  --dur-pop: 160ms; /* encPop — popovers, menus, the selection bar */
+  --dur-panel: 180ms; /* encPeek / encToast — side panels and toasts */
+  --dur-row: 220ms; /* encIn on a list row */
+  --dur-card: 250ms; /* encIn on a card or stat tile */
+  --dur-screen: 300ms; /* encIn on a whole screen region */
+  --dur-prose: 350ms; /* encFade on a block of prose */
+  --dur-bar: 500ms; /* a determinate progress width */
+
+  /* ---- Stagger ------------------------------------------------------------
+   * The prototype computes three: `Math.min(i, 12) * 0.02s` on library rows,
+   * `i * 0.03s` on search hits, `i * 0.05s` on stat tiles. The cap is the
+   * important half — without it the hundredth row waits two seconds and the
+   * stagger stops reading as one gesture and starts reading as a stall. */
+  --stagger-row: 20ms;
+  --stagger-card: 30ms;
+  --stagger-tile: 50ms;
+  --stagger-cap: 12;
+
+  /* ---- Travel -------------------------------------------------------------
+   * The distance and scale each entrance covers. Separated from the durations
+   * because `docs/09 §12` degrades *these* to nothing under reduced motion
+   * while the opacity half is what it keeps — which is only expressible if the
+   * transform is a variable the keyframe reads. */
+  --travel-in: 4px; /* encIn, block axis */
+  --travel-panel: 14px; /* encPeek, inline axis */
+  --travel-pop: 8px; /* encPop */
+  --travel-toast: 10px; /* encToast */
+  --scale-pop: 0.97;
+
+  /* ---- Indeterminate loops ------------------------------------------------
+   * Three animations that repeat because the wait has no known end. They are
+   * treated differently under reduced motion (see the block at the foot of this
+   * file): slowed to near-stillness rather than cut, because an infinite
+   * animation with `animation: none` freezes at whatever frame it was on, and a
+   * mark frozen mid-scan reads as a broken mark. */
+  --dur-shimmer: 1400ms;
+  --dur-spin: 800ms;
+  --dur-strata: 1500ms;
+
+  /* ---- Direction ----------------------------------------------------------
+   * Motion and glyph rotation are the two places a logical property cannot
+   * reach: `translateX` and `rotate` take numbers, and a number cannot mirror
+   * itself. These two variables are how the tree stays RTL-correct without a
+   * physical property anywhere (`library.md` techniqueFixes #5, #6). */
+  --icon-flip: 1;
+  --chev-collapsed: -90deg;
+}
+
+:root:dir(rtl) {
+  --icon-flip: -1;
+  --chev-collapsed: 90deg;
+}
+
+/* ---- Keyframes ------------------------------------------------------------
+ * The prototype's eight, with the two direction-sensitive ones rewritten to
+ * read `--icon-flip` and every travel distance rewritten to read its token.
+ * `encPop` also drops the prototype's `translateX(-50%)`: the selection bar now
+ * centres with `inset-inline: 0; margin-inline: auto`, so the centring and the
+ * animation no longer fight (`library.md` techniqueFixes #4). */
+
+@keyframes enc-in {
+  from {
+    opacity: 0;
+    transform: translateY(var(--travel-in));
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes enc-panel {
+  from {
+    opacity: 0;
+    transform: translateX(calc(var(--travel-panel) * var(--icon-flip)));
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes enc-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes enc-pop {
+  from {
+    opacity: 0;
+    transform: translateY(var(--travel-pop)) scale(var(--scale-pop));
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes enc-toast {
+  from {
+    opacity: 0;
+    transform: translateY(var(--travel-toast));
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes enc-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* A single opacity pulse, never a translate-based sweep.
+ *
+ * The prototype's `encSh` slides a gradient across a 200% background, which
+ * costs a paint of the whole skeleton every frame and, on a 400-row list, is
+ * measurable. `library.md` §A already specifies the pulse instead — same
+ * reading, one composited property. */
+@keyframes enc-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+
+/* ---- Utilities ------------------------------------------------------------
+ * Three classes, because three entrances are used often enough that repeating
+ * the declaration is how the values drift. Anything more specific stays in the
+ * component that owns it. */
+
+/* Longhands, not the `animation` shorthand.
+ *
+ * The shorthand resets `animation-delay` to `0s`, so `.enc-enter .enc-stagger`
+ * would work only because `.enc-stagger` happens to be declared further down
+ * this file — same specificity, later wins. That is a correct rendering
+ * resting on the order of two rules nobody would think to preserve, and the
+ * failure mode is silent: the stagger simply stops and the list enters as one
+ * block. Longhands make the two rules independent. */
+.enc-enter,
+.enc-enter-row,
+.enc-enter-panel,
+.enc-enter-pop {
+  animation-timing-function: var(--ease-enter);
+  animation-fill-mode: both;
+}
+
+.enc-enter {
+  animation-name: enc-in;
+  animation-duration: var(--dur-card);
+}
+
+/* A list row. 220ms rather than 250 — `specs/library.md §4A.3` is exact about
+ * it, and a row entering slower than the card it sits in reads as lag. */
+.enc-enter-row {
+  animation-name: enc-in;
+  animation-duration: var(--dur-row);
+}
+
+.enc-enter-panel {
+  animation-name: enc-panel;
+  animation-duration: var(--dur-panel);
+}
+
+.enc-enter-pop {
+  animation-name: enc-pop;
+  animation-duration: var(--dur-pop);
+}
+
+/* The stagger, as one declaration a row opts into by setting `--i`.
+ *
+ * `--i` is the row's index. The `min()` is the cap: past the twelfth row every
+ * subsequent row shares the twelfth's delay, so the entrance always completes
+ * within `12 × --stagger-row` no matter how long the list is. */
+.enc-stagger {
+  animation-delay: calc(min(var(--i, 0), var(--stagger-cap)) * var(--stagger-row));
+}
+
+.enc-stagger-card {
+  animation-delay: calc(min(var(--i, 0), var(--stagger-cap)) * var(--stagger-card));
+}
+
+.enc-stagger-tile {
+  animation-delay: calc(min(var(--i, 0), var(--stagger-cap)) * var(--stagger-tile));
+}
+
+/* ---- Reduced motion -------------------------------------------------------
+ *
+ * Two different answers, because there are two different kinds of animation
+ * here and one answer would be wrong for one of them.
+ *
+ * **One-shot entrances** lose their travel entirely — `--travel-*` goes to
+ * zero and `--scale-pop` to 1, which is `docs/09 §12`'s "keeping only opacity
+ * changes" expressed once rather than per component — and their durations
+ * collapse to 1ms. Not to *nothing*: `animation: none` would drop the `both`
+ * fill mode along with the animation, and an element whose settled appearance
+ * is the keyframe's `to` block would snap back to its un-animated state. 1ms
+ * keeps the fill and removes the motion.
+ *
+ * **Indeterminate loops** are slowed to near-stillness instead — 6s — which is
+ * the answer `web/public/logo-loader.css` already gives and the reason it gives
+ * it: a loop stopped dead freezes at an arbitrary frame, and the mark's three
+ * layers frozen mid-scan read as a mark that failed to load rather than as a
+ * mark holding still. The shimmer is removed outright (`library.md` §A) because
+ * a skeleton has a settled appearance and does not need one.
+ *
+ * The stagger goes to zero in both cases. A 20ms-per-row cascade is motion even
+ * when each row's own animation is instant.
+ */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-fade: 1ms;
+    --dur-pop: 1ms;
+    --dur-panel: 1ms;
+    --dur-row: 1ms;
+    --dur-card: 1ms;
+    --dur-screen: 1ms;
+    --dur-prose: 1ms;
+    --dur-bar: 1ms;
+
+    --stagger-row: 0ms;
+    --stagger-card: 0ms;
+    --stagger-tile: 0ms;
+
+    --travel-in: 0px;
+    --travel-panel: 0px;
+    --travel-pop: 0px;
+    --travel-toast: 0px;
+    --scale-pop: 1;
+
+    --dur-shimmer: 6s;
+    --dur-spin: 6s;
+    --dur-strata: 6s;
+  }
+
+  /* The skeleton pulse is the one loop with a settled appearance, so it is
+   * removed rather than slowed. */
+  .enc-pulse,
+  .ui-skeleton {
+    animation: none;
+  }
+}

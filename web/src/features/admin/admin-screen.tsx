@@ -1,11 +1,11 @@
 import { useCallback, useSyncExternalStore } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { ApiError } from '../../shared/api/client.ts';
+import { failureOf, type Failure } from '../../shared/api/failure.ts';
 import { useT } from '../../shared/i18n/index.tsx';
 import { Pill } from '../../shared/ui/primitives.tsx';
+import { DeniedPanel } from '../../shared/ui/surface-states.tsx';
 import { AdminNav } from './admin-nav.tsx';
 import {
-  AdminDeniedState,
   AdminEmptyState,
   AdminErrorState,
   AdminFilteredEmptyState,
@@ -111,6 +111,12 @@ export default function Screen() {
   const onSelect = useCallback((ruleId: string) => setParam('rule', ruleId), []);
   const onCreate = useCallback(() => setParam('rule', 'draft'), []);
 
+  /* One reading of what went wrong, from `shared/api/failure.ts`, rather than
+   * three `instanceof ApiError` narrowings that each had to remember the same
+   * three-way split (`docs/17 §7`). */
+  const failure: Failure | undefined =
+    rules.error === null || rules.error === undefined ? undefined : failureOf(rules.error);
+
   /* In development there is no gateway in front of this build, so a network
    * failure is the expected answer rather than an incident. The fixture stands
    * in, behind a marker that says what it is. A real failure — a 5xx, a parse
@@ -119,50 +125,50 @@ export default function Screen() {
    * incident, and sample policies on a security screen would be worse than an
    * error state. */
   const offline =
-    import.meta.env.DEV &&
-    rules.error instanceof ApiError &&
-    rules.error.failure.kind === 'failed' &&
-    rules.error.failure.code === 'network';
+    import.meta.env.DEV && failure?.kind === 'failed' && failure.code === 'network';
 
   const fixture = surface === 'fixture' || offline;
   const live: readonly DlpRule[] = fixture ? RULES : rules.data?.items ?? [];
 
   if (surface === 'loading' || (surface === 'live' && rules.isPending)) {
     return (
-      <div className="adm">
-        <AdminLoadingState />
+      <div className="adm" data-solo="">
+        <div className="adm-pane">
+          <AdminLoadingState />
+        </div>
       </div>
     );
   }
 
-  if (surface === 'denied' || (rules.error instanceof ApiError && rules.error.failure.kind === 'denied')) {
-    const failure =
-      rules.error instanceof ApiError && rules.error.failure.kind === 'denied'
-        ? rules.error.failure
-        : { code: 'ACCESS_DENIED', message: '', remediation: undefined, requestId: '' };
+  if (surface === 'denied' || failure?.kind === 'denied') {
+    const denial =
+      failure?.kind === 'denied'
+        ? failure
+        : ({
+            kind: 'denied',
+            code: 'ACCESS_DENIED',
+            message: '',
+            remediation: undefined,
+            requestId: '',
+          } as const);
+    /* `DeniedPanel`, not the error state, and the difference is a contract
+     * rather than a style: a refusal offers **no retry** (`docs/17 §7` F3). */
     return (
-      <div className="adm">
-        <AdminDeniedState
-          denial={{
-            code: failure.code,
-            message: failure.message,
-            remediation: failure.remediation,
-            requestId: failure.requestId,
-          }}
-        />
+      <div className="adm" data-solo="">
+        <DeniedPanel failure={denial} fill />
       </div>
     );
   }
 
-  if (surface === 'error' || (surface === 'live' && !offline && rules.error !== null)) {
-    const failure =
-      rules.error instanceof ApiError && rules.error.failure.kind === 'failed'
-        ? rules.error.failure
+  if (surface === 'error' || (surface === 'live' && !offline && failure !== undefined)) {
+    const failed =
+      failure?.kind === 'failed'
+        ? failure
         : { retryable: true, requestId: '01K3Q7X0PMDR4W8B2ZC6E5A9TN' };
     return (
-      <div className="adm">
+      <div className="adm" data-solo="">
         <AdminErrorState
-          error={{ retryable: failure.retryable, requestId: failure.requestId }}
+          error={{ retryable: failed.retryable, requestId: failed.requestId }}
           onRetry={() => void rules.refetch()}
         />
       </div>

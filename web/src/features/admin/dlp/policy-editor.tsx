@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useT } from '../../../shared/i18n/index.tsx';
 import type { MessageKey } from '../../../shared/i18n/catalog.ts';
 import { Button, LaterChip, Pill } from '../../../shared/ui/primitives.tsx';
+import { Eyebrow, Push } from '../../../shared/ui/layout.tsx';
 import { Icon } from '../../../shared/ui/icon-sprite.tsx';
 import { PolicyDiff } from './diff.tsx';
 import { DenialPreview, PolicySentence } from './sentence.tsx';
@@ -72,6 +73,7 @@ function GateList({ steps }: { steps: readonly GateStep[] }) {
             </span>
             <span className="adm-muted">{t(step.why)}</span>
           </span>
+          <Push />
           {step.state === 'unbuilt' ? (
             <LaterChip note="later.chip" />
           ) : (
@@ -151,7 +153,7 @@ export function PolicyEditor({ baseline, initial, simulate, readOnly }: PolicyEd
           <Pill label="admin.dlp.status.inForce" tone="ok" icon="check" />
         )}
         {readOnly && <Pill label="admin.auditor.pill" tone="info" icon="eye" />}
-        <span className="adm-spacer" />
+        <Push />
         {gateOpen && !readOnly && (
           /* Reached only once the rehearsal and the confirmation are behind it,
            * and *still* not actionable: the step-up flow is unwritten. Neutral,
@@ -177,10 +179,8 @@ export function PolicyEditor({ baseline, initial, simulate, readOnly }: PolicyEd
 
       <DenialPreview rule={draft} />
 
-      <section className="adm-panel" aria-labelledby="adm-sim-title">
-        <h2 className="adm-panel-title adm-panel-title-lg" id="adm-sim-title">
-          {t('admin.dlp.sim.heading')}
-        </h2>
+      <section className="ui-card adm-panel" data-padded="" aria-label={t('admin.dlp.sim.heading')}>
+        <Eyebrow label="admin.dlp.sim.heading" />
         {running ? (
           <SimulationSkeleton />
         ) : rehearsal === null ? (
@@ -203,10 +203,8 @@ export function PolicyEditor({ baseline, initial, simulate, readOnly }: PolicyEd
         readOnly={readOnly}
       />
 
-      <section className="adm-panel" aria-labelledby="adm-gate-title">
-        <h2 className="adm-panel-title adm-panel-title-lg" id="adm-gate-title">
-          {t('admin.dlp.gate.title')}
-        </h2>
+      <section className="ui-card adm-panel" data-padded="" aria-label={t('admin.dlp.gate.title')}>
+        <Eyebrow label="admin.dlp.gate.title" />
         <GateList steps={steps} />
       </section>
 
@@ -215,10 +213,8 @@ export function PolicyEditor({ baseline, initial, simulate, readOnly }: PolicyEd
        * the builder edits and the same body `POST /admin/dlp/rules` takes — so
        * the two cannot drift. Read-only, because a second editor would be a
        * second parser and `docs/05 §14.2` refuses a rule that lost a clause. */}
-      <section className="adm-panel" aria-labelledby="adm-json-title">
-        <h2 className="adm-panel-title adm-panel-title-lg" id="adm-json-title">
-          {t('admin.dlp.json.title')}
-        </h2>
+      <section className="ui-card adm-panel" data-padded="" aria-label={t('admin.dlp.json.title')}>
+        <Eyebrow label="admin.dlp.json.title" />
         <p className="adm-muted">{t('admin.dlp.json.note')}</p>
         <pre className="adm-json" tabIndex={0} aria-label={t('admin.dlp.json.label')}>
           {JSON.stringify(toWire(draft), null, 2)}

@@ -1,5 +1,7 @@
 import { useT } from '../../shared/i18n/index.tsx';
 import { Icon } from '../../shared/ui/icon-sprite.tsx';
+import { Card } from '../../shared/ui/layout.tsx';
+import { LaterChip } from '../../shared/ui/primitives.tsx';
 import type { SearchDiagnostics } from './model.ts';
 
 /* The degraded-search header.
@@ -89,25 +91,32 @@ export function RetrievalNotice({ diagnostics }: { diagnostics: SearchDiagnostic
   if (variant === null) return null;
 
   return (
-    <div className="esr-notice" data-notice={variant} role="status">
+    /* `Card` with the `sunken` tone, which is the recipe this file used to write
+     * out by hand — a well the eye reads as behind the page, no semantic colour,
+     * no border. The tone is the *only* thing it borrows: a sunken card is not a
+     * warning, and nothing in the shared component paints one. */
+    <Card tone="sunken" padded={false} className="esr-notice">
       <span className="esr-notice-icon">
         {/* `info` and `clock`, never `warn`. A triangle is the shape of an
          * alarm, and this is not one. `clock` on the degraded variant carries
          * the one fact that distinguishes it: this passes. */}
         <Icon name={variant === 'degraded' ? 'clock' : 'info'} size={12} />
       </span>
-      <div className="esr-notice-copy">
+      {/* The live region is the copy, not the card, because `Card` renders no
+       * attributes of its own — and the copy is all of the text anyway, so a
+       * screen reader is announced the same sentences in the same order. */}
+      <div className="esr-notice-copy" data-notice={variant} role="status">
         <p className="esr-notice-head">
           {t('search.retrieval.head')}
           {/* Only on the product-state variant. `docs/17 §6`: the `Later` chip is
            * future tense about the product, and an incident is neither. */}
-          {variant === 'lexical' && <span className="ui-later">{t('later.chip')}</span>}
+          {variant === 'lexical' && <LaterChip note="later.chip" />}
         </p>
         <p className="esr-notice-body">{t('search.retrieval.stillSearched')}</p>
         <p className="esr-notice-body">
           {t(variant === 'degraded' ? 'search.retrieval.degraded' : 'search.retrieval.lexical')}
         </p>
       </div>
-    </div>
+    </Card>
   );
 }

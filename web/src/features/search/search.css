@@ -1,15 +1,39 @@
-/* The search screen.
+/* The search screen — what is genuinely search's, and nothing else.
  *
  * Every value is lifted from `web/design-system/enclave-client-prototype.html`'s
- * `data-screen-label="Search"` block — 14/16 px bar padding, 24 px chips, the
- * 11.5 px meta line, `--r-surf` on a hovered row. Every *property name* is
- * logical, which the prototype's inline styles are not: it writes `left:50%`,
+ * `data-screen-label="Search"` block, and every *property name* is logical,
+ * which the prototype's inline styles are not: it writes `left:50%`,
  * `margin-left:auto`, `padding-left:25px` and `text-align:center` throughout,
  * and `en-XB` mirrors direction in CI (`docs/17 §8`). Copy its values, never its
  * property names.
  *
- * z-index, from the scale documented at the top of `shared/ui/primitives.css`:
- * the filter menus are `20` (popovers and menus). Nothing else here stacks.
+ * ## What left this file, and where it went
+ *
+ * This stylesheet was 780 lines, and most of them were not about search. The
+ * four state blocks, the button, the classification badge, the skeleton, the
+ * avatar, the floating menu, the raised card, the focus ring and the
+ * trailing-spacer idiom were each the third or fourth copy of something that now
+ * has one implementation:
+ *
+ *   `.esr-state*`, `.esr-request-id`     → `shared/ui/surface-states`
+ *   `.esr-btn`                           → `shared/ui/primitives` `.ui-btn`
+ *   `.esr-classification`                → `entities/classification` chip
+ *   `.esr-skeleton`, `@keyframes`        → `shared/ui/primitives` `.ui-skeleton`
+ *   `.esr-owner`                         → `shared/ui/primitives` `.ui-avatar`
+ *   `.esr-chip-menu`, `-menuitem`        → `shared/ui/layout` `.ui-popover`, `.ui-row`
+ *   `.esr-answer`, `.esr-notice` surface → `shared/ui/layout` `.ui-card`
+ *   `.esr-input`, the bar's focus ring   → `shared/ui/layout` `.ui-field`
+ *   `margin-inline-start: auto`          → `shared/ui/layout` `.ui-push`
+ *   the truncation idiom                 → `shared/ui/layout` `.ui-truncate`
+ *
+ * The per-file `@media (prefers-reduced-motion: reduce)` block went too:
+ * `styles/motion.css` owns reduced motion globally by rewriting the motion
+ * tokens, so anything expressed in `var(--dur-*)`/`var(--ease-*)` degrades
+ * without asking. A local block is how a fifth animation gets added and missed.
+ *
+ * Geometry reads `styles/scale.css`. The only px literals left are hairlines,
+ * which are a rule rather than a point on a spacing ramp, and the `720px`
+ * breakpoint, which a media query cannot read from a custom property.
  */
 
 .esr {
@@ -21,48 +45,29 @@
 
 /* ------------------------------------------------------------- search bar */
 
+/* The band the field sits in: the reference's 16px inset and its block-end
+ * hairline. The *field* — its box, its placeholder colour and the one focus
+ * ring `docs/09 §15` asks for — is `.ui-field`, which is why this rule is four
+ * declarations and not twenty. */
 .esr-bar {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 14px 16px;
+  padding-block: var(--sp-3);
+  padding-inline: var(--sp-8);
   box-shadow: inset 0 -1px 0 var(--line);
   flex: none;
 }
 
-.esr-bar-icon {
-  color: var(--fg3);
-}
-
-.esr-input {
-  border: 0;
-  background: transparent;
-  font: inherit;
-  font-size: 14px;
-  color: var(--fg);
-  outline: 0;
+.esr-bar .ui-field {
   flex: 1;
-  min-inline-size: 0;
-  /* A query can be RTL while the interface is not. */
-  unicode-bidi: isolate;
 }
 
-.esr-input::placeholder {
-  color: var(--fg2);
-}
-
-.esr-input:focus-visible {
-  outline: 0;
-}
-
-.esr-bar:focus-within {
-  box-shadow:
-    inset 0 -1px 0 var(--line),
-    inset 0 0 0 1px var(--accent-ring);
-}
-
-.esr-bar-kbd {
-  flex: none;
+/* The one place the field's type size is overridden, and the reason is that
+ * this is the screen's subject rather than one of its controls: the reference
+ * sets the search input at 14px against a 12.5px page. `--fs-row` is the step
+ * below it, which keeps the emphasis without spending four pixels of density. */
+.esr-bar .ui-field-input {
+  font-size: var(--fs-row);
 }
 
 /* ----------------------------------------------------------------- chips */
@@ -70,8 +75,9 @@
 .esr-filters {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 10px 16px 6px;
+  gap: var(--sp-3);
+  padding-block: var(--sp-5) var(--sp-2);
+  padding-inline: var(--sp-8);
   flex: none;
 }
 
@@ -79,13 +85,16 @@
   position: relative;
 }
 
+/* The three-segment filter chip. This one stays — a key half, a value half and
+ * a remove control inside a single 24px pill is search's own control and has no
+ * second implementation to collapse into. */
 .esr-chip {
   display: inline-flex;
   align-items: center;
-  block-size: 24px;
+  block-size: var(--ctl-h-sm);
   border-radius: var(--r-ctrl);
   box-shadow: var(--hairline);
-  font-size: 12px;
+  font-size: var(--fs-ctl);
   overflow: hidden;
   background: var(--sheet);
 }
@@ -99,57 +108,70 @@
 .esr-chip-open {
   display: inline-flex;
   align-items: center;
-  block-size: 24px;
+  block-size: var(--ctl-h-sm);
   border: 0;
   background: transparent;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--fs-ctl);
   cursor: pointer;
   padding: 0;
   color: var(--fg);
-}
-
-.esr-chip-key {
-  padding-inline: 7px;
-  color: var(--fg2);
-  box-shadow: inset -1px 0 0 var(--line);
-}
-
-/* The divider is a physical inset shadow in the prototype; mirrored here so it
- * stays on the trailing edge of the key half in an RTL interface. */
-:dir(rtl) .esr-chip-key {
-  box-shadow: inset 1px 0 0 var(--line);
-}
-
-.esr-chip-value {
-  padding-inline: 7px;
-  color: var(--fg);
-  font-weight: 500;
-  white-space: nowrap;
 }
 
 .esr-chip-open:hover {
   background: var(--hover);
 }
 
+.esr-chip-key {
+  position: relative;
+  padding-inline: var(--sp-3);
+  color: var(--fg2);
+}
+
+.esr-chip-value {
+  padding-inline: var(--sp-3);
+  color: var(--fg);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
 .esr-chip-clear {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   /* 24 px square, not the 20 the chip would like: WCAG 2.2 SC 2.5.8 sets 24×24
    * as the minimum target and axe checks it. */
-  inline-size: 24px;
-  block-size: 24px;
+  inline-size: var(--ctl-h-sm);
+  block-size: var(--ctl-h-sm);
   border: 0;
   background: transparent;
   color: var(--fg2);
   cursor: pointer;
   padding: 0;
-  box-shadow: inset 1px 0 0 var(--line);
 }
 
-:dir(rtl) .esr-chip-clear {
-  box-shadow: inset -1px 0 0 var(--line);
+/* The segment dividers, as pseudo-elements (`specs/library.md`, technique fix
+ * #2). Not `border-inline-end`, which consumes a pixel of layout and shifts the
+ * segment's text; and no longer an inset `box-shadow`, which drew correctly but
+ * is physical — `inset -1px 0 0` points left in an RTL interface, so it needed a
+ * `:dir(rtl)` override per segment and this file carried two. A positioned
+ * pseudo-element reproduces the original pixel for pixel and mirrors itself. */
+.esr-chip-key::after,
+.esr-chip-clear::before {
+  content: '';
+  position: absolute;
+  inset-block: 0;
+  inline-size: 1px;
+  background: var(--line);
+}
+
+.esr-chip-key::after {
+  inset-inline-end: 0;
+}
+
+.esr-chip-clear::before {
+  inset-inline-start: 0;
 }
 
 .esr-chip-clear:hover {
@@ -157,74 +179,50 @@
   color: var(--fg);
 }
 
+/* Position only. The elevation, the radius, the padding, the layer and the
+ * entrance are `.ui-popover`'s — a menu that re-declares them is the second
+ * floating surface that independently picked `z-index: 20`. */
 .esr-chip-menu {
-  position: absolute;
-  inset-block-start: calc(100% + 4px);
+  inset-block-start: calc(100% + var(--sp-2));
   inset-inline-start: 0;
-  z-index: 20;
-  min-inline-size: 168px;
-  padding: 4px;
-  border-radius: var(--r-surf);
-  background: var(--sheet);
-  box-shadow: var(--el2);
   display: flex;
   flex-direction: column;
-  gap: 1px;
-}
-
-.esr-chip-menuitem {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  block-size: 26px;
-  padding-inline: 6px;
-  border: 0;
-  border-radius: var(--r-ctrl);
-  background: transparent;
-  font: inherit;
-  font-size: 12.5px;
-  color: var(--fg);
-  cursor: pointer;
-  text-align: start;
-}
-
-.esr-chip-menuitem:hover {
-  background: var(--hover);
+  gap: var(--sp-1);
 }
 
 .esr-chip-tick {
-  inline-size: 10px;
+  inline-size: var(--icon-xs);
   display: inline-flex;
   flex: none;
   color: var(--accent);
 }
 
 .esr-count {
-  margin-inline-start: auto;
   color: var(--fg2);
-  font-size: 11.5px;
+  font-size: var(--fs-meta);
   white-space: nowrap;
 }
 
 /* ------------------------------------------------------------ answer slot */
 
-/* `docs/17 §6`: the unbuilt treatment. Neutral, no remedy, out of the tab order,
- * and it may never share a class or a colour with the denial treatment — the
- * whole point being that a user who learns dimmed means "not written yet" stops
- * reading the one place it means "DLP refused this". */
+/* `docs/17 §6`: the unbuilt treatment — neutral, no remedy, out of the tab
+ * order, and never a class or a colour the denial treatment also wears. The
+ * surface is a `Card`; only the margins and the row inside it are here. */
+.esr-answer-card {
+  margin-block-start: var(--sp-2);
+  margin-inline: var(--sp-8);
+  flex: none;
+}
+
 .esr-answer {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin: 4px 16px 0;
-  padding: 8px 10px;
-  border-radius: var(--r-surf);
-  box-shadow: var(--hairline);
-  background: var(--sheet);
+  gap: var(--sp-4);
+  padding-block: var(--sp-4);
+  padding-inline: var(--sp-5);
   color: var(--fg2);
-  font-size: 12.5px;
+  font-size: var(--fs-body);
   cursor: default;
-  flex: none;
 }
 
 .esr-answer-icon {
@@ -238,21 +236,20 @@
 
 /* ------------------------------------------------- the degraded-search header */
 
-/* Neutral by construction. `--sunken` on a hairline is the weight of a keyboard
- * hint, which is the register this belongs in: a fact about how the search ran,
- * not an alarm. Explicitly **not** `--warn` — amber is this product's DLP and
- * restriction language ("No download", "Preview only") and borrowing it here
- * would say something about the user's access is wrong, which is false. And
- * explicitly not `--danger`, which is the error state's. */
+/* Neutral by construction, which is what `Card`'s `sunken` tone is for: a well
+ * at the weight of a keyboard hint, which is the register this belongs in — a
+ * fact about how the search ran, not an alarm. Explicitly **not** `--warn`:
+ * amber is this product's DLP and restriction language ("No download", "Preview
+ * only") and borrowing it here would say something about the user's access is
+ * wrong, which is false. And not `--danger`, which is the error state's. */
 .esr-notice {
   display: flex;
   align-items: flex-start;
-  gap: 9px;
-  margin: 6px 16px 2px;
-  padding: 9px 11px;
-  border-radius: var(--r-surf);
-  background: var(--sunken);
-  box-shadow: var(--hairline);
+  gap: var(--sp-4);
+  margin-block: var(--sp-3) var(--sp-1);
+  margin-inline: var(--sp-8);
+  padding-block: var(--sp-4);
+  padding-inline: var(--sp-5);
   flex: none;
 }
 
@@ -260,46 +257,40 @@
   display: inline-flex;
   color: var(--fg3);
   /* Optically centred on the heading's cap height rather than on its line box. */
-  margin-block-start: 2px;
+  margin-block-start: var(--sp-1);
   flex: none;
 }
 
 .esr-notice-copy {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--sp-1);
   min-inline-size: 0;
 }
 
 .esr-notice-head {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: var(--sp-3);
   margin: 0;
-  font-size: 12.5px;
+  font-size: var(--fs-body);
   font-weight: 500;
-  letter-spacing: -0.006em;
+  letter-spacing: var(--ls-body);
   color: var(--fg);
 }
 
 .esr-notice-body {
   margin: 0;
-  font-size: 11.5px;
-  line-height: 1.45;
+  font-size: var(--fs-meta);
+  line-height: var(--lh-body);
   color: var(--fg2);
   max-inline-size: 78ch;
 }
 
 /* Both body lines are `--fg2`, and the second is deliberately *not* recessed to
- * `--fg3`.
- *
- * It reads as the quieter of the two — it is second, and the heading above it
- * carries the emphasis — but the colour step below `--fg2` is not available for
- * text in the light theme: `--fg3` (#7A7A74) is 4.31:1 on the sheet and 3.78:1
- * on `--sunken`, both short of `docs/09 §15`'s 4.5:1. `ENC-680` in
- * `features/libraries/list/grouped-list.css` records the same finding, and axe
- * caught this exact rule at 3.78. Hierarchy here is order and weight, not
- * colour. */
+ * `--fg3`: on `--sunken` that is 3.78:1, short of `docs/09 §15`'s 4.5:1, and axe
+ * caught this exact rule at 3.78 (`ENC-680`). Hierarchy here is order and
+ * weight, not colour. */
 
 /* -------------------------------------------------------------- result list */
 
@@ -308,7 +299,7 @@
   overflow: auto;
   flex: 1;
   min-block-size: 0;
-  padding-inline: 8px;
+  padding-inline: var(--sp-4);
 }
 
 .esr-spacer {
@@ -319,23 +310,33 @@
 .esr-window {
   position: absolute;
   inset-block-start: 0;
-  inset-inline-start: 8px;
-  inset-inline-end: 8px;
+  inset-inline-start: var(--sp-4);
+  inset-inline-end: var(--sp-4);
   will-change: transform;
 }
 
+/* `--esr-row-h` is set on `.esr` from `ROW_HEIGHT` in `search-screen.tsx`.
+ *
+ * The windowing arithmetic and the row's height have to agree exactly or the
+ * absolutely positioned window drifts from the spacer that gives the scrollbar
+ * its length, and two copies of one number is how they stop agreeing. The
+ * number lives in TypeScript because that is where it is computed with. */
 .esr-row {
-  block-size: 80px;
+  block-size: var(--esr-row-h);
   display: flex;
 }
 
+/* The skeleton shares this box exactly (`docs/09 §11`): three 20px lines, two
+ * 2px gaps and 8px of block padding is 80, so nothing shifts when data lands. */
 .esr-hit,
 .esr-skeleton-hit {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  justify-content: center;
+  gap: var(--sp-1);
   inline-size: 100%;
-  padding: 9px 10px;
+  padding-block: var(--sp-4);
+  padding-inline: var(--sp-5);
   border-radius: var(--r-surf);
   text-decoration: none;
   color: inherit;
@@ -359,38 +360,44 @@
 .esr-line {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-4);
+  block-size: var(--sp-10);
   min-inline-size: 0;
 }
 
-.esr-line-title {
-  block-size: 20px;
-}
-
 .esr-line-meta {
-  block-size: 15px;
   /* The prototype indents the meta and excerpt lines past the icon with
    * `padding-left:25px`. Same measure, logical property. */
-  padding-inline-start: 24px;
+  padding-inline-start: var(--sp-12);
   color: var(--fg2);
-  font-size: 11.5px;
+  font-size: var(--fs-meta);
 }
 
 .esr-line-excerpt {
-  block-size: 17px;
-  padding-inline-start: 24px;
+  padding-inline-start: var(--sp-12);
   color: var(--fg);
-  font-size: 12.5px;
-  line-height: 1.35;
+  font-size: var(--fs-body);
+  line-height: var(--lh-tight);
+}
+
+/* The loading row's leading square reserves the file icon's exact box. A
+ * skeleton one size off is a layout shift with a delay on it. */
+.esr-line-title .ui-skeleton:first-child {
+  inline-size: var(--icon-md);
+  block-size: var(--icon-md);
+  flex: none;
 }
 
 .esr-icon {
-  inline-size: 16px;
-  block-size: 16px;
+  inline-size: var(--icon-md);
+  block-size: var(--icon-md);
   flex: none;
   color: var(--fg3);
 }
 
+/* The MIME-family tints of `specs/library.md §4A(b)`, which are the same four
+ * on every surface that draws a file. Literal because they are a fixed
+ * vocabulary rather than a theme colour — they do not move with a brand. */
 .esr-icon[data-kind='pdf'] {
   color: #d0453a;
 }
@@ -406,18 +413,13 @@
 
 .esr-title {
   font-weight: 500;
-  font-size: 13px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  min-inline-size: 0;
+  font-size: var(--fs-row);
 }
 
 .esr-location {
-  margin-inline-start: auto;
   color: var(--fg2);
   font-family: var(--mono);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   white-space: nowrap;
   flex: none;
 }
@@ -429,49 +431,12 @@
   flex: none;
 }
 
-.esr-path,
-.esr-ownername {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  min-inline-size: 0;
-}
-
 .esr-sep {
-  inline-size: 2px;
-  block-size: 2px;
-  border-radius: 50%;
+  inline-size: var(--sp-1);
+  block-size: var(--sp-1);
+  border-radius: var(--r-dot);
   background: var(--fg4);
   flex: none;
-}
-
-.esr-owner {
-  inline-size: 15px;
-  block-size: 15px;
-  border-radius: 50%;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 8px;
-  font-weight: 600;
-  flex: none;
-}
-
-.esr-owner[data-tone='a'] {
-  background: var(--av-a-bg);
-  color: var(--av-a-fg);
-}
-.esr-owner[data-tone='b'] {
-  background: var(--av-b-bg);
-  color: var(--av-b-fg);
-}
-.esr-owner[data-tone='c'] {
-  background: var(--av-c-bg);
-  color: var(--av-c-fg);
-}
-.esr-owner[data-tone='d'] {
-  background: var(--av-d-bg);
-  color: var(--av-d-fg);
 }
 
 .esr-when {
@@ -485,14 +450,12 @@
  * repeated here because this is the one declaration in the file that must not be
  * lost to a refactor. `docs/14 §7`: an excerpt is a window cut from the middle
  * of a document, so an unterminated U+202E arrives open and would otherwise
- * reverse the rest of this row and every row beneath it. */
+ * reverse the rest of this row and every row beneath it. The ellipsis half of
+ * the idiom is `.ui-truncate`, which the element also carries. */
 .esr-excerpt {
   unicode-bidi: isolate;
   display: block;
   inline-size: 100%;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .esr-no-excerpt {
@@ -503,66 +466,9 @@
 .esr-match {
   background: color-mix(in srgb, var(--accent) 16%, transparent);
   color: var(--fg);
-  border-radius: 2px;
-  padding-inline: 1px;
+  border-radius: var(--sp-1);
+  padding-inline: var(--sp-1);
   font-weight: 500;
-}
-
-/* ---------------------------------------------------- classification badge */
-
-/* The palette is locked (`docs/09 §16a`) and the recipe is
- * `features/libraries/list/grouped-list.css`'s `.egl-classification`, copied
- * exactly: a 11% tint and text mixed at **70%** against `--fg`. Not the
- * prototype's 82%, which is 3.68:1 and fails WCAG AA — axe catches it. */
-.esr-classification {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  block-size: 18px;
-  padding-inline: 6px 7px;
-  border-radius: 999px;
-  font-size: 10.5px;
-  font-weight: 500;
-  letter-spacing: 0;
-  white-space: nowrap;
-  flex: none;
-  background: color-mix(in srgb, var(--cc) 11%, transparent);
-  color: color-mix(in srgb, var(--cc) 70%, var(--fg));
-}
-
-.esr-classification::before {
-  content: '';
-  inline-size: 5px;
-  block-size: 5px;
-  border-radius: 50%;
-  background: var(--cc);
-  flex: none;
-}
-
-.esr-classification[data-level='public'] {
-  --cc: var(--c-pub);
-}
-.esr-classification[data-level='internal'] {
-  --cc: var(--c-int);
-}
-.esr-classification[data-level='confidential'] {
-  --cc: var(--c-conf);
-}
-.esr-classification[data-level='highlyConfidential'] {
-  --cc: var(--c-hconf);
-}
-.esr-classification[data-level='restricted'] {
-  --cc: var(--c-restr);
-}
-
-.esr-classification[data-level='unclassified'] {
-  background: transparent;
-  box-shadow: var(--hairline);
-  color: var(--fg2);
-}
-
-.esr-classification[data-level='unclassified']::before {
-  display: none;
 }
 
 /* ------------------------------------------------------------- four states */
@@ -571,174 +477,22 @@
   flex: 1;
   min-block-size: 0;
   overflow: hidden;
-  padding-inline: 8px;
+  padding-inline: var(--sp-4);
 }
 
-.esr-skeleton {
-  block-size: 10px;
-  border-radius: 4px;
-  background: linear-gradient(90deg, var(--sunken) 25%, var(--g150) 50%, var(--sunken) 75%);
-  background-size: 200% 100%;
-  animation: esr-shimmer 1.4s linear infinite;
-}
-
-.esr-skeleton-icon {
-  inline-size: 16px;
-  block-size: 16px;
-  border-radius: 4px;
-  flex: none;
-}
-
-@keyframes esr-shimmer {
-  to {
-    background-position: -200% 0;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .esr-skeleton {
-    animation: none;
-  }
-}
-
-.esr-state {
-  flex: 1;
-  min-block-size: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  padding-inline: 32px;
-  text-align: center;
-  background: var(--sheet);
-}
-
-/* The mark's own construction at rest: a bounded field with a window inside it.
- * Drawn from tokens, not shipped as a raster — an empty state that carries an
- * image is an empty state nobody re-themes. */
-.esr-state-figure {
-  inline-size: 44px;
-  block-size: 44px;
-  border-radius: 11px;
-  box-shadow: inset 0 0 0 1px var(--line-strong);
-  position: relative;
-  margin-block-end: 4px;
-  color: var(--fg4);
-}
-
-.esr-state-figure::after {
-  content: '';
-  position: absolute;
-  inset-block-start: 13.75px;
-  inset-inline-start: 13.75px;
-  inline-size: 22px;
-  block-size: 22px;
-  border-radius: 0 5.5px 5.5px 5.5px;
-  box-shadow: inset 0 0 0 1px var(--line-strong);
-}
-
-:dir(rtl) .esr-state-figure::after {
-  border-radius: 5.5px 0 5.5px 5.5px;
-}
-
-.esr-state[data-tone='error'] .esr-state-figure,
-.esr-state[data-tone='error'] .esr-state-figure::after {
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 34%, transparent);
-}
-
-.esr-state-title {
-  font-size: 15px;
-  font-weight: 600;
-  letter-spacing: -0.02em;
-  margin: 0;
-  max-inline-size: 46ch;
-}
-
-.esr-state-body {
-  color: var(--fg2);
-  font-size: 12.5px;
-  max-inline-size: 52ch;
-  margin: 0;
-}
-
+/* The one thing the filtered-empty state adds to the shared block: the filters
+ * it is empty *because of*, named. `docs/09 §11` asks this state to separate
+ * "your query found nothing" from "your filters exclude everything", and a
+ * count cannot do that on its own — the user has to see which chips are on. */
 .esr-state-filters {
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
-  gap: 6px;
-  margin: 2px 0 0;
+  gap: var(--sp-3);
+  margin: 0;
+  margin-block-start: var(--sp-1);
   padding: 0;
   list-style: none;
-}
-
-.esr-state-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-block-start: 6px;
-}
-
-.esr-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  block-size: 28px;
-  padding-inline: 10px;
-  border-radius: var(--r-ctrl);
-  border: 0;
-  font: inherit;
-  font-size: 12.5px;
-  font-weight: 500;
-  cursor: pointer;
-  background: var(--sheet);
-  color: var(--fg);
-  box-shadow: var(--hairline);
-  white-space: nowrap;
-  letter-spacing: -0.006em;
-  transition:
-    transform 120ms cubic-bezier(0.32, 0.72, 0, 1),
-    background-color 120ms ease;
-}
-
-.esr-btn:hover {
-  background: var(--sunken);
-}
-
-.esr-btn:active {
-  transform: translateY(1px);
-}
-
-.esr-btn[data-variant='primary'] {
-  background: var(--accent);
-  /* `--on-accent`, not `#fff`: all three dark accents are light and white on
-   * #8B85FF is 3.04:1 (`tokens.css`). */
-  color: var(--on-accent);
-  box-shadow: none;
-}
-
-.esr-btn[data-variant='primary']:hover {
-  filter: brightness(1.08);
-}
-
-.esr-request-id {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  margin-block-start: 12px;
-  font-family: var(--mono);
-  font-size: 11px;
-  color: var(--fg2);
-}
-
-.esr-request-id code {
-  background: var(--sunken);
-  padding: 2px 6px;
-  border-radius: 4px;
-  color: var(--fg2);
-  /* An opaque token, not prose: it must not reorder next to an RTL interface. */
-  unicode-bidi: isolate;
-  direction: ltr;
 }
 
 /* -------------------------------------------------------------------- foot */
@@ -746,28 +500,25 @@
 .esr-foot {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 8px 16px;
+  gap: var(--sp-6);
+  padding-block: var(--sp-4);
+  padding-inline: var(--sp-8);
   box-shadow: inset 0 1px 0 var(--line);
   color: var(--fg2);
-  font-size: 11.5px;
+  font-size: var(--fs-meta);
   flex: none;
 }
 
 .esr-foot span {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-}
-
-.esr-foot-end {
-  margin-inline-start: auto;
+  gap: var(--sp-3);
 }
 
 /* `docs/09 §16`: mobile is functional, not vestigial, and search is named as one
  * of the flows that must work on a phone. Below the tablet breakpoint the meta
  * line loses the path — the workspace and the date are what disambiguate two
- * files with the same name — and the location moves under the title. */
+ * files with the same name — and the notice drops its reading measure. */
 @media (max-width: 720px) {
   .esr-path,
   .esr-ownername {

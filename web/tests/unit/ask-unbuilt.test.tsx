@@ -157,8 +157,13 @@ describe('an unbuilt control is not in the tab order', () => {
   });
 
   it('a genuine failure does put its retry in the tab order', () => {
-    // A second positive control, on this screen rather than on a probe.
-    expect(tabbable(mount('?surface=error'))).toHaveLength(1);
+    /* A second positive control, on this screen rather than on a probe.
+     *
+     * Two, not one: the shared error state carries a *Copy* button beside the
+     * request ID (`docs/09 §11`), and both are keyboard-reachable on purpose.
+     * The claim is unchanged — a failed request is actionable and an unbuilt
+     * surface is not. */
+    expect(tabbable(mount('?surface=error'))).toHaveLength(2);
   });
 });
 
@@ -174,16 +179,23 @@ describe('an unbuilt control offers no remedy', () => {
     expect(ask.querySelectorAll('a')).toHaveLength(0);
   });
 
-  it('a genuine failure does offer exactly one action', () => {
+  it('a genuine failure offers retry and a way to quote the failure, and nothing else', () => {
     /* The positive control. Without it, "the unbuilt screen offers no action"
      * would pass against a screen that renders no actions anywhere, which is a
-     * different and much weaker claim. */
+     * different and much weaker claim.
+     *
+     * Named rather than counted, so the assertion says *which* two actions a
+     * failure offers: retry, and copying the request ID. Neither is available
+     * on a denial (`docs/17 §7`), and a third would be a regression. */
     const errored = mount('?surface=error');
-    const actionable = [...errored.querySelectorAll('button')].filter(
-      (button) => button.getAttribute('aria-disabled') !== 'true',
-    );
-    expect(actionable).toHaveLength(1);
-    expect(actionable[0]?.textContent).toBe(catalog['ask.state.error.retry'].message);
+    const actionable = [...errored.querySelectorAll('button')]
+      .filter((button) => button.getAttribute('aria-disabled') !== 'true')
+      .map((button) => button.textContent);
+
+    expect(actionable).toEqual([
+      catalog['ask.state.error.retry'].message,
+      catalog['surface.error.copy'].message,
+    ]);
   });
 
   it('the release note is future tense about the product, and is what the controls point at', () => {

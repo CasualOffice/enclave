@@ -180,12 +180,43 @@ export interface IconButtonProps
   /** The accessible name. An icon-only control without one is unusable. */
   readonly label: MessageKey;
   readonly values?: Record<string, string | number>;
+  /**
+   * A toggle's current position.
+   *
+   * Rendered as `aria-pressed`, and the stylesheet keys the pressed appearance
+   * off that same attribute — so what the control looks like and what it
+   * announces cannot disagree. `features/libraries` had grown a second
+   * 26-line icon button for want of this one prop.
+   */
+  readonly pressed?: boolean | undefined;
+  /**
+   * Show only on the parent row's hover or focus.
+   *
+   * Opacity, never `display:none`: a hidden button is not reachable by
+   * keyboard, and the row-actions control is the only way to a row's menu
+   * without a pointer. It returns on `:focus-visible`.
+   */
+  readonly reveal?: boolean;
 }
 
-export function IconButton({ name, label, values, ...rest }: IconButtonProps) {
+export function IconButton({
+  name,
+  label,
+  values,
+  pressed,
+  reveal = false,
+  ...rest
+}: IconButtonProps) {
   const t = useT();
   return (
-    <button {...rest} type="button" className="ui-iconbtn" aria-label={t(label, values)}>
+    <button
+      {...rest}
+      type="button"
+      className="ui-iconbtn"
+      aria-pressed={pressed}
+      data-reveal={reveal ? '' : undefined}
+      aria-label={t(label, values)}
+    >
       <Icon name={name} size={14} />
     </button>
   );
@@ -244,8 +275,33 @@ export function Kbd({ children }: { children: string }) {
   return <span className="ui-kbd">{children}</span>;
 }
 
-export function Skeleton({ width }: { width: string }) {
-  return <span className="ui-skeleton" style={{ inlineSize: width }} aria-hidden="true" />;
+/**
+ * A reserved box, shaped like the thing that will land in it.
+ *
+ * `docs/09 §11` and `docs/17 §8`: the skeleton and the loaded element share a
+ * box model, so nothing shifts when data arrives. `shape` is how a caller says
+ * which box — a pill-shaped skeleton for a pill, a circle for an avatar —
+ * rather than hand-rolling the radius per feature, which is how two of the
+ * three previous copies ended up with a square avatar placeholder.
+ *
+ * Widths are the caller's and should be **deterministic**. A skeleton whose
+ * widths reshuffle every render reads as data arriving and then leaving again.
+ */
+export function Skeleton({
+  width,
+  shape,
+}: {
+  width?: string;
+  shape?: 'pill' | 'circle' | 'text';
+}) {
+  return (
+    <span
+      className="ui-skeleton"
+      data-shape={shape}
+      style={width === undefined ? undefined : { inlineSize: width }}
+      aria-hidden="true"
+    />
+  );
 }
 
 /** Visually hidden, still announced. */

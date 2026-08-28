@@ -1,6 +1,8 @@
 import { useT } from '../../../shared/i18n/index.tsx';
 import { useFormatters } from '../../../shared/i18n/format.ts';
-import { Avatar, Button, Skeleton } from '../../../shared/ui/primitives.tsx';
+import { Card, Eyebrow, Push, Truncate } from '../../../shared/ui/layout.tsx';
+import { Avatar, Button, Pill, Skeleton } from '../../../shared/ui/primitives.tsx';
+import { StateActions, StateBlock } from '../../../shared/ui/surface-states.tsx';
 import { useListFormat, useRichT } from '../rich-text.tsx';
 import { CATEGORY_KEY, SCOPE_KEY, type SimulationResult } from './model.ts';
 
@@ -33,10 +35,10 @@ const WINDOW_DAYS = 30;
 
 function Stat({ value, label }: { value: string; label: string }) {
   return (
-    <div className="adm-stat">
+    <Card>
       <b className="adm-stat-value">{value}</b>
       <span className="adm-stat-label">{label}</span>
-    </div>
+    </Card>
   );
 }
 
@@ -48,14 +50,14 @@ export function SimulationSkeleton() {
        * same height, so nothing shifts when the result lands (`docs/09 §11`). */}
       <div className="adm-stats" aria-hidden="true">
         {[0, 1, 2, 3].map((index) => (
-          <div className="adm-stat" key={index}>
+          <Card key={index}>
             <span className="adm-stat-value">
               <Skeleton width="48px" />
             </span>
             <span className="adm-stat-label">
               <Skeleton width="80%" />
             </span>
-          </div>
+          </Card>
         ))}
       </div>
     </div>
@@ -69,21 +71,27 @@ export function SimulationEmpty({
   onRun: () => void;
   readOnly: boolean;
 }) {
-  const t = useT();
+  /* The panel's empty state, and it is the shared one: nothing has been
+   * rehearsed yet, which is `docs/09 §11`'s empty (new) rather than a paragraph
+   * that happened to borrow the state block's title class. */
   return (
-    <div className="adm-sim-empty">
-      <p className="adm-state-title">{t('admin.dlp.sim.empty.title')}</p>
-      <p className="adm-muted">{t('admin.dlp.sim.empty.body')}</p>
+    <StateBlock
+      state="empty"
+      heading="admin.dlp.sim.empty.title"
+      body="admin.dlp.sim.empty.body"
+    >
       {!readOnly && (
-        <Button
-          label="admin.dlp.sim.run"
-          values={{ days: WINDOW_DAYS }}
-          variant="primary"
-          icon="clock"
-          onClick={onRun}
-        />
+        <StateActions>
+          <Button
+            label="admin.dlp.sim.run"
+            values={{ days: WINDOW_DAYS }}
+            variant="primary"
+            icon="clock"
+            onClick={onRun}
+          />
+        </StateActions>
       )}
-    </div>
+    </StateBlock>
   );
 }
 
@@ -108,10 +116,8 @@ export function SimulationPanel({
   return (
     <div className="adm-sim">
       <div className="adm-sim-head">
-        <h3 className="adm-panel-title">
-          {t('admin.dlp.sim.title', { days: result.windowDays })}
-        </h3>
-        <span className="adm-spacer" />
+        <Eyebrow label="admin.dlp.sim.title" values={{ days: result.windowDays }} />
+        <Push />
         <span
           className="adm-muted"
           title={format.dateTime(new Date(result.ranAt))}
@@ -150,16 +156,18 @@ export function SimulationPanel({
       </p>
 
       <div className="adm-sim-grid">
-        <section className="adm-panel" aria-labelledby="adm-sim-workspaces">
-          <h4 className="adm-panel-title" id="adm-sim-workspaces">
-            {t('admin.dlp.sim.byWorkspace')}
-          </h4>
+        <section
+          className="ui-card adm-panel"
+          data-padded=""
+          aria-label={t('admin.dlp.sim.byWorkspace')}
+        >
+          <Eyebrow label="admin.dlp.sim.byWorkspace" />
           <ul className="adm-bars">
             {result.byWorkspace.map((row) => (
               <li className="adm-bar-row" key={row.workspace}>
                 {/* The workspace name is data; the sentence a screen reader hears
                  * is one message with the share as a percent placeholder. */}
-                <span className="adm-bar-label">{row.workspace}</span>
+                <Truncate>{row.workspace}</Truncate>
                 <span
                   className="adm-bar"
                   aria-hidden="true"
@@ -178,10 +186,12 @@ export function SimulationPanel({
           </ul>
         </section>
 
-        <section className="adm-panel" aria-labelledby="adm-sim-events">
-          <h4 className="adm-panel-title" id="adm-sim-events">
-            {t('admin.dlp.sim.events')}
-          </h4>
+        <section
+          className="ui-card adm-panel"
+          data-padded=""
+          aria-label={t('admin.dlp.sim.events')}
+        >
+          <Eyebrow label="admin.dlp.sim.events" />
           <ul className="adm-events">
             {result.events.map((event) => (
               <li className="adm-event" key={`${event.actorName}-${event.at}`}>
@@ -193,6 +203,7 @@ export function SimulationPanel({
                     resource: event.resource,
                   })}
                 </span>
+                <Push />
                 <span className="adm-event-when" title={format.dateTime(new Date(event.at))}>
                   {format.date(new Date(event.at))}
                 </span>
@@ -204,9 +215,7 @@ export function SimulationPanel({
                   {rich('admin.dlp.sim.eventCategories', {
                     categories: and(
                       event.categories.map((category) => (
-                        <span className="adm-chip adm-chip-sm" key={category}>
-                          {t(CATEGORY_KEY[category])}
-                        </span>
+                        <Pill key={category} label={CATEGORY_KEY[category]} />
                       )),
                     ),
                   })}

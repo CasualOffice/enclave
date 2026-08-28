@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useT } from '../../shared/i18n/index.tsx';
 import { Icon } from '../../shared/ui/icon-sprite.tsx';
+import { Popover, Row } from '../../shared/ui/layout.tsx';
 import type { MessageKey } from '../../shared/i18n/catalog.ts';
 import { ANY, type FilterDef, type FilterId, type FilterOption, type FilterState } from './filters.ts';
 
@@ -109,15 +110,21 @@ function FilterChip({
         )}
       </span>
 
+      {/* `Popover` owns the elevation, the radius, the padding, the entrance and
+        * the layer — `--z-popover`, from the ladder in `styles/scale.css`. This
+        * menu and the upload tray had independently arrived at `z-index: 20`
+        * because the ladder was prose in a comment neither author could read.
+        * Only the anchoring is `.esr-chip-menu`'s, because a popover's anchor is
+        * the caller's business. `Row` is the item, for the same reason: four
+        * implementations agreed on eleven declarations and differed on the
+        * twelfth. */}
       {open && (
-        <div className="esr-chip-menu" role="menu" aria-label={keyText}>
+        <Popover label={def.label} role="menu" className="esr-chip-menu">
           {def.options.map((option) => (
-            <button
+            <Row
               key={option.value}
-              type="button"
               role="menuitemradio"
               aria-checked={option.value === value}
-              className="esr-chip-menuitem"
               onClick={() => {
                 onChange(def.id, option.value);
                 setOpen(false);
@@ -128,9 +135,9 @@ function FilterChip({
                 {option.value === value && <Icon name="check" size={10} />}
               </span>
               <bdi dir="auto">{optionText(option, t)}</bdi>
-            </button>
+            </Row>
           ))}
-        </div>
+        </Popover>
       )}
     </div>
   );

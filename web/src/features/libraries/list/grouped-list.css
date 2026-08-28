@@ -1,8 +1,9 @@
 /* The grouped, virtualized file list.
  *
- * Values come from `web/design-system/design-system-v2.html`, which is
- * authoritative for them (`docs/09 §16a`): the 36 px row, the seven-column
- * template, the 28 px group header, the classification badge.
+ * Values come from `web/design-system/specs/library.md §4A`, read off
+ * `enclave-client-prototype.html`, which is authoritative for them
+ * (`docs/09 §16a`): the 36px row, the seven-column template, the 28px group
+ * header, the 30px sticky column header.
  *
  * Property *names* do not come from the reference. It is physical-CSS
  * throughout — `left`, `margin-left:auto`, `text-align:right`, `float` — and
@@ -10,25 +11,55 @@
  * than a licence to copy it. `en-XB` mirrors direction in CI and would fail on
  * every one of them. So: values yes, property names no.
  *
- * The z-index scale, in full, because an undocumented one becomes `z-index: 9999`:
- *   1  selected-row accent bar
- *   2  the pinned group header
- *   3  the column-header row
- * Three values, and there is deliberately no fourth: the empty, loading and
- * error states replace the grid rather than covering it, so nothing ever has to
- * stack above the column header.
+ * ## What this file no longer holds
+ *
+ * It was 652 lines and roughly two hundred of them were other people's
+ * components written out again:
+ *
+ *   - `.egl-state*` + `.egl-request-id` (four states, ~90 lines) → `shared/ui/surface-states`
+ *   - `.egl-btn` (57 lines, a third copy of `.ui-btn`)          → `shared/ui/primitives` `Button`
+ *   - `.egl-classification` (~49 lines, a fourth badge)          → `entities/classification/chip`
+ *   - `.egl-avatar` (~31 lines, light-theme hex only)            → `shared/ui/primitives` `Avatar`
+ *   - `.egl-skeleton-bar` + `@keyframes egl-shimmer`             → `shared/ui/primitives` `Skeleton`
+ *   - `.egl-name-icon` (a third copy of four raw hexes)          → `entities/file/kind-icon`
+ *   - a local `prefers-reduced-motion` block                     → `styles/motion.css`
+ *
+ * Each deletion fixed something as well as shortening the file. `.egl-btn`'s
+ * primary variant painted `color:#fff` with a separate dark override;
+ * `.ui-btn`'s reads the derived `--on-accent` pair, which is correct in both
+ * themes without a second rule. `.egl-avatar`'s four tones were light-theme hex
+ * literals, so the list's avatars did not flip in dark at all; `Avatar` reads
+ * the `--av-*-bg` / `--av-*-fg` token pairs, which do.
+ *
+ * ## The z ladder
+ *
+ * Three of `styles/scale.css`'s named layers, and deliberately no fourth: the
+ * empty, loading and error states *replace* the grid rather than covering it,
+ * so nothing ever has to stack above the column header.
  */
 
 .egl {
+  /* The three heights the virtualizer and the stylesheet must agree on.
+   *
+   * `shared/list/geometry.ts` owns the numbers, because the window arithmetic
+   * needs them as JavaScript and a layout computed from one set of numbers and
+   * painted with another is a layout that drifts by a row. The component writes
+   * them onto this element as inline custom properties; these are the values
+   * they resolve to, so a row is the right height for the instant before the
+   * component mounts and so a reader can see which token each one tracks. */
+  --egl-row-h: var(--row-h);
+  --egl-header-h: var(--row-h-group);
+  --egl-columns-h: var(--row-h-head);
+
   display: flex;
   flex-direction: column;
   min-block-size: 0;
   block-size: 100%;
   background: var(--sheet);
   color: var(--fg);
-  font-size: 13px;
-  line-height: 1.45;
-  letter-spacing: -0.006em;
+  font-size: var(--fs-row);
+  line-height: var(--lh-body);
+  letter-spacing: var(--ls-body);
 }
 
 /* The scroll container is the treegrid itself. Putting the column headers
@@ -57,22 +88,31 @@
 .egl-columns {
   position: sticky;
   inset-block-start: 0;
-  z-index: 3;
+  z-index: var(--z-sticky);
   background: var(--sheet);
 }
 
 .egl-columns-row,
 .egl-row {
   display: grid;
+  /* The one literal left in this file, and it stays one.
+   *
+   * `specs/library.md §4A` gives this template verbatim — checkbox · name ·
+   * modified · classification · status · size · row-actions — and it is a
+   * *column specification*, not seven points on a spacing scale. Tokenising
+   * `128px` as `--sp-something` would say the modified column is a multiple of
+   * the grid, which it is not: it is as wide as a relative timestamp plus an
+   * avatar, measured. The header row and every data row share it verbatim so
+   * the two cannot fall out of alignment. */
   grid-template-columns: 32px minmax(0, 1fr) 128px 116px 108px 64px 32px;
   align-items: center;
-  gap: 8px;
-  padding-inline: 10px 6px;
+  gap: var(--sp-4);
+  padding-inline: var(--sp-5) var(--sp-3);
 }
 
 .egl-columns-row {
   block-size: var(--egl-columns-h);
-  font-size: 11px;
+  font-size: var(--fs-sm);
   font-weight: 500;
   /* `--fg2`, not the reference's `--fg4`, and not `--fg3` either.
    *
@@ -110,7 +150,7 @@
 .egl-sticky {
   position: sticky;
   inset-block-start: var(--egl-columns-h);
-  z-index: 2;
+  z-index: var(--z-pinned);
   block-size: 0;
 }
 
@@ -145,11 +185,11 @@
 .egl-group {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-4);
   block-size: var(--egl-header-h);
-  padding-inline: 16px;
+  padding-inline: var(--sp-8);
   inline-size: 100%;
-  font-size: 11.5px;
+  font-size: var(--fs-meta);
   font-weight: 500;
   color: var(--fg2);
   background: var(--sheet);
@@ -181,24 +221,25 @@
 }
 
 .egl-group-chevron {
-  inline-size: 10px;
-  block-size: 10px;
+  inline-size: var(--icon-xs);
+  block-size: var(--icon-xs);
   flex: none;
   /* A graphical object that carries meaning needs 3:1 (WCAG 1.4.11). `--fg4` is
    * 2.3:1 on the sheet; axe does not check icon contrast, which is exactly why
    * this one is set by hand rather than copied. */
   color: var(--fg3);
   /* Rotation, not two icons: one element, one transform, and it degrades to an
-   * instant swap under reduced motion instead of disappearing. */
-  transition: transform 140ms cubic-bezier(0.32, 0.72, 0, 1);
+   * instant swap under reduced motion — `--dur-fade` collapses to 1ms there,
+   * which is the single block in `styles/motion.css` doing its job. */
+  transition: transform var(--dur-fade) var(--ease-enter);
 }
 
+/* `--chev-collapsed` is `-90deg` under LTR and `+90deg` under RTL, from
+ * `styles/motion.css`. A horizontal chevron has to mirror; expressing it as a
+ * direction-aware variable replaced a rule and its `:root:dir(rtl)` twin
+ * (`specs/library.md` techniqueFixes #5). */
 .egl-group[aria-expanded='false'] .egl-group-chevron {
-  transform: rotate(-90deg);
-}
-
-:root:dir(rtl) .egl-group[aria-expanded='false'] .egl-group-chevron {
-  transform: rotate(90deg);
+  transform: rotate(var(--chev-collapsed));
 }
 
 .egl-group-name {
@@ -211,7 +252,7 @@
 .egl-group-count {
   font-family: var(--mono);
   color: var(--fg2);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
 }
 
 /* ------------------------------------------------------------------- rows */
@@ -220,7 +261,7 @@
   position: relative;
   block-size: var(--egl-row-h);
   cursor: default;
-  font-size: 13px;
+  font-size: var(--fs-row);
 }
 
 .egl-row:hover {
@@ -235,11 +276,11 @@
   content: '';
   position: absolute;
   inset-inline-start: 0;
-  inset-block: 6px;
+  inset-block: var(--sp-3);
   inline-size: 2px;
   border-radius: 2px;
   background: var(--accent);
-  z-index: 1;
+  z-index: var(--z-accent);
 }
 
 .egl-row > * {
@@ -257,29 +298,9 @@
 .egl-name {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: var(--ctl-pad);
   font-weight: 450;
   color: var(--fg);
-}
-
-.egl-name-icon {
-  inline-size: 16px;
-  block-size: 16px;
-  flex: none;
-  color: var(--fg3);
-}
-
-.egl-name-icon[data-kind='pdf'] {
-  color: #d0453a;
-}
-.egl-name-icon[data-kind='doc'] {
-  color: #3b6fd4;
-}
-.egl-name-icon[data-kind='xls'] {
-  color: #2e8b57;
-}
-.egl-name-icon[data-kind='ppt'] {
-  color: #d2591c;
 }
 
 .egl-name-text {
@@ -292,15 +313,15 @@
 .egl-name-ext {
   color: var(--fg2);
   font-weight: 400;
-  font-size: 12px;
+  font-size: var(--fs-ctl);
 }
 
 .egl-meta {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--sp-3);
   color: var(--fg2);
-  font-size: 12.5px;
+  font-size: var(--fs-body);
   /* `docs/09 §13` wants dates and numbers in a fixed-width form so a column
    * scans. Tabular figures inside the design's own family get that without
    * switching to the mono face mid-row, which the reference does not do and
@@ -313,104 +334,9 @@
   font-variant-numeric: tabular-nums;
 }
 
-.egl-avatar {
-  inline-size: 20px;
-  block-size: 20px;
-  border-radius: 50%;
-  background: var(--sunken);
-  color: var(--fg2);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 9.5px;
-  font-weight: 600;
-  flex: none;
-  letter-spacing: 0;
-}
-
-.egl-avatar[data-tone='a'] {
-  background: #e0e7ff;
-  color: #3730a3;
-}
-.egl-avatar[data-tone='b'] {
-  background: #fde7de;
-  color: #9a3412;
-}
-.egl-avatar[data-tone='c'] {
-  background: #dcfce7;
-  color: #166534;
-}
-.egl-avatar[data-tone='d'] {
-  background: #fef3c7;
-  color: #92400e;
-}
-
-/* The classification palette is LOCKED (`docs/09 §16a`). A tenant cannot
- * recolour it and neither can a design skill. Colour is reinforcement only —
- * the badge carries its text as well (`docs/09 §15`).
- *
- * Which is the point of the one number that differs from the reference. The
- * reference's recipe is `color-mix(in srgb, var(--cc) 82%, var(--fg))`, and axe
- * measured that at **3.68:1 for Public** and 4.28:1 for Confidential in the
- * light theme — a label the palette exists to reinforce, rendered too faintly
- * to read. The palette is untouched: `--cc` still colours the dot at full
- * strength, and the tint behind the badge is still 11% of it. Only the mix that
- * produces the *text* moves, 82% to 70%, which is the largest ratio that clears
- * 4.5:1 for all five levels in both themes. `tools/classification-contrast.mjs`
- * computes it and prints the table; re-run it if a token changes. */
-.egl-classification {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  block-size: 20px;
-  padding-inline: 7px 8px;
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0;
-  white-space: nowrap;
-  background: color-mix(in srgb, var(--cc) 11%, transparent);
-  color: color-mix(in srgb, var(--cc) 70%, var(--fg));
-}
-
-.egl-classification::before {
-  content: '';
-  inline-size: 6px;
-  block-size: 6px;
-  border-radius: 50%;
-  background: var(--cc);
-  flex: none;
-}
-
-.egl-classification[data-level='public'] {
-  --cc: var(--c-pub);
-}
-.egl-classification[data-level='internal'] {
-  --cc: var(--c-int);
-}
-.egl-classification[data-level='confidential'] {
-  --cc: var(--c-conf);
-}
-.egl-classification[data-level='highlyConfidential'] {
-  --cc: var(--c-hconf);
-}
-.egl-classification[data-level='restricted'] {
-  --cc: var(--c-restr);
-}
-
-.egl-classification[data-level='unclassified'] {
-  background: transparent;
-  box-shadow: var(--hairline);
-  color: var(--fg2);
-}
-
-.egl-classification[data-level='unclassified']::before {
-  display: none;
-}
-
 .egl-checkbox {
-  inline-size: 14px;
-  block-size: 14px;
+  inline-size: var(--icon);
+  block-size: var(--icon);
   margin: 0;
   accent-color: var(--accent);
   opacity: 0;
@@ -428,193 +354,22 @@
   position: static;
 }
 
-/* ------------------------------------------------------------ four states */
-
-.egl-state {
-  flex: 1;
-  min-block-size: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  padding-inline: 32px;
-  text-align: center;
-  background: var(--sheet);
-}
-
-.egl-state-figure {
-  /* The mark's own construction, at rest: a bounded field with a window inside
-   * it (`web/public/BRAND.md`). Drawn from tokens, not an illustration — an
-   * empty state that ships a raster is an empty state nobody re-themes. */
-  inline-size: 44px;
-  block-size: 44px;
-  border-radius: 11px;
-  box-shadow: inset 0 0 0 1px var(--line-strong);
-  position: relative;
-  margin-block-end: 4px;
-  color: var(--fg4);
-}
-
-.egl-state-figure::after {
-  content: '';
-  position: absolute;
-  inset-block-start: 13.75px;
-  inset-inline-start: 13.75px;
-  inline-size: 22px;
-  block-size: 22px;
-  border-radius: 0 5.5px 5.5px 5.5px;
-  box-shadow: inset 0 0 0 1px var(--line-strong);
-}
-
-:dir(rtl) .egl-state-figure::after {
-  border-radius: 5.5px 0 5.5px 5.5px;
-}
-
-.egl-state[data-tone='error'] .egl-state-figure {
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 34%, transparent);
-}
-
-.egl-state[data-tone='error'] .egl-state-figure::after {
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 34%, transparent);
-}
-
-.egl-state-title {
-  font-size: 15px;
-  font-weight: 600;
-  letter-spacing: -0.02em;
-  margin: 0;
-}
-
-.egl-state-body {
-  color: var(--fg2);
-  font-size: 12.5px;
-  max-inline-size: 46ch;
-  margin: 0;
-}
-
-.egl-state-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-block-start: 6px;
-}
-
-.egl-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  block-size: 28px;
-  padding-inline: 10px;
-  border-radius: var(--r-ctrl);
-  border: 0;
-  font: inherit;
-  font-size: 12.5px;
-  font-weight: 500;
-  cursor: pointer;
-  background: var(--sheet);
-  color: var(--fg);
-  box-shadow: var(--hairline);
-  white-space: nowrap;
-  letter-spacing: -0.006em;
-  transition:
-    transform 120ms cubic-bezier(0.32, 0.72, 0, 1),
-    background-color 120ms ease;
-}
-
-.egl-btn:hover {
-  background: var(--sunken);
-}
-
-/* Tactile: the control moves under the press. One pixel, not a bounce. */
-.egl-btn:active {
-  transform: translateY(1px);
-}
-
-/* The label on the accent, and why it is not simply white.
- *
- * The reference sets `.btn.primary{color:#fff}`, and that was right when the
- * accent was only ever the light-theme value. It is not right now: `tokens.css`
- * carries the reference's own dark ladder, and all three dark accents are
- * *light* — harbor #8B85FF, northwind #2DD4BF, meridian #E5E7EB. White on
- * #8B85FF is 3.04:1 and axe failed the empty and error routes in dark the
- * moment the missing dark accent was restored.
- *
- * `docs/09 §18` already names the right shape — the branding API returns
- * "derived contrast-safe foreground pairs" — so this is that pair, derived by
- * theme rather than invented. When the branding API lands it supplies the value
- * and this rule reads a token instead. */
-.egl-btn[data-variant='primary'] {
-  background: var(--accent);
-  color: #fff;
-  box-shadow: none;
-}
-
-[data-theme='dark'] .egl-btn[data-variant='primary'] {
-  color: var(--ink);
-}
-
-.egl-btn[data-variant='primary']:hover {
-  filter: brightness(1.08);
-}
-
-.egl-request-id {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  margin-block-start: 12px;
-  font-family: var(--mono);
-  font-size: 11px;
-  color: var(--fg2);
-}
-
-.egl-request-id code {
-  background: var(--sunken);
-  padding: 2px 6px;
-  border-radius: 4px;
-  color: var(--fg2);
-  /* A request ID is an opaque token, not prose: it must not reorder next to an
-   * RTL interface (`docs/14 §7`). */
-  unicode-bidi: isolate;
-  direction: ltr;
-}
-
 /* ------------------------------------------------------------- skeletons */
 
-.egl-skeleton-bar {
-  block-size: 10px;
-  border-radius: 4px;
-  background: linear-gradient(90deg, var(--sunken) 25%, var(--g150) 50%, var(--sunken) 75%);
-  background-size: 200% 100%;
-  animation: egl-shimmer 1.4s linear infinite;
-}
-
-@keyframes egl-shimmer {
-  to {
-    background-position: -200% 0;
-  }
-}
-
-/* `docs/09 §12`: reduced motion keeps opacity changes and removes the rest.
- * A shimmer is decoration on top of a shape that already communicates loading. */
-@media (prefers-reduced-motion: reduce) {
-  .egl-skeleton-bar {
-    animation: none;
-    background: var(--sunken);
-  }
-
-  .egl-group-chevron,
-  .egl-btn {
-    transition: none;
-  }
+/* `Skeleton` draws the bar; the grid decides how big it is.
+ *
+ * The one shape the primitive has no name for is the checkbox: a 14px square is
+ * not a pill, a circle or a line of text. `specs/library.md §A` requires the
+ * skeleton row to share the loaded row's box model exactly — same 36px height,
+ * same seven columns, same `10px 6px` inset — so that nothing shifts when the
+ * data lands (CLS 0), and the checkbox cell is part of that box. */
+.egl-cell-select .ui-skeleton {
+  inline-size: var(--icon);
+  block-size: var(--icon);
 }
 
 /* ---------------------------------------------------------------- uploads */
 
-/* Files arriving into this container. A list rather than grid rows — see
- * `UploadQueue` for why — sharing the row's exact grid template so the columns
- * line up with the grid beneath it and nothing appears to jog.
- */
 /* Its own band, not an orphaned row.
  *
  * It sits above the column headers — it is a sibling of the grid, not a row in

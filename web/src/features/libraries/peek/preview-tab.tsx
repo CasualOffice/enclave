@@ -5,7 +5,7 @@ import { requestBlob } from '../../../shared/api/client.ts';
 import { failureOf } from '../../../shared/api/failure.ts';
 import { FailureState, UnbuiltState } from '../../../shared/ui/surface-states.tsx';
 import { Skeleton } from '../../../shared/ui/primitives.tsx';
-import type { FileCapabilities, VersionPage } from '../../../entities/file/api-model.ts';
+import type { CurrentVersion, FileCapabilities } from '../../../entities/file/api-model.ts';
 import './preview-tab.css';
 
 /* The Preview tab — `docs/09 §7`'s peek-before-open, reading real bytes.
@@ -27,18 +27,31 @@ import './preview-tab.css';
  * error with a retry button would be worse: the retry cannot succeed until a
  * scanner runs, which may be never on a deployment with no engine configured.
  *
- * The fix is not to interpret the 404 at all. `GET /files/{id}/versions`
- * publishes `isReadable`, which is the server's own answer to *may these bytes
- * be served* — so this component **asks that first** and only requests an image
- * when the answer is yes. The 404 branch then only has to cover the genuinely
- * unexpected, and the common case gets the sentence it deserves.
+ * The fix is not to interpret the 404 at all. `isReadable` is the server's own
+ * answer to *may these bytes be served* — the same predicate the delivery
+ * routes filter on, so it cannot drift from them — and this component **asks
+ * that first**, only requesting an image when the answer is yes. The 404 branch
+ * then only has to cover the genuinely unexpected, and the common case gets the
+ * sentence it deserves.
  *
- * Verified against the running binary. A freshly uploaded PNG on a stack with
+ * ## Where `isReadable` comes from, and where it used to come from
+ *
+ * `detail.currentVersion`, which the panel already holds.
+ *
+ * It used to come from a second request. When this was written, `GET
+ * /files/{id}` reported `currentVersion.status: "AVAILABLE"` with nothing beside
+ * it to contradict that — byte-identical for a file that previews and one every
+ * delivery route answers 404 for — so `GET /files/{id}/versions` was the only
+ * endpoint publishing the field and had to be fetched on every peek to reach
+ * it. `ENC-825` closed that on the server and `ENC-848` is this half: the
+ * workaround is deleted, not merely explained, and the panel makes one request
+ * per peek instead of two.
+ *
+ * Verified against the running binary before the fix, and the case is still the
+ * one that matters: a freshly uploaded PNG on a stack with
  * `antivirus.provider: none` settles at `status: AVAILABLE`, `avStatus:
- * SKIPPED`, `isReadable: false` and answers 404 on both delivery routes —
- * while `GET /files/{id}` cheerfully reports `currentVersion.status:
- * "AVAILABLE"` with nothing beside it to contradict that (`ENC-825`). A client
- * that trusted `FileDetail` alone would show a spinner, then "not found", on a
+ * SKIPPED`, `isReadable: false` and answers 404 on both delivery routes. A
+ * client that branched on `status` would show a spinner, then "not found", on a
  * file it had just successfully uploaded.
  *
  * ## The 503 that is a deployment fact
@@ -91,23 +104,22 @@ export function PreviewTab({
   name,
   mimeType,
   capabilities,
-  versions,
-  versionsPending,
+  currentVersion,
 }: {
   fileId: string | undefined;
   name: string;
   mimeType: string;
   capabilities: FileCapabilities;
-  versions: VersionPage | undefined;
-  versionsPending: boolean;
+  /** From `GET /files/{id}`. Absent only when the file has no committed version. */
+  currentVersion: CurrentVersion | undefined;
 }) {
   const t = useT();
 
-  /* The current version is the first entry: `GET /files/{id}/versions` orders
-   * newest first. `isReadable` is read, never recomputed from `status` and
-   * `avStatus` beside it — the same rule as `capabilities`, and the same
-   * reason. */
-  const current = versions?.items[0];
+  /* `isReadable` is read, never recomputed from the `status` and `avStatus`
+   * beside it — the same rule as `capabilities`, and the same reason: the
+   * server owns the predicate and a client that re-derives it is a second
+   * authority that will eventually disagree. */
+  const current = currentVersion;
   const readable = current?.isReadable === true;
   const renderable = RENDERABLE.has(mimeType);
 
@@ -129,14 +141,10 @@ export function PreviewTab({
     );
   }
 
-  if (versionsPending) {
-    return (
-      <div className="peek-preview" role="status" aria-busy="true">
-        <Skeleton width="100%" />
-      </div>
-    );
-  }
-
+  /* No separate pending branch: the panel does not render this tab until
+   * `detail` has arrived, so `currentVersion` is as settled as the title above
+   * it. The loading state that used to sit here was waiting on the second
+   * request that no longer exists. */
   if (current === undefined) {
     return (
       <div className="peek-preview" data-state="empty">
