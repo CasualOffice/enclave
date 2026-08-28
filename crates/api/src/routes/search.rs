@@ -18,34 +18,69 @@
 //! `results` from anywhere else — [`hydrate`] and [`capabilities_for`] are given
 //! [`enclave_search::Confirmed`] values and cannot be given anything else.
 //!
-//! # Why every response from this route says `degraded: true`
+//! # When this route says `degraded: true`, and why it used to say it always
 //!
 //! `docs/09-UX-WHITE-LABELING.md §10`: *"A degraded search (vector store unavailable) says so in the
-//! results header rather than quietly returning less."* This route makes that concrete, and today it
-//! says so on every request, because it is true on every request:
+//! results header rather than quietly returning less."*
 //!
-//! * [`ApiState`] holds no [`enclave_search::vector::VectorIndex`]. The API process has no Milvus
-//!   handle, no configuration pointing at one, and nothing that could construct one — so from this
-//!   process the vector store is not merely empty, it is **unreachable**. That is the honest reading
-//!   and it is the one passed to [`Retrieval::decide`].
-//! * `ENC-661` landed the embedding provider a few days ago and no corpus has been embedded, so even
-//!   a wired store would answer nothing. `M5` ships lexical search (`ENC-675`).
+//! Until `ENC-698` this route said so on **every** request, and it was telling the truth for a
+//! reason that had nothing to do with the deployment: [`ApiState`] held no
+//! [`enclave_search::vector::VectorIndex`], so from inside this process the store was not merely
+//! empty, it was unreachable — and [`Retrieval::decide`] was handed a hardcoded
+//! [`VectorStore::Unreachable`]. The flag was therefore a constant wearing a decision's clothes.
+//! When a corpus existed, nothing here would have changed and a healthy index would have kept being
+//! reported as a degraded search.
 //!
-//! The flag is not set here. It is *decided* by [`Retrieval::decide`] and *carried* by the type:
-//! [`enclave_search::DegradedReason`] has a private field and `decide` is its only constructor,
-//! [`enclave_search::lexical::candidates`] demands one, and [`SearchResults`] has no constructor
-//! taking a `bool`. So `diagnostics.degraded` cannot be forgotten at this boundary — which is the
-//! boundary `plans/M3-DISCOVERY.md` D25 exists to protect, because a client that cannot tell reduced
+//! [`ApiState::vector`] is the fix, and it is what [`plan`] reads. Three states, all honest:
+//!
+//! * **No pair on the state** — no `search.milvus`, or no mounted embedding model. This process
+//!   cannot reach the store, [`VectorStore::Unreachable`] is the honest reading, and the lexical
+//!   fallback runs. This is the ordinary deployment and it is not a defect.
+//! * **A pair, and the store answers** — [`Retrieval::Complete`], the dense path, `degraded: false`.
+//! * **A pair, and the store is unreachable, depleted, or the tenant's denylist has outgrown its
+//!   limit** — the lexical fallback, `degraded: true`, with the cause in a log line.
+//!
+//! The flag is still not set here. It is *decided* by [`Retrieval::decide`] and *carried* by the
+//! type: [`enclave_search::DegradedReason`] has a private field and `decide` is its only
+//! constructor, [`enclave_search::lexical::candidates`] demands one, and [`SearchResults`] has no
+//! constructor taking a `bool` — [`SearchResults::confirm`] is complete and
+//! [`SearchResults::confirm_degraded`] is degraded, and which one runs is decided by which generator
+//! produced the candidates. So `diagnostics.degraded` cannot be forgotten at this boundary, which is
+//! the boundary `plans/M3-DISCOVERY.md` D25 exists to protect: a client that cannot tell reduced
 //! recall from complete recall tells a user their document is gone.
-//!
-//! `ENC-698` is the row for wiring a real vector index into the API process. Until it is closed the
-//! honest value of this flag is `true`, and a route that reported `false` while running on the
-//! lexical fallback would be the exact failure the flag exists to prevent.
 //!
 //! **What is not on the wire is the *cause*.** `enclave_search::degraded` draws that line and this
 //! module keeps it: the boolean is caller-facing, the cause is operator-facing. A caller needs to
 //! know their recall is reduced; telling them *which internal component is unwell* is a fact about
 //! our topology. The cause goes to a log line.
+//!
+//! # The dense path is a *generator* change and nothing else
+//!
+//! This is the sentence `CLAUDE.md` rule 5 is about, so it is worth being exact. The two paths
+//! differ in **where candidates come from** and in nothing else:
+//!
+//! ```text
+//! lexical:  lexical::candidates(tx, tenant, query, budget, reason)
+//! dense:    embedder.embed(query) -> index.candidates(VectorQuery { .. })
+//!                     |                          |
+//!                     +--------- Vec<Candidate> -+
+//!                                     |
+//!                        PostFilter::confirm(tx, authorization, ctx, candidates)
+//! ```
+//!
+//! [`SearchResults::confirm`] and [`SearchResults::confirm_degraded`] are two callers of one
+//! [`enclave_search::PostFilter::confirm`], with no argument between them that changes what is
+//! checked. There is **no second post-filter** in this module and there must not be: the vector
+//! store's candidates are resolved against `acl_entries` by the same batched
+//! `file.metadata_read`/`file.content_read` call the lexical ones are, in the same transaction, and a
+//! candidate that resolves to nothing is dropped silently rather than reported as a hit. That matters
+//! more here than on the lexical path, because `crates/search/src/vector.rs` says plainly that
+//! `acl_tokens` and `barrier_tokens` are **not** in the emitted filter — nothing computes them — so
+//! on the dense path the post-filter is doing all of the access control rather than confirming any
+//! of it.
+//!
+//! Everything after the post-filter — [`hydrate`], [`capabilities_for`], the trim, the markup — is
+//! shared, takes [`Confirmed`] values, and cannot be given anything else.
 //!
 //! # Where the policy chain runs, and the gap that is worth naming
 //!
@@ -126,13 +161,14 @@ use axum::body::Bytes;
 use axum::extract::State;
 use axum::Json;
 use enclave_core::{
-    Action, AuthorizationService, ContainerAction, Error, FieldError, FileAction, FileId,
-    Obligations, PolicyDecision, ReasonCode, RequestContext, ResourceKind, ResourceRef, TenantId,
-    ValidationCode,
+    Action, AuthorizationService, ClassificationRank, ContainerAction, Error, FieldError,
+    FileAction, FileId, Obligations, PolicyDecision, ReasonCode, RequestContext, ResourceKind,
+    ResourceRef, TenantId, ValidationCode,
 };
+use enclave_embeddings::ClassifiedText;
 use enclave_search::{
-    lexical, Confirmed, Excerpt, Highlights, Retrieval, SearchResults, VectorStore,
-    DEFAULT_DENYLIST_LIMIT,
+    lexical, Candidate, Confirmed, Excerpt, Highlights, Prefilter, Retrieval, SearchResults,
+    VectorQuery, VectorStore, DEFAULT_DENYLIST_LIMIT,
 };
 use serde::{Deserialize, Serialize};
 use sqlx::{PgConnection, Row as _};
@@ -190,15 +226,27 @@ const MAX_PATH_DEPTH: i32 = enclave_files::MAX_DEPTH;
 
 /// The retrieval modes a request may name.
 ///
-/// Accepted and validated, and today none of them changes what runs: there is no vector index in
-/// this process (see the module documentation), so every request is answered by the lexical path
-/// and says so. A request for `semantic` therefore gets lexical results with `degraded: true`, which
-/// is exactly what degraded mode is for — the alternative, refusing the mode, would tell a caller
-/// their query is invalid when the truth is that our index is unavailable.
+/// Accepted and validated, and none of them changes what runs. Which path answers is decided by
+/// [`plan`] from the health of the store, never by the request: a deployment with no reachable
+/// index answers a `semantic` request lexically and says `degraded: true`, which is exactly what
+/// degraded mode is for — refusing the mode would tell a caller their query is invalid when the
+/// truth is that our index is unavailable. `ENC-697` carries honouring the mode as a *narrowing*
+/// (a caller asking for `lexical` over a healthy index gets more than they asked for, which is the
+/// safe direction of the two and the one this route already takes for every other filter).
 const MODES: [&str; 3] = ["hybrid", "semantic", "lexical"];
 
-/// What `diagnostics.mode` reports: the mode that *ran*, never the one that was asked for.
-const MODE_RAN: &str = "lexical";
+/// What `diagnostics.mode` reports when the lexical fallback answered.
+const MODE_LEXICAL: &str = "lexical";
+
+/// What `diagnostics.mode` reports when the vector index answered.
+///
+/// `semantic` and not `hybrid`, because [`enclave_search::VectorIndex::candidates`] runs a dense
+/// search over `dense_vector` alone. `docs/07-SEARCH-INDEXING.md §5` specifies a hybrid query fused
+/// with the sparse side; the collection has a `sparse_vector` field and the writer populates it, but
+/// nothing issues a hybrid request yet. Reporting `hybrid` would be the same lie `degraded` exists
+/// to prevent, one field along — a caller told their query was answered by a fusion that did not
+/// run. `ENC-891`.
+const MODE_SEMANTIC: &str = "semantic";
 
 /// The capability actions a search result carries (`docs/05-API.md §11`).
 ///
@@ -364,28 +412,6 @@ pub async fn search(
         return Err(state.audit.refuse(&ctx, SEARCH, &resource, refused).await);
     }
 
-    // The decision that puts this request on the lexical path. Taken through `Retrieval::decide`
-    // and not assembled here, because `DegradedReason`'s field is private and `decide` is its only
-    // constructor — `lexical::candidates` cannot be called without one, so there is no way to reach
-    // the fallback without having decided to.
-    let retrieval = Retrieval::decide(VectorStore::Unreachable, 0, DEFAULT_DENYLIST_LIMIT);
-    let reason = match retrieval {
-        Retrieval::Degraded(reason) => reason,
-        // Unreachable: `decide` maps `Unreachable` to `Degraded` unconditionally. Failing is the
-        // only safe arm — a search that reported itself complete while running on the lexical
-        // fallback is the single outcome this route exists to prevent, so it must not be
-        // expressible as a fall-through.
-        Retrieval::Complete => {
-            return Err(ApiError::new(
-                Error::Internal(anyhow::anyhow!(
-                    "retrieval reported a complete path with no vector index in the process"
-                )),
-                request_id,
-            ))
-        }
-    };
-    tracing::debug!(cause = ?reason.cause(), "search degraded to the lexical path");
-
     let budget = (limit.saturating_mul(OVERFETCH)).min(MAX_CANDIDATES);
 
     let mut tx = state
@@ -394,21 +420,41 @@ pub async fn search(
         .await
         .map_err(|error| ApiError::new(error.into(), request_id))?;
 
-    let candidates = lexical::candidates(&mut tx, ctx.tenant_id, &query, budget, reason)
+    // Which generator answers, decided before anything is retrieved and inside the transaction the
+    // post-filter will run in — so the denylist size the decision reads and the denylist the
+    // post-filter drops by are one snapshot of one table.
+    let path = plan(&state, &mut tx, ctx.tenant_id)
         .await
-        .map_err(|error| ApiError::new(Error::from(error), request_id))?;
+        .map_err(|error| ApiError::new(error, request_id))?;
 
-    // The post-filter. Same transaction as the generator, because the denylist read and the
-    // authorization resolution have to see one snapshot; same call the vector path would make, with
-    // no argument that softens what it checks.
-    let confirmed = SearchResults::confirm_degraded(
-        &mut tx,
-        state.policy.authorization().as_ref(),
-        &ctx,
-        candidates,
-    )
-    .await
-    .map_err(|error| ApiError::new(Error::from(error), request_id))?;
+    // The post-filter runs on both arms and it is the same one: `SearchResults::confirm` and
+    // `SearchResults::confirm_degraded` are two callers of `PostFilter::confirm`, in this
+    // transaction, with no argument between them that changes what is checked. The arms differ in
+    // where the candidates came from and in what `diagnostics.mode` says about it.
+    let authorization = state.policy.authorization();
+    let (confirmed, mode) = match path {
+        Path::Dense(vector) => {
+            let candidates = propose(vector, ctx.tenant_id, &query, budget)
+                .await
+                .map_err(|error| ApiError::new(error, request_id))?;
+            let confirmed =
+                SearchResults::confirm(&mut tx, authorization.as_ref(), &ctx, candidates)
+                    .await
+                    .map_err(|error| ApiError::new(Error::from(error), request_id))?;
+            (confirmed, MODE_SEMANTIC)
+        }
+        Path::Lexical(reason) => {
+            tracing::debug!(cause = ?reason.cause(), "search degraded to the lexical path");
+            let candidates = lexical::candidates(&mut tx, ctx.tenant_id, &query, budget, reason)
+                .await
+                .map_err(|error| ApiError::new(Error::from(error), request_id))?;
+            let confirmed =
+                SearchResults::confirm_degraded(&mut tx, authorization.as_ref(), &ctx, candidates)
+                    .await
+                    .map_err(|error| ApiError::new(Error::from(error), request_id))?;
+            (confirmed, MODE_LEXICAL)
+        }
+    };
 
     let counts = confirmed.counts();
     tracing::debug!(
@@ -476,10 +522,168 @@ pub async fn search(
     Ok(Json(SearchResponse {
         results,
         page: PageInfo { next_cursor: None, has_more },
-        // Not a literal `true`. `is_degraded` is the envelope's own answer, and the envelope is the
-        // only thing that can produce one — see the module documentation.
-        diagnostics: Diagnostics { mode: MODE_RAN, degraded: confirmed.is_degraded() },
+        // Neither field is a literal. `is_degraded` is the envelope's own answer and the envelope is
+        // the only thing that can produce one; `mode` comes from the arm that produced the
+        // envelope, so the two cannot disagree about which path ran.
+        diagnostics: Diagnostics { mode, degraded: confirmed.is_degraded() },
     }))
+}
+
+// ---------------------------------------------------------------------------------------------
+// Which generator answers
+// ---------------------------------------------------------------------------------------------
+
+/// Where this search's candidates come from.
+///
+/// Two variants rather than a `Retrieval` plus an `Option<&VectorRetrieval>`, so that "complete
+/// path, no index to run it on" is not a state a caller has to handle. [`plan`] is the only
+/// constructor and it can only produce [`Path::Dense`] on the branch that is holding the pair.
+enum Path<'a> {
+    /// The vector index answers, with its full recall.
+    Dense(&'a crate::state::VectorRetrieval),
+    /// The lexical fallback answers, carrying the reason it is running.
+    Lexical(enclave_search::DegradedReason),
+}
+
+/// Decides which generator answers, from the health of the store and the pressure on the denylist.
+///
+/// # Both inputs are real, and one of them used to be a literal
+///
+/// `ENC-695` passed `VectorStore::Unreachable` and `0`. The first was truthful — this process held
+/// no index — and the second was inert only *because* of the first: [`Retrieval::decide`] is a
+/// `const fn` whose `Unreachable` arm ignores both denylist arguments, so no value of the second
+/// could change the answer. The moment a store became reachable that stopped being true, and a
+/// hardcoded `0` would have said "invalidation is keeping up" about a tenant whose denylist had
+/// overflowed — which is `docs/07-SEARCH-INDEXING.md §6.4`'s third degradation trigger, silently
+/// disarmed. [`enclave_search::in_force`] supplies it, counting by the same `clears_at` rule the
+/// post-filter drops by.
+///
+/// The `None` branch still passes `0`, and still cannot be wrong about it, for exactly the reason
+/// above — asserted by `a_process_with_no_index_degrades_whatever_the_denylist_holds` rather than
+/// left as a claim. It is *not* read there because a `count(*)` on every search of every deployment
+/// that has no vector store is work with no consumer.
+///
+/// # The reachability probe is a network round trip, taken per request
+///
+/// There is no circuit breaker in front of it yet — `crates/search/src/milvus.rs` says so and sizes
+/// `MilvusConfig::connect_timeout` short *because* of it: while the store is down, every request
+/// pays one connect attempt. That is the cost of the honest answer, and the alternative is the one
+/// `enclave_search::degraded` refuses — caching the store's health per process would make the same
+/// query answer completely on one replica and degraded on another with no state change between
+/// them.
+///
+/// # Errors
+///
+/// A failed denylist read, propagated. **Never a degradation**: a storage failure that quietly
+/// engaged the fallback would answer an outage with a smaller result set and a flag the caller
+/// cannot distinguish from a real one.
+async fn plan<'a>(
+    state: &'a ApiState,
+    conn: &mut PgConnection,
+    tenant: TenantId,
+) -> Result<Path<'a>, Error> {
+    let Some(vector) = state.vector.as_ref() else {
+        return no_index_in_this_process().map(Path::Lexical);
+    };
+
+    let store = vector.index().reachability().await;
+    let denylisted = enclave_search::in_force(conn, tenant).await.map_err(Error::from)?;
+
+    Ok(match Retrieval::decide(store, denylisted, DEFAULT_DENYLIST_LIMIT) {
+        Retrieval::Complete => Path::Dense(vector),
+        Retrieval::Degraded(reason) => Path::Lexical(reason),
+    })
+}
+
+/// The reason a process holding no vector index gives for running the fallback.
+///
+/// Taken through [`Retrieval::decide`] rather than assembled, because
+/// [`enclave_search::DegradedReason`] has a private field and `decide` is its only constructor —
+/// [`lexical::candidates`] demands one, so there is no way to reach the fallback without having
+/// decided to take it.
+///
+/// # Errors
+///
+/// [`Error::Internal`] for a `Complete` that cannot happen: `decide` maps
+/// [`VectorStore::Unreachable`] to `Degraded` unconditionally, whatever the denylist arguments. It
+/// is a fall-through rather than a possibility, and it fails rather than falling into the dense arm
+/// because a search that reported itself complete while running on the lexical fallback is the one
+/// outcome this route exists to prevent. The message says *this process cannot query the store*,
+/// which is the narrower and now-accurate claim: a store may be perfectly reachable from a worker
+/// that has the pair while this replica has neither half of it.
+fn no_index_in_this_process() -> Result<enclave_search::DegradedReason, Error> {
+    match Retrieval::decide(VectorStore::Unreachable, 0, DEFAULT_DENYLIST_LIMIT) {
+        Retrieval::Degraded(reason) => Ok(reason),
+        Retrieval::Complete => Err(Error::Internal(anyhow::anyhow!(
+            "retrieval reported a complete path from a store this process cannot query"
+        ))),
+    }
+}
+
+/// Asks the vector index for candidates, having first put the query through the embedder.
+///
+/// # What this function is allowed to be wrong about: everything
+///
+/// It proposes. `crates/search/src/vector.rs` states the contract and it is not softened here — a
+/// candidate for a file the caller has no grant on, a deleted file, a file re-classified upward an
+/// hour ago, or a file of another tenant entirely is dropped by
+/// [`enclave_search::PostFilter::confirm`], which the caller runs on this output before anything
+/// reaches a response. Nothing downstream reads a field the index matched on.
+///
+/// [`Prefilter::unnarrowed`] is therefore the correct narrowing and not a shortcut: this route
+/// refuses every narrowing filter `docs/05-API.md §11` defines (`ENC-697`), so the caller asked a
+/// tenant-wide question and an unnarrowed scan is the answer to it. `docs/07 §6.1`'s library
+/// pre-filter is a **cost** optimisation whose values must come from PostgreSQL; supplying it from
+/// anywhere else — or supplying a guess to look busy — loses recall for a narrowing nobody can
+/// verify.
+///
+/// # The query is embedded at the ceiling, deliberately
+///
+/// [`ClassificationRank::RESTRICTED`] is the rank attached to the query text, and it is not the
+/// query's "classification" — a query has none, because it is the caller's own words rather than a
+/// document's contents. It is a routing decision: the words someone types looking for a
+/// `RESTRICTED` document are as sensitive as the document, and this is the one rank that can never
+/// be admitted to a remote provider (`crates/embeddings/src/text.rs`). Today every deployment is
+/// air-gapped so the rank changes nothing; the day a remote provider exists it is the difference
+/// between a search box and an egress channel, and the safe value is the one to have written down
+/// before then.
+///
+/// # Errors
+///
+/// An embedding failure or a vector-store failure, propagated. Never an empty candidate set
+/// standing in for either — `crates/search/src/error.rs` and `crates/embeddings/src/error.rs` both
+/// hold that line, and a search that answered an outage with "no matches" would tell a caller their
+/// document is not there.
+async fn propose(
+    vector: &crate::state::VectorRetrieval,
+    tenant: TenantId,
+    query: &str,
+    budget: u32,
+) -> Result<Vec<Candidate>, Error> {
+    let text = ClassifiedText::new(ClassificationRank::RESTRICTED, vec![query.to_owned()]);
+    let embedded = vector.embedder().embed(text).await.map_err(Error::from)?;
+
+    // One chunk in, one vector out. `EmbeddingRouter::embed` already refuses a batch that comes
+    // back short, so this is the second guard and it is a refusal rather than a `None` candidate
+    // set: a search that returned nothing because the model returned nothing would report an
+    // embedding outage as a tenant with no matching documents.
+    let Some(embedding) = embedded.embeddings().first() else {
+        return Err(Error::Internal(anyhow::anyhow!(
+            "the embedder returned no vector for a one-chunk query batch"
+        )));
+    };
+
+    let prefilter = Prefilter::unnarrowed();
+    vector
+        .index()
+        .candidates(VectorQuery {
+            tenant,
+            embedding: embedding.as_slice(),
+            budget,
+            prefilter: &prefilter,
+        })
+        .await
+        .map_err(Error::from)
 }
 
 // ---------------------------------------------------------------------------------------------

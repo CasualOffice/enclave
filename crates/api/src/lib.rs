@@ -29,7 +29,7 @@ use enclave_preview::PreviewPipeline;
 use enclave_storage::BlobStore;
 
 pub use edge::Edge;
-pub use state::{unconfigured_stages, ApiState};
+pub use state::{unconfigured_stages, ApiState, VectorRetrieval};
 
 /// Builds the router.
 ///

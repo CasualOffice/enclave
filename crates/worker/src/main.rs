@@ -651,8 +651,8 @@ fn milvus_config(
     config: &enclave_config::Config,
     secrets: &enclave_config::ResolvedSecrets,
 ) -> anyhow::Result<Option<MilvusConfig>> {
-    Ok(MilvusConfig::from_operator_config(config, secrets, ACTIVE.dimension)
-        .context("read the vector store this deployment's `search.milvus` names")?)
+    MilvusConfig::from_operator_config(config, secrets, ACTIVE.dimension)
+        .context("read the vector store this deployment's `search.milvus` names")
 }
 
 /// The scanner this deployment configured, or a refusal to start.
