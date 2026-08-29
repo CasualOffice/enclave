@@ -1013,6 +1013,24 @@ jobs:
           tail -60 "$RUNNER_TEMP/api.log"
           exit 1
 
+      # **Before provisioning, not after.** The provisioning step uploads a file
+      # and waits for it to become AVAILABLE, and it is this process that
+      # publishes it — so starting the worker afterwards means that wait can
+      # never succeed. It was second, and the tell was the diagnostic rather
+      # than the failure: the step's own `tail` of the worker log reported `No
+      # such file or directory`, because the log did not exist yet (`ENC-935`).
+      #
+      # `POST /uploads/{id}/complete` answers `202 SCANNING` and stops: the
+      # antivirus pass and the publish that follows it are the worker's, and no
+      # read path serves SCANNING content (rule 9). Without this the upload below
+      # never becomes AVAILABLE and `GET /files/{id}` answers 404 forever — which
+      # is rule 9 working, not a fault.
+      - name: Start the worker
+        run: |
+          set -euo pipefail
+          ./target/debug/enclave-worker > "$RUNNER_TEMP/worker.log" 2>&1 &
+          echo "worker started"
+
       # `seed` writes tenants, users and groups and **no content** — it says so in
       # its own header — so `GET /workspaces` answers `200 {"items":[]}` until
       # something provisions one, and the suite's own guard fires: "the seeded
@@ -1110,17 +1128,6 @@ jobs:
           exit 1
         env:
           ENCLAVE_E2E_PASSWORD: ${{ secrets.ENCLAVE_E2E_PASSWORD || 'Walkthrough-Pass-2026!' }}
-
-      # `POST /uploads/{id}/complete` answers `202 SCANNING` and stops: the
-      # antivirus pass and the publish that follows it are the worker's, and no
-      # read path serves SCANNING content (rule 9). Without this the upload below
-      # never becomes AVAILABLE and `GET /files/{id}` answers 404 forever — which
-      # is rule 9 working, not a fault.
-      - name: Start the worker
-        run: |
-          set -euo pipefail
-          ./target/debug/enclave-worker > "$RUNNER_TEMP/worker.log" 2>&1 &
-          echo "worker started"
 
       - name: Install web dependencies
         working-directory: web
