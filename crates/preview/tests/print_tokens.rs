@@ -26,7 +26,7 @@
 //! # Everything runs through the harness pool, which `SET ROLE enclave_app`s
 //!
 //! A test that connected as the cluster superuser would prove nothing about row-level security or
-//! about the `DELETE` grant `0027` adds, because a superuser bypasses both. That is PR #22's
+//! about the `DELETE` grant `0028` adds, because a superuser bypasses both. That is PR #22's
 //! finding and `ENC-705`/`ENC-686`'s, and it is why the setup writes are on
 //! [`TestDb::connect`] and every assertion is on [`TestDb::pool`].
 
@@ -114,7 +114,7 @@ async fn mint(pool: &DbPool, tenant: TenantId, grant: &PrintGrant) -> PrintToken
 
 /// Writes a grant that is *already dead*, over the admin connection.
 ///
-/// It cannot go through [`mint`], and that is a property rather than an inconvenience: `0027`
+/// It cannot go through [`mint`], and that is a property rather than an inconvenience: `0028`
 /// carries `CHECK (expires_at > issued_at)`, so a grant that expired before it was issued is not a
 /// row the database will accept — see [`a_grant_cannot_be_minted_already_dead`], which asserts
 /// exactly that. What an expired grant actually looks like is a row issued ten minutes ago that
@@ -390,7 +390,7 @@ async fn a_colleague_in_the_same_tenant_cannot_spend_another_persons_grant() {
 
 /// A grant cannot be minted already dead, and the database is what refuses it.
 ///
-/// `0027`'s `CHECK (expires_at > issued_at)`. It is cheap, and it is the constraint that would catch
+/// `0028`'s `CHECK (expires_at > issued_at)`. It is cheap, and it is the constraint that would catch
 /// a mint which started deriving `expires_at` from its own clock: a replica running behind the
 /// database would issue grants that are born expired, and every caller would see a `404` on a
 /// redemption that had done nothing wrong. Without this test the constraint is a line in a migration
@@ -432,7 +432,7 @@ async fn a_grant_cannot_be_minted_already_dead() {
 
 /// Expired rows are deleted, live ones are not, and the `DELETE` runs as `enclave_app`.
 ///
-/// The grant half is the point. `0027` writes `GRANT … DELETE ON print_tokens TO enclave_app`, and
+/// The grant half is the point. `0028` writes `GRANT … DELETE ON print_tokens TO enclave_app`, and
 /// the only way to know it took is to delete as that role — which is what the harness pool does and
 /// what a superuser connection would silently paper over. `ENC-705` and `ENC-686` were both missing
 /// grants with correct code above them and passing tests below them.

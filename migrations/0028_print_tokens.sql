@@ -1,4 +1,4 @@
--- 0027 — `print_tokens`: the durable home of a print capability, and the single-use property held
+-- 0028 — `print_tokens`: the durable home of a print capability, and the single-use property held
 --   by PostgreSQL instead of by one process's memory. `ENC-724`; modelled in
 --   `docs/04-DATA-MODEL.md §15.2`, and the two endpoints that write and spend a row are
 --   `docs/05-API.md §9`.
