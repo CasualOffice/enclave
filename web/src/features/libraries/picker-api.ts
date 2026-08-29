@@ -1,6 +1,6 @@
 import { useQuery, type UseQueryResult } from '@tanstack/react-query';
 import { request } from '../../shared/api/client.ts';
-import { Library, LibraryPage, WorkspacePage } from '../../entities/workspace/api-model.ts';
+import { Library, LibraryPage } from '../../entities/workspace/api-model.ts';
 
 /* The three reads the library picker is built from.
  *
@@ -16,17 +16,11 @@ import { Library, LibraryPage, WorkspacePage } from '../../entities/workspace/ap
  * policy chain never composed.
  */
 
-/** `GET /api/v1/workspaces` — every workspace the viewer may read. */
-export function useWorkspaces(): UseQueryResult<WorkspacePage> {
-  return useQuery({
-    queryKey: ['workspaces'],
-    queryFn: ({ signal }) => request('/workspaces', WorkspacePage, { signal }),
-    /* Each row carries `capabilities`, which is a property of this user, this
-     * action and this moment — never served stale (`docs/17 §4.1`). */
-    staleTime: 0,
-    retry: false,
-  });
-}
+/* `useWorkspaces` moved to `entities/workspace/api.ts` when the search screen's
+ * workspace filter needed it too: `docs/17 §2` forbids one feature importing
+ * another, so the shared piece went down rather than sideways (`ENC-934`).
+ * Re-exported here so this module still reads as the picker's three reads. */
+export { useWorkspaces } from '../../entities/workspace/api.ts';
 
 /** `GET /api/v1/workspaces/{id}/libraries` — the libraries inside one workspace. */
 export function useLibraries(workspaceId: string | undefined): UseQueryResult<LibraryPage> {

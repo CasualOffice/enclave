@@ -95,9 +95,12 @@ export const MODIFIED_WINDOW_MS: Readonly<Record<string, number>> = {
 /**
  * The four filters, given the workspaces this tenant has.
  *
- * Workspaces are data, so the list is a parameter rather than a constant: in the
- * shipped product it comes from the same response the results do, and here it
- * comes from the fixture. Nothing about the chip changes.
+ * Workspaces are data, so the list is a parameter rather than a constant. It now
+ * comes from `GET /api/v1/workspaces` — the same endpoint the library picker
+ * reads — and until `ENC-934` it came from `search/fixture.ts`, which meant the
+ * filter offered names that existed nowhere and narrowing by one produced an
+ * empty result for a reason nobody could explain. Nothing about the chip
+ * changes, which is the point of the parameter.
  */
 export function filterDefs(workspaces: readonly string[]): readonly FilterDef[] {
   return [

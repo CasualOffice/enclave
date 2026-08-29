@@ -31,7 +31,7 @@ import {
   type FilterOption,
   type FilterState,
 } from './filters.ts';
-import { CORPUS_WORKSPACES } from './fixture.ts';
+import { useWorkspaces } from '../../entities/workspace/api.ts';
 import { useSearch } from './api.ts';
 import { FailureState } from '../../shared/ui/surface-states.tsx';
 import { failureOf } from '../../shared/api/failure.ts';
@@ -155,7 +155,27 @@ export default function SearchScreen() {
   const surface: Surface =
     surfaceParam === 'loading' ? 'loading' : surfaceParam === 'error' ? 'error' : 'ready';
 
-  const defs = useMemo(() => filterDefs(CORPUS_WORKSPACES), []);
+  /* The caller's own workspaces, from the same endpoint the library picker
+   * reads. It was `CORPUS_WORKSPACES` — a fixture — so the workspace filter
+   * offered a list of names that existed nowhere, and picking one narrowed a
+   * real search to a workspace the tenant does not have (`ENC-934`).
+   *
+   * Everything else on this screen was already real: `POST /search` returns
+   * matches, excerpts and scores from PostgreSQL's full-text index, and
+   * `api.ts` has always sent the query to it. One import was the whole gap,
+   * which is worth stating because the screen *looked* entirely fabricated and
+   * was not.
+   *
+   * An absent or failed list yields no workspace options rather than fictional
+   * ones. A filter that cannot be populated is a filter that offers only
+   * "Any" — which narrows nothing and is honest — and never a name the caller
+   * could pick and get an empty result from for a reason nobody could explain. */
+  const workspaces = useWorkspaces();
+  const workspaceNames = useMemo(
+    () => workspaces.data?.items.map((workspace) => workspace.name) ?? [],
+    [workspaces.data],
+  );
+  const defs = useMemo(() => filterDefs(workspaceNames), [workspaceNames]);
 
   /* One writer for the query string. A chip that wrote only its own key would
    * drop the others, because `replaceParams` replaces rather than merges. */
