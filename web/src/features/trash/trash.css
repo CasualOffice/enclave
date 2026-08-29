@@ -1,0 +1,103 @@
+/* Trash (`ENC-939`).
+ *
+ * The page measure and the row rhythm are Home's, deliberately: both are a short
+ * list of files with a timestamp on the right, and two screens that look alike
+ * because they *are* alike is the whole point of a token scale. `--page-measure`
+ * is centred, so this screen sits where Home sits rather than where the
+ * full-bleed library table does.
+ */
+
+.trash {
+  padding-block: var(--sp-9);
+  padding-inline: var(--sp-10);
+  overflow: auto;
+  block-size: 100%;
+}
+
+.trash-page {
+  max-inline-size: var(--page-measure);
+  margin-inline: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+}
+
+.trash-title {
+  margin: 0;
+  font-family: var(--tight);
+  font-size: var(--fs-display);
+  line-height: var(--lh-tight);
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.trash-subline {
+  margin: 0;
+  margin-block-start: var(--sp-2);
+  font-size: var(--fs-meta);
+  color: var(--fg2);
+}
+
+.trash-list ul,
+.trash-loading ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+/* The divider is an inset shadow rather than a border, so the last row's rule is
+ * clipped by the card's `overflow: hidden` instead of needing a `:last-child`
+ * exception that every future insertion has to remember. */
+.trash-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  padding-block: var(--sp-4);
+  padding-inline: var(--sp-6);
+  box-shadow: inset 0 -1px 0 var(--line);
+  min-block-size: 52px;
+}
+
+.trash-row:hover {
+  background: var(--hover);
+}
+
+.trash-row--skeleton {
+  background: var(--sunken);
+  opacity: 0.55;
+}
+
+.trash-icon {
+  display: flex;
+  flex: none;
+  color: var(--fg3);
+}
+
+.trash-name {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  min-inline-size: 0;
+  font-size: var(--fs-body);
+  color: var(--fg);
+}
+
+.trash-ext {
+  color: var(--fg4);
+  font-weight: 400;
+}
+
+.trash-meta {
+  font-size: var(--fs-sm);
+  color: var(--fg3);
+}
+
+/* `--c-restr`'s colour would be wrong here: this is a failure, not a
+ * classification, and reusing a sensitivity token for an error state is how a
+ * palette stops meaning anything. */
+.trash-failed {
+  font-size: var(--fs-sm);
+  color: var(--fg2);
+  max-inline-size: 32ch;
+  text-align: end;
+}

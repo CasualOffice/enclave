@@ -139,6 +139,56 @@ export const catalog = {
     message: 'Sign out',
     description: 'The sign-out item inside the account menu at the foot of the sidebar.',
   },
+  'trash.title': {
+    message: 'Trash',
+    description: 'Heading of the screen listing what this user deleted and may restore.',
+  },
+  'trash.subline': {
+    message: 'Deleted files stay here until they are purged. Restoring one puts it back where it was.',
+    description:
+      'The line under the Trash heading. States both facts a person needs before acting: that the file is recoverable for now, and that restoring returns it to its original place rather than somewhere new.',
+  },
+  'trash.empty.heading': {
+    message: 'Nothing deleted',
+    description: 'Heading of the Trash empty state, shown when this user has deleted nothing that is still recoverable.',
+  },
+  'trash.empty.body': {
+    message: 'Files you delete appear here, and can be put back until they are purged.',
+    description: 'Body of the Trash empty state. Says what would put something here, so the blank screen reads as a report rather than a fault.',
+  },
+  'trash.filtered.heading': {
+    message: 'Nothing here you can restore',
+    description:
+      'Heading shown when everything in the bin was removed by the policy chain. Distinct from the empty state because "you deleted nothing" and "what you deleted is no longer yours to restore" are different facts about the same blank list (docs/09 §11).',
+  },
+  'trash.filtered.body': {
+    message:
+      '{count, plural, one {# deleted file is} other {# deleted files are}} hidden because you can no longer restore {count, plural, one {it} other {them}}.',
+    description:
+      'Body of the Trash filtered-empty state. The count is what the server withheld; it never names a file, because the caller once had access to it and naming it would confirm it still exists (CLAUDE.md rule 7).',
+  },
+  'trash.deletedBy': {
+    message: 'Deleted by {who}',
+    description: 'Accompanies a row in Trash. "who" is a display name supplied by the server and is never translated.',
+  },
+  'trash.deletedByUnknown': {
+    message: 'Deleted by a principal with no directory entry',
+    description:
+      'Used in place of trash.deletedBy when the server sends no display name — a service account or an MCP client, which have no users row. Never invent a name for one.',
+  },
+  'trash.purgeAfter': {
+    message: 'Purged {when}',
+    description: 'The countdown on a Trash row. "when" is a relative time already formatted by Intl and is never re-formatted here.',
+  },
+  'trash.restore': {
+    message: 'Restore',
+    description: 'The button on a Trash row that puts the file back where it was deleted from.',
+  },
+  'trash.restore.failed': {
+    message: 'That could not be restored. Nothing changed.',
+    description:
+      'Shown on a Trash row whose restore failed. Leads with the outcome and states explicitly that nothing moved, because the row is still on screen and a person cannot otherwise tell whether it half-worked.',
+  },
   'nav.account': {
     message: 'Account',
     description:
