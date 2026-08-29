@@ -23,5 +23,6 @@ pub mod permissions;
 pub mod recent;
 pub mod search;
 pub mod shares;
+pub mod trash;
 pub mod uploads;
 pub mod workspaces;

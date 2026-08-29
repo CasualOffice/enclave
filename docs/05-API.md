@@ -1300,7 +1300,51 @@ GET /health/dependencies    per-dependency status, unauthenticated summary / aut
 GET /api/v1/bootstrap       branding, feature flags, locale, policy hints for the SPA
 GET /api/v1/me              current identity, groups, capabilities, quota headroom
 GET /api/v1/me/recent       the files this caller opened, newest first (?limit=8, capped)
+GET /api/v1/trash           what this caller deleted and may restore (?limit=50, capped)
 ```
+
+### 19.2 `GET /trash` — what was deleted, and what can be brought back (`ENC-938`)
+
+`§7` registers `DELETE /files/{id}` and `POST /files/{id}/restore` and, until `ENC-938`, nothing that
+listed the bin — so a file deleted through the product left every surface and the restore endpoint
+was reachable only by somebody holding an id they had written down first.
+
+```json
+{
+  "items": [
+    {
+      "fileId": "01a04eb4-…", "name": "Q3 Notes.pdf", "nodeType": "FILE",
+      "mimeType": "application/pdf", "libraryId": "01a04eb4-…", "parentFolderId": null,
+      "deletedAt": "2026-08-29T20:11:04Z", "purgeAfter": "2026-09-28T20:11:04Z",
+      "deletedBy": { "id": "…", "displayName": "…" },
+      "revision": 4,
+      "capabilities": { "…": "the same twelve as §7" }
+    }
+  ],
+  "filteredCount": 0
+}
+```
+
+**`revision` is on the wire because `restore` requires `If-Match`.** A listing that omitted it would
+show somebody their file and give them no way to get it back, which is the same dead end as not
+listing it at all, one step further in.
+
+**Authorized on `file.restore`, not `file.metadata_read`.** The list exists to be acted on, so
+showing a row the caller cannot restore is offering an action that will refuse them. A candidate the
+chain drops increments `filteredCount` and never becomes a `403` — rule 7, and the disclosure is
+sharper here than elsewhere, because the caller *did* once have access and a `403` would confirm the
+file is still there.
+
+**Only the roots of a cascade are listed.** `DELETE` stamps one `deleted_at` across a folder and
+every descendant, and `restore` restores exactly the subtree sharing that instant. Listing every
+trashed row would show a folder and each of its hundred children as separate entries, and restoring
+any child would be a partial restore of somebody's folder. A row is kept only when no parent shares
+its `deleted_at` — which correctly keeps a file deleted *before* the folder above it, since its
+parent's instant differs.
+
+Ordered most-recently-deleted first. The read model is `04-DATA-MODEL.md §7`'s `files`, and
+`idx_files_trash` — documented since the file surface was specified and created by no migration
+until `migrations/0030` — is what keeps it off a sequential scan.
 
 ### 19.1 `GET /me/recent` — the home screen's *Continue working* list (`ENC-930`)
 
