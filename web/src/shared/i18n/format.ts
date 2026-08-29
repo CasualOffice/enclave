@@ -83,7 +83,16 @@ export function useFormatters(): Formatters {
       return intl.formatNumber(value / scale, {
         style: 'unit',
         unit,
-        unitDisplay: 'short',
+        /* `long` for raw bytes and `short` for everything above them, which is
+         * not a style choice: `short` renders the `byte` unit **unpluralised**,
+         * so a 45-byte file read "45 byte" on every listing (`ENC-937`). `long`
+         * gives "45 bytes" and is only ever reached below 1 kB, where the unit
+         * name is short enough to spell out.
+         *
+         * The scaled units must stay `short` — `long` renders them
+         * "1.5 kilobytes" and "4.2 megabytes", which is the opposite problem in
+         * the column where almost every real file lands. */
+        unitDisplay: scale === 1 ? 'long' : 'short',
         maximumFractionDigits: scale === 1 ? 0 : 1,
       });
     },
