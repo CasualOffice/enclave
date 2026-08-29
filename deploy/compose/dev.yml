@@ -276,6 +276,18 @@ services:
   clamav:
     profiles: ["av"]
     image: docker.io/clamav/clamav:1.4_base
+    # ClamAV publishes **linux/amd64 only** — `docker manifest inspect` lists one platform and an
+    # `unknown/unknown` attestation entry. Without this pin, `--profile av up` fails outright on an
+    # Apple Silicon machine with `no matching manifest for linux/arm64/v8`, which is where a good
+    # share of this project is developed. Pinned rather than left to fail, because the failure is at
+    # *pull* time and reads as a broken compose file rather than as an unavailable image.
+    #
+    # It runs under emulation and it is slow — the `_base` tag downloads signature databases on
+    # first start, which is what the 300s `start_period` below is already for, and emulation makes
+    # that worse rather than different. A laptop that does not want to pay it should set
+    # `antivirus.provider: none` with `unsupported_policy: ALLOW_WITH_FLAG` instead; `README.md`
+    # spells out the trade and the start-up banner states it at every boot (`ENC-926`).
+    platform: linux/amd64
     environment:
       CLAMAV_NO_MILTERD: "true"
       # Freshclam on a schedule rather than never: stale signatures are a silent failure.

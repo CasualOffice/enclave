@@ -263,6 +263,59 @@ way to make one.
 Uploading bytes needs the worker and antivirus as well, which is `docker compose --profile search`
 plus `cargo run -p enclave-worker`; the steps above need only PostgreSQL and MinIO.
 
+### Uploading a file
+
+The table above is folders. Uploading *bytes* needs two more things, and both were found by doing
+it rather than by reading (`ENC-926`).
+
+**Run the worker.** `POST /uploads/{id}/complete` answers `202 SCANNING` and stops there. Nothing in
+`enclave-api` publishes a version — the antivirus pass and the publish that follows it are
+`enclave-worker`'s, so without it every upload sits in `SCANNING` forever and that is rule 9 working,
+not a bug:
+
+```bash
+cargo run -p enclave-worker
+```
+
+**Decide what scans it.** The template says `antivirus.provider: clamav`, and the dev stack's ClamAV
+is behind a Compose profile:
+
+```bash
+docker compose -f deploy/compose/dev.yml --profile av up -d --wait
+export CLAMD_ADDR=tcp://localhost:3310
+```
+
+On **Apple Silicon** that image is `linux/amd64` only. `dev.yml` pins the platform so it runs under
+emulation rather than failing at pull time, and emulation plus a first-boot signature download is
+slow. The alternative is to run with no engine, which the configuration supports deliberately:
+
+```yaml
+antivirus:
+  provider: "none"
+  unsupported_policy: "ALLOW_WITH_FLAG"
+```
+
+That publishes content **nothing inspected for malware**, recorded `SKIPPED` rather than `CLEAN` —
+so it stays distinguishable, and configuring an engine later rescans the whole corpus rather than
+leaving it unexamined. `enclave-api` says so at `warn` on every boot. The default
+`unsupported_policy: BLOCK` is the other half of that decision and is the one to leave alone in
+anything real: with `provider: none` it makes the deployment a **write-only store** — uploads
+succeed and nothing can be read back. The `enterprise` profile refuses `provider: none` outright.
+
+The round trip, verified end to end on 2026-08-29:
+
+| Step | Request | Answer |
+|---|---|---|
+| Reserve | `POST /uploads` with `libraryId`, `name`, `sizeBytes`, `sha256` | `201` + a pre-signed `PutObject` URL and `requiredHeaders` |
+| Send | `PUT` to that URL with **both** required headers | `200` |
+| Finish | `POST /uploads/{id}/complete` with `sizeBytes`, `sha256`, `parts` | `202 SCANNING` |
+| — | the worker's antivirus pass runs | `files.status` → `AVAILABLE`, `av_status` → `SKIPPED` |
+| Read | `GET /files/{id}` | `200`, `capabilities.download: true` |
+| Fetch | `POST /files/{id}/download`, then the signed URL | the original bytes |
+
+`requiredHeaders` is not advisory: `x-amz-checksum-sha256` is signed into the URL, so the provider
+hashes what it receives and refuses a body that disagrees with the digest declared at reserve time.
+
 ### What a running server cannot do yet
 
 Checked on every commit by `crates/api/tests/reachability.rs`, which starts this binary, logs in and
