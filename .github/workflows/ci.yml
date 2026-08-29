@@ -977,8 +977,8 @@ jobs:
           docker logs enclave-minio-e2e | tail -40
           exit 1
 
-      - name: Build the API and the CLI
-        run: cargo build --locked -p enclave-api -p enclave-cli
+      - name: Build the API, the CLI and the worker
+        run: cargo build --locked -p enclave-api -p enclave-cli -p enclave-worker
 
       # The documented setup, run as the README describes it. If this step
       # breaks, the README is wrong — which has happened twice (`ENC-925`).
@@ -1060,9 +1060,67 @@ jobs:
             -H "$host" -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
             -d '{"name":"Drafts"}' > /dev/null
 
-          echo "provisioned workspace $workspace, library $library, and one folder"
+          # A real file, because `home.spec.ts` asserts that opening something puts
+          # it in `GET /me/recent` — and a **folder records nothing**.
+          # `content.rs` excludes them deliberately ("browsing is not opening"),
+          # the recency read filters `node_type = 'FOLDER'` out, and
+          # `a_folder_never_appears_in_a_recency_list` is one of the data layer's
+          # own tests. Provisioning a folder and expecting recency was `ENC-932`.
+          #
+          # Three calls, because an upload is three: reserve, PUT the bytes to
+          # the signed URL with **both** required headers, then complete.
+          # `x-amz-checksum-sha256` is signed into the URL, so the provider
+          # rehashes the body and refuses one that disagrees with the digest
+          # declared at reserve time.
+          printf 'The quick brown fox jumps over the lazy dog.\n' > "$RUNNER_TEMP/ci.txt"
+          sha=$(sha256sum "$RUNNER_TEMP/ci.txt" | cut -d' ' -f1)
+          size=$(stat -c%s "$RUNNER_TEMP/ci.txt")
+
+          reserve=$(curl -sf -X POST http://127.0.0.1:8080/api/v1/uploads \
+            -H "$host" -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
+            -d "{\"libraryId\":\"$library\",\"name\":\"ci.txt\",\"sizeBytes\":$size,\"mimeType\":\"text/plain\",\"sha256\":\"$sha\"}")
+          upload=$(printf '%s' "$reserve" | python3 -c 'import sys,json; print(json.load(sys.stdin)["uploadId"])')
+          url=$(printf '%s' "$reserve" | python3 -c 'import sys,json; print(json.load(sys.stdin)["uploadUrl"])')
+          ctype=$(printf '%s' "$reserve" | python3 -c 'import sys,json; print(json.load(sys.stdin)["requiredHeaders"]["content-type"])')
+          csum=$(printf '%s' "$reserve" | python3 -c 'import sys,json; print(json.load(sys.stdin)["requiredHeaders"]["x-amz-checksum-sha256"])')
+
+          curl -sf -X PUT "$url" -H "Content-Type: $ctype" -H "x-amz-checksum-sha256: $csum" \
+            --data-binary "@$RUNNER_TEMP/ci.txt" > /dev/null
+
+          curl -sf -X POST "http://127.0.0.1:8080/api/v1/uploads/$upload/complete" \
+            -H "$host" -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
+            -d "{\"sizeBytes\":$size,\"sha256\":\"$sha\",\"parts\":[]}" > /dev/null
+
+          # The worker publishes it. `antivirus.provider` is `none` with
+          # ALLOW_WITH_FLAG on this runner, so the pass is immediate and the
+          # version is recorded SKIPPED rather than CLEAN — but it is still the
+          # worker that moves it, so this waits rather than assuming.
+          for _ in $(seq 1 30); do
+            state=$(curl -sf "http://127.0.0.1:8080/api/v1/libraries/$library/items" \
+              -H "$host" -H "Authorization: Bearer $token" \
+              | python3 -c 'import sys,json; print(next((i["status"] for i in json.load(sys.stdin)["items"] if i["name"]=="ci.txt"), "ABSENT"))')
+            if [ "$state" = "AVAILABLE" ]; then
+              echo "provisioned workspace $workspace, library $library, one folder and one file"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error title=The uploaded file never became AVAILABLE::the worker did not publish it; home.spec.ts will have nothing to open"
+          tail -40 "$RUNNER_TEMP/worker.log"
+          exit 1
         env:
           ENCLAVE_E2E_PASSWORD: ${{ secrets.ENCLAVE_E2E_PASSWORD || 'Walkthrough-Pass-2026!' }}
+
+      # `POST /uploads/{id}/complete` answers `202 SCANNING` and stops: the
+      # antivirus pass and the publish that follows it are the worker's, and no
+      # read path serves SCANNING content (rule 9). Without this the upload below
+      # never becomes AVAILABLE and `GET /files/{id}` answers 404 forever — which
+      # is rule 9 working, not a fault.
+      - name: Start the worker
+        run: |
+          set -euo pipefail
+          ./target/debug/enclave-worker > "$RUNNER_TEMP/worker.log" 2>&1 &
+          echo "worker started"
 
       - name: Install web dependencies
         working-directory: web

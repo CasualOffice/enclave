@@ -364,6 +364,22 @@ pub(crate) const ACKNOWLEDGED: &[Acknowledged] = &[
                  enforcement happens when the action is actually attempted. Guarded the same way.",
     },
     Acknowledged {
+        file: "crates/api/src/routes/recent.rs",
+        function: "admit",
+        kind: SiteKind::Conversion,
+        reason: "The per-row trim behind `GET /me/recent` (`ENC-930`), and the same shape as \
+                 `routes::workspaces::admit` below. Guarded by `if !decision.is_allowed() { \
+                 continue }` on the line above, so the conversion cannot produce an `Err` and \
+                 refuses nothing — it exists to carry an admitted row's obligations forward rather \
+                 than drop them, which is what keeps a `READ_ONLY` attached to a metadata read from \
+                 evaporating between the trim and the capabilities built from it. The request \
+                 itself is audited by the chain. Per-row trimming is deliberately not a separate \
+                 audit event (docs/07 §6.2): auditing it would write one speculative ALLOW per \
+                 candidate for a question nobody asked, and this endpoint over-fetches on purpose, \
+                 so most candidates are ones the caller never named. What the caller is told \
+                 instead is `filteredCount` — how many, never which (rule 7).",
+    },
+    Acknowledged {
         file: "crates/api/src/routes/workspaces.rs",
         function: "admit",
         kind: SiteKind::Conversion,

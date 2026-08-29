@@ -171,21 +171,28 @@ test('→ reaches the row-actions button, which hover-reveal never hides from th
   await page.keyboard.press('ArrowDown');
   expect(await cursor(page)).toBe('r:0');
 
-  /* Invisible to begin with — the control, so that "it is visible after" is
-   * about the reveal and not about a button that was always shown.
+  /* The control — a button that is *not* revealed — read on a row that does not
+   * have focus.
    *
-   * Polled, for the reason the assertion at the end of this test already gives
-   * about the other direction: opacity here is transition-driven, and reading it
-   * in the same tick as the `ArrowDown` that focused the row reads it mid-flight.
-   * This was the read left un-polled, and it flaked on CI at `Received: "1"`
-   * against a `web/` tree byte-identical to one that had just passed on `main`
-   * (`ENC-921`). Polling does not weaken the control: a button that was always
-   * shown never settles at `0`, so the poll times out and the test still fails,
-   * which is the whole thing this assertion is here to catch. */
-  const actions = page.locator('[data-cursor="r:0:6"]');
+   * It used to be read on **this** row, after `ArrowDown` had already focused
+   * it, and that assertion was never true: `grouped-list.css` reveals on
+   * `.egl-row:focus-within`, so a focused row's actions are visible by design.
+   * It passed for months because the read landed mid-transition and caught a
+   * value on its way to `1`. `ENC-921` made it a poll, on the theory that the
+   * transient was the flake — and polling waits for the settled value, which is
+   * `1`, so it started failing honestly instead. The poll did not break it; it
+   * showed that the control had been asserting a transient all along.
+   *
+   * Row 1 is the real control. Its actions are unrevealed because nothing is
+   * hovering or focused inside it, which is a *state* rather than a moment, so
+   * there is no race to lose. It still fails against a button that is always
+   * shown, which is the only thing this assertion was ever for. */
+  const unfocused = page.locator('[data-cursor="r:1:6"]');
   await expect
-    .poll(() => actions.evaluate((node) => getComputedStyle(node).opacity))
+    .poll(() => unfocused.evaluate((node) => getComputedStyle(node).opacity))
     .toBe('0');
+
+  const actions = page.locator('[data-cursor="r:0:6"]');
   /* And **not** `display:none`, which is the decision this test exists to
    * protect: a display-hidden button is not in the focus order at all, so no
    * amount of arrow-key handling could reach it. */
