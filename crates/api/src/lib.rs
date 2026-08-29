@@ -130,6 +130,14 @@ pub fn router(state: ApiState, delivery: Delivery) -> Router {
         // `migrations/0029` — and every candidate it returns goes through the chain before it
         // reaches the wire, with a filtered row counted rather than refused (rule 7).
         .route("/api/v1/me/recent", get(routes::recent::recent))
+        // `ENC-938`. The other half of `ENC-807`'s trash: `DELETE /files/{id}` moved a file into it
+        // and `POST /files/{id}/restore` brought one back, and **nothing listed it** — so a file
+        // deleted through the product left every listing and could only be restored by somebody who
+        // had written its id down first. A real endpoint reachable by nobody, which is this
+        // repository's signature failure in the form that costs a person their work. Authorized on
+        // `file.restore` rather than `metadata_read`: the list exists to be acted on, and showing a
+        // row somebody cannot restore is offering an action that will refuse them.
+        .route("/api/v1/trash", get(routes::trash::list))
         // Bootstrap (docs/05-API.md §19). The first request a client makes and the only one it
         // makes holding nothing, so it is registered beside `/me` rather than beside the health
         // probes: it is an `/api/v1` surface with an authenticated half that reads a tenant's row

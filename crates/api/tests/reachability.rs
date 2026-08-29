@@ -279,6 +279,16 @@ const SPECS: &[Spec] = &[
     // `ENC-930`. The home screen's first request after `/me`. It answers `200` with an empty
     // list on a fixture that has opened nothing, which is the correct answer and not a skip:
     // `filteredCount` is what tells that apart from a list the chain emptied.
+    // `ENC-938`. Answers `200` with an empty list on a fixture that has deleted nothing, which is
+    // the correct answer: `filteredCount` is what separates that from a bin the chain emptied.
+    Spec {
+        method: "GET",
+        path: "/api/v1/trash",
+        target: "/api/v1/trash",
+        body: None,
+        credential: Credential::Bearer,
+        expect: Expect::Served,
+    },
     Spec {
         method: "GET",
         path: "/api/v1/me/recent",

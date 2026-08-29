@@ -103,6 +103,7 @@ pub mod routing;
 pub mod security_facts;
 pub mod tenant;
 pub mod tenants;
+pub mod trash;
 
 pub use auth_tokens::{PgDenylist, PgEpochs, PgRefreshTokenStore, PgSessionFacts};
 pub use classifications::{

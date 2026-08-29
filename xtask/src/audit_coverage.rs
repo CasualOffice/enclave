@@ -364,6 +364,23 @@ pub(crate) const ACKNOWLEDGED: &[Acknowledged] = &[
                  enforcement happens when the action is actually attempted. Guarded the same way.",
     },
     Acknowledged {
+        file: "crates/api/src/routes/trash.rs",
+        function: "admit",
+        kind: SiteKind::Conversion,
+        reason: "The per-row trim behind `GET /trash` (`ENC-938`), and the third of this shape after \
+                 `routes::recent::admit` and `routes::workspaces::admit`. Guarded by \
+                 `if !decision.is_allowed() { continue }` on the line above — verified, not assumed \
+                 — so the conversion cannot produce an `Err` and refuses nothing; it carries an \
+                 admitted row's obligations forward rather than dropping them. The request is \
+                 audited by the chain. Per-row trimming is deliberately not a separate audit event \
+                 (docs/07 §6.2), and the argument is sharper here than for the other two: this \
+                 endpoint over-fetches a bin that may hold thousands of rows a caller has no claim \
+                 on, so auditing the trim would write one speculative ALLOW per candidate for a \
+                 question nobody asked, and bury the deletions somebody *did* perform under them. \
+                 What the caller is told is `filteredCount` — how many, never which (rule 7), which \
+                 matters more here than elsewhere because they once had access to what is hidden.",
+    },
+    Acknowledged {
         file: "crates/api/src/routes/recent.rs",
         function: "admit",
         kind: SiteKind::Conversion,

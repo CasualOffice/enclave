@@ -472,7 +472,19 @@ WHERE deleted_at IS NULL;
 CREATE INDEX idx_files_parent     ON files (tenant_id, parent_id, normalized_name) WHERE deleted_at IS NULL;
 CREATE INDEX idx_files_library    ON files (tenant_id, library_id, modified_at DESC) WHERE deleted_at IS NULL;
 CREATE INDEX idx_files_workspace  ON files (tenant_id, workspace_id);
-CREATE INDEX idx_files_trash      ON files (tenant_id, purge_after) WHERE deleted_at IS NOT NULL;
+CREATE INDEX idx_files_trash      ON files (tenant_id, deleted_at DESC) WHERE deleted_at IS NOT NULL;
+
+`idx_files_trash` was keyed on `purge_after` here and **existed in no migration at all** until
+`ENC-938` — this document described it from the day the file surface was specified and nothing
+created it, which nothing noticed because nothing read the trash as a set: `GET /libraries/{id}/items`
+filters `deleted_at IS NOT NULL` *out*, and `find_including_trashed` looks up one row by primary key.
+`GET /api/v1/trash` is its first reader and found the promise unkept.
+
+The column is `deleted_at DESC` rather than `purge_after` because that is what the reader orders by.
+The two sort identically today — `purge_after` is `deleted_at` plus one constant — and stop doing so
+the moment retention becomes a tenant setting, at which point an index on `purge_after` would leave
+this listing sorting on a column nobody is looking at. A purge sweep, when one exists, gets its own
+index on `purge_after` and its own argument.
 CREATE INDEX idx_files_class      ON files (tenant_id, classification_id) WHERE deleted_at IS NULL;
 ```
 
