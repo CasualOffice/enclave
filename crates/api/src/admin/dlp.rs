@@ -86,7 +86,6 @@ use crate::auth::Authenticated;
 use crate::error::{ApiError, Envelope, NO_STORE};
 use crate::refusal::{none_dischargeable, Refused};
 use crate::state::ApiState;
-use crate::state::StepUpPolicy;
 
 /// The action every write on this surface is authorized as.
 ///
@@ -289,7 +288,7 @@ pub async fn create_rule(
 ) -> Result<Response, ApiError> {
     let request_id = ctx.request_id;
     enforce(&state, &ctx, WRITE_ACTION).await?;
-    if let Err(envelope) = require_step_up(&ctx, state.step_up) {
+    if let Err(envelope) = crate::admin::require_step_up(&ctx, state.step_up, "dlp.rule.write") {
         return Ok(envelope.into_response(request_id));
     }
     let author = match author(&ctx) {
@@ -363,7 +362,7 @@ pub async fn withdraw_rule(
 ) -> Result<Response, ApiError> {
     let request_id = ctx.request_id;
     enforce(&state, &ctx, WRITE_ACTION).await?;
-    if let Err(envelope) = require_step_up(&ctx, state.step_up) {
+    if let Err(envelope) = crate::admin::require_step_up(&ctx, state.step_up, "dlp.rule.write") {
         return Ok(envelope.into_response(request_id));
     }
 
@@ -429,39 +428,6 @@ async fn enforce(state: &ApiState, ctx: &RequestContext, action: Action) -> Resu
             .await);
     }
     Ok(())
-}
-
-/// Refuses a privileged mutation that is not backed by recent multi-factor authentication.
-///
-/// `docs/06 §22`, `docs/05-API.md §14`. It runs **after** `enforce` so the chain decides first, and
-/// the cost of that ordering is the one [`super::conditional_access::require_step_up`] records:
-/// the engine has already written an *allow* row when this refuses. `ENC-620` is the row for moving
-/// it into the conditional-access stage, where it would be audited as the denial it is.
-fn require_step_up(ctx: &RequestContext, policy: StepUpPolicy) -> Result<(), Envelope> {
-    // `policy` rather than a constant: `security.mfa.admins_required` existed, was documented, and
-    // was read by nothing, so this demanded a second factor the binary's `MfaVerifier` could never
-    // check. A tenant administrator was refused their own policy surface for want of a factor they
-    // had no way to present (`ENC-771`).
-    if policy.satisfied_by(ctx.auth_strength, ctx.auth_age(chrono::Utc::now()).num_seconds()) {
-        return Ok(());
-    }
-
-    tracing::warn!(
-        %ctx.request_id,
-        %ctx.tenant_id,
-        actor = ?ctx.actor.kind(),
-        "a DLP rule change was refused for want of a recent second factor"
-    );
-    Err(Envelope::new(
-        StatusCode::FORBIDDEN,
-        "STEP_UP_REQUIRED",
-        "This action needs a fresher sign-in.",
-        "Re-authenticate with a second factor and retry.",
-    )
-    .with_details(vec![serde_json::json!({
-        "acr": "mfa",
-        "maxAge": policy.max_age_secs(),
-    })]))
 }
 
 /// The user this rule will be attributed to.
@@ -811,6 +777,8 @@ mod tests {
     // Assertions are the point of a test; the workspace warns on these in non-test code.
     #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
+    use crate::state::StepUpPolicy;
+
     use enclave_core::{AuthStrength, ClientType, FileAction, ServiceAccountId, TenantId, UserId};
     use enclave_dlp::{ActionScope, Condition, DlpAction};
 
@@ -1108,20 +1076,34 @@ mod tests {
     fn a_privileged_mutation_needs_a_second_factor_and_a_recent_one() {
         let tenant = TenantId::new_v7();
         assert!(
-            require_step_up(&admin(tenant), StepUpPolicy::Required { max_age_secs: 900 }).is_ok(),
+            crate::admin::require_step_up(
+                &admin(tenant),
+                StepUpPolicy::Required { max_age_secs: 900 },
+                "test"
+            )
+            .is_ok(),
             "the control: an MFA session just now"
         );
 
         let mut single = admin(tenant);
         single.auth_strength = AuthStrength::SingleFactor;
-        let refusal = require_step_up(&single, StepUpPolicy::Required { max_age_secs: 900 })
-            .expect_err("one factor is not recent MFA");
+        let refusal = crate::admin::require_step_up(
+            &single,
+            StepUpPolicy::Required { max_age_secs: 900 },
+            "test",
+        )
+        .expect_err("one factor is not recent MFA");
         assert_eq!(refusal.status(), StatusCode::FORBIDDEN);
         assert_eq!(refusal.code(), "STEP_UP_REQUIRED");
 
         let mut stale = admin(tenant);
         stale.auth_time = chrono::Utc::now() - chrono::TimeDelta::minutes(16);
-        assert!(require_step_up(&stale, StepUpPolicy::Required { max_age_secs: 900 }).is_err());
+        assert!(crate::admin::require_step_up(
+            &stale,
+            StepUpPolicy::Required { max_age_secs: 900 },
+            "test"
+        )
+        .is_err());
     }
 
     /// A rule is attributed to a person, because the column is `NOT NULL` onto `users`.

@@ -135,11 +135,22 @@ pub fn router(state: ApiState, delivery: Delivery) -> Router {
         // Navigation — workspaces and libraries (docs/05-API.md §7.1). Registered before the file
         // surface because they are how a client *reaches* it: `GET /libraries/{id}/items` was
         // registered from M1 and nothing told a caller which id to pass, so the library picker in
-        // the web shell was drawn as unbuilt (`ENC-778`). Every one of the four is a read; the
-        // create and update halves are `/admin/workspaces` and `/admin/libraries`, unbuilt.
+        // the web shell was drawn as unbuilt (`ENC-778`). Four of these are reads. The two writes
+        // are `ENC-916`, and they are deliberately not registered alike. Provisioning a *workspace*
+        // is an administrative act against the tenant and lives at `/admin/workspaces` below, where
+        // `docs/05-API.md §14` reserves it and where its step-up requirement applies: `classify`
+        // calls a tenant reference `Target::Unsupported`, so a container action on one can never be
+        // allowed, and `crates/authorization/src/admin.rs` is the only door that opens. Creating a
+        // *library* is not administrative — it is `container.create` against the parent workspace,
+        // answered by that workspace's own ACL, so a workspace owner may add one without being the
+        // tenant's administrator. Collapsing the two onto one path would have made every library a
+        // tenant-admin operation, which is the shape `docs/05 §7.1` described before it had either.
         .route("/api/v1/workspaces", get(routes::workspaces::list))
         .route("/api/v1/workspaces/{id}", get(routes::workspaces::read))
-        .route("/api/v1/workspaces/{id}/libraries", get(routes::libraries::list_in_workspace))
+        .route(
+            "/api/v1/workspaces/{id}/libraries",
+            get(routes::libraries::list_in_workspace).post(routes::libraries::create),
+        )
         .route("/api/v1/libraries/{id}", get(routes::libraries::read))
         // Files and folders (docs/05-API.md §7).
         // Files and folders (docs/05-API.md §7). `POST /libraries/{id}/folders` is the document's
@@ -235,6 +246,7 @@ pub fn router(state: ApiState, delivery: Delivery) -> Router {
         )
         // DLP rules (docs/05-API.md §14.2). There is no `PATCH`: a DLP rule carries no mode, which
         // is D28's structural guarantee rather than an omission — see `admin/dlp.rs`.
+        .route("/api/v1/admin/workspaces", post(routes::workspaces::create))
         .route("/api/v1/admin/dlp/rules", get(admin::dlp::list_rules).post(admin::dlp::create_rule))
         .route("/api/v1/admin/dlp/rules/{id}", delete(admin::dlp::withdraw_rule))
         // Workflows (docs/05-API.md §16, docs/15-WORKFLOWS-AND-SIGNING.md). `ENC-739`.

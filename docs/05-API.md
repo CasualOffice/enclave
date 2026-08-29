@@ -308,6 +308,7 @@ The same object, with the same three fields, is what `GET /uploads/{id}` returns
 | `GET` | `/workspaces/{workspaceId}` | One workspace + this caller's capabilities |
 | `GET` | `/workspaces/{workspaceId}/libraries` | The libraries in it; cursor-paged |
 | `GET` | `/libraries/{libraryId}` | One library, its settings + this caller's capabilities |
+| `POST` | `/workspaces/{workspaceId}/libraries` | Create a library in it; `201` + `Location` |
 
 **Why this section exists.** `§7` above documents how to browse a library, `§12` documents
 sub-resources of workspaces and libraries, and `§14` documents `/admin/workspaces` and
@@ -315,8 +316,21 @@ sub-resources of workspaces and libraries, and `§14` documents `/admin/workspac
 library. The consequence was concrete: the web shell could open a library only if the id already sat
 in its URL, and drew its library picker as unbuilt.
 
-These four are reads. Creating, renaming and trashing a container are administrative operations and
-live under `/admin/**` (`§14`); nothing here mutates.
+**One of these mutates, and the split is deliberate** (`ENC-916`). Creating a *library* is
+`container.create` against the parent workspace, answered by that workspace's own ACL — so a
+workspace owner may add one without being the tenant's administrator, which is the arrangement
+`01-PRD.md §4` describes and the one every comparable product has. Creating a *workspace* is not
+that, and cannot be: `crates/authorization`'s `classify` maps a tenant reference to
+`Target::Unsupported`, so a container action against a tenant is refused whoever asks. It is an
+administrative act against the tenant and it lives at `POST /admin/workspaces` (`§14`), with the
+step-up requirement every route there carries.
+
+This section said *"nothing here mutates"* until `ENC-916`, and it said so accurately — the
+consequence was that a deployment could enumerate workspaces and libraries and create neither, while
+`enclave-cli seed` writes tenants, users and groups and no container at all. An upload needs a
+library to go into, so a fresh deployment had nowhere to put a file and no way to make one.
+
+Renaming and trashing a container remain unbuilt on both paths.
 
 ```json
 {
@@ -857,6 +871,7 @@ body against. It was optional, which gave the sync push path `ENC-820` in the sa
 ```text
 /admin/users            /admin/groups             /admin/guests
 /admin/workspaces       /admin/libraries          /admin/quotas
+   POST /admin/workspaces is built (ENC-916); the rest of that row is not.
 /admin/identity-providers                          /admin/scim/v2/*
 /admin/dlp/policies     /admin/dlp/incidents      /admin/dlp/simulate
 /admin/conditional-access/policies                 /admin/conditional-access/simulate
@@ -891,6 +906,29 @@ branding*, so policy surfaces authorize as `admin.manage_policy` and configurati
 A principal that is not a directory user — a service account, an MCP client, a guest — is never an
 administrator, and a suspended, deprovisioned or deleted one holds nothing from the moment the row
 says so, whatever its outstanding token still claims.
+
+**`POST /admin/workspaces`** (`ENC-916`) provisions a workspace. It authorizes as
+`admin.write_config` against the tenant, per the rule above, and answers `201` with the same
+`WorkspaceView` and capabilities object `GET /workspaces/{id}` renders — a create that invented its
+own shape would hand clients two decoders for one thing. `409` on a duplicate slug, detected by the
+unique index rather than by a prior read.
+
+The part worth knowing is what it writes **besides** the workspace. In the same transaction it
+writes the creator's founding grant into `acl_entries` — thirteen rows, one per action: the six
+container actions, and seven file actions. Both halves are needed and the reason is not symmetry.
+`POST /uploads` enforces `container.create`, so a container-only grant let a founder upload a file
+and then receive `404` opening it, because the resolver matches action strings literally and nothing
+implies `file.metadata_read` from `container.create`. What the founding grant deliberately does
+**not** confer is `print`, `export`, `share`, `share_external`, `sync`, `copy`, `move`, `restore`,
+`version_restore` or file-level `manage_permissions`: `CLAUDE.md` rule 6 holds that preview,
+download, print, export and sync are five permissions and never one, and provisioning is an
+automatic act nobody reviewed. A founder who wants them holds `container.manage_permissions` and
+writes them deliberately — which is the second act rule 6 exists to require, and which **no HTTP
+route can perform yet** (`ENC-917`). Until one does, the founding grant is the only way any
+principal obtains access to a new workspace.
+
+The workspace insert and the founding grant commit together or not at all. A provisioning that
+half-succeeded would leave a workspace nobody can open and nobody can delete.
 
 ### 14.1 Conditional-access rules
 
