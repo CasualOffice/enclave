@@ -109,6 +109,31 @@
   gap: var(--sp-3);
 }
 
+/* The account button and the menu it opens (`ENC-927`).
+ *
+ * `position: relative` on the wrapper rather than on the button, because the
+ * menu is a sibling of the button and not a child of it: a `<div role="menu">`
+ * nested inside a `<button>` is invalid content and browsers flatten it, which
+ * takes the menu items out of the accessibility tree along the way.
+ *
+ * It opens **upward** — `inset-block-end: 100%` — because this control sits at
+ * the foot of the sidebar and a menu opening downward would be clipped by the
+ * viewport edge on every screen. Logical properties throughout, per `CLAUDE.md`
+ * rule 12: `inset-inline-start` rather than `left`, so the menu lands on the
+ * correct side under a right-to-left locale instead of off the rail. */
+.shell-account {
+  position: relative;
+}
+
+.shell-account-menu {
+  position: absolute;
+  inset-block-end: 100%;
+  inset-inline-start: 0;
+  inset-inline-end: 0;
+  margin-block-end: var(--sp-2);
+  z-index: var(--z-popover);
+}
+
 /* A classification dot beside a library. Colour is reinforcement; the library's
  * own name and the badge on its rows carry the label in text (`docs/09 §15`). */
 .shell-lib-dot {

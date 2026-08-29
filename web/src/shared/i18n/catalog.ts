@@ -137,7 +137,16 @@ export const catalog = {
   },
   'nav.signOut': {
     message: 'Sign out',
-    description: 'Accessible name of the user chip at the foot of the sidebar.',
+    description: 'The sign-out item inside the account menu at the foot of the sidebar.',
+  },
+  'nav.account': {
+    message: 'Account',
+    description:
+      'Accessible name of the button at the foot of the sidebar showing the signed-in person, which opens the account menu.',
+  },
+  'nav.account.menu': {
+    message: 'Account menu',
+    description: 'Accessible name of the menu opened by the account button at the foot of the sidebar.',
   },
   'theme.light': { message: 'Light', description: 'Theme toggle: the light theme.' },
   'theme.dark': { message: 'Dark', description: 'Theme toggle: the dark theme.' },

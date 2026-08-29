@@ -27,6 +27,8 @@ import type { Page, Route } from '@playwright/test';
  * product can never render.
  */
 
+import { capabilitiesFixture } from '../support/capabilities.ts';
+
 export interface ApiPlan {
   /** `false` makes `/me` and the refresh unauthenticated, so the app shows sign-in. */
   readonly signedIn?: boolean;
@@ -78,20 +80,24 @@ const VIEWER = {
 function capabilities(index: number) {
   /* Not all `true`. A row where every action is permitted would let markup that
    * ignores `capabilities` entirely pass this gate, and the refused treatment
-   * would never be rendered for axe to check its contrast. */
+   * would never be rendered for axe to check its contrast.
+   *
+   * Built from the shared, schema-typed fixture rather than written out here.
+   * This function was one of three copies of the same object, all agreeing with
+   * each other and none with the server, which is how `ENC-807`'s two new
+   * capabilities went unnoticed while 111 tests in this suite stayed green
+   * (`ENC-929`). A field added to the schema is now a compile error in
+   * `tests/support/capabilities.ts` instead of a parse failure in production. */
   const restricted = index % 3 === 0;
-  return {
-    metadataRead: true,
-    preview: true,
+  return capabilitiesFixture({
     download: !restricted,
     print: !restricted,
     export: !restricted,
-    edit: true,
-    share: true,
-    shareExternal: false,
     delete: !restricted,
+    move: !restricted,
+    restore: !restricted,
     sync: !restricted,
-  };
+  });
 }
 
 /**

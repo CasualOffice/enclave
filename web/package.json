@@ -16,6 +16,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:a11y": "playwright test --project=a11y",
+    "test:e2e": "playwright test --config=playwright.e2e.config.ts",
     "bench": "playwright test --project=bench",
     "check:bundle-size": "npm run build && node tools/check-bundle-size.mjs"
   },
