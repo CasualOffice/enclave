@@ -209,8 +209,15 @@ shell history and in `ps` output:
 ```bash
 cargo run -p enclave-cli -- seed
 printf '%s' "$NEW_PASSWORD" | cargo run -p enclave-cli -- \
-  set-password --tenant tenant-alpha --email owner@tenant-alpha.example
+  set-password --tenant tenant-alpha --email admin@tenant-alpha.example
 ```
+
+**Use `admin@`, not `owner@`.** The fixture seeds five accounts per tenant and exactly one of them —
+`admin@tenant-alpha.example` — carries `users.is_admin`. It is the only administrative grant this
+schema has (`crates/authorization/src/admin.rs`), and `POST /admin/workspaces` is what provisions the
+first workspace. `owner@` signs in perfectly well and then cannot create anything, which reads as a
+broken product rather than as the wrong account: this file said `owner@` until `ENC-925`, and the
+walkthrough that found it got as far as an empty `GET /workspaces` before stopping.
 
 **6. Log in on a host that routes to the tenant.** The tenant comes from the routed authority and
 never from the request body (`CLAUDE.md` rule 3). A single-label host such as `localhost` routes no
@@ -221,7 +228,7 @@ the deployment would really be reached at:
 ```bash
 curl -s http://127.0.0.1:8080/api/v1/auth/login \
   -H 'Host: tenant-alpha.enclave.test' -H 'Content-Type: application/json' \
-  -d '{"email":"owner@tenant-alpha.example","password":"'"$NEW_PASSWORD"'"}'
+  -d '{"email":"admin@tenant-alpha.example","password":"'"$NEW_PASSWORD"'"}'
 
 curl -s http://127.0.0.1:8080/api/v1/me \
   -H 'Host: tenant-alpha.enclave.test' -H "Authorization: Bearer $ACCESS_TOKEN"
@@ -233,6 +240,29 @@ The web client is a separate process:
 cd web && npm install && npm run dev
 ```
 
+### The journey, end to end
+
+Run against the setup above on 2026-08-29, every step through the HTTP API, nothing touched directly
+in the database. This is what "it works" currently means, and it is deliberately concrete — for most
+of this project's life the honest answer was that a clean install had nowhere to put a file and no
+way to make one.
+
+| Step | Request | Answer |
+|---|---|---|
+| Sign in | `POST /auth/login` with `Host: tenant-alpha.enclave.test` | `200` + access token |
+| Look around | `GET /workspaces` | `200` `{"items":[]}` |
+| Provision | `POST /admin/workspaces` | `201`, and the founding grant is in the response's `capabilities` |
+| Add a library | `POST /workspaces/{id}/libraries` | `201` |
+| Add a folder | `POST /libraries/{id}/folders` | `201` |
+| Open it | `GET /files/{id}` | `200` |
+| Rename it | `PATCH /files/{id}` with `If-Match` | `200`, `revision` 1 → 2 |
+| Let somebody in | `GET` then `PUT /workspaces/{id}/permissions` | `200` — and the second account goes `404` → `200` on the same workspace |
+| Delete it | `DELETE /files/{id}` with `If-Match` | `200`, and the listing empties |
+| Undo that | `POST /files/{id}/restore` with `If-Match` | `200`, and the listing fills again |
+
+Uploading bytes needs the worker and antivirus as well, which is `docker compose --profile search`
+plus `cargo run -p enclave-worker`; the steps above need only PostgreSQL and MinIO.
+
 ### What a running server cannot do yet
 
 Checked on every commit by `crates/api/tests/reachability.rs`, which starts this binary, logs in and
@@ -241,7 +271,7 @@ calls every registered route. Each of these is a tracker row rather than a surpr
 | Endpoint | Answers | Why |
 |---|---|---|
 | `POST /sync/devices` | `403` | Enrolling a device asks a question no composed authorization service can answer (`ENC-736`). |
-| The five `/admin/**` mutations | `403` | They require multi-factor authentication within 15 minutes, and no factor can be verified in this build (`ENC-771`, `ENC-688`). |
+| The `/admin/**` mutations, *if* `security.mfa.admins_required` is `true` | `403` | They require multi-factor authentication within 15 minutes and no factor can be verified in this build (`ENC-771`, `ENC-688`). The template now ships `false`, because `true` with no verifier is refused at start-up — so on the documented setup these **work**, and `POST /admin/workspaces` is one of them (`ENC-925`). |
 
 `POST /uploads` is no longer on that list: `ENC-770` composed the real object store and the write
 path answers `201` with a signed `PutObject` URL. The row is deleted rather than reworded, because
