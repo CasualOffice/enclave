@@ -20,6 +20,7 @@ pub mod folders;
 pub mod libraries;
 pub mod lifecycle;
 pub mod permissions;
+pub mod recent;
 pub mod search;
 pub mod shares;
 pub mod uploads;

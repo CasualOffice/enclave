@@ -780,6 +780,17 @@ export const catalog = {
     description:
       'Shown in place of the "Continue working" list when this user has no history in this workspace.',
   },
+  'home.recent.filtered': {
+    message:
+      'Nothing here you can open. {count, plural, one {# recent file is} other {# recent files are}} hidden by permissions.',
+    description:
+      'Shown in place of the "Continue working" list when the policy chain removed every row. Distinct from the empty message because "you have opened nothing" and "you opened things you may no longer see" are different facts about the same blank list (docs/09 §11). The count is what the server filtered; it never names which files.',
+  },
+  'home.recent.failed': {
+    message: 'The recent list could not be loaded.',
+    description:
+      'Shown inside the "Continue working" section when its own request fails. Home has three independent surfaces and one failing must not blank the others, so this replaces the list and nothing else.',
+  },
   'home.recent.laterNote': {
     message: 'Opening a file from here arrives in a later release.',
     description:

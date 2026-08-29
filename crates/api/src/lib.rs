@@ -123,6 +123,13 @@ pub fn router(state: ApiState, delivery: Delivery) -> Router {
         .route("/api/v1/auth/sessions/{sid}", delete(routes::auth::revoke_session))
         // Identity (docs/05-API.md §3).
         .route("/api/v1/me", get(me::me))
+        // `ENC-930`. The home screen's Continue-working list, and the endpoint it had been
+        // rendering nothing for: `home-screen.tsx`'s own header said `GET /api/v1/me/recent`
+        // did not exist and must not be improvised out of `audit_events`, which is hash-chained
+        // and deliberately not a feed (rule 10). It is a purpose-built read model instead —
+        // `migrations/0029` — and every candidate it returns goes through the chain before it
+        // reaches the wire, with a filtered row counted rather than refused (rule 7).
+        .route("/api/v1/me/recent", get(routes::recent::recent))
         // Bootstrap (docs/05-API.md §19). The first request a client makes and the only one it
         // makes holding nothing, so it is registered beside `/me` rather than beside the health
         // probes: it is an `/api/v1` surface with an authenticated half that reads a tenant's row

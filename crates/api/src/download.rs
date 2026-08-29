@@ -201,6 +201,12 @@ pub async fn download(
         .await
         .map_err(|error| ApiError::new(storage_failure(&error), request_id))?;
 
+    // "You opened it." After the URL exists, so a mint that failed records nothing — the caller
+    // received no bytes and no route to them. It cannot fail this response and returns none to
+    // ignore; `crate::routes::recent` argues both, and argues why a refused download is never
+    // recorded.
+    crate::routes::recent::record(&state, &ctx, file).await;
+
     let grant = DownloadGrant {
         url: url.to_string(),
         expires_in: SIGNED_URL_TTL.as_secs(),

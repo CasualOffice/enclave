@@ -276,6 +276,17 @@ const SPECS: &[Spec] = &[
     // `SelfServiceOr` — which only the composed binary wires — and every row on the page is then
     // trimmed by `PgAclAuthorization`. A binary composing either service alone answers `200` with an
     // empty list rather than failing, so `ENC-746`'s row is load-bearing for these two as well.
+    // `ENC-930`. The home screen's first request after `/me`. It answers `200` with an empty
+    // list on a fixture that has opened nothing, which is the correct answer and not a skip:
+    // `filteredCount` is what tells that apart from a list the chain emptied.
+    Spec {
+        method: "GET",
+        path: "/api/v1/me/recent",
+        target: "/api/v1/me/recent",
+        body: None,
+        credential: Credential::Bearer,
+        expect: Expect::Served,
+    },
     Spec {
         method: "GET",
         path: "/api/v1/workspaces",
