@@ -27,5 +27,5 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["src", "tests", "tools", "vite.config.ts", "playwright.config.ts"]
+  "include": ["src", "tests", "tools", "vite.config.ts", "playwright.config.ts", "playwright.e2e.config.ts"]
 }

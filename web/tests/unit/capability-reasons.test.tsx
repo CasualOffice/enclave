@@ -6,6 +6,7 @@ import { Button } from '../../src/shared/ui/primitives.tsx';
 import { reasonMessage } from '../../src/entities/capability/denial.ts';
 import { Item } from '../../src/entities/file/api-model.ts';
 import { Library } from '../../src/entities/workspace/api-model.ts';
+import { capabilitiesFixture } from '../support/capabilities.ts';
 
 /* `ENC-674` / `docs/05 §7` / `docs/09 §5`: the client renders the *server's*
  * reason for a denied capability and never one of its own.
@@ -37,18 +38,7 @@ function wireItem(capabilityReasons?: Record<string, string>): unknown {
     libraryId: 'lib-1',
     status: 'AVAILABLE',
     revision: 1,
-    capabilities: {
-      metadataRead: true,
-      preview: true,
-      download: false,
-      print: false,
-      export: false,
-      edit: true,
-      share: true,
-      shareExternal: false,
-      delete: true,
-      sync: false,
-    },
+    capabilities: capabilitiesFixture(),
     ...(capabilityReasons === undefined ? {} : { capabilityReasons }),
     obligations: OBLIGATIONS,
     createdAt: '2026-08-20T00:00:00Z',

@@ -38,6 +38,22 @@ export const FileCapabilities = z.strictObject({
   share: z.boolean(),
   shareExternal: z.boolean(),
   delete: z.boolean(),
+  /* `ENC-807` added these two to the server's object and this schema was not
+   * updated with it, which — because the object is strict, deliberately — meant
+   * every row of `GET /libraries/{id}/items` failed to parse and the library
+   * screen rendered its failure state against a healthy server. The main
+   * surface of the product had never rendered a row from this API.
+   *
+   * Both existing suites passed over it, and that is the finding worth keeping:
+   * `tests/a11y/api-stub.ts` and the unit fixtures each hand-write this object,
+   * so both agreed with the client and neither had ever asked the server. It
+   * took `ENC-928`'s first run against a real API to see it.
+   *
+   * The strictness is not what failed here — it is what reported it. A loose
+   * schema would have dropped both fields silently and rendered Move and
+   * Restore as refused, which is a denial the policy chain never issued. */
+  move: z.boolean(),
+  restore: z.boolean(),
   sync: z.boolean(),
 });
 

@@ -881,10 +881,162 @@ jobs:
   # remembering to add it to the protected-branch list, and a forgotten job is a
   # gate that quietly stops blocking anything. (It had drifted three jobs upwards
   # and was sitting above `role-race`, describing the wrong thing.)
+  # --------------------------------------------------------------------------
+  # The web client, against the real API rather than a fixture.
+  #
+  # `ENC-928`. Every other browser suite in this repository runs `npm run
+  # preview` with no server at all and renders from `src/features/*/fixture.ts`,
+  # so ~18,000 lines of React had never once met a real response — its Zod
+  # schemas, its auth flow and its error handling were all unverified against
+  # the thing they exist to talk to. This job is what makes that false.
+  #
+  # It is the most expensive job in this file: a Rust build, a database, an
+  # object store, a browser and a Vite build, for four minutes or so. That is
+  # deliberate and it is the point — the cheap version of this job is the one
+  # that stubs the API, and the cheap version proves nothing.
+  # --------------------------------------------------------------------------
+  web-e2e:
+    name: e2e — the web client talks to the real API
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: enclave
+          POSTGRES_PASSWORD: enclave
+          POSTGRES_DB: enclave
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U enclave"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgres://enclave:enclave@localhost:5432/enclave
+      DATABASE_PLATFORM_URL: postgres://enclave:enclave@localhost:5432/enclave
+      REDIS_URL: redis://localhost:6379
+      NATS_URL: nats://localhost:4222
+      S3_ACCESS_KEY_ID: enclave
+      S3_SECRET_ACCESS_KEY: enclave-dev-secret
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # `*.localhost` resolves to loopback natively on macOS and in Chrome, and
+      # not on Linux, where the stub resolver answers only the bare name. The
+      # tenant is the first label of the Host (`CLAUDE.md` rule 3), so without
+      # this the dev server has no address and every request in the suite fails
+      # to connect — which reads as "the app is broken" rather than as a
+      # resolver difference between the machine it was written on and this one.
+      - name: Resolve the tenant host
+        run: echo "127.0.0.1 tenant-alpha.localhost" | sudo tee -a /etc/hosts
+
+      - name: Start MinIO
+        run: |
+          set -euo pipefail
+          pull() {
+            for attempt in 1 2 3; do
+              if docker pull "$1"; then return 0; fi
+              echo "::warning title=Image pull failed::$1 (attempt $attempt of 3)"
+              sleep $(( attempt * 10 ))
+            done
+            echo "::error title=Image pull failed after 3 attempts::$1 — this is a registry fault, not a test failure"
+            return 1
+          }
+          pull quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z
+          pull quay.io/minio/mc:RELEASE.2025-04-16T18-13-26Z
+          docker run -d --name enclave-minio-e2e \
+            -e MINIO_ROOT_USER=enclave \
+            -e MINIO_ROOT_PASSWORD=enclave-dev-secret \
+            -p 9000:9000 \
+            quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z server /data
+          for _ in $(seq 1 60); do
+            if curl -sf http://localhost:9000/minio/health/live >/dev/null; then
+              docker run --rm --network host \
+                -e MC_HOST_local=http://enclave:enclave-dev-secret@localhost:9000 \
+                quay.io/minio/mc:RELEASE.2025-04-16T18-13-26Z \
+                mb --ignore-existing local/enclave-content
+              echo "MinIO is ready and enclave-content exists"; exit 0
+            fi
+            sleep 2
+          done
+          echo "::error title=MinIO did not become ready::the API cannot start"
+          docker logs enclave-minio-e2e | tail -40
+          exit 1
+
+      - name: Build the API and the CLI
+        run: cargo build --locked -p enclave-api -p enclave-cli
+
+      # The documented setup, run as the README describes it. If this step
+      # breaks, the README is wrong — which has happened twice (`ENC-925`).
+      - name: Configure and seed
+        run: |
+          set -euo pipefail
+          cp deploy/config/enclave.example.yaml enclave.yaml
+          sed -i 's|^\( *\)# *platform_url_env: "DATABASE_PLATFORM_URL"|\1platform_url_env: "DATABASE_PLATFORM_URL"|' enclave.yaml
+          # No antivirus engine on this runner and none needed: the suite signs
+          # in and reads, it never uploads. `none` + ALLOW_WITH_FLAG is the
+          # documented laptop posture (`README.md`, `ENC-926`); `clamav` here
+          # would leave `CLAMD_ADDR` unresolvable and refuse to start.
+          sed -i 's|^  provider: "clamav"|  provider: "none"|' enclave.yaml
+          sed -i 's|^  unsupported_policy: "BLOCK"|  unsupported_policy: "ALLOW_WITH_FLAG"|' enclave.yaml
+          ./target/debug/enclave-cli seed
+          printf '%s' "$ENCLAVE_E2E_PASSWORD" | ./target/debug/enclave-cli \
+            set-password --tenant tenant-alpha --email admin@tenant-alpha.example
+        env:
+          ENCLAVE_E2E_PASSWORD: ${{ secrets.ENCLAVE_E2E_PASSWORD || 'Walkthrough-Pass-2026!' }}
+
+      - name: Start the API
+        run: |
+          set -euo pipefail
+          ./target/debug/enclave-api > "$RUNNER_TEMP/api.log" 2>&1 &
+          for _ in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:8080/health/ready >/dev/null; then
+              echo "enclave-api is ready"; exit 0
+            fi
+            sleep 2
+          done
+          echo "::error title=enclave-api did not become ready::the e2e suite has nothing to talk to"
+          tail -60 "$RUNNER_TEMP/api.log"
+          exit 1
+
+      - name: Install web dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Install the browser
+        working-directory: web
+        run: npx playwright install --with-deps chromium
+
+      - name: The client and the server agree
+        working-directory: web
+        run: npm run test:e2e
+        env:
+          ENCLAVE_E2E_PASSWORD: ${{ secrets.ENCLAVE_E2E_PASSWORD || 'Walkthrough-Pass-2026!' }}
+
+      # An API that died mid-suite reads as a dozen unrelated client failures,
+      # which is a diagnosis nobody reaches from the Playwright output alone.
+      - name: The API's own log, on failure
+        if: failure()
+        run: tail -120 "$RUNNER_TEMP/api.log"
+
   ci-status:
     name: CI status
     if: always()
-    needs: [fmt, clippy, test, build, role-race, reachability]
+    needs: [fmt, clippy, test, build, role-race, reachability, web-e2e]
     runs-on: ubuntu-latest
     steps:
       - name: Fail unless every CI job succeeded

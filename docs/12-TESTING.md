@@ -74,9 +74,30 @@ prescribes for PEM banners.
 | Integration | Real PostgreSQL + Redis + MinIO + NATS via testcontainers | < 10 min | `tests/` |
 | Contract | OpenAPI schema conformance, event schema compatibility | < 2 min | CI |
 | Security | The leakage matrix (`§4`) | < 10 min | `tests/security/` |
-| E2E | Browser flows against a seeded stack | < 20 min | Playwright |
+| E2E | Browser flows against a seeded stack | < 5 min | `web/playwright.e2e.config.ts` |
 | Load | Search, upload, browse at target concurrency | Nightly | k6 |
 | Chaos | Dependency failure injection | Weekly | Staging |
+
+**Four of these eight rows describe tooling that is not in the tree.** `proptest`, `testcontainers`,
+k6 and a chaos harness appear nowhere — not in any `Cargo.toml`, not in `Cargo.lock`, not in
+`web/package.json`. The rows are kept because they are the intent and each is a real gap, but a
+reader should not take this table as an inventory. What *is* real: the unit and integration rows
+(every crate, against a live PostgreSQL, MinIO and ClamAV rather than testcontainers), the security
+row (`§4`'s matrix), and — since `ENC-928` — the E2E row.
+
+**The E2E row was the last one that was decorative in a way that mattered.** Until it, ~18,000 lines
+of React had never met a real response: every browser suite ran `npm run preview` with no server and
+rendered from `src/features/*/fixture.ts`, so the client's Zod schemas, auth flow and error handling
+were unverified against the API they exist to talk to. `web/playwright.e2e.config.ts` **refuses to
+run** when `/health/ready` does not answer, rather than falling back to anything — a fixture
+fallback would turn the expensive suite back into the cheap one without anyone noticing, which is
+the failure this row is for.
+
+It also covers a surface nothing else could reach. `app.tsx` renders `<Shell>` only inside
+`ViewerProvider`, which needs a session, which needs the API — so the sidebar, the account menu, the
+theme toggle and the upload tray had **never been rendered by any test**. That is where `ENC-927`'s
+sign-out trap lived: a control that ended the session on one click, in the one place every signed-in
+person looks.
 
 ## 3. Fixtures
 

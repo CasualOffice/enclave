@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useLocale, useT } from '../shared/i18n/index.tsx';
 import { initialsOf, toneOf } from '../entities/user/model.ts';
 import { signOut } from '../features/auth/sign-out.ts';
@@ -7,7 +7,7 @@ import { useViewer } from '../entities/user/viewer.tsx';
 import { Icon, type IconName } from '../shared/ui/icon-sprite.tsx';
 import { Mark } from '../shared/ui/mark.tsx';
 import { Avatar, Kbd, LaterChip } from '../shared/ui/primitives.tsx';
-import { Push, Row, Truncate } from '../shared/ui/layout.tsx';
+import { Popover, Push, Row, Truncate } from '../shared/ui/layout.tsx';
 import type { MessageKey } from '../shared/i18n/catalog.ts';
 import { navigate, useRoute, type RouteName } from './routes.ts';
 import { KeyboardSurfaces } from './keyboard.tsx';
@@ -135,6 +135,92 @@ function NavLink({ item }: { item: NavItem }) {
   );
 }
 
+/**
+ * The signed-in person, and the menu their name opens.
+ *
+ * **It was a sign-out button.** The whole row — avatar, name, the lot — carried
+ * `onClick={signOut}` and an `aria-label` of "Sign out", and nothing visible
+ * said so. Every other product puts a menu here and sign-out inside it, so the
+ * row looked like the account control it is shaped like, and clicking it ended
+ * the session with no menu and no confirmation. The nav item directly above it
+ * is Administration, which is how it was found: a report of "clicking admin logs
+ * me out" (`ENC-927`).
+ *
+ * An `aria-label` is not a substitute for the affordance. It told a screen
+ * reader the truth and everyone else nothing, which is the inverse of what an
+ * accessible name is for — it names a control whose purpose is already visible,
+ * it does not supply a purpose the control declines to show.
+ *
+ * `aria-haspopup` and `aria-expanded` are what make the button honest now: it
+ * announces that it opens something rather than that it acts, so the
+ * destructive step is one deliberate choice further on and is labelled where it
+ * happens.
+ */
+function AccountMenu({
+  initials,
+  viewer,
+}: {
+  initials: string;
+  viewer: { id: string; displayName: string };
+}) {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  const box = useRef<HTMLDivElement>(null);
+
+  /* Escape closes, and a pointer outside closes. Both are registered only while
+   * the menu is open — a document-level listener that outlives its surface is
+   * the leak that makes the *next* popover behave strangely. */
+  useEffect(() => {
+    if (!open) return undefined;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false);
+    };
+    const onDown = (event: MouseEvent) => {
+      if (box.current !== null && !box.current.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener('keydown', onKey);
+    document.addEventListener('mousedown', onDown);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.removeEventListener('mousedown', onDown);
+    };
+  }, [open]);
+
+  return (
+    <div className="shell-account" ref={box}>
+      {open && (
+        <Popover label="nav.account.menu" className="shell-account-menu">
+          <Row
+            role="menuitem"
+            onClick={() => {
+              setOpen(false);
+              void signOut();
+            }}
+          >
+            <Icon name="chev" size={12} />
+            {t('nav.signOut')}
+          </Row>
+        </Popover>
+      )}
+      <Row
+        aria-label={t('nav.account')}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((was) => !was)}
+      >
+        <Avatar initials={initials} tone={toneOf(viewer.id)} />
+        {/* A person's name is data, not a message. `docs/14 §6`: display the
+         * full name as provided, never assume given-name-first ordering and
+         * never split on whitespace — which also means it never goes in the
+         * catalog, because there is nothing to translate. */}
+        <Truncate>
+          <bdi dir="auto">{viewer.displayName}</bdi>
+        </Truncate>
+      </Row>
+    </div>
+  );
+}
+
 export function Shell({ children }: { children: ReactNode }) {
   const t = useT();
   const viewer = useViewer();
@@ -195,21 +281,7 @@ export function Shell({ children }: { children: ReactNode }) {
         )}
 
         <div className="shell-nav-foot">
-          <Row
-            aria-label={t('nav.signOut')}
-            onClick={() => {
-              void signOut();
-            }}
-          >
-            <Avatar initials={initials} tone={toneOf(viewer.id)} />
-            {/* A person's name is data, not a message. `docs/14 §6`: display the
-             * full name as provided, never assume given-name-first ordering and
-             * never split on whitespace — which also means it never goes in the
-             * catalog, because there is nothing to translate. */}
-            <Truncate>
-              <bdi dir="auto">{viewer.displayName}</bdi>
-            </Truncate>
-          </Row>
+          <AccountMenu initials={initials} viewer={viewer} />
           <div className="shell-prefs">
             {/* `.ui-tab` for the pill, `aria-pressed` for the semantics. The
               * third copy of this toggle's 16 lines is gone; what it is *not*

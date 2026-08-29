@@ -5,6 +5,7 @@ import { Button } from '../../src/shared/ui/primitives.tsx';
 import { GroupedFileList } from '../../src/features/libraries/list/grouped-file-list.tsx';
 import { rowFromItem } from '../../src/entities/file/present.ts';
 import type { Item } from '../../src/entities/file/api-model.ts';
+import { capabilitiesFixture } from '../support/capabilities.ts';
 
 /* Two contracts that live in the library list, and both are about **not
  * stating things the server never said**.
@@ -22,18 +23,11 @@ import type { Item } from '../../src/entities/file/api-model.ts';
 
 afterEach(cleanup);
 
-const CAPS = {
-  metadataRead: true,
-  preview: true,
-  download: false,
-  print: false,
-  export: false,
-  edit: true,
-  share: true,
-  shareExternal: false,
-  delete: true,
-  sync: true,
-};
+/* The shared, schema-typed fixture. This was a fourth hand-written copy of the
+ * capabilities object and it passed only because nothing here parses it — so it
+ * would have drifted next, silently, exactly as the other three did
+ * (`ENC-929`). */
+const CAPS = capabilitiesFixture({ sync: true });
 
 const OBLIGATIONS = { watermark: false, justificationRequired: [], approvalRequired: [] };
 
