@@ -1013,6 +1013,42 @@ jobs:
           tail -60 "$RUNNER_TEMP/api.log"
           exit 1
 
+      # `seed` writes tenants, users and groups and **no content** — it says so in
+      # its own header — so `GET /workspaces` answers `200 {"items":[]}` until
+      # something provisions one, and the suite's own guard fires: "the seeded
+      # tenant has no workspaces — is the database seeded?". That guard is why
+      # this failure was one line to diagnose instead of a screenful of
+      # unreadable destructuring, and it is worth keeping in mind that the
+      # *product* had the same gap until `ENC-916`: for most of this project's
+      # life there was no endpoint that could create a workspace at all.
+      #
+      # Provisioned over HTTP rather than with SQL, deliberately. A fixture
+      # written straight into the database would drift from what the API
+      # actually accepts, and this suite exists precisely to stop the two sides
+      # believing different things (`ENC-929`). The names are never asserted —
+      # the tests read them back from the API — so they only have to be valid.
+      - name: Provision a workspace and a library
+        run: |
+          set -euo pipefail
+          host='Host: tenant-alpha.localhost'
+          token=$(curl -sf http://127.0.0.1:8080/api/v1/auth/login \
+            -H "$host" -H 'Content-Type: application/json' \
+            -d "{\"email\":\"admin@tenant-alpha.example\",\"password\":\"$ENCLAVE_E2E_PASSWORD\"}" \
+            | python3 -c 'import sys,json; print(json.load(sys.stdin)["accessToken"])')
+
+          workspace=$(curl -sf -X POST http://127.0.0.1:8080/api/v1/admin/workspaces \
+            -H "$host" -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
+            -d '{"name":"Continuous Integration","slug":"continuous-integration"}' \
+            | python3 -c 'import sys,json; print(json.load(sys.stdin)["id"])')
+
+          curl -sf -X POST "http://127.0.0.1:8080/api/v1/workspaces/$workspace/libraries" \
+            -H "$host" -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
+            -d '{"name":"Specifications","slug":"specifications"}' > /dev/null
+
+          echo "provisioned workspace $workspace with one library"
+        env:
+          ENCLAVE_E2E_PASSWORD: ${{ secrets.ENCLAVE_E2E_PASSWORD || 'Walkthrough-Pass-2026!' }}
+
       - name: Install web dependencies
         working-directory: web
         run: npm ci
