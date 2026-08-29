@@ -165,7 +165,20 @@ security:
     # not enough to mount an offline attack. Unset in development; a reference in production:
     # pepper: "vault://workspace/password#pepper"
   mfa:
-    admins_required: true
+    # `false` here, and it is the one value in this file that is *false in development because it
+    # cannot be true* rather than because development is relaxed (`ENC-925`).
+    #
+    # `true` with no verifier configured is refused at start-up, deliberately and correctly: every
+    # `/api/v1/admin/**` mutation would answer `403 STEP_UP_REQUIRED` to every caller including a
+    # tenant administrator, with no way for anyone to satisfy it. Nothing is protected by that — the
+    # process does not run at all. The dev stack has no MFA verifier and cannot be given one, so
+    # this template shipped a value that made its own documented setup fail on step 4, every time.
+    #
+    # **A production deployment must set this back to `true` and configure a verifier.** It is not
+    # a relaxation to carry forward: `docs/06-SECURITY-DLP-ACCESS.md §22` requires recent
+    # multi-factor authentication for every privileged mutation, and provisioning a workspace
+    # (`POST /admin/workspaces`) is one of them.
+    admins_required: false
     step_up_max_age: "15m"
   # What happens when the privileged-token denylist cannot be reached. FAIL_CLOSED locks admins
   # out during an outage; FAIL_OPEN keeps revoked admin tokens working. The first is an incident,
