@@ -300,6 +300,19 @@ const SPECS: &[Spec] = &[
         credential: Credential::Bearer,
         expect: Expect::Served,
     },
+    // `ENC-916`. Creating a library is `container.create` against the *workspace*, so unlike its
+    // `GET` sibling it is answered by that workspace's own ACL rather than by the library's. The
+    // probe therefore says as much about the fixture as about the route: it passes because the
+    // seeded caller holds the grant on the workspace it names, and a `404` here means the fixture
+    // stopped granting it, not that the route stopped existing.
+    Spec {
+        method: "POST",
+        path: "/api/v1/workspaces/{id}/libraries",
+        target: "/api/v1/workspaces/{ws}/libraries",
+        body: Some(r#"{"name":"reachability-probe","slug":"reachability-probe"}"#),
+        credential: Credential::Bearer,
+        expect: Expect::Served,
+    },
     Spec {
         method: "GET",
         path: "/api/v1/libraries/{id}",
@@ -598,6 +611,18 @@ const SPECS: &[Spec] = &[
         body: None,
         credential: Credential::Bearer,
         expect: Expect::Served,
+    },
+    // `ENC-916`. Provisioning is an administrative act against the tenant, not a container action:
+    // `classify` calls a tenant reference `Target::Unsupported`, so `crates/authorization/admin.rs`
+    // is the only door that opens it. It carries the same step-up requirement as its neighbours
+    // here, which is why it sits in this block rather than beside `GET /workspaces`.
+    Spec {
+        method: "POST",
+        path: "/api/v1/admin/workspaces",
+        target: "/api/v1/admin/workspaces",
+        body: Some(r#"{"name":"Reachability Probe","slug":"reachability-probe-ws"}"#),
+        credential: Credential::Bearer,
+        expect: STEP_UP,
     },
     Spec {
         method: "POST",

@@ -16,6 +16,10 @@
 //!
 //! * [`admin`] answers the one question the ACL model has no rows for — *may this principal
 //!   administer this tenant* (`ENC-619`) — and composes with everything below it.
+//! * [`grant`] is the only place in the workspace outside `/tests/` that can *write* an
+//!   `acl_entries` row. Until it existed a deployment could resolve permissions perfectly and could
+//!   not be given one; its module documentation says what the gap was and why the statement belongs
+//!   in one function rather than in whichever handler needs it first.
 //! * [`resolve`] holds the rules as pure functions over rows. They are the definition.
 //! * [`repo`] holds the SQL that fetches those rows in three round trips per batch, whatever the
 //!   batch size. Its `WHERE` clauses duplicate rules 2 and 4 as a prefilter; [`resolve`] re-applies
@@ -50,6 +54,7 @@
 pub mod admin;
 pub mod cache;
 pub mod error;
+pub mod grant;
 pub mod materialise;
 pub mod repo;
 pub mod resolve;
@@ -59,6 +64,10 @@ pub mod service;
 pub use admin::{AdminAuthorization, AdminGrants, AdminRoles, PgAdminRoles};
 pub use cache::{cache_key, CACHE_KEY_PREFIX};
 pub use error::{AuthzError, Result};
+// `grant::grant` is re-exported under its module-qualified name only. A bare `grant` at the crate
+// root would collide with the module, and `enclave_authorization::grant::grant(..)` reads as what
+// it is at the call site — a write, not a question.
+pub use grant::{entries_on, revoke, Grant, GrantError, GrantedEntry, MAX_GRANT_ACTIONS};
 pub use materialise::{
     break_file_inheritance, break_library_inheritance, MAX_MATERIALISED_ENTRIES,
 };

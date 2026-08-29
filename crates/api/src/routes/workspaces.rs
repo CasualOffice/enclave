@@ -1,4 +1,4 @@
-//! The workspace read paths — enumerate the containers a caller is in, and read one.
+//! The workspace surface — enumerate the containers a caller is in, read one, and make one.
 //!
 //! `docs/05-API.md §7.1` is authoritative for everything on the wire here. That section was
 //! **written for this module** (`ENC-794`): before it, the document specified `§7`'s file surface,
@@ -36,6 +36,24 @@
 //! |---|---|---|
 //! | `GET /workspaces` | **the caller's own `users` row** | `container.read` |
 //! | `GET /workspaces/{id}` | the workspace | `container.read` |
+//! | `POST /workspaces` | **the tenant** | `admin.write_config` |
+//!
+//! # Why there is a write here at all, and what the document still says
+//!
+//! `docs/05-API.md §7.1` ends with *"These four are reads. Creating, renaming and trashing a
+//! container are administrative operations and live under `/admin/**` (`§14`); nothing here
+//! mutates."* That sentence is now half true and needs amending, and until it is amended a reader
+//! is entitled to be confused — so the reasoning is recorded here rather than left implicit.
+//!
+//! [`WorkspaceRepository::create`] has existed since M1, is covered by its own tests, and had **no
+//! caller in any binary**. `enclave-cli seed` writes tenants, users and groups and no workspace, so
+//! a freshly installed deployment answered `GET /workspaces` with an empty page and offered no way
+//! to make it non-empty. Every write path below a workspace — libraries, folders, uploads, shares —
+//! is reachable only from a workspace that exists, so the missing create was not one missing
+//! feature but the reason the product could not be started at all. `/admin/workspaces` is the
+//! surface `§14` reserves for the administrative *lifecycle* — rename, quota, trash, transfer — and
+//! none of it is built; waiting for it would have kept the floor missing for the sake of a table
+//! row. What lands here is creation and only creation.
 //!
 //! The first row is the one that needs an argument (`ENC-795`). A tenant-wide listing has no parent
 //! container: the thing above a workspace is the tenant, and `crates/authorization/src/service.rs`
@@ -71,18 +89,27 @@
 //! workspace holding it. They live here rather than in a module of their own because a workspace is
 //! the outermost container — the vocabulary is defined where the hierarchy starts.
 
+use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
-use axum::Json;
+use axum::http::{header, StatusCode};
+use axum::response::{IntoResponse, Response};
+use axum::{Json, RequestExt as _};
+use chrono::Utc;
+use enclave_authorization::{AclResourceType, ChainNode, Effect, Grant, Principal, PrincipalKind};
 use enclave_core::{
-    Action, AuthorizationService, ContainerAction, Error, FieldError, Obligation, Obligations,
-    PolicyDecision, ReasonCode, RequestContext, RequestId, ResourceRef, StageOutcome,
-    ValidationCode, WorkspaceId,
+    Action, Actor, AdminAction, AuthorizationService, ContainerAction, Error, FieldError,
+    FileAction, Obligation, Obligations, PolicyDecision, ReasonCode, RequestContext, RequestId,
+    ResourceRef, StageOutcome, UserId, ValidationCode, WorkspaceId,
 };
-use enclave_workspaces::{PageSize, Visibility, Workspace, WorkspaceFilter, WorkspaceRepository};
+use enclave_workspaces::{
+    normalize_slug, PageSize, Visibility, Workspace, WorkspaceError, WorkspaceFilter,
+    WorkspaceRepository, WorkspaceSettings,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::auth::Authenticated;
-use crate::error::{ApiError, CapabilityReasons};
+use crate::error::{ApiError, CapabilityReasons, Envelope};
+use crate::refusal::{none_dischargeable, Refused};
 use crate::state::ApiState;
 
 // ---------------------------------------------------------------------------------------------
@@ -260,6 +287,47 @@ pub struct ListParams {
     pub(crate) limit: Option<String>,
 }
 
+/// The body of `POST /workspaces`.
+///
+/// `camelCase` per `§1`. Four fields, and the two that are *absent* are the point:
+///
+/// * There is no `tenantId`. Tenant identity comes from the verified token or from custom-domain
+///   routing and never from a body field (`CLAUDE.md` rule 3). A field a client could send would be
+///   a field somebody eventually trusts.
+/// * There is no `defaultClassificationId` and no `storageProfileId`. [`WorkspaceView`] deliberately
+///   keeps both off the wire — they are references into the classification catalogue and into
+///   `docs/08-BYO-INFRA.md`'s storage profiles — and a create that accepted what the read will not
+///   return would let a caller set a value they can then never see. Both are stored as `NULL`, which
+///   means *inherit the tenant's*, and `/admin/workspaces` is the surface that pins them.
+///
+/// `visibility` is a `String` rather than a typed [`Visibility`] for the reason [`ListParams`]
+/// gives about `limit`: an unrecognised member must be this handler's field-level `400`, naming
+/// `visibility`, and not a serde rejection that axum answers with plain text outside `§5`'s
+/// envelope.
+///
+/// **Every field defaults**, including the two that are required. Nothing here is optional as far as
+/// the caller is concerned — [`settings_from`] refuses an empty `name` and an empty `slug` — but a
+/// field serde may not omit is a field whose absence is a *deserialization* failure, and this
+/// handler can only report that as `body`. Defaulting moves the refusal into the validator, where
+/// the answer is `slug: REQUIRED` and a form can attach it to the input the user did not fill in.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateWorkspaceRequest {
+    /// The display name as the user typed it.
+    #[serde(default)]
+    name: String,
+    /// The URL-safe short name. Folded by [`normalize_slug`] before it is validated, so what is
+    /// checked is what is stored.
+    #[serde(default)]
+    slug: String,
+    /// Free text, or absent.
+    #[serde(default)]
+    description: Option<String>,
+    /// Discoverability, or absent for [`Visibility::Private`].
+    #[serde(default)]
+    visibility: Option<String>,
+}
+
 // ---------------------------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------------------------
@@ -381,6 +449,474 @@ pub async fn read(
     .map_err(|error| ApiError::new(error, request_id))?;
 
     Ok(Json(WorkspaceView::new(&record, capabilities, reasons, wire)))
+}
+
+/// Handles `POST /api/v1/workspaces` — provision a workspace the creator can actually open.
+///
+/// # Why the action is `admin.write_config` and not `container.create`
+///
+/// The obvious reading — *creating a container is `container.create` on the thing above it* — is the
+/// reading [`crate::routes::folders::create`] uses, and it does not survive one level higher. The
+/// thing above a workspace is the tenant, and [`enclave_authorization`]'s `service::classify` maps
+/// `ResourceKind::Tenant` onto `Target::Unsupported`, which resolves to `None` — an unconditional
+/// refusal. A `container.create` on a tenant reference is therefore not *strict*, it is *dead*: it
+/// would refuse every caller in every deployment while looking perfectly principled, which is
+/// exactly the failure `ENC-619` found across the whole of `/api/v1/admin/**`.
+///
+/// `crates/authorization/src/admin.rs` is the decorator that answers an [`Action::Admin`] by role
+/// instead of by ACL, from `users.is_admin`, and `crates/api/src/admin/dlp.rs`'s `create_rule` is
+/// the existing shape of a tenant-level create: enforce against [`ResourceRef::tenant`], take no
+/// obligation, then write. This handler follows it deliberately rather than inventing a third
+/// pattern.
+///
+/// [`AdminAction::WriteConfig`] is the narrow fix and not the right long-term answer. Provisioning a
+/// workspace deserves an `AdminAction` of its own — it is closer to `docs/01-PRD.md §4`'s Tenant
+/// Administrator than to branding, but it is not branding — and naming one today would be a
+/// distinction the schema cannot yet carry: `docs/04 §9` specifies `role_definitions` and names
+/// `role_assignments` in its inventory, and `role_assignments` **has no DDL** (`migrations/0004`
+/// says so in as many words). Until it does, a deployment has exactly one administrative role, the
+/// global administrator holds every [`AdminAction`], and any of the five would admit and refuse
+/// precisely the same set of people. `WriteConfig` is chosen because a workspace is tenant
+/// configuration rather than tenant *policy*: giving this to `ManagePolicy` would have handed the
+/// person who may provision containers the right to rewrite the tenant's DLP rules on the day the
+/// finer roles land, and that is the collapse `admin.rs` is written against.
+///
+/// # The creator's grant is written in the same transaction as the workspace
+///
+/// A workspace with no ACL entry on it is a workspace **nobody** can open — not even the
+/// administrator who made it, because being an administrator answers `Action::Admin` and says
+/// nothing about `container.read`. Shipping the insert alone would have produced the twelfth
+/// instance of this repository's signature failure: a route that is built, tested, green, and
+/// reaches a thing no caller can subsequently use. So [`enclave_authorization::grant::grant`] writes
+/// [`FOUNDING_GRANT`] onto the new workspace inside the *same* [`crate::state::ApiState::db`]
+/// transaction as the insert, and the two commit together or neither does. A half-done create is a
+/// workspace nobody can reach and nobody can delete, which is worse than no workspace.
+///
+/// # Errors
+///
+/// [`ApiError`]: the denial's own status — `403`, not `404` — when the caller holds no
+/// administrative grant; `400` for a body that will not decode and for a name, slug or visibility
+/// the tenant cannot store; `409` when a live workspace already holds the folded slug.
+///
+/// `CLAUDE.md` rule 7 is deliberately **not** applied to the refusal. Rule 7 conceals resources
+/// whose existence is itself the secret; the resource here is the caller's own tenant, whose
+/// existence their token already asserts, and a `404` on `POST /workspaces` would tell a
+/// non-administrator that the endpoint does not exist rather than that they may not use it.
+/// `admin/dlp.rs` makes the same call for the same reason.
+pub async fn create(
+    State(state): State<ApiState>,
+    Authenticated { ctx }: Authenticated,
+    request: axum::extract::Request,
+) -> Result<Response, ApiError> {
+    let request_id = ctx.request_id;
+    let tenant = ResourceRef::tenant(ctx.tenant_id);
+
+    // The chain runs before the body is looked at, exactly as `admin::dlp::create_rule` orders it: a
+    // caller the chain refuses learns nothing about the request schema — not even that their JSON
+    // was malformed.
+    let decision = state
+        .policy
+        .enforce(&ctx, PROVISION, &tenant)
+        .await
+        .map_err(|error| ApiError::new(error, request_id))?;
+
+    // `PolicyDecision` is `#[must_use]`; consuming it here is what proves nothing was dropped. No
+    // stage attaches an obligation to an administrative action today, and this path could
+    // discharge none if one arrived — there is no rendition to watermark, no content to reclassify
+    // and nowhere synchronous to route an approval — so an obligation is a refusal (D29,
+    // `CLAUDE.md` rule 8) and it is audited as one (rule 10).
+    if let Err(refused) = none_dischargeable(&decision.into_obligations()) {
+        return Err(state.audit.refuse(&ctx, PROVISION, &tenant, refused).await);
+    }
+
+    // `docs/05-API.md §14` requires recent multi-factor authentication for a privileged mutation,
+    // and provisioning a workspace is one: it is the act that creates a container and, in the same
+    // transaction, writes the founding grant over it. Ordered after the chain for the reason
+    // `crate::admin::require_step_up` records — the chain decides first, at the cost of an `ALLOW`
+    // row for a request this then refuses (`ENC-620`). It reads `state.step_up` rather than a
+    // constant, so a deployment that has configured no second factor is not locked out of its own
+    // provisioning path, which is `ENC-771`'s finding and the reason this endpoint is usable at all
+    // on a stack that has not configured MFA.
+    if let Err(envelope) = crate::admin::require_step_up(&ctx, state.step_up, "workspace.provision")
+    {
+        return Ok(envelope.into_response(request_id));
+    }
+
+    let created_by = match founder(&ctx) {
+        Ok(user) => user,
+        Err(refused) => return Err(state.audit.refuse(&ctx, PROVISION, &tenant, refused).await),
+    };
+
+    let body: Bytes = match request.extract().await {
+        Ok(body) => body,
+        Err(_error) => return Err(ApiError::new(unreadable_body(), request_id)),
+    };
+    let body: CreateWorkspaceRequest = match serde_json::from_slice(&body) {
+        Ok(body) => body,
+        Err(_error) => return Err(ApiError::new(unreadable_body(), request_id)),
+    };
+
+    let settings = settings_from(&body).map_err(|error| ApiError::new(error, request_id))?;
+
+    let record = match provision(&state, &ctx, &settings, created_by).await {
+        Ok(record) => record,
+        Err(ProvisionFailure::SlugTaken) => return Ok(slug_in_use().into_response(request_id)),
+        Err(ProvisionFailure::Other(error)) => return Err(ApiError::new(error, request_id)),
+    };
+
+    // Resolved **after** the commit, and that ordering is the whole point of the response. The
+    // authorization stage reads `acl_entries` over a pool of its own, so a capabilities object
+    // computed inside the transaction above would be resolved against an ACL the resolver's
+    // connection cannot see yet, and every field would come back `false` — a `201` telling the
+    // creator they may do nothing with what they just made.
+    //
+    // With **no** obligations to subtract: `none_dischargeable` above refuses the request outright
+    // unless the decision carried none, so the empty set is a property this path has established
+    // rather than an omission here.
+    let resource = ResourceRef::workspace(ctx.tenant_id, record.id);
+    let (capabilities, reasons, wire) = capabilities_for_container(
+        state.policy.authorization().as_ref(),
+        &ctx,
+        &resource,
+        &Obligations::none(),
+    )
+    .await
+    .map_err(|error| ApiError::new(error, request_id))?;
+
+    Ok((
+        StatusCode::CREATED,
+        [(header::LOCATION, format!("/api/v1/workspaces/{}", record.id))],
+        Json(WorkspaceView::new(&record, capabilities, reasons, wire)),
+    )
+        .into_response())
+}
+
+// ---------------------------------------------------------------------------------------------
+// The pieces creation is made of
+// ---------------------------------------------------------------------------------------------
+
+/// The action `POST /workspaces` is decided by. See [`create`] for the argument.
+const PROVISION: Action = Action::Admin(AdminAction::WriteConfig);
+
+/// The rights the creating user is given on the workspace they just made.
+///
+/// The **whole** container vocabulary, and it is a founding grant rather than a role: there is no
+/// `role_assignments` table to name a role in yet (`migrations/0004`), so the only durable place a
+/// right can be written today is `acl_entries`, one action per row.
+///
+/// All six rather than a cautious subset, because every smaller set produces a workspace its
+/// creator cannot finish setting up. Without `create` they cannot add the library that makes the
+/// workspace useful; without `manage_permissions` they cannot let anybody else in, and — since
+/// nothing else in the product writes an ACL entry on a workspace — the container would be
+/// permanently single-occupant; without `delete` a mistyped slug is unrecoverable, because the slug
+/// index only releases a name when the row holding it is trashed. This is the same set
+/// `crates/api/tests/navigation.rs` asserts the resolver against action by action, and the spelling
+/// each entry lands under is `Action`'s own `Display` — `container.read` — which
+/// `enclave_authorization::grant` renders and `enclave_testing::content::grant` writes, so a grant
+/// and the decision it is meant to permit cannot come to name different things.
+///
+/// It is a grant to the **user**, not to `EVERYONE` and not to a group. `Principal::everyone` on a
+/// brand-new container would be the most permissive entry the schema can express, written by a
+/// request that asked for nothing of the kind.
+///
+/// # Why the file half is here too, and why it is not all of it
+///
+/// The container vocabulary alone left the creator one step short in a way that would have read as
+/// a bug in something else. `POST /uploads` enforces `Action::Container(ContainerAction::Create)`,
+/// so an upload into a freshly provisioned workspace **succeeded**; `content::file_metadata`
+/// enforces `Action::File(FileAction::MetadataRead)`, and `repo::acl_entries_by_action` matches
+/// `a.action = ANY($2::text[])` — a literal string comparison with no implication from
+/// `container.*` to `file.*`. So the founder could create the workspace, create the library, create
+/// the folder, upload the file, and then get a `404` opening it. That is this repository's
+/// signature failure moved down one level, and it is why the two halves are granted together.
+///
+/// The file half is the seeded owner's set (`crates/testing/src/content.rs`, and the rows a
+/// `SELECT DISTINCT action FROM acl_entries` returns against the development fixture), because that
+/// is the set the resolver is actually tested against. What it deliberately leaves out is as much
+/// of the decision as what it includes: **`print`, `export`, `share_external`, `share`, `copy`,
+/// `move`, `restore` and `version_restore` are not conferred.** `CLAUDE.md` rule 6 says preview,
+/// download, print, export and sync are five permissions and never one, and a founding grant is an
+/// automatic act nobody reviewed — the least appropriate place to hand out the ones that put
+/// content outside the tenant. A founder who wants them holds `container.manage_permissions` and
+/// can write them deliberately, which is the second act rule 6 exists to require.
+///
+/// The one honest limitation, recorded rather than smoothed over: **no HTTP route writes an ACL
+/// entry yet** (`ENC-917`), so `container.manage_permissions` is a right nothing can currently
+/// exercise, and this grant is the only way any principal obtains access to a new workspace.
+const FOUNDING_GRANT: [Action; 13] = [
+    Action::Container(ContainerAction::Read),
+    Action::Container(ContainerAction::Create),
+    Action::Container(ContainerAction::Update),
+    Action::Container(ContainerAction::Delete),
+    Action::Container(ContainerAction::ManageMembers),
+    Action::Container(ContainerAction::ManagePermissions),
+    Action::File(FileAction::MetadataRead),
+    Action::File(FileAction::Preview),
+    Action::File(FileAction::ContentRead),
+    Action::File(FileAction::Download),
+    Action::File(FileAction::Edit),
+    Action::File(FileAction::Delete),
+    Action::File(FileAction::VersionRead),
+];
+
+/// The founding grant, as a value, so that one definition is both used and testable.
+///
+/// It was written inline in [`provision`] and asserted by a unit test that rebuilt the same literal
+/// in its own body — which meant the test would have stayed green if `provision` had started
+/// granting [`Principal::everyone`], the exact thing its name says it prevents. A test that
+/// constructs its subject is a test about the test. This function is the subject.
+fn founding_grant_for(workspace: WorkspaceId, created_by: UserId) -> Grant {
+    Grant {
+        resource: ChainNode::new(AclResourceType::Workspace, workspace.as_uuid()),
+        principal: Principal::new(PrincipalKind::User, created_by.as_uuid()),
+        effect: Effect::Allow,
+        granted_by: created_by,
+        // No expiry. A founding grant that lapsed would leave a workspace with an owner who has
+        // become a stranger to it, and nothing in the product to notice.
+        expires_at: None,
+    }
+}
+
+/// What a failed provisioning was.
+///
+/// Two cases rather than one [`Error`], for [`crate::routes::folders`]'s reason: the collision is
+/// the one this handler has to answer with a status [`Error`] cannot express.
+enum ProvisionFailure {
+    /// A live workspace in this tenant already holds the folded slug.
+    SlugTaken,
+    /// Anything else, already mapped onto the error type the API layer renders.
+    Other(Error),
+}
+
+/// Opens one transaction, writes the workspace, grants the creator the container, commits.
+///
+/// Separate from the handler so that the atomicity [`create`] argues for is visible as a single
+/// scope with one `commit` at the bottom, and so the `SlugTaken` interception is one `match` on a
+/// two-variant type rather than a nested `if let` in the request path.
+///
+/// The grant is written through [`enclave_authorization::grant::grant`] rather than by an `INSERT`
+/// here. That module exists precisely to stop this statement being re-derived at a call site: the
+/// conflict target is an expression list, an `ALLOW` may not land on a `DENY`, `inherited_from` has
+/// to be cleared, and duplicate actions abort the whole statement — five decisions that are silent
+/// when they are wrong. It authorizes nothing, which is correct: [`create`] has already been through
+/// `PolicyEngine::enforce`, and a second check here would be a second answer that could disagree
+/// with the one that audited (`CLAUDE.md` rules 1 and 10).
+///
+/// `granted_by` is the creator themselves. `acl_entries.granted_by` carries no foreign key and is
+/// checked by the grant engine against this tenant's `users`, so it has to name somebody real; the
+/// person who provisioned the workspace is the honest answer, and the alternative — the nil UUID
+/// that fixtures use — would put a row in the audit trail that no review could ever explain.
+async fn provision(
+    state: &ApiState,
+    ctx: &RequestContext,
+    settings: &WorkspaceSettings,
+    created_by: UserId,
+) -> Result<Workspace, ProvisionFailure> {
+    // One clock for the row and for its ACL, so the entry can never be timestamped before the
+    // resource it hangs on.
+    let now = Utc::now();
+
+    let mut tx =
+        state.db.begin(ctx.tenant_id).await.map_err(|e| ProvisionFailure::Other(e.into()))?;
+
+    let record = match WorkspaceRepository::create(
+        &mut tx,
+        ctx.tenant_id,
+        settings,
+        created_by,
+        now,
+    )
+    .await
+    {
+        Ok(record) => record,
+        // The transaction is dropped without committing. A refused insert has aborted it in any
+        // case — `ENC-691`'s finding was that `COMMIT` on an aborted transaction *is* a
+        // rollback, which is why nothing here relies on that and simply drops.
+        Err(WorkspaceError::SlugTaken) => return Err(ProvisionFailure::SlugTaken),
+        Err(error) => return Err(ProvisionFailure::Other(error.into())),
+    };
+
+    let founding = founding_grant_for(record.id, created_by);
+    enclave_authorization::grant::grant(&mut tx, ctx.tenant_id, &founding, &FOUNDING_GRANT, now)
+        .await
+        .map_err(|error| ProvisionFailure::Other(error.into()))?;
+
+    tx.commit().await.map_err(|e| ProvisionFailure::Other(e.into()))?;
+    Ok(record)
+}
+
+/// Validates the request and turns it into the settings the repository stores.
+///
+/// Every rejection names a field and never its value (`CLAUDE.md` rule 10, and
+/// `enclave_workspaces::error`'s note): a workspace name can carry organizational structure —
+/// *Project Ravenwood — acquisition* — and a validation message is the shortest path from a value to
+/// a log line.
+///
+/// The bounds are the ones the rest of the product already uses. 255 characters is
+/// `enclave_files::normalize::MAX_NAME_CHARS`, adopted rather than re-chosen so that a name a folder
+/// may carry is a name a workspace may carry. The slug's character class is narrower than the
+/// column's — `workspaces.slug` is bare `TEXT` with only a uniqueness index over it — because
+/// `docs/04-DATA-MODEL.md §7` calls it a *URL-safe short name* and a slug holding a slash or a space
+/// is neither, whatever the column will accept.
+///
+/// # Errors
+///
+/// [`Error::Validation`] listing **every** offending field rather than the first, so a client
+/// correcting a form is not made to submit it once per mistake.
+fn settings_from(body: &CreateWorkspaceRequest) -> Result<WorkspaceSettings, Error> {
+    let mut fields: Vec<FieldError> = Vec::new();
+
+    let name = body.name.trim();
+    if name.is_empty() {
+        fields.push(FieldError::new("name", ValidationCode::Required));
+    } else if name.chars().count() > MAX_NAME_CHARS {
+        fields.push(FieldError::new("name", ValidationCode::TooLong));
+    }
+
+    // Folded first, so what is validated is what `WorkspaceRepository::create` will store and what
+    // `uq_workspace_slug` will compare. Validating the raw value and storing the folded one is how
+    // an accepted slug becomes a stored slug the caller cannot look up.
+    let slug = normalize_slug(&body.slug);
+    if slug.is_empty() {
+        fields.push(FieldError::new("slug", ValidationCode::Required));
+    } else if slug.chars().count() > MAX_SLUG_CHARS {
+        fields.push(FieldError::new("slug", ValidationCode::TooLong));
+    } else if !slug.chars().all(is_slug_char) {
+        fields.push(FieldError::new("slug", ValidationCode::InvalidFormat));
+    }
+
+    // Absent is `PRIVATE`: the least discoverable member of the vocabulary. A default that widened
+    // visibility would make an omitted field a disclosure, which is the wrong direction for a
+    // field whose whole subject is who can see the thing.
+    let visibility = match body.visibility.as_deref() {
+        None => Some(Visibility::Private),
+        Some(raw) => match raw.trim().parse::<Visibility>() {
+            Ok(visibility) => Some(visibility),
+            Err(_unknown) => {
+                // `UNSUPPORTED` rather than `INVALID_FORMAT`: the value is well-formed text that
+                // names a member this deployment's `CHECK` constraint does not have.
+                fields.push(FieldError::new("visibility", ValidationCode::Unsupported));
+                None
+            }
+        },
+    };
+
+    if !fields.is_empty() {
+        return Err(Error::Validation(fields));
+    }
+
+    Ok(WorkspaceSettings {
+        name: name.to_owned(),
+        slug,
+        // An empty description is no description. Storing `""` would put a value in the column that
+        // renders as an empty paragraph in every client and reads as "somebody wrote nothing here".
+        description: body
+            .description
+            .as_deref()
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(str::to_owned),
+        visibility: visibility.unwrap_or(Visibility::Private),
+        // Both `NULL`, meaning *inherit the tenant's*. See [`CreateWorkspaceRequest`] for why
+        // neither is a field a client may send.
+        default_classification_id: None,
+        storage_profile_id: None,
+    })
+}
+
+/// The longest workspace name this surface accepts, in characters rather than bytes.
+///
+/// `enclave_files::normalize::MAX_NAME_CHARS`'s value, adopted rather than re-chosen — see
+/// [`settings_from`]. Counted in `chars` for that function's reason: a byte limit rejects a name in
+/// Japanese at a third of the length of the same name in English.
+const MAX_NAME_CHARS: usize = 255;
+
+/// The longest slug this surface accepts. The same bound, for the same reason.
+const MAX_SLUG_CHARS: usize = 255;
+
+/// Whether one folded character may appear in a slug.
+///
+/// ASCII alphanumerics, `-` and `_`. Uppercase is absent because [`normalize_slug`] has already
+/// lowercased, so an uppercase character reaching here is impossible rather than forbidden — and a
+/// predicate that accepted it would quietly permit a spelling the index can never produce.
+const fn is_slug_char(character: char) -> bool {
+    character.is_ascii_lowercase()
+        || character.is_ascii_digit()
+        || character == '-'
+        || character == '_'
+}
+
+/// The user a workspace is attributed to and granted to.
+///
+/// `workspaces.created_by` is a `NOT NULL` reference to a `users` row, and `acl_entries` can only
+/// name a principal the tenant's directory holds — the same argument `routes::folders::author` and
+/// `admin::dlp::author` make. In the composed binary this is unreachable, because
+/// `AdminAuthorization` has already refused every actor that is not a `User` (its structural refusal
+/// 2: `is_admin` is a column on `users`, and a principal the grant model cannot name is refused).
+/// It is asserted here anyway, because a handler that depends on a *composition* for a property it
+/// needs is a handler that breaks silently the day the composition changes.
+///
+/// A [`Refused`] rather than an [`Error`] because the chain has already allowed by the time this is
+/// asked, so the refusal needs an audit row of its own (`ENC-606`).
+///
+/// # Errors
+///
+/// [`Refused`] for every actor that is not [`Actor::User`].
+fn founder(ctx: &RequestContext) -> Result<UserId, Refused> {
+    match ctx.actor {
+        Actor::User(id) => Ok(id),
+        // A link bearer least of all (`ENC-879`): `Actor::subject_id` answers `Some` with a
+        // `share_links.id`, which is a real row in the wrong table entirely.
+        Actor::Guest(_)
+        | Actor::ServiceAccount(_)
+        | Actor::McpClient(_)
+        | Actor::LinkBearer(_)
+        | Actor::System => Err(Refused::actor(ReasonCode::AccessDenied)),
+    }
+}
+
+/// `409`, per `docs/05-API.md §5`'s status table: "name collision".
+///
+/// `NAME_IN_USE` rather than a `SLUG_IN_USE` invented here. `§5`'s code vocabulary is published and
+/// a client switches on it; adding a member is a documentation change, and this collision is the
+/// same event the published code already names — the `details` entry is what says *which* field
+/// collided, which is exactly what `§7`'s folder rule uses it for.
+///
+/// The status assertion is load-bearing in both directions. [`WorkspaceError::SlugTaken`] converts
+/// to `Error::Validation`, which is a `400` — right for the four other conversions beside it and
+/// wrong for this one — so a handler that let the blanket conversion run would answer `400`. Rather
+/// than change a conversion other call sites depend on, this intercepts before it, on the precedent
+/// `routes::folders::name_in_use` and `admin::dlp::write_failure` set.
+///
+/// The slug is **not** echoed back. The caller sent it, but a collision report is the one place a
+/// workspace the caller has not been shown could be named to them — and on this endpoint that is
+/// sharper than it is for a folder, because the refusal is proof that a live workspace in the tenant
+/// holds exactly that slug.
+fn slug_in_use() -> Envelope {
+    Envelope::new(
+        StatusCode::CONFLICT,
+        "NAME_IN_USE",
+        "A workspace in this tenant already uses that slug.",
+        "Choose another slug, or trash the workspace that holds it.",
+    )
+    .with_details(vec![serde_json::json!({
+        "field": "slug",
+        "code": ValidationCode::NotUnique.as_str(),
+    })])
+}
+
+/// `400` for a body that will not decode, inside `§5`'s envelope.
+///
+/// Built from [`Error::Validation`] rather than as a hand-rolled [`Envelope`] like
+/// `routes::folders::unreadable_body`: the canonical conversion already renders
+/// `VALIDATION_FAILED`, the `400`, and a `details` array, so the only thing a literal envelope would
+/// add here is a fourth copy of two English sentences that could drift from the other three.
+///
+/// The serde error is deliberately dropped rather than reported. `serde_json`'s message quotes the
+/// offending input, and an error path that echoes an unparsed request body is a log line containing
+/// whatever the client sent (`CLAUDE.md` rule 10).
+fn unreadable_body() -> Error {
+    Error::Validation(vec![FieldError::new("body", ValidationCode::InvalidFormat)])
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -981,5 +1517,285 @@ mod tests {
     fn concealment_drops_the_remediation_with_the_status() {
         let denial = Error::denied_with(ReasonCode::AccessDenied, Remediation::RequestAccess);
         assert!(matches!(conceal(denial), Error::NotFound));
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Creation
+    // -----------------------------------------------------------------------------------------
+
+    /// A request body with the required two fields and nothing else.
+    fn minimal(name: &str, slug: &str) -> CreateWorkspaceRequest {
+        CreateWorkspaceRequest {
+            name: name.to_owned(),
+            slug: slug.to_owned(),
+            description: None,
+            visibility: None,
+        }
+    }
+
+    /// The founding grant covers every action the response then reports on, and one more.
+    ///
+    /// Two lists that must agree: [`CONTAINER_ACTIONS`] is what `capabilities` resolves, and
+    /// [`FOUNDING_GRANT`] is what the creator is given. If a container operation is added to the
+    /// vocabulary and only one of them is updated, the endpoint starts answering `201` with a
+    /// capability the creator does not hold — a button the chain will refuse. Asserted over both
+    /// arrays rather than by reading either, so the drift is what fails.
+    ///
+    /// `container.read` is the "one more": [`CONTAINER_ACTIONS`] omits it because
+    /// [`capabilities_for_containers`] sets `read` by construction on a row that survived the trim,
+    /// and a creator who was never granted it would not survive that trim at all.
+    #[test]
+    fn the_founding_grant_covers_every_capability_the_response_reports() {
+        assert!(
+            FOUNDING_GRANT.contains(&Action::Container(ContainerAction::Read)),
+            "without container.read the creator cannot open what they just made"
+        );
+        for (name, action) in CONTAINER_ACTIONS {
+            assert!(
+                FOUNDING_GRANT.contains(&Action::Container(*action)),
+                "capabilities reports `{name}` but the creator is never granted it"
+            );
+        }
+        let containers =
+            FOUNDING_GRANT.iter().filter(|a| matches!(a, Action::Container(_))).count();
+        assert_eq!(
+            containers,
+            CONTAINER_ACTIONS.len() + 1,
+            "the container half of the founding grant must be the container vocabulary and \
+             nothing wider"
+        );
+    }
+
+    /// The founding grant confers no permission that puts content outside the tenant.
+    ///
+    /// `CLAUDE.md` rule 6: preview, download, print, export and sync are five permissions and never
+    /// one. The file half of [`FOUNDING_GRANT`] exists so that a creator can open the file they
+    /// just uploaded — not so that provisioning becomes a way to acquire the rights rule 6 exists
+    /// to keep separate. This is the assertion that keeps the next person from widening it by one
+    /// convenient variant: adding `print` here would make every provisioning an unreviewed grant of
+    /// a delivery path, and `share_external` would make it a grant of egress.
+    ///
+    /// Written as a deny-list over the exact variants rather than a count, because a count fails
+    /// for the wrong reason — it also fails when something harmless is added — and tells whoever
+    /// reads it nothing about which line crossed which rule.
+    #[test]
+    fn the_founding_grant_confers_no_egress_and_no_external_sharing() {
+        for forbidden in [
+            FileAction::Print,
+            FileAction::Export,
+            FileAction::Share,
+            FileAction::ShareExternal,
+            FileAction::Sync,
+            FileAction::Copy,
+            FileAction::Move,
+            FileAction::Restore,
+            FileAction::VersionRestore,
+            FileAction::ManagePermissions,
+        ] {
+            assert!(
+                !FOUNDING_GRANT.contains(&Action::File(forbidden)),
+                "provisioning a workspace must not confer `file.{}` without a second, deliberate \
+                 act (CLAUDE.md rule 6)",
+                forbidden.as_str()
+            );
+        }
+    }
+
+    /// The grant is written for the creator alone, and it never reaches `EVERYONE`.
+    ///
+    /// The failure this catches is not a typo. `Principal::everyone` is one call away and is the
+    /// most permissive entry `acl_entries` can hold; a provisioning path that reached for it would
+    /// make every new workspace tenant-readable from the instant it existed, and nothing on the
+    /// wire would say so — `capabilities` would look identical to the creator.
+    #[test]
+    fn the_founding_grant_names_the_creator_and_not_everyone() {
+        let user = UserId::new_v7();
+        let workspace = WorkspaceId::new_v7();
+        // The value `provision` actually writes, not a copy of it assembled here.
+        let founding = founding_grant_for(workspace, user);
+
+        assert_eq!(founding.principal.kind, PrincipalKind::User);
+        assert_eq!(founding.principal.id, Some(user.as_uuid()));
+        assert_ne!(founding.principal, Principal::everyone());
+        assert_eq!(founding.resource.kind, AclResourceType::Workspace);
+        assert_eq!(founding.effect, Effect::Allow);
+        assert!(founding.expires_at.is_none(), "a founding grant that lapses orphans a workspace");
+    }
+
+    /// An omitted `visibility` is the least discoverable member, never the most.
+    ///
+    /// The positive control is the explicit `TENANT_VISIBLE`: without it this would pass against an
+    /// implementation that ignored the field entirely and hard-coded `PRIVATE`.
+    #[test]
+    fn an_omitted_visibility_defaults_to_private() {
+        let settings = settings_from(&minimal("Engineering", "engineering")).expect("valid");
+        assert_eq!(settings.visibility, Visibility::Private);
+
+        let mut body = minimal("Engineering", "engineering");
+        body.visibility = Some("TENANT_VISIBLE".to_owned());
+        let settings = settings_from(&body).expect("valid");
+        assert_eq!(settings.visibility, Visibility::TenantVisible);
+    }
+
+    /// A visibility outside the `CHECK` constraint's vocabulary is a field-level `400`.
+    ///
+    /// Not a `500` from the insert and not a serde rejection: both would leave the caller outside
+    /// `docs/05-API.md §5`'s envelope, and the second would do it before this handler ran at all.
+    #[test]
+    fn an_unknown_visibility_names_the_field_it_came_from() {
+        let mut body = minimal("Engineering", "engineering");
+        body.visibility = Some("PUBLIC".to_owned());
+
+        match settings_from(&body).expect_err("PUBLIC is not a member") {
+            Error::Validation(fields) => {
+                assert_eq!(fields.len(), 1);
+                assert_eq!(fields[0].field, "visibility");
+                assert_eq!(fields[0].code, ValidationCode::Unsupported);
+            }
+            other => panic!("expected a validation failure, got {other:?}"),
+        }
+    }
+
+    /// The slug that is validated is the slug that is stored.
+    ///
+    /// `WorkspaceRepository::create` folds through `normalize_slug` on the way in, so a handler that
+    /// validated the raw value would accept ` Engineering ` and store `engineering` — and the
+    /// caller's own `GET` by slug would then miss the row they just made.
+    #[test]
+    fn the_slug_is_folded_before_it_is_validated_and_stored() {
+        let settings = settings_from(&minimal("Engineering", "  Engineering  ")).expect("valid");
+        assert_eq!(settings.slug, "engineering");
+        assert_eq!(settings.name, "Engineering", "the display name keeps its case");
+    }
+
+    /// Every offending field is reported, not the first one.
+    ///
+    /// A form corrected one refusal at a time is a form submitted four times, and each submission
+    /// of *this* one is a write attempt against the tenant's workspace table.
+    #[test]
+    fn a_request_that_is_wrong_twice_is_told_about_both() {
+        let mut body = minimal("   ", "not a slug");
+        body.visibility = Some("PUBLIC".to_owned());
+
+        match settings_from(&body).expect_err("three bad fields") {
+            Error::Validation(fields) => {
+                let named: Vec<&str> = fields.iter().map(|field| field.field.as_str()).collect();
+                assert!(named.contains(&"name"), "{named:?}");
+                assert!(named.contains(&"slug"), "{named:?}");
+                assert!(named.contains(&"visibility"), "{named:?}");
+            }
+            other => panic!("expected a validation failure, got {other:?}"),
+        }
+    }
+
+    /// A slug that is not URL-safe is refused, and the ones that are stay accepted.
+    ///
+    /// The accepted half is the control: a predicate that refused everything would satisfy every
+    /// rejection below while making the endpoint unusable.
+    #[test]
+    fn a_slug_must_be_url_safe() {
+        for accepted in ["engineering", "eng-2026", "eng_2026", "a", "0"] {
+            assert!(
+                settings_from(&minimal("Name", accepted)).is_ok(),
+                "`{accepted}` is URL-safe and must be accepted"
+            );
+        }
+        for refused in ["eng ineering", "eng/ineering", "eng.ineering", "engineering?", "eñe", ""]
+        {
+            let error = settings_from(&minimal("Name", refused)).expect_err("not a URL-safe slug");
+            assert!(
+                matches!(error, Error::Validation(ref fields) if fields[0].field == "slug"),
+                "`{refused}` must be refused as a slug, got {error:?}"
+            );
+        }
+    }
+
+    /// A name at the bound is accepted and one character past it is not.
+    ///
+    /// Counted in `chars`: the multi-byte input is what stops the bound being re-implemented as a
+    /// byte length, which would refuse a Japanese name at a third of the permitted length.
+    #[test]
+    fn a_name_is_bounded_in_characters_and_not_in_bytes() {
+        let at_limit = "é".repeat(MAX_NAME_CHARS);
+        assert!(at_limit.len() > MAX_NAME_CHARS, "the input must be multi-byte to prove anything");
+        assert!(settings_from(&minimal(&at_limit, "slug")).is_ok());
+
+        let over = "é".repeat(MAX_NAME_CHARS + 1);
+        match settings_from(&minimal(&over, "slug")).expect_err("one character too long") {
+            Error::Validation(fields) => {
+                assert_eq!(fields[0].field, "name");
+                assert_eq!(fields[0].code, ValidationCode::TooLong);
+            }
+            other => panic!("expected a validation failure, got {other:?}"),
+        }
+    }
+
+    /// An empty description is stored as absent, and a real one survives trimming.
+    #[test]
+    fn an_empty_description_is_no_description() {
+        let mut body = minimal("Engineering", "engineering");
+        body.description = Some("   ".to_owned());
+        assert!(settings_from(&body).expect("valid").description.is_none());
+
+        body.description = Some("  Platform and infrastructure  ".to_owned());
+        assert_eq!(
+            settings_from(&body).expect("valid").description.as_deref(),
+            Some("Platform and infrastructure")
+        );
+    }
+
+    /// A create never sets the two references [`WorkspaceView`] refuses to return.
+    ///
+    /// A field a caller can write and can never read back is a field they cannot correct. Asserted
+    /// over the settings rather than by reading [`CreateWorkspaceRequest`], so adding either as a
+    /// body field fails here rather than shipping.
+    #[test]
+    fn a_create_pins_neither_a_classification_nor_a_storage_profile() {
+        let settings = settings_from(&minimal("Engineering", "engineering")).expect("valid");
+        assert!(settings.default_classification_id.is_none());
+        assert!(settings.storage_profile_id.is_none());
+    }
+
+    /// A taken slug is `409` and it does not echo the slug.
+    ///
+    /// The status is asserted because `WorkspaceError::SlugTaken`'s blanket conversion is a `400`,
+    /// so a handler that let it run would answer `400` and this fails. The absence of the value is
+    /// asserted because that conversion would not have leaked it either — without this assertion
+    /// the interception could later start echoing the slug and nothing would notice.
+    #[test]
+    fn a_taken_slug_is_a_conflict_that_does_not_echo_the_slug() {
+        let envelope = slug_in_use();
+        assert_eq!(envelope.status(), StatusCode::CONFLICT);
+        assert_eq!(envelope.code(), "NAME_IN_USE");
+
+        let rendered = serde_json::to_string(envelope.details()).expect("render");
+        assert!(rendered.contains("NOT_UNIQUE"), "the field diagnosis must survive: {rendered}");
+        assert!(rendered.contains("slug"), "the details must say which field collided: {rendered}");
+    }
+
+    /// The provisioning action is administrative, and it is decided against the tenant.
+    ///
+    /// A single assertion, and it is the one that would catch the plausible wrong implementation:
+    /// `Action::Container(ContainerAction::Create)` compiles, reads correctly, and is refused
+    /// unconditionally by `service::classify`, so an endpoint written that way would be `403` for
+    /// every caller in every deployment while looking principled. See [`create`].
+    #[test]
+    fn provisioning_is_an_administrative_action_and_not_a_container_one() {
+        assert_eq!(PROVISION, Action::Admin(AdminAction::WriteConfig));
+        assert!(!matches!(PROVISION, Action::Container(_)));
+    }
+
+    /// A body that will not decode is `400`, and the refusal quotes none of it.
+    #[test]
+    fn an_unreadable_body_names_the_body_and_repeats_none_of_it() {
+        match unreadable_body() {
+            Error::Validation(fields) => {
+                assert_eq!(fields.len(), 1);
+                assert_eq!(fields[0].field, "body");
+                assert_eq!(fields[0].code, ValidationCode::InvalidFormat);
+            }
+            other => panic!("expected a validation failure, got {other:?}"),
+        }
+        assert_eq!(unreadable_body().status_code(), 400);
     }
 }
