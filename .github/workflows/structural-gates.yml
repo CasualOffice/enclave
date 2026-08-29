@@ -75,6 +75,7 @@ jobs:
   rls-coverage:
     name: "RULE: every tenant_id table has RLS enabled, forced, and a policy"
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     services:
       postgres:
         image: postgres:16
@@ -156,6 +157,7 @@ jobs:
   grant-coverage:
     name: "RULE: every tenant_id table is granted to enclave_app, which cannot bypass RLS"
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     services:
       postgres:
         image: postgres:16
@@ -252,6 +254,7 @@ jobs:
   composite-fks:
     name: "RULE: every FK between tenant-scoped tables includes tenant_id"
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     services:
       postgres:
         image: postgres:16
@@ -325,6 +328,7 @@ jobs:
   policy-routing:
     name: "RULE: every route handler reaches PolicyEngine::enforce"
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
 
@@ -408,6 +412,7 @@ jobs:
   audit-coverage:
     name: "RULE: every refusal is audited — no enforcement point is silent"
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
 
@@ -499,10 +504,23 @@ jobs:
   no-conflict-markers:
     name: 'RULE: no tracked file carries a merge-conflict marker'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - name: No unresolved conflict markers
         run: python3 .github/scripts/no_conflict_markers.py
+
+  # --------------------------------------------------------------------------
+  # Gate: workflow timeouts — a job that hangs must eventually say so.
+  # --------------------------------------------------------------------------
+  workflow-timeouts:
+    name: 'RULE: every workflow job declares a timeout'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: Every job bounds how long it may hold a runner
+        run: python3 .github/scripts/workflow_timeouts.py
 
   # --------------------------------------------------------------------------
   # Gate: no raw pool — enforceable today, purely static.
@@ -510,6 +528,7 @@ jobs:
   no-raw-pool:
     name: 'RULE: no sqlx query outside the db crate bypasses TenantScoped'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - name: No database access bypasses TenantScoped
@@ -542,6 +561,7 @@ jobs:
   tracker-unique-ids:
     name: 'RULE: every tracker ID appears exactly once'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - name: No tracker ID is used twice
@@ -574,6 +594,7 @@ jobs:
   tracker-rollup:
     name: 'RULE: the tracker rollup agrees with its rows'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - name: The rollup counts what the rows say
@@ -605,6 +626,7 @@ jobs:
   obligations:
     name: "RULE: PolicyDecision is must_use and never discarded"
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
 
@@ -662,6 +684,7 @@ jobs:
   secrets:
     name: "RULE: no literal credentials in config, fixtures or code"
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
 
@@ -738,6 +761,7 @@ jobs:
   migrations:
     name: "RULE: migrations are numbered, gapless and forward-only"
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
         with:
@@ -816,6 +840,7 @@ jobs:
   dependencies:
     name: "RULE: cargo audit, cargo deny and SBOM stay wired up"
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
 
@@ -849,6 +874,7 @@ jobs:
   api-contract:
     name: "RULE: generated OpenAPI matches the committed snapshot"
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
 
@@ -915,6 +941,7 @@ jobs:
   web-gates:
     name: "RULE: i18n catalog, bundle budget and axe pass on web/"
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 
@@ -1000,6 +1027,11 @@ jobs:
       # green on the first and is exactly what CLAUDE.md rule 10 forbids.
       - audit-coverage
       - no-raw-pool
+      # Not a code rule, and it belongs here anyway: this gate is the reason the other
+      # fifteen can be trusted to report at all. A job with no timeout that wedges reports
+      # nothing for six hours, and a required check that is silent blocks the merge box in
+      # exactly the way a failing one does — without naming a cause anybody can act on.
+      - workflow-timeouts
       - obligations
       - secrets
       - migrations
@@ -1009,6 +1041,7 @@ jobs:
       - tracker-rollup
       - tracker-unique-ids
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Fail unless every gate succeeded
         env:
