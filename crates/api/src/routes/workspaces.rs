@@ -640,9 +640,12 @@ const PROVISION: Action = Action::Admin(AdminAction::WriteConfig);
 /// content outside the tenant. A founder who wants them holds `container.manage_permissions` and
 /// can write them deliberately, which is the second act rule 6 exists to require.
 ///
-/// The one honest limitation, recorded rather than smoothed over: **no HTTP route writes an ACL
-/// entry yet** (`ENC-917`), so `container.manage_permissions` is a right nothing can currently
-/// exercise, and this grant is the only way any principal obtains access to a new workspace.
+/// This grant was, for one release, the *only* way any principal obtained access to a workspace:
+/// `container.manage_permissions` was a right nothing could exercise, because no HTTP route wrote
+/// an `acl_entries` row. `ENC-917` closed that — [`crate::routes::permissions`] is where a founder
+/// now admits anybody else — which is what makes the narrowness above affordable. A founding grant
+/// that withholds `print` and `share_external` is a sensible default when there is a second act
+/// that can add them, and was a dead end when there was not.
 const FOUNDING_GRANT: [Action; 13] = [
     Action::Container(ContainerAction::Read),
     Action::Container(ContainerAction::Create),

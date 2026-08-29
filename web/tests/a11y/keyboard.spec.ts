@@ -172,9 +172,20 @@ test('→ reaches the row-actions button, which hover-reveal never hides from th
   expect(await cursor(page)).toBe('r:0');
 
   /* Invisible to begin with — the control, so that "it is visible after" is
-   * about the reveal and not about a button that was always shown. */
+   * about the reveal and not about a button that was always shown.
+   *
+   * Polled, for the reason the assertion at the end of this test already gives
+   * about the other direction: opacity here is transition-driven, and reading it
+   * in the same tick as the `ArrowDown` that focused the row reads it mid-flight.
+   * This was the read left un-polled, and it flaked on CI at `Received: "1"`
+   * against a `web/` tree byte-identical to one that had just passed on `main`
+   * (`ENC-921`). Polling does not weaken the control: a button that was always
+   * shown never settles at `0`, so the poll times out and the test still fails,
+   * which is the whole thing this assertion is here to catch. */
   const actions = page.locator('[data-cursor="r:0:6"]');
-  expect(await actions.evaluate((node) => getComputedStyle(node).opacity)).toBe('0');
+  await expect
+    .poll(() => actions.evaluate((node) => getComputedStyle(node).opacity))
+    .toBe('0');
   /* And **not** `display:none`, which is the decision this test exists to
    * protect: a display-hidden button is not in the focus order at all, so no
    * amount of arrow-key handling could reach it. */

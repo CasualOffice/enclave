@@ -309,6 +309,9 @@ The same object, with the same three fields, is what `GET /uploads/{id}` returns
 | `GET` | `/workspaces/{workspaceId}/libraries` | The libraries in it; cursor-paged |
 | `GET` | `/libraries/{libraryId}` | One library, its settings + this caller's capabilities |
 | `POST` | `/workspaces/{workspaceId}/libraries` | Create a library in it; `201` + `Location` |
+| `GET` | `/workspaces/{workspaceId}/permissions` · `/libraries/{libraryId}/permissions` | Effective + explicit ACL |
+| `PUT` | same two paths | Replace the explicit ACL |
+| `POST` | `/libraries/{libraryId}/permissions/break-inheritance` | Materializes inherited entries |
 
 **Why this section exists.** `§7` above documents how to browse a library, `§12` documents
 sub-resources of workspaces and libraries, and `§14` documents `/admin/workspaces` and
@@ -331,6 +334,32 @@ consequence was that a deployment could enumerate workspaces and libraries and c
 library to go into, so a fresh deployment had nowhere to put a file and no way to make one.
 
 Renaming and trashing a container remain unbuilt on both paths.
+
+**The permissions surface is the same shape as `§7`'s file one, one level up** (`ENC-917`), and it
+exists because `enclave_authorization::grant` could write an `acl_entries` row from the day it landed
+and its only caller was the founding grant `POST /admin/workspaces` writes. Every workspace this
+product provisioned was therefore permanently single-occupant: the founder held
+`container.manage_permissions`, every container endpoint reported `managePermissions: true` to
+clients, and no request acted on it — an API describing a button whose handler was never written.
+
+Four things are worth stating on the wire contract, because a client cannot infer them:
+
+* **`PUT` is a replace, not a merge.** An entry the body omits is gone afterwards. That is what makes
+  a permissions dialog — read the set, change one row, send the whole thing back — correct rather
+  than an accumulation of everything anyone ever granted.
+* **It replaces the *explicit* set only.** Rows with `inheritedFrom` set are materialized copies from
+  a broken inheritance and no `PUT` removes them, or breaking inheritance would be undoable by an
+  unrelated grant.
+* **`GET` returns `explicit` and `effective` separately**, each entry tagged with the `source` it
+  came from. A collapsed per-principal verdict cannot answer *why* somebody has access, which is the
+  only question a permissions screen is ever opened to answer.
+* **A caller cannot remove their own ability to manage permissions here.** The refusal is
+  `409 WOULD_REMOVE_OWN_MANAGE_PERMISSIONS`, computed on the *effective* answer after the proposed
+  change and inside the same transaction as the write — so inheritance still granting it is a pass,
+  and a replace that committed before failing its own check is impossible. A tenant administrator is
+  **not** exempt: `users.is_admin` confers `admin.*`, never `container.manage_permissions`, so an
+  exemption would be a fiction. `aclRevision` is reported on the file surface only, because
+  `04-DATA-MODEL.md §7` gives that column to `files` alone.
 
 ```json
 {
