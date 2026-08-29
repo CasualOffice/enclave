@@ -152,6 +152,25 @@ pub fn router(state: ApiState, delivery: Delivery) -> Router {
             get(routes::libraries::list_in_workspace).post(routes::libraries::create),
         )
         .route("/api/v1/libraries/{id}", get(routes::libraries::read))
+        // Permissions (`docs/05-API.md §7`, and the same shape one level up for containers).
+        // `ENC-917`: `enclave_authorization::grant` could write an `acl_entries` row from the day it
+        // landed and its only caller was `POST /admin/workspaces`' founding grant, so every
+        // workspace this product provisioned was permanently single-occupant — the founder held
+        // `container.manage_permissions`, every container endpoint reported it to clients, and no
+        // request acted on it. The container action and the file action stay two actions, which is
+        // rule 6 applied to the one action that can grant every other action.
+        .route(
+            "/api/v1/workspaces/{id}/permissions",
+            get(routes::permissions::read_workspace).put(routes::permissions::replace_workspace),
+        )
+        .route(
+            "/api/v1/libraries/{id}/permissions",
+            get(routes::permissions::read_library).put(routes::permissions::replace_library),
+        )
+        .route(
+            "/api/v1/libraries/{id}/permissions/break-inheritance",
+            post(routes::permissions::break_library_inheritance),
+        )
         // Files and folders (docs/05-API.md §7).
         // Files and folders (docs/05-API.md §7). `POST /libraries/{id}/folders` is the document's
         // own row 175 and the only write in that table anything serves: `FileRepository::create_folder`
@@ -162,6 +181,14 @@ pub fn router(state: ApiState, delivery: Delivery) -> Router {
         .route("/api/v1/libraries/{id}/folders", post(routes::folders::create))
         .route("/api/v1/files/{id}", get(content::file_metadata))
         .route("/api/v1/files/{id}/versions", get(content::file_versions))
+        .route(
+            "/api/v1/files/{id}/permissions",
+            get(routes::permissions::read_file).put(routes::permissions::replace_file),
+        )
+        .route(
+            "/api/v1/files/{id}/permissions/break-inheritance",
+            post(routes::permissions::break_file_inheritance),
+        )
         // Upload (docs/05-API.md §8). The bytes never pass through here: `POST /uploads` decides,
         // then hands back signed URLs the client writes to directly, which is why the API's memory
         // is flat for a 5 GB upload and a 5 KB one alike. `complete` answers `202 SCANNING` and

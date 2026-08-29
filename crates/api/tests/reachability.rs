@@ -305,6 +305,51 @@ const SPECS: &[Spec] = &[
     // probe therefore says as much about the fixture as about the route: it passes because the
     // seeded caller holds the grant on the workspace it names, and a `404` here means the fixture
     // stopped granting it, not that the route stopped existing.
+    // `ENC-917`. Five routes, and what they probe is that a caller holding `manage_permissions`
+    // reaches them at all — the whole item exists because `enclave_authorization::grant` was
+    // complete, tested and callable by no request. The `PUT` bodies resend an empty set rather than
+    // a real one: this test asserts reachability, and a body that granted something would make the
+    // probe depend on the fixture's ACL staying exactly as it is.
+    Spec {
+        method: "GET",
+        path: "/api/v1/workspaces/{id}/permissions",
+        target: "/api/v1/workspaces/{ws}/permissions",
+        body: None,
+        credential: Credential::Bearer,
+        expect: Expect::Served,
+    },
+    Spec {
+        method: "PUT",
+        path: "/api/v1/workspaces/{id}/permissions",
+        target: "/api/v1/workspaces/{ws}/permissions",
+        body: Some(r#"{"entries":[]}"#),
+        credential: Credential::Bearer,
+        expect: Expect::Served,
+    },
+    Spec {
+        method: "GET",
+        path: "/api/v1/libraries/{id}/permissions",
+        target: "/api/v1/libraries/{lib}/permissions",
+        body: None,
+        credential: Credential::Bearer,
+        expect: Expect::Served,
+    },
+    Spec {
+        method: "PUT",
+        path: "/api/v1/libraries/{id}/permissions",
+        target: "/api/v1/libraries/{lib}/permissions",
+        body: Some(r#"{"entries":[]}"#),
+        credential: Credential::Bearer,
+        expect: Expect::Served,
+    },
+    Spec {
+        method: "POST",
+        path: "/api/v1/libraries/{id}/permissions/break-inheritance",
+        target: "/api/v1/libraries/{lib}/permissions/break-inheritance",
+        body: None,
+        credential: Credential::Bearer,
+        expect: Expect::Served,
+    },
     Spec {
         method: "POST",
         path: "/api/v1/workspaces/{id}/libraries",
@@ -334,6 +379,30 @@ const SPECS: &[Spec] = &[
         method: "GET",
         path: "/api/v1/files/{id}",
         target: "/api/v1/files/{file}",
+        body: None,
+        credential: Credential::Bearer,
+        expect: Expect::Served,
+    },
+    Spec {
+        method: "GET",
+        path: "/api/v1/files/{id}/permissions",
+        target: "/api/v1/files/{file}/permissions",
+        body: None,
+        credential: Credential::Bearer,
+        expect: Expect::Served,
+    },
+    Spec {
+        method: "PUT",
+        path: "/api/v1/files/{id}/permissions",
+        target: "/api/v1/files/{file}/permissions",
+        body: Some(r#"{"entries":[]}"#),
+        credential: Credential::Bearer,
+        expect: Expect::Served,
+    },
+    Spec {
+        method: "POST",
+        path: "/api/v1/files/{id}/permissions/break-inheritance",
+        target: "/api/v1/files/{file}/permissions/break-inheritance",
         body: None,
         credential: Credential::Bearer,
         expect: Expect::Served,

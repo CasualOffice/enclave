@@ -74,6 +74,18 @@ pub type Result<T, E = GrantError> = core::result::Result<T, E>;
 /// authorization decision in the product.
 pub const MAX_GRANT_ACTIONS: usize = 64;
 
+/// How many entries one [`replace`] may declare.
+///
+/// [`MAX_GRANT_ACTIONS`] cannot serve here and the difference is not arbitrary: a grant names one
+/// principal and a role's worth of actions, while a replace names the resource's *whole* explicit
+/// ACL, so a permissions dialog listing twenty principals with a dozen actions each is ordinary and
+/// would breach the smaller bound. It is still bounded for the same reason the smaller one is — the
+/// set is written inside a transaction holding row locks on `acl_entries`, which is on the read path
+/// of every authorization decision the product makes — and it sits an order of magnitude below
+/// [`crate::materialise::MAX_MATERIALISED_ENTRIES`], because that limit bounds a set the product
+/// computed from its own tree and this one bounds a set a client typed.
+pub const MAX_REPLACE_ENTRIES: usize = 1_000;
+
 // -------------------------------------------------------------------------------------------
 // Errors
 // -------------------------------------------------------------------------------------------
@@ -166,6 +178,27 @@ pub enum GrantError {
         limit: usize,
     },
 
+    /// More entries than [`MAX_REPLACE_ENTRIES`] in one [`replace`].
+    #[error("a replace may declare at most {limit} entries")]
+    TooManyEntries {
+        /// The limit that was exceeded.
+        limit: usize,
+    },
+
+    /// A [`replace`] named one principal and action twice, with different content.
+    ///
+    /// Refused rather than resolved by a rule — last-wins, deny-wins, anything — because every such
+    /// rule silently discards half of what the caller sent. A set that says *allow until Friday* and
+    /// *deny forever* about the same principal and action is a caller who has lost track of their
+    /// own request, most likely by merging two lists in a UI, and the row that would be dropped is
+    /// the one nobody looks at again. `uq_acl_entry` has room for one of the two in any case, so the
+    /// alternative is not "write both" but "write whichever the array happened to end with".
+    #[error("the desired set names `{action}` twice for one principal, with different content")]
+    ContradictoryEntries {
+        /// The action named twice, in the spelling `acl_entries.action` holds.
+        action: String,
+    },
+
     /// An [`enclave_core::AdminAction`] was offered as an ACL grant.
     ///
     /// `acl_entries.action` is free text, and `crate::admin` decides administrative actions from
@@ -232,6 +265,16 @@ impl From<GrantError> for CoreError {
             }
             GrantError::TooManyActions { .. } => {
                 Self::Validation(vec![FieldError::new("actions", ValidationCode::TooLong)])
+            }
+            GrantError::TooManyEntries { .. } => {
+                Self::Validation(vec![FieldError::new("entries", ValidationCode::TooLong)])
+            }
+            // `Inconsistent` rather than `NotUnique`: the two entries are well-formed and the
+            // complaint is that they disagree with each other, which is exactly what that code
+            // means (`docs/05-API.md §5`). `NotUnique` would send a client looking for a collision
+            // with something already stored.
+            GrantError::ContradictoryEntries { .. } => {
+                Self::Validation(vec![FieldError::new("entries", ValidationCode::Inconsistent)])
             }
             GrantError::AdminActionNotGrantable => {
                 Self::Validation(vec![FieldError::new("actions", ValidationCode::Unsupported)])
@@ -303,6 +346,67 @@ pub struct GrantedEntry {
     ///
     /// Flagged rather than filtered, and [`entries_on`] says why.
     pub expired: bool,
+}
+
+/// One row of the complete set a [`replace`] declares.
+///
+/// Flat — one principal, one action — rather than a [`Grant`] with an action list beside it, because
+/// a replace has to be able to say things a list of grants cannot: that this principal keeps
+/// `file.download` until Friday and `file.preview` forever, and that the entry the caller is *not*
+/// repeating is gone. Grouping by principal would put the same expiry on every action of a principal
+/// and make the difference between "omitted" and "unchanged" a property of how the caller happened
+/// to bucket their input.
+///
+/// There is deliberately no `granted_by`. Every row one replace writes is answered for by the one
+/// caller who issued it, and a per-row granter would be a body field that lets a client stamp
+/// somebody else's name on an entry — provenance is a fact about who acted, not an input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DesiredEntry {
+    /// Who the entry names.
+    pub principal: Principal,
+    /// What it grants or refuses.
+    pub action: Action,
+    /// Grant or refusal.
+    pub effect: Effect,
+    /// When it stops applying, if ever. Compared with `> now`, as everywhere else in this crate.
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+/// What one [`replace`] did, in the terms a handler has to report and an operator has to read.
+///
+/// The three counts exist because "the ACL is now this" is not an answer to "what did I just do".
+/// A `PUT` that silently removed eleven entries and a `PUT` that changed nothing produce the same
+/// final set, and the difference between them is the whole content of the audit record the policy
+/// engine writes around the call (`CLAUDE.md` rule 10).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplaceOutcome {
+    /// Entries the resource did not hold under this `(principal, action)` and now does.
+    pub added: usize,
+    /// Entries it already held under this `(principal, action)` and that were rewritten.
+    ///
+    /// Counts a rewrite, not a change: an entry re-declared with exactly the content it already had
+    /// is counted here. Telling the two apart would mean comparing every column of every row, and
+    /// the distinction buys a caller nothing that the resulting [`entries`](Self::entries) does not
+    /// already give them. This is also the count that an inherited row converts into — see
+    /// [`replace`] on what the upsert does when a declared entry collides with a materialised one.
+    pub updated: usize,
+    /// Explicit entries the resource held and the caller did not declare, now gone.
+    ///
+    /// The number a permissions screen must show back to whoever pressed save, because it is the
+    /// half of a replace nobody typed. Inherited rows are never counted here: they are not removable
+    /// by this operation at all.
+    pub removed: usize,
+    /// Everything stored on the resource afterwards, in [`entries_on`]'s order.
+    ///
+    /// Read inside the same transaction as the write, and returned rather than left to the caller,
+    /// so that the ACL a handler renders and the `aclRevision` it reports describe one state that
+    /// existed at one instant. A handler that re-read after committing would render a set another
+    /// transaction may already have moved on from, and would attach the previous revision to it.
+    ///
+    /// Inherited copies are included, which is not a leak of the abstraction but the point of it:
+    /// the screen that just replaced the explicit set is exactly the screen that has to show the
+    /// entries the replace could not touch.
+    pub entries: Vec<GrantedEntry>,
 }
 
 /// Writes or updates the entries granting `actions` to a principal on a resource.
