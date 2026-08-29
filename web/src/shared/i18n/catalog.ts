@@ -738,9 +738,9 @@ export const catalog = {
   },
   'home.subline': {
     message:
-      '{date} · {workspace} · {attention, plural, =0 {nothing needs your attention} one {# thing needs your attention} other {# things need your attention}}',
+      '{date} · {attention, plural, =0 {nothing needs your attention} one {# thing needs your attention} other {# things need your attention}}',
     description:
-      'The line under the Home greeting. "date" arrives already formatted by Intl and is never re-formatted here; "workspace" is the workspace name; "attention" is how many items are waiting on this user in this workspace. The middle dot is a separator and may be replaced by whatever separates list items in the target language.',
+      'The line under the Home greeting. It named a workspace until ENC-936 and was fed the viewer\u2019s email address, because /me carries no workspace and Home is not scoped to one \u2014 its two reads, /workflows/tasks and /me/recent, are both per-user across the whole tenant. The segment is gone rather than corrected: there is no true value to put there. \u0022date\u0022 arrives already formatted by Intl and is never re-formatted here; \u0022attention\u0022 is how many items are waiting on this user.',
   },
   'home.attention.title': {
     message: 'Needs your attention',
@@ -766,9 +766,10 @@ export const catalog = {
     description: 'Action on a document waiting for this user’s signature. Currently unbuilt.',
   },
   'home.attention.empty': {
-    message: 'Nothing is waiting on you in this workspace.',
+    message:
+      'Nothing is waiting on you.',
     description:
-      'Shown in place of the "Needs your attention" list when it is empty but the rest of Home is not. A statement of fact, not congratulation — the user may simply be new.',
+      'Shown in place of the approvals list when this user has nothing to act on. Said \u0022in this workspace\u0022 until ENC-936, which was untrue: the list is every task waiting on this person across the tenant, so the qualifier told them to go looking somewhere that does not exist.',
   },
   'home.recent.title': {
     message: 'Continue working',
@@ -776,9 +777,10 @@ export const catalog = {
       'Section heading on Home over the files this user opened most recently, newest first.',
   },
   'home.recent.empty': {
-    message: 'You have not opened anything in this workspace yet.',
+    message:
+      'You have not opened anything yet.',
     description:
-      'Shown in place of the "Continue working" list when this user has no history in this workspace.',
+      'Shown in place of the \u0022Continue working\u0022 list when this user has no history. Said \u0022in this workspace\u0022 until ENC-936; GET /me/recent is per-user across the tenant and is not scoped to a workspace.',
   },
   'home.recent.filtered': {
     message:
@@ -811,14 +813,16 @@ export const catalog = {
       'Explains the neutral Later chip beside the "Recent asks" heading. Ask itself is a later milestone, so the pills record what was asked without being able to run it again.',
   },
   'home.state.loading': {
-    message: 'Loading your workspace',
+    message:
+      'Loading your home',
     description:
-      'Announced while Home’s skeleton is on screen. The skeleton itself is decorative and hidden from assistive technology.',
+      'The whole-screen loading state. Said \u0022Loading your workspace\u0022 until ENC-936. Home is not a workspace and does not load one.',
   },
   'home.state.empty.title': {
-    message: 'Your workspace is quiet',
+    message:
+      'Nothing needs you right now',
     description:
-      'Heading of Home’s empty state: nothing is waiting, nothing has been opened, nothing has been asked. Usually a brand-new workspace.',
+      'Heading of the whole-screen empty state, shown when all three sections are empty. Said \u0022Your workspace is quiet\u0022 until ENC-936. It must read as a report on this person\u2019s work, not on a container they are not in.',
   },
   'home.state.empty.body': {
     message:

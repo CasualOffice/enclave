@@ -107,7 +107,19 @@ export interface RecentAsk {
 export interface HomeData {
   /** The greeting is addressed to a person, so it needs the form they are called by. */
   readonly givenName: string;
-  readonly workspaceName: string;
+  /* `workspaceName` was here and is gone (`ENC-936`).
+   *
+   * It was fed `viewer.email`, because `/me` carries no workspace and Home is
+   * not scoped to one: `/workflows/tasks` and `/me/recent` are both per-user
+   * across the whole tenant. So the subtitle showed an email address labelled
+   * as a workspace, and four other strings on this screen said "in this
+   * workspace" about a scope that does not exist — which sends somebody
+   * looking for a switcher that is not there, to find work that was never
+   * hidden from them.
+   *
+   * Removed rather than corrected because there is no true value: the field
+   * cannot be supplied until a workspace scope exists, and a placeholder here
+   * is how the email got in. */
   readonly attention: readonly AttentionItem[];
   readonly recent: readonly RecentFile[];
   /**

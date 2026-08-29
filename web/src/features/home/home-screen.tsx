@@ -355,7 +355,6 @@ export function HomeView({ data, now }: HomeViewProps) {
           <p className="home-subline">
             {t('home.subline', {
               date: f.date(now),
-              workspace: data.workspaceName,
               attention: data.attention.length,
             })}
           </p>
@@ -438,10 +437,6 @@ export default function Screen() {
     /* The display name as given. Never split on whitespace to find a "first"
      * name — name order is not universal (`docs/14 §6`). */
     givenName: viewer.displayName,
-    /* Not on the wire. `/me` carries no workspace, and there is no endpoint
-     * that enumerates them, so the subtitle names the tenant's own address
-     * rather than inventing a workspace called something. */
-    workspaceName: viewer.email,
     attention: tasks.data.items.map(attentionFromTask),
     /* `GET /api/v1/me/recent`, which did not exist until `ENC-930` — this file's
      * header said so, and said the list must not be improvised out of
