@@ -26,6 +26,7 @@ const HomeScreen = lazy(() => import('../features/home/home-screen.tsx'));
 const SearchScreen = lazy(() => import('../features/search/search-screen.tsx'));
 const AskScreen = lazy(() => import('../features/ask/ask-screen.tsx'));
 const AdminScreen = lazy(() => import('../features/admin/admin-screen.tsx'));
+const TrashScreen = lazy(() => import('../features/trash/trash-screen.tsx'));
 const SignInScreen = lazy(() => import('../features/auth/signin-screen.tsx'));
 const LibraryScreen = lazy(() => import('../features/libraries/library-screen.tsx'));
 
@@ -38,6 +39,8 @@ function Screen() {
       return <SearchScreen />;
     case 'ask':
       return <AskScreen />;
+    case 'trash':
+      return <TrashScreen />;
     case 'admin':
       return <AdminScreen />;
     case 'signin':

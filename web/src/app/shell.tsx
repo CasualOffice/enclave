@@ -74,7 +74,11 @@ const WORKSPACE: readonly NavItem[] = [
 const PERSONAL: readonly NavItem[] = [
   { label: 'nav.favorites', icon: 'star', unbuilt: true },
   { label: 'nav.shared', icon: 'share', unbuilt: true },
-  { label: 'nav.trash', icon: 'trash', unbuilt: true },
+  /* Built by `ENC-939`. It was `unbuilt: true` while `ENC-807` shipped a delete
+   * with no way back — the endpoint that lists what was deleted did not exist
+   * until `ENC-938`, so a nav entry here would have led to a screen that could
+   * not be written. One fewer `Later` chip, and the first of the seven to go. */
+  { label: 'nav.trash', icon: 'trash', route: 'trash' },
 ];
 
 function NavLink({ item }: { item: NavItem }) {

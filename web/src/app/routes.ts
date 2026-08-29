@@ -17,7 +17,7 @@ import { notifyUrlChanged } from '../shared/url-state.ts';
  * is the moment to buy the library rather than reimplement it.
  */
 
-export type RouteName = 'signin' | 'home' | 'library' | 'search' | 'ask' | 'admin';
+export type RouteName = 'signin' | 'home' | 'library' | 'search' | 'ask' | 'trash' | 'admin';
 
 const PATHS: Record<RouteName, string> = {
   signin: '/signin',
@@ -25,6 +25,7 @@ const PATHS: Record<RouteName, string> = {
   library: '/library',
   search: '/search',
   ask: '/ask',
+  trash: '/trash',
   admin: '/admin',
 };
 

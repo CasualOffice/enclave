@@ -128,6 +128,25 @@ export interface RequestOptions {
    * have, and the honest request says what it will accept.
    */
   readonly accept?: string;
+  /**
+   * The revision this write believes it is changing, sent as `If-Match`.
+   *
+   * A number rather than a string: the quoting is an HTTP detail and every
+   * caller that had to build `"4"` by hand would be one caller away from
+   * sending `4` and getting a `400` nobody could explain from the call site.
+   *
+   * Narrow, and deliberately not a general `headers` bag. `docs/05-API.md §7`
+   * requires `If-Match` on exactly three routes — `PATCH /files/{id}`,
+   * `DELETE /files/{id}` and `POST /files/{id}/restore` — and until `ENC-939`
+   * this layer could not send a header at all, so **no client code could call
+   * any of them**. A general escape hatch would have closed that too, and would
+   * also have made the next header somebody wants a matter of adding a key
+   * rather than of arguing for one.
+   *
+   * A stale value is `409`, not `412`: `§4` says so, and the client renders the
+   * server's sentence rather than inventing one about revisions.
+   */
+  readonly ifMatch?: number;
 }
 
 /**
@@ -213,6 +232,12 @@ async function send(
     accept: options.accept ?? 'application/json',
     ...auth,
   };
+
+  if (options.ifMatch !== undefined) {
+    /* Quoted, because an ETag is a quoted-string and an unquoted one is a
+     * malformed header rather than a lenient one. */
+    headers['if-match'] = `"${options.ifMatch}"`;
+  }
 
   if (options.body !== undefined) {
     headers['content-type'] = 'application/json';
