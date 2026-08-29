@@ -41,7 +41,19 @@
   /* The rail's width is the width at which the longest section name fits on one
    * line; it does not move with the density switch. The other four are grid
    * measures, sized to their content for the same reason. */
-  --adm-rail: 200px;
+  /* 200px until `ENC-937`, which was narrower than the labels it has to hold.
+   * "Conditional access" and "Information barriers" wrapped to two lines while
+   * their `Later` chip — a separate flex item — stayed on the first, so the rail
+   * read as
+   *
+   *     Conditional      [Later]
+   *     access
+   *
+   * with the chip orphaned from the half of the label it belongs to. Truncating
+   * instead would have produced "Conditional acc…", which is worse: these are
+   * eight fixed strings and every one of them fits at 232px. Matched to the main
+   * sidebar's width, so the two rails agree rather than each guessing. */
+  --adm-rail: 232px;
   --adm-stat-min: 120px;
   --adm-panel-min: 260px;
   --adm-bar-label: 110px;
