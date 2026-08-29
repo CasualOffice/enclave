@@ -1,6 +1,6 @@
 # 06 — Security, DLP & Access Controls
 
-> **Status:** Draft · **Version:** 2.4 · **Owner:** Security Engineering · **Last updated:** 2026-08-28
+> **Status:** Draft · **Version:** 2.5 · **Owner:** Security Engineering · **Last updated:** 2026-08-30
 > **Authoritative for:** threat model, conditional access, DLP, antivirus, renditions, incidents, privileged operations.
 
 ## 1. Security model
@@ -463,6 +463,23 @@ privileged, audited operation with a recorded reason.
 
 Ordering matters: retention is evaluated last in the chain, so a user who lacks permission is told
 they lack permission rather than learning that a matter-specific legal hold exists.
+
+**Where overlapping policies disagree, the strictest wins** — ranked by action
+(`LEGAL_HOLD` > `RECORD` > `KEEP` > `KEEP_THEN_DELETE` > `DELETE_AFTER`), then by the longer
+duration, with scope specificity only a tiebreak between policies that are otherwise equal. This is
+the opposite of the most-specific-wins rule that governs ACLs, and it is deliberate: under
+most-specific-wins, anyone who can attach a `DELETE_AFTER` to a library could override a
+tenant-wide `KEEP`, which is a legal hold that its own subject can lift. A narrower scope may
+therefore only ever add restriction.
+
+The refusal is a **stage of the chain**, not a predicate on the delete statement. The two would
+reject the same requests; only the stage writes the audit record, and a hold whose stated property
+is that it is fully auditable cannot be a `WHERE` clause. A cascading delete is a delete of every
+descendant, so the stage evaluates the subtree rather than the named node.
+
+Enforcement is unconditional. A deployment that has configured no policy is answered identically by
+a stage that runs and finds nothing, so there is no flag to enable — and no deployment where the
+control is off because nobody checked.
 
 ## 16. Passwords
 

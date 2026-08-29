@@ -444,7 +444,18 @@ async fn main() -> anyhow::Result<()> {
         Arc::new(enclave_information_barriers::UnconfiguredBarriers),
         Arc::new(enclave_classification::UnconfiguredClassification),
         dlp,
-        Arc::new(enclave_retention::UnconfiguredRetention),
+        // `ENC-940`. `UnconfiguredRetention` until now — 32 lines answering `allow()` to
+        // everything, while `docs/06 §15` said *"retention and record policies override user
+        // deletion"* and nothing did. `PgRetention` reads `retention_assignments`, so an
+        // administrator's `allow_user_delete: false` is what refuses a delete rather than a
+        // sentence in a document.
+        //
+        // Composed unconditionally rather than behind a flag: a deployment with no policies gets
+        // the same answer either way — `governing_policy` returns `None` and the stage allows —
+        // and a control that has to be switched on is a control that is off somewhere nobody
+        // checked. `UnconfiguredRetention` stays for tests and for the start-up banner that names
+        // which stages are inert.
+        Arc::new(enclave_retention::PgRetention::new(db.clone())),
         audit,
     )
     .with_facts(Arc::new(facts));

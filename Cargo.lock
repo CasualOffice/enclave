@@ -1800,8 +1800,16 @@ dependencies = [
 name = "enclave-retention"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-trait",
+ "chrono",
  "enclave-core",
+ "enclave-db",
+ "enclave-testing",
+ "sqlx",
+ "thiserror 2.0.20",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]
