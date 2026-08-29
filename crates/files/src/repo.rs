@@ -535,6 +535,35 @@ impl FileRepository {
         Ok(trashed)
     }
 
+    /// Every live node in this node's subtree, addressed node first, without writing anything.
+    ///
+    /// The read half of a cascading delete. [`Self::trash`] returns the same set *after* changing
+    /// it, which is the wrong order for a caller that has to authorize each node: deciding on the
+    /// result of a write means holding that write open while the decision is made, and an ACL batch
+    /// takes a connection of its own. This lets the decision happen between two short transactions
+    /// instead of inside one long one.
+    ///
+    /// It is a *snapshot*, and the caller must treat it as one. A node can be created inside the
+    /// subtree between this read and the write that follows, so the write's own result has to be
+    /// checked against what was authorized rather than assumed to match it.
+    ///
+    /// # Errors
+    ///
+    /// [`FilesError::NotFound`] if the node does not exist in this tenant or is already trashed.
+    /// Storage and decode failures otherwise.
+    pub async fn live_subtree(
+        conn: &mut PgConnection,
+        tenant: TenantId,
+        file: FileId,
+    ) -> Result<Vec<FileNode>> {
+        let rows = sqlx::query(LIVE_SUBTREE)
+            .bind(sql(tenant))
+            .bind(sql(file))
+            .fetch_all(&mut *conn)
+            .await?;
+        Self::collect_subtree(&rows, file)
+    }
+
     /// Restores a node, and the subtree that was trashed with it, from the trash.
     ///
     /// Only descendants whose `deleted_at` equals this node's are restored — that is, exactly the
@@ -932,6 +961,34 @@ RETURNING id, tenant_id, workspace_id, library_id, parent_id, node_type, name, n
      mime_type, current_version_id, size_bytes, inherit_permissions, revision, acl_revision, \
      is_record, on_legal_hold, status, created_by, modified_by, created_at, modified_at, \
      deleted_at, purge_after";
+
+/// Every live node in a subtree, read without writing anything.
+///
+/// [`TRASH_SUBTREE`]'s recursive term with the `UPDATE` taken off, and it exists for a reason about
+/// connections rather than about files. A caller that has to decide something *per node* — the
+/// authorization of a cascading delete is the only one today — otherwise has to write first and ask
+/// afterwards, which means holding a write transaction open across whatever the asking costs.
+/// `crates/api/src/content.rs` states the rule this violates: a handler that keeps its transaction
+/// while an ACL batch takes a second connection needs two per request, and on a pool of sixteen that
+/// is a deadlock waiting for load rather than a slow path.
+///
+/// No revision predicate. This is the read that *precedes* the decision; the write that follows it
+/// carries the `If-Match`, and putting one here would refuse an enumeration for a mismatch the
+/// caller has not yet been told about.
+const LIVE_SUBTREE: &str = "\
+WITH RECURSIVE subtree AS ( \
+    SELECT f.id FROM files f \
+     WHERE f.tenant_id = $1 AND f.id = $2 AND f.deleted_at IS NULL \
+    UNION \
+    SELECT c.id FROM subtree s \
+      JOIN files c ON c.tenant_id = $1 AND c.parent_id = s.id AND c.deleted_at IS NULL \
+) \
+SELECT id, tenant_id, workspace_id, library_id, parent_id, node_type, name, normalized_name, \
+     mime_type, current_version_id, size_bytes, inherit_permissions, revision, acl_revision, \
+     is_record, on_legal_hold, status, created_by, modified_by, created_at, modified_at, \
+     deleted_at, purge_after \
+  FROM files \
+ WHERE tenant_id = $1 AND id IN (SELECT id FROM subtree)";
 
 /// Restores a node and exactly the descendants that were trashed with it.
 ///

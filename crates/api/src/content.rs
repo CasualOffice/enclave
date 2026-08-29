@@ -363,6 +363,13 @@ pub(crate) struct Capabilities {
     share: bool,
     share_external: bool,
     delete: bool,
+    /// `ENC-807`. Present because `PATCH /files/{id}` can now move a node and
+    /// `POST /files/{id}/restore` can bring one back. `CLAUDE.md`'s React rule is that a client
+    /// renders actions from this object and never re-derives them, so a verb the product serves and
+    /// this struct cannot express is a control a conforming UI is unable to draw at all.
+    #[serde(rename = "move")]
+    move_: bool,
+    restore: bool,
     sync: bool,
 }
 
@@ -884,6 +891,8 @@ const CAPABILITY_ACTIONS: &[(&str, FileAction)] = &[
     ("share", FileAction::Share),
     ("shareExternal", FileAction::ShareExternal),
     ("delete", FileAction::Delete),
+    ("move", FileAction::Move),
+    ("restore", FileAction::Restore),
     ("sync", FileAction::Sync),
 ];
 
@@ -1084,14 +1093,14 @@ fn set_capability(capabilities: &mut Capabilities, action: FileAction) {
         FileAction::Share => capabilities.share = true,
         FileAction::ShareExternal => capabilities.share_external = true,
         FileAction::Delete => capabilities.delete = true,
+        FileAction::Move => capabilities.move_ = true,
+        FileAction::Restore => capabilities.restore = true,
         FileAction::Sync => capabilities.sync = true,
         // Real actions with no field in `docs/05-API.md §7`'s capabilities object. They are not
         // silently ignored — they are listed here so that adding a field for one is a visible edit
         // rather than a discovery.
         FileAction::ContentRead
         | FileAction::Copy
-        | FileAction::Move
-        | FileAction::Restore
         | FileAction::VersionRead
         | FileAction::VersionRestore
         | FileAction::ManagePermissions => {}
@@ -1156,6 +1165,13 @@ fn apply_obligations(
                 withdraw(&mut capabilities.delete, reasons, "delete", code);
                 withdraw(&mut capabilities.share, reasons, "share", code);
                 withdraw(&mut capabilities.share_external, reasons, "shareExternal", code);
+                // `ENC-807`. Relocating a node and bringing one back from the trash are both
+                // mutations, and this arm's own comment says *every* mutation path. Adding a
+                // capability field without adding it here is how a read-only file acquires a Move
+                // control — the failure would be silent, because the field would simply stay `true`
+                // and nothing asserts on a capability nobody thought to list.
+                withdraw(&mut capabilities.move_, reasons, "move", code);
+                withdraw(&mut capabilities.restore, reasons, "restore", code);
             }
             // Serve a rendition but never the original bytes. Print and export are here as well as
             // download because both yield content outside the viewer — collapsing them is the
@@ -1502,6 +1518,8 @@ mod tests {
             share: true,
             share_external: true,
             delete: true,
+            move_: true,
+            restore: true,
             sync: true,
         };
 
@@ -1509,14 +1527,24 @@ mod tests {
         let mut why = CapabilityReasons::default();
         apply_obligations(&mut caps, &mut why, &Obligations::from_iter([Obligation::ReadOnly]));
         assert!(!caps.edit && !caps.delete && !caps.share && !caps.share_external);
+        assert!(
+            !caps.move_ && !caps.restore,
+            "relocating and restoring are mutations, and read-only means every mutation (`ENC-807`)"
+        );
         assert!(caps.preview && caps.download, "read-only restricts writing, not reading");
         // Every suppression names itself (`ENC-674`), and only the suppressions do: `preview` and
         // `download` survived, so a reason for either would be an invented refusal.
         assert_eq!(why.get("edit"), Some(ReasonCode::AccessDenied));
         assert_eq!(why.get("shareExternal"), Some(ReasonCode::AccessDenied));
+        assert_eq!(why.get("move"), Some(ReasonCode::AccessDenied));
+        assert_eq!(why.get("restore"), Some(ReasonCode::AccessDenied));
         assert_eq!(why.get("preview"), None);
         assert_eq!(why.get("download"), None);
-        assert_eq!(why.len(), 4, "one reason per capability actually taken away");
+        // Six, not four: `ENC-807` added `move` and `restore` to the object and therefore to what
+        // read-only takes away. The count is asserted rather than left implicit because it is the
+        // only assertion here that fails when a *future* mutation capability is added to the struct
+        // and not to the arm above — the named `get`s all pass while the new field stays `true`.
+        assert_eq!(why.len(), 6, "one reason per capability actually taken away");
 
         let mut caps = full();
         let mut why = CapabilityReasons::default();

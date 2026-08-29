@@ -189,8 +189,8 @@ returns a lower-bounded estimate over accessible rows only.
 | `POST` | `/libraries/{libraryId}/folders` | Create folder |
 | `GET` | `/files/{id}` | Metadata + effective permissions for the caller |
 | `PATCH` | `/files/{id}` | Rename, reparent, change content type; `If-Match` required |
-| `DELETE` | `/files/{id}` | Soft delete to trash |
-| `POST` | `/files/{id}/restore` | Restore from trash |
+| `DELETE` | `/files/{id}` | Soft delete to trash, cascading; `If-Match` required |
+| `POST` | `/files/{id}/restore` | Restore from trash; `If-Match` required |
 | `POST` | `/files/{id}/copy` · `/move` | Bulk-capable; DLP evaluated per destination |
 | `GET` | `/files/{id}/versions` | Version history |
 | `GET` | `/files/{id}/versions/{versionId}` | Version metadata |
@@ -200,6 +200,31 @@ returns a lower-bounded estimate over accessible rows only.
 | `POST` | `/files/{id}/permissions/break-inheritance` | Materializes inherited entries |
 | `GET` | `/files/{id}/activity` | Audit-derived activity feed |
 | `POST` | `/files/{id}/checkout` · `/checkin` | Explicit lock lifecycle |
+
+**The lifecycle three, and what is not obvious about them** (`ENC-807`). `rename`, `reparent`,
+`trash` and `restore` had been in `crates/files` since M1 with no caller in any binary, so a folder,
+once created, was permanent.
+
+* **`PATCH` asks two questions.** A rename is `file.edit`; a move is `file.move`; a body asking for
+  both must satisfy both. A move additionally asks **`container.create` of the destination**, because
+  `file.move` on the source alone is enough to place content into a folder the caller cannot write
+  to. A caller who may not write to the destination cannot tell it from one that does not exist.
+* **`If-Match` is required on all three and never defaulted**, including `DELETE` and `restore`. A
+  missing header is `400 IF_MATCH_REQUIRED`; a stale one is `409`, per `§4`'s optimistic-concurrency
+  rule rather than the `412` HTTP reflex would suggest. `ETag` is `files.revision`.
+* **`DELETE` cascades, and so does its authorization.** The whole live subtree is enumerated, every
+  node is asked `file.delete`, and one denial refuses the operation entirely — nothing partial. A
+  subtree refusal is **`404`, not `403`**: the denying node may be one the caller holds no
+  `file.metadata_read` on, and a `403` would confirm that the folder contains something hidden from
+  them. The addressed folder stays readable, so a `GET` answering `200` beside a `DELETE` answering
+  `404` is the intended shape.
+* **`restore` is decided against the container the node returns into**, not against the node. A
+  trashed row has an empty inheritance chain — `FILE_CHAIN_SQL` joins on `deleted_at IS NULL` — so
+  enforcing `file.restore` on the trashed node itself would make restore unreachable forever.
+* **"Change content type" in the `PATCH` row above is not implemented and cannot be.**
+  `files.content_type_id` references a catalogue that does not exist: there is no `ContentTypeId`,
+  `FileNode` omits the column, and no repository mutates it. The handler refuses the field rather
+  than accepting and dropping it (`ENC-922`).
 
 `GET /files/{id}` includes what the caller may do, so the UI never renders an action that the server
 will reject:
@@ -219,7 +244,8 @@ will reject:
   "aclRevision": 4,
   "capabilities": {
     "preview": true, "download": false, "print": false, "export": false,
-    "edit": true, "share": true, "shareExternal": false, "delete": false, "sync": false
+    "edit": true, "share": true, "shareExternal": false, "delete": false,
+    "move": true, "restore": false, "sync": false
   },
   "capabilityReasons": {
     "download": "PREVIEW_ONLY", "print": "PREVIEW_ONLY", "export": "PREVIEW_ONLY",
@@ -472,7 +498,7 @@ object, the same `capabilities`, the same `obligations`:
   "revision": 1,
   "capabilities": { "metadataRead": true, "preview": true, "download": false, "print": false,
                     "export": false, "edit": true, "share": true, "shareExternal": false,
-                    "delete": true, "sync": true },
+                    "delete": true, "move": true, "restore": false, "sync": true },
   "obligations": { "watermark": false, "justificationRequired": [], "approvalRequired": [] },
   "createdAt": "2026-08-27T22:07:07Z",
   "modifiedAt": "2026-08-27T22:07:07Z"

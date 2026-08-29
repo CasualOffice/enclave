@@ -179,7 +179,20 @@ pub fn router(state: ApiState, delivery: Delivery) -> Router {
         // browse it makes non-trivial, and before `/files/{id}`, in the document's order.
         .route("/api/v1/libraries/{id}/items", get(content::browse))
         .route("/api/v1/libraries/{id}/folders", post(routes::folders::create))
-        .route("/api/v1/files/{id}", get(content::file_metadata))
+        // The rest of `§7`'s file tree (`ENC-807`). `rename`, `reparent`, `trash` and `restore`
+        // have been in `crates/files` since M1 with no caller in any binary, so every folder
+        // `POST /libraries/{id}/folders` could make was permanent — no request this product served
+        // could rename, move or delete it. `PATCH` asks **two** questions rather than one: a rename
+        // is `file.edit`, a move is `file.move`, and a move also asks `container.create` of the
+        // destination, because `file.move` on the source alone is enough to place content into a
+        // folder the caller cannot write to (rule 6, and `ENC-141`'s direction — gained privilege).
+        .route(
+            "/api/v1/files/{id}",
+            get(content::file_metadata)
+                .patch(routes::lifecycle::update)
+                .delete(routes::lifecycle::trash),
+        )
+        .route("/api/v1/files/{id}/restore", post(routes::lifecycle::restore))
         .route("/api/v1/files/{id}/versions", get(content::file_versions))
         .route(
             "/api/v1/files/{id}/permissions",
