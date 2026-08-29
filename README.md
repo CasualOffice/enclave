@@ -13,8 +13,21 @@ governance, customer-controlled infrastructure, hybrid vector search and MCP-nat
 It is not a file server. It is an information boundary combining content, identity, permissions,
 governance, search, collaboration, DLP, retention, audit and AI access.
 
-> **Status: design phase.** This repository currently contains the complete specification pack.
-> Implementation follows the phasing in [`docs/01-PRD.md §37`](docs/01-PRD.md).
+> **Status: in development.** The specification pack is complete, and implementation is
+> underway against the phasing in [`docs/01-PRD.md §37`](docs/01-PRD.md).
+> **Phase 0 — Foundations** and **Phase 1 — MVP** are done: the Cargo workspace and its
+> crates, layered config, the `db` crate with RLS-enforced tenancy, the append-only audit
+> hash chain, the transactional outbox, `PolicyEngine::enforce` with all six stages wired
+> and a CI gate proving every handler reaches it, Argon2id + JWT auth with refresh
+> rotation, then tenancy and groups, real ACL resolution with inheritance and deny-wins,
+> workspaces and libraries, the `BlobStore` upload state machine, files and folders with
+> trash and move/copy, immutable versions with atomic commit and restore, ClamAV scanning
+> ahead of `AVAILABLE`, paginated read paths, and the first three sections of the security
+> leakage matrix. **Phase 2 — Enterprise V1** has not started.
+>
+> There is no release, no hosted demo, and nothing here is ready for production.
+> [`TRACKER.md`](TRACKER.md) is authoritative for what is built; [`ROADMAP.md`](ROADMAP.md)
+> for what comes next and what "complete" means at each gate.
 
 ## What it does
 
