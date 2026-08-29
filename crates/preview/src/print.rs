@@ -363,9 +363,40 @@ pub async fn reap_expired(
 /// the column's vocabulary and the enum's are the same strings by construction. This exists so a
 /// test can assert that, because the alternative is discovering the mismatch as a constraint
 /// violation on the one principal kind nobody minted a grant for in a test.
+///
+/// # Why this is a filter rather than [`ActorKind::all`] (`ENC-919`)
+///
+/// It *was* `all()`, and that was right when the enum had five variants and the column listed the
+/// same five. `ENC-879` added a sixth, [`ActorKind::ShareLink`], and the two stopped agreeing —
+/// which this function's own test caught on `main` and neither contributing branch could have seen,
+/// because `#83` added the variant and `#85` wrote the `CHECK` and neither contained the other.
+///
+/// The column is right and the exclusion is **structural rather than a policy choice**. A print
+/// grant is minted for the caller its access token names, and `share_link` is the one kind no token
+/// may ever carry: `AccessTokenIssuer::issue` refuses to mint one and `check_claims` refuses to
+/// accept one, so a `typ` of `share_link` is a rejected token rather than a principal. There is no
+/// request that could reach `POST /files/{id}/print-token` as a link bearer, so a row naming one
+/// could not be written by any code path — and a `CHECK` that admitted it would be describing a
+/// caller that cannot exist. It would also outlive its link: `print_tokens` has a stated lifetime
+/// of its own and revoking a link does not sweep it, which is the laundering `ENC-879` refused for
+/// `refresh_tokens.actor_type` by the same argument.
+///
+/// The `match` is exhaustive with no `_` arm on purpose. A seventh actor kind must not silently
+/// join or silently miss this column; it has to be decided, here, by whoever adds it.
 #[must_use]
 pub fn stored_actor_kinds() -> Vec<&'static str> {
-    ActorKind::all().iter().map(|kind| kind.as_str()).collect()
+    ActorKind::all()
+        .iter()
+        .filter(|kind| match kind {
+            ActorKind::User
+            | ActorKind::Guest
+            | ActorKind::ServiceAccount
+            | ActorKind::McpClient
+            | ActorKind::System => true,
+            ActorKind::ShareLink => false,
+        })
+        .map(|kind| kind.as_str())
+        .collect()
 }
 
 #[cfg(test)]
@@ -433,10 +464,40 @@ mod tests {
     }
 
     #[test]
-    fn the_stored_actor_vocabulary_is_the_enums_own() {
+    fn the_stored_actor_vocabulary_is_the_migrations_own() {
         // The migration's CHECK, written out. If `ActorKind` gains a variant or renames a wire
         // string, this fails here rather than as a constraint violation on the one principal kind
-        // no test happened to mint a grant for.
-        assert_eq!(stored_actor_kinds(), vec!["user", "guest", "service", "mcp", "system"]);
+        // no test happened to mint a grant for. It did exactly that on `main` for `share_link`
+        // (`ENC-919`), which is the one thing about this failure worth keeping: the drift detector
+        // worked, and it was the only thing that noticed.
+        assert_eq!(
+            stored_actor_kinds(),
+            vec!["user", "guest", "service", "mcp", "system"],
+            "this list is `migrations/0028_print_tokens.sql`'s CHECK and must stay byte-identical \
+             to it — the migration is merged and forward-only, so a disagreement is fixed here or \
+             in a new migration, never by editing that file"
+        );
+    }
+
+    /// A link bearer is not a principal a print grant can name, and that is deliberate.
+    ///
+    /// The companion to the test above, and the reason it is a separate one: the list assertion
+    /// would go green again if somebody "fixed" the drift by adding `share_link` to the expectation
+    /// — the change that looks like housekeeping and is actually the defect. This asserts the
+    /// exclusion itself, so that reading fails too.
+    ///
+    /// `ENC-919`. The kind is excluded because no access token may carry it, so no request can
+    /// reach the minting endpoint as one; and because a print grant outlives its link, which is the
+    /// laundering `ENC-879` refused for `refresh_tokens` by the same argument.
+    #[test]
+    fn a_share_link_bearer_is_not_an_actor_a_print_grant_can_name() {
+        assert!(
+            !stored_actor_kinds().contains(&ActorKind::ShareLink.as_str()),
+            "a print grant naming a link bearer would outlive the link that produced it"
+        );
+        // The positive control. Without it this passes against a `stored_actor_kinds` that returns
+        // nothing at all, which is the free-passing absence `docs/12-TESTING.md §1.2` warns about.
+        assert!(stored_actor_kinds().contains(&ActorKind::User.as_str()));
+        assert_eq!(stored_actor_kinds().len(), ActorKind::all().len() - 1);
     }
 }
