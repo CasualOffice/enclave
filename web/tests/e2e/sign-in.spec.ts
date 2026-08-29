@@ -92,6 +92,8 @@ async function json<T>(
 interface Seeded {
   readonly viewer: z.infer<typeof Me>;
   readonly workspace: z.infer<typeof Container>;
+  /** Every workspace this account can see, in the order the API returned them. */
+  readonly workspaceNames: readonly string[];
   readonly library: z.infer<typeof Container>;
   readonly itemNames: readonly string[];
 }
@@ -119,6 +121,7 @@ async function seeded(request: APIRequestContext): Promise<Seeded> {
 
   const viewer = await json(request, '/api/v1/me', Me, accessToken);
   const workspaces = await json(request, '/api/v1/workspaces', Page_, accessToken);
+  const workspaceNames = workspaces.items.map((item) => item.name);
   const workspace = workspaces.items[0];
   /* The fixtures this suite exists to replace never had an empty case, so an
    * unseeded database would otherwise surface as an unreadable destructuring
@@ -138,7 +141,13 @@ async function seeded(request: APIRequestContext): Promise<Seeded> {
 
   const items = await json(request, `/api/v1/libraries/${library.id}/items`, Items, accessToken);
 
-  return { viewer, workspace, library, itemNames: items.items.map((item) => item.name) };
+  return {
+    viewer,
+    workspace,
+    workspaceNames,
+    library,
+    itemNames: items.items.map((item) => item.name),
+  };
 }
 
 /* ------------------------------------------------------------ the browser side */
@@ -228,7 +237,7 @@ test('the workspace and library on screen are the tenant’s own, down to ids mi
   page,
   request,
 }) => {
-  const { workspace, library, itemNames } = await seeded(request);
+  const { workspaceNames, library, itemNames } = await seeded(request);
 
   await signIn(page);
 
@@ -238,7 +247,15 @@ test('the workspace and library on screen are the tenant’s own, down to ids mi
   await page.goto('/library');
   await expect(page.locator('[data-screen="library"][data-state="picker"]')).toBeVisible();
 
-  await expect(page.locator('.lib-picker-ws-name')).toHaveText([workspace.name]);
+  /* Every workspace the API returned, in its order — not `[workspace.name]`.
+   *
+   * That was the assertion here and it encoded a fixture's cardinality rather
+   * than a property: it held only while the tenant had exactly one workspace,
+   * and went red the moment a second existed for an unrelated reason. Asserting
+   * the *set* is both more robust and strictly stronger, because it still fails
+   * on a picker that invents a row or drops one — which is what the assertion
+   * was actually for. */
+  await expect(page.locator('.lib-picker-ws-name')).toHaveText(workspaceNames);
 
   /* Picking writes the library id into the URL (`features/libraries`), which is
    * the assertion this whole test is built around: a UUIDv7 that exists only in

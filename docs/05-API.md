@@ -1299,4 +1299,51 @@ GET /health/ready           readiness (PostgreSQL, migrations, object storage)
 GET /health/dependencies    per-dependency status, unauthenticated summary / authenticated detail
 GET /api/v1/bootstrap       branding, feature flags, locale, policy hints for the SPA
 GET /api/v1/me              current identity, groups, capabilities, quota headroom
+GET /api/v1/me/recent       the files this caller opened, newest first (?limit=8, capped)
 ```
+
+### 19.1 `GET /me/recent` — the home screen's *Continue working* list (`ENC-930`)
+
+```json
+{
+  "items": [
+    {
+      "fileId": "01a04eb4-…",
+      "name": "fox.txt",
+      "extension": "txt",
+      "mimeType": "text/plain",
+      "classification": { "key": "INTERNAL", "label": "Internal", "rank": 20 },
+      "lastAccessedAt": "2026-08-30T00:11:04Z",
+      "libraryId": "01a04eb4-…",
+      "parentFolderId": null,
+      "capabilities": { "metadataRead": true, "preview": true, "…": "the same twelve as §7" }
+    }
+  ],
+  "filteredCount": 0
+}
+```
+
+`limit` defaults to 8 and is clamped rather than refused. `parentFolderId` is `null` for a file at
+the library root. `capabilities` is `§7`'s object, produced by the same code — a second copy of that
+shape is `ENC-929`, which blanked the library screen for a week when the server grew two fields the
+client did not have.
+
+**`classification` is the file's own label, deliberately not the inherited chain maximum**, and
+`null` means *this row has nothing to display* rather than *this file is unclassified*. Drawing
+`Unclassified` on a document that inherits `RESTRICTED` from its folder is exactly the disclosure the
+badge exists to prevent (`06-SECURITY-DLP-ACCESS.md §6.2`), so a client renders no chip at all for
+`null`.
+
+**`filteredCount` is the count the policy chain removed, and it names nothing.** Every candidate the
+read model produces goes through `PolicyEngine::enforce` before it reaches the wire; a row the chain
+drops increments this and never becomes a `403` (rule 7 — a `403` would confirm the file exists).
+The count is what lets a client tell *"you have opened nothing"* from *"you opened things you may no
+longer see"*, which `09-UX-WHITE-LABELING.md §11` requires be two different sentences. A caller
+learns how many they cannot see and never which.
+
+**What records a row**: `GET /files/{id}`, preview and download — *you looked at it*. Browsing a
+folder does not, or the list would be the folders somebody walked past rather than the work they
+were doing. **The write never fails the read it records**: a missing recency row is cosmetic, and a
+file that will not open because its bookkeeping failed is an outage.
+
+The read model is `04-DATA-MODEL.md §15.3` and is **not** derived from `audit_events`.

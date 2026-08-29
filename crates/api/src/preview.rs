@@ -230,6 +230,12 @@ pub async fn preview(
             } else {
                 bytes
             };
+            // "You opened it", on the path that actually rendered something. `Delivery::Unavailable`
+            // above answers `404` and records nothing, which is right: there was no rendition, so
+            // nothing was looked at. After the commit and after the mark, so this takes a connection
+            // while the request holds none, and so a watermark that could not be composited leaves
+            // no recency behind. `crate::routes::recent` argues why it cannot fail this response.
+            crate::routes::recent::record(&state, &ctx, file).await;
             Ok(rendition_response(bytes, &media_type, request_id))
         }
     }

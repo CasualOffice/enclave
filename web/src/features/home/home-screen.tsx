@@ -12,7 +12,7 @@ import {
   ScreenReaderOnly,
   type ControlState,
 } from '../../shared/ui/primitives.tsx';
-import { attentionFromTask, useTasks } from './api.ts';
+import { attentionFromTask, recentFromItem, useRecent, useTasks } from './api.ts';
 import { useViewer } from '../../entities/user/viewer.tsx';
 import { FailureState } from '../../shared/ui/surface-states.tsx';
 import { failureOf } from '../../shared/api/failure.ts';
@@ -213,8 +213,23 @@ function RecentSection({ data, now }: { data: HomeData; now: Date }) {
   return (
     <section aria-label={t('home.recent.title')}>
       <SectionHead titleKey="home.recent.title" laterKey="home.recent.laterNote" />
-      {data.recent.length === 0 ? (
-        <Card className="home-section-empty">{t('home.recent.empty')}</Card>
+      {data.recentFailed === true ? (
+        /* This section's own failure, inside this section. `specs/home.md`:
+         * Home has three independent data surfaces and one failing must never
+         * blank another — a page-level error here would take the approvals
+         * waiting above it off the screen as well. */
+        <Card className="home-section-empty">{t('home.recent.failed')}</Card>
+      ) : data.recent.length === 0 ? (
+        /* Blank for two different reasons, and they are two different
+         * sentences. `filteredCount` is what the policy chain removed, so
+         * "you have opened nothing" and "you opened things you may no longer
+         * see" stop being the same screen (`docs/09 §11`). The count never
+         * names a file — rule 7 — it only says how many. */
+        <Card className="home-section-empty">
+          {(data.recentFilteredCount ?? 0) > 0
+            ? t('home.recent.filtered', { count: data.recentFilteredCount ?? 0 })
+            : t('home.recent.empty')}
+        </Card>
       ) : (
         <Card className="home-recent" padded={false}>
           <ul className="home-recent-list">
@@ -235,8 +250,18 @@ function RecentSection({ data, now }: { data: HomeData; now: Date }) {
                 </span>
                 {/* Colour is never the only carrier: the chip says the level in
                  * words as well (`docs/09 §15`), and it is the product's single
-                 * implementation of that badge rather than this screen's copy. */}
-                <ClassificationChip level={file.classification} />
+                 * implementation of that badge rather than this screen's copy.
+                 *
+                 * **No chip at all when the label is `null`**, which is not the
+                 * same as an `Unclassified` chip. `GET /me/recent` sends the
+                 * file's own label and deliberately not the inherited chain
+                 * maximum, so `null` means *this row has nothing to display* —
+                 * and drawing `Unclassified` on a document inheriting
+                 * `RESTRICTED` from its folder is exactly the disclosure the
+                 * badge exists to prevent (`model.ts`, `docs/06 §6.2`). */}
+                {file.classification !== null && (
+                  <ClassificationChip level={file.classification} />
+                )}
                 <Push />
                 <When at={file.openedAt} now={now} className="home-recent-when" />
               </li>
@@ -383,6 +408,11 @@ export default function Screen() {
   const [retried, setRetried] = useState(false);
   const viewer = useViewer();
   const tasks = useTasks();
+  /* A second, independent read. Deliberately **not** gated with `tasks` below:
+   * `specs/home.md` gives each of Home's three surfaces its own four states,
+   * and a shared `isPending` would let a slow recency query hold the approvals
+   * a person is waiting on off the screen. `ENC-930`. */
+  const recent = useRecent();
 
   if (forced === 'loading') return <LoadingState />;
 
@@ -413,7 +443,17 @@ export default function Screen() {
      * rather than inventing a workspace called something. */
     workspaceName: viewer.email,
     attention: tasks.data.items.map(attentionFromTask),
-    recent: [],
+    /* `GET /api/v1/me/recent`, which did not exist until `ENC-930` — this file's
+     * header said so, and said the list must not be improvised out of
+     * `audit_events`, which is hash-chained and deliberately not a feed. It is
+     * a purpose-built read model now (`migrations/0029`), and every row it
+     * returns has been through the policy chain. */
+    recent: recent.data === undefined ? [] : recent.data.items.map(recentFromItem),
+    recentFilteredCount: recent.data?.filteredCount,
+    /* Still pending is not still failing: an empty list while the request is in
+     * flight must not draw the "nothing here" sentence, and must not draw the
+     * failure one either. */
+    recentFailed: recent.isError,
     asks: [],
     hiddenByScope: 0,
   };

@@ -1041,11 +1041,26 @@ jobs:
             -d '{"name":"Continuous Integration","slug":"continuous-integration"}' \
             | python3 -c 'import sys,json; print(json.load(sys.stdin)["id"])')
 
-          curl -sf -X POST "http://127.0.0.1:8080/api/v1/workspaces/$workspace/libraries" \
+          library=$(curl -sf -X POST "http://127.0.0.1:8080/api/v1/workspaces/$workspace/libraries" \
             -H "$host" -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
-            -d '{"name":"Specifications","slug":"specifications"}' > /dev/null
+            -d '{"name":"Specifications","slug":"specifications"}' \
+            | python3 -c 'import sys,json; print(json.load(sys.stdin)["id"])')
 
-          echo "provisioned workspace $workspace with one library"
+          # A folder, because the library must not be empty. `home.spec.ts` opens
+          # something and asserts it comes back from `GET /me/recent`, and an
+          # empty library gives it nothing to open — the same shape as the
+          # failure this step was added for (`ENC-931`), one level down.
+          #
+          # A folder rather than an uploaded file, deliberately: a folder is a row
+          # in `files` like any other, so `GET /files/{id}` records recency for it
+          # exactly as it would for a document, and it needs no worker, no
+          # antivirus and no object round-trip. `ENC-807`'s tests make the same
+          # trade for the same reason.
+          curl -sf -X POST "http://127.0.0.1:8080/api/v1/libraries/$library/folders" \
+            -H "$host" -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
+            -d '{"name":"Drafts"}' > /dev/null
+
+          echo "provisioned workspace $workspace, library $library, and one folder"
         env:
           ENCLAVE_E2E_PASSWORD: ${{ secrets.ENCLAVE_E2E_PASSWORD || 'Walkthrough-Pass-2026!' }}
 

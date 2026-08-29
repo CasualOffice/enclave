@@ -638,6 +638,18 @@ pub async fn file_metadata(
             .await
             .map_err(|error| ApiError::new(error, request_id))?;
 
+    // "You opened it." Last, on the success path only: recording a read the chain refused would put
+    // a row in `recent_files` for a file this caller may not see, and `GET /me/recent` counts every
+    // such row into `filteredCount` — turning that counter into the enumeration oracle rule 7
+    // exists to forbid. It cannot fail this response and does not return one to ignore; the whole
+    // argument is in `crate::routes::recent`.
+    //
+    // Files only. A folder is excluded because browsing is not opening — and because the recency
+    // read filters `node_type = 'FOLDER'` out, so a row for one could never be read back.
+    if !node.is_folder() {
+        crate::routes::recent::record(&state, &ctx, file).await;
+    }
+
     Ok(Json(FileMetadata {
         id: node.id.to_string(),
         node_type: node.node_type.as_str(),
