@@ -99,6 +99,7 @@ pub mod normalize;
 pub mod pool;
 pub mod quota;
 pub mod recent;
+pub mod retention;
 pub mod routing;
 pub mod security_facts;
 pub mod tenant;
@@ -129,6 +130,10 @@ pub use quota::{
 pub use recent::{
     recent, recent_on, record, record_on, RecentCandidate, RecentCandidates, RecentClassification,
     MAX_CANDIDATES, OVER_FETCH,
+};
+pub use retention::{
+    governing_policy, governing_policy_on, GoverningPolicy, PgInterval, RetentionAction,
+    RetentionBasis, RetentionPolicyId, RetentionScopeType,
 };
 pub use routing::resolve_routed_tenant;
 pub use security_facts::{external_exposure, load_facts, record_facts, resolve_content};
