@@ -631,8 +631,23 @@ const PROVISION: Action = Action::Admin(AdminAction::WriteConfig);
 /// signature failure moved down one level, and it is why the two halves are granted together.
 ///
 /// The file half is the seeded owner's set (`crates/testing/src/content.rs`, and the rows a
-/// `SELECT DISTINCT action FROM acl_entries` returns against the development fixture), because that
-/// is the set the resolver is actually tested against. What it deliberately leaves out is as much
+/// `SELECT DISTINCT action FROM acl_entries` returns against the development fixture), plus
+/// `restore` and `move`, which `ENC-807` added and which the seeded fixture predates.
+///
+/// **`restore` is here because `delete` is.** Granting one without the other makes the trash a
+/// one-way door: a founder could trash a folder and the product would serve no request that brought
+/// it back, forever, on every fresh install. It was excluded in the first draft of this grant on the
+/// argument below — that a founding grant is an automatic act nobody reviewed and should be narrow —
+/// and that argument is simply wrong about this action, because restoring is *less* dangerous than
+/// the deletion already conferred. A narrow grant that removes a safety net is not narrow, it is
+/// lopsided.
+///
+/// **`move` is here because `container.create` already is.** A founder holds `container.create`
+/// across the workspace they provisioned, so every destination a move could reach inside it is one
+/// they may already write to — and `PATCH /files/{id}` asks `container.create` of the destination
+/// separately, so a move *out* of their reach is refused by that question rather than by this
+/// omission. Withholding it bought nothing and left the founder unable to organise the tree they are
+/// the only principal in. What it deliberately leaves out is as much
 /// of the decision as what it includes: **`print`, `export`, `share_external`, `share`, `copy`,
 /// `move`, `restore` and `version_restore` are not conferred.** `CLAUDE.md` rule 6 says preview,
 /// download, print, export and sync are five permissions and never one, and a founding grant is an
@@ -646,7 +661,7 @@ const PROVISION: Action = Action::Admin(AdminAction::WriteConfig);
 /// now admits anybody else — which is what makes the narrowness above affordable. A founding grant
 /// that withholds `print` and `share_external` is a sensible default when there is a second act
 /// that can add them, and was a dead end when there was not.
-const FOUNDING_GRANT: [Action; 13] = [
+const FOUNDING_GRANT: [Action; 15] = [
     Action::Container(ContainerAction::Read),
     Action::Container(ContainerAction::Create),
     Action::Container(ContainerAction::Update),
@@ -659,6 +674,8 @@ const FOUNDING_GRANT: [Action; 13] = [
     Action::File(FileAction::Download),
     Action::File(FileAction::Edit),
     Action::File(FileAction::Delete),
+    Action::File(FileAction::Restore),
+    Action::File(FileAction::Move),
     Action::File(FileAction::VersionRead),
 ];
 
@@ -1583,6 +1600,14 @@ mod tests {
     /// reads it nothing about which line crossed which rule.
     #[test]
     fn the_founding_grant_confers_no_egress_and_no_external_sharing() {
+        // `Move` and `Restore` were on this list until `ENC-807` and are deliberately off it now.
+        // Neither puts content outside the tenant, which is what this assertion is about: `restore`
+        // is strictly less dangerous than the `delete` this grant already confers, and withholding
+        // it made the trash a one-way door on every fresh install; `move` reaches only destinations
+        // the founder already holds `container.create` on, and a move beyond them is refused by
+        // `PATCH /files/{id}`'s separate question about the destination rather than by an omission
+        // here. What stays on the list is the set that either exports content or hands rights to
+        // somebody else.
         for forbidden in [
             FileAction::Print,
             FileAction::Export,
@@ -1590,8 +1615,6 @@ mod tests {
             FileAction::ShareExternal,
             FileAction::Sync,
             FileAction::Copy,
-            FileAction::Move,
-            FileAction::Restore,
             FileAction::VersionRestore,
             FileAction::ManagePermissions,
         ] {

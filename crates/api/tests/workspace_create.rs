@@ -156,14 +156,14 @@ fn token(key: &PrivateSigningKey, tenant: TenantId, user: UserId, acr: Acr) -> S
 
 /// How many `acl_entries` rows one provisioning writes.
 ///
-/// Six container actions and seven file actions — `routes::workspaces::FOUNDING_GRANT`, which this
+/// Six container actions and nine file actions — `routes::workspaces::FOUNDING_GRANT`, which this
 /// suite cannot import because it is private to the crate. The split is the point rather than the
 /// total: the container half is what lets the creator finish setting the workspace up, and the file
 /// half is what lets them open the first thing they put in it. Granting only the first was a real
 /// defect, and `a_founder_can_walk_from_an_empty_tenant_to_a_file_they_can_open` is what catches its
 /// return. If this number changes, that test and the rule-6 deny-list beside `FOUNDING_GRANT` are
 /// the two places to look before changing it here.
-const FOUNDING_GRANT_ROWS: i64 = 13;
+const FOUNDING_GRANT_ROWS: i64 = 15;
 
 /// Issues one `POST /api/v1/admin/workspaces` and returns the status and the parsed body.
 async fn create_workspace(

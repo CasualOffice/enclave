@@ -383,6 +383,35 @@ const SPECS: &[Spec] = &[
         credential: Credential::Bearer,
         expect: Expect::Served,
     },
+    // `ENC-807`. All three deliberately send **no** `If-Match` and no body. They answer
+    // `400 IF_MATCH_REQUIRED`, which is a validation `4xx` and therefore `Expect::Served` — and,
+    // which is the point, they then mutate nothing: a `DELETE` probe that reached the repository
+    // would trash the smoke fixture on every run, and every probe after it would be measuring a
+    // deleted tree. Do not "fix" the missing header.
+    Spec {
+        method: "PATCH",
+        path: "/api/v1/files/{id}",
+        target: "/api/v1/files/{file}",
+        body: None,
+        credential: Credential::Bearer,
+        expect: Expect::Served,
+    },
+    Spec {
+        method: "DELETE",
+        path: "/api/v1/files/{id}",
+        target: "/api/v1/files/{file}",
+        body: None,
+        credential: Credential::Bearer,
+        expect: Expect::Served,
+    },
+    Spec {
+        method: "POST",
+        path: "/api/v1/files/{id}/restore",
+        target: "/api/v1/files/{file}/restore",
+        body: None,
+        credential: Credential::Bearer,
+        expect: Expect::Served,
+    },
     Spec {
         method: "GET",
         path: "/api/v1/files/{id}/permissions",
