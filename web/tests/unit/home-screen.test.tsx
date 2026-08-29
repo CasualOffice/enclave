@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
 import type { ReactElement } from 'react';
 import { I18nProvider } from '../../src/shared/i18n/index.tsx';
+import { catalog } from '../../src/shared/i18n/catalog.ts';
 import { HomeView } from '../../src/features/home/home-screen.tsx';
 import { buildHome } from '../../src/features/home/fixture.ts';
 
@@ -33,12 +34,12 @@ function renderWith(ui: ReactElement) {
 }
 
 describe('Home, success', () => {
-  it('greets the user by name and states the date, the workspace and the count', () => {
+  it('greets the user by name and states the date and the count', () => {
     const data = buildHome(MORNING);
     renderWith(<HomeView data={data} now={MORNING} />);
 
     expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Good morning, Priya');
-    expect(screen.getByText(/Aug 20, 2026 · Finance · 4 things need your attention/)).toBeTruthy();
+    expect(screen.getByText(/Aug 20, 2026 · 4 things need your attention/)).toBeTruthy();
   });
 
   it('chooses the greeting from the reader’s own wall clock', () => {
@@ -124,6 +125,6 @@ describe('Home, success', () => {
     // The positive control: the rest of the screen is still the success state,
     // not the whole-screen empty state.
     expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Good morning, Priya');
-    expect(screen.queryByText('Your workspace is quiet')).toBeNull();
+    expect(screen.queryByText(catalog['home.state.empty.title'].message)).toBeNull();
   });
 });

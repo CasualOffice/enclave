@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
 import type { ReactElement } from 'react';
 import { I18nProvider } from '../../src/shared/i18n/index.tsx';
+import { catalog } from '../../src/shared/i18n/catalog.ts';
 import { HomeView } from '../../src/features/home/home-screen.tsx';
 import { ErrorState, LoadingState } from '../../src/features/home/states.tsx';
 import { buildHome } from '../../src/features/home/fixture.ts';
@@ -37,7 +38,7 @@ describe('Home, loading', () => {
 
     const region = screen.getByRole('status');
     expect(region.getAttribute('aria-busy')).toBe('true');
-    expect(region.getAttribute('aria-label')).toBe('Loading your workspace');
+    expect(region.getAttribute('aria-label')).toBe(catalog['home.state.loading'].message);
   });
 
   it('reserves the loaded screen’s own boxes, not a spinner', () => {
@@ -78,7 +79,7 @@ describe('Home, empty', () => {
   it('says what the surface is for and names the one action that starts it', () => {
     renderWith(<HomeView data={{ ...buildHome(NOW), ...EMPTY, hiddenByScope: 0 }} now={NOW} />);
 
-    expect(screen.getByText('Your workspace is quiet')).toBeTruthy();
+    expect(screen.getByText(catalog['home.state.empty.title'].message)).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Upload a file' })).toBeTruthy();
     expect(document.querySelector('[data-state="empty"]')).toBeTruthy();
   });
@@ -91,7 +92,7 @@ describe('Home, empty', () => {
      * "Nothing here" is the defect this pair of assertions exists to catch. */
     expect(screen.getByText('Nothing here, but not nothing everywhere')).toBeTruthy();
     expect(screen.getByText('3 items are waiting for you in other workspaces.')).toBeTruthy();
-    expect(screen.queryByText('Your workspace is quiet')).toBeNull();
+    expect(screen.queryByText(catalog['home.state.empty.title'].message)).toBeNull();
     expect(document.querySelector('[data-state="scoped-empty"]')).toBeTruthy();
   });
 });

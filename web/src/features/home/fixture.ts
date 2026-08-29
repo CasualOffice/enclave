@@ -36,7 +36,6 @@ export function buildHome(now: Date): HomeData {
   const t = now.getTime();
   return {
     givenName: 'Priya',
-    workspaceName: 'Finance',
     attention: [
       {
         id: 'attn-1',
