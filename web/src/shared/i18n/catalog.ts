@@ -2653,6 +2653,63 @@ export const catalog = {
     description:
       'Chip carrying the file’s classification label as the server sent it. Surfaced on this screen in particular because a document that arrived from somebody else is one whose sensitivity the reader has not seen before.',
   },
+
+  /* Favorites (`ENC-959`).
+   *
+   * The screen behind the third `Later` chip to become a real entry. Its
+   * sentences are about the reader's own acts, which is what makes them
+   * different from Shared with me's: everything here is something they chose,
+   * so the empty state tells them how to choose rather than explaining somebody
+   * else's behaviour.
+   */
+  'favorites.title': {
+    message: 'Favorites',
+    description: 'Heading of the screen listing files and folders this account has starred.',
+  },
+  'favorites.subline': {
+    message: 'Files and folders you have starred.',
+    description:
+      'Sentence under the Favorites heading. "You have starred" rather than "saved": nothing is copied, and describing it as saving would suggest the reader now holds their own version.',
+  },
+  'favorites.empty.heading': {
+    message: 'Nothing starred yet',
+    description: 'Heading of the empty state when this account has starred nothing.',
+  },
+  'favorites.empty.body': {
+    message: 'Open a file and use the star in its details panel to keep it here.',
+    description:
+      'Body of the Favorites empty state. Names where the control actually is, because a star that appears only in the details panel is not somewhere a reader would think to look.',
+  },
+  'favorites.filtered.heading': {
+    message: 'Nothing you can open',
+    description:
+      'Heading of the empty state when stars exist but policy removed every one of them from this listing.',
+  },
+  'favorites.filtered.body': {
+    message:
+      '{count, plural, one {# starred item is} other {# starred items are}} no longer available to you. A permission changed after you starred {count, plural, one {it} other {them}}.',
+    description:
+      'Body of the filtered-empty state. Says how many and never which — CLAUDE.md rule 7 — because a star is not permission and the file may have been re-permissioned since.',
+  },
+  'favorites.unstar': {
+    message: 'Remove {name} from favorites',
+    description:
+      'Accessible name of the star button on a Favorites row. Names the file, because a list of identical buttons is unusable to a screen reader without it.',
+  },
+  'favorites.star': {
+    message: 'Add to favorites',
+    description: 'Accessible name of the star control in the details panel when the file is not starred.',
+  },
+  'favorites.starred': {
+    message: 'Remove from favorites',
+    description:
+      'Accessible name of the same control when the file is starred. A separate key rather than a conditional, so a translator sees both sentences and neither is assembled at run time.',
+  },
+  'favorites.classification': {
+    message: '{label}',
+    description:
+      'Chip carrying the file’s classification label as the server sent it, on a Favorites row.',
+  },
 } as const satisfies Record<string, CatalogEntry>;
 
 export type MessageKey = keyof typeof catalog;

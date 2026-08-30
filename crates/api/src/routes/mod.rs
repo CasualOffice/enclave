@@ -16,6 +16,7 @@
 pub mod auth;
 pub mod bootstrap;
 pub mod delivery;
+pub mod favorites;
 pub mod folders;
 pub mod libraries;
 pub mod lifecycle;

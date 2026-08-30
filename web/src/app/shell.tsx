@@ -72,7 +72,10 @@ const WORKSPACE: readonly NavItem[] = [
 ];
 
 const PERSONAL: readonly NavItem[] = [
-  { label: 'nav.favorites', icon: 'star', unbuilt: true },
+  /* Built by `ENC-959`. It was `unbuilt: true` because there was no table: the
+   * chip is the honest treatment of a screen that cannot be written, and this
+   * is the third of the seven to stop needing it. */
+  { label: 'nav.favorites', icon: 'star', route: 'favorites' },
   /* Built by `ENC-955`. It was `unbuilt: true` while `acl_entries` had a writer
    * and no reader: a colleague could share a document and the recipient had no
    * way to find it, so the chip was the honest treatment of a screen that could

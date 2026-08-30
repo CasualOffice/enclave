@@ -25,7 +25,7 @@ pub mod workflows;
 
 use std::sync::Arc;
 
-use axum::routing::{delete, get, patch, post};
+use axum::routing::{delete, get, patch, post, put};
 use axum::{Extension, Router};
 use enclave_preview::PreviewPipeline;
 use enclave_storage::BlobStore;
@@ -130,6 +130,9 @@ pub fn router(state: ApiState, delivery: Delivery) -> Router {
         // what a person was given — so a colleague could share a document outside any workspace
         // this user belongs to and they had no way to find it.
         .route("/api/v1/me/shared", get(routes::shared::shared))
+        // `ENC-959`. Favorites has carried a `Later` chip since the shell was written and had no
+        // table until `migrations/0034`.
+        .route("/api/v1/me/favorites", get(routes::favorites::list))
         // did not exist and must not be improvised out of `audit_events`, which is hash-chained
         // and deliberately not a feed (rule 10). It is a purpose-built read model instead —
         // `migrations/0029` — and every candidate it returns goes through the chain before it
@@ -217,6 +220,12 @@ pub fn router(state: ApiState, delivery: Delivery) -> Router {
         // to the state it was already in is not a new power, and giving it an action of its own
         // would create a permission an administrator must grant for something nobody withholds.
         .route("/api/v1/files/{id}/rehydrate", post(routes::rehydrate::rehydrate))
+        // `PUT`, not `POST`: the request declares a desired state rather than appending an event,
+        // and starring an already-starred file is success rather than a conflict (`ENC-959`).
+        .route(
+            "/api/v1/files/{id}/favorite",
+            put(routes::favorites::star).delete(routes::favorites::unstar),
+        )
         .route("/api/v1/files/{id}/versions", get(content::file_versions))
         .route(
             "/api/v1/files/{id}/permissions",

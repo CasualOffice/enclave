@@ -93,6 +93,7 @@ pub mod config;
 pub mod cursor;
 pub mod dlp;
 pub mod error;
+pub mod favorites;
 pub mod ids;
 pub mod migrate;
 pub mod normalize;
