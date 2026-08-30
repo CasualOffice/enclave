@@ -934,6 +934,7 @@ body against. It was optional, which gave the sync push path `ENC-820` in the sa
 /admin/retention        /admin/legal-holds        /admin/records
    /admin/retention/policies is built (ENC-943); legal-holds and records are not.
 /admin/audit            /admin/audit/verify       /admin/audit/export
+   /admin/audit is built (ENC-961); verify and export are not.
 /admin/storage-profiles /admin/mail               /admin/secrets/test
 /admin/search/reindex   /admin/search/status
 /admin/mcp/clients      /admin/branding           /admin/domains
@@ -1201,12 +1202,52 @@ individually and would report it; the stage above it is what fails. `ENC-651`, a
 `ENC-623` one stage over.
 
 
+#### Audit (`ENC-961`)
+
+`GET /admin/audit` reads the tenant's compliance log: whole rows, newest first, cursored on
+`sequence`. Authorized as **`AdminAction::ReadAudit`** — its own permission, deliberately not the
+`ReadConfig` its neighbouring admin surfaces use. Someone who may see which DLP rules exist is not
+thereby someone who may see every file every colleague opened.
+
+It is the exact inverse of `GET /me/activity` below, and each of that surface's three exclusions is
+reversed here for the same reason: they all turn on the feed being readable by any member, and none
+of them survives a caller holding `ReadAudit` over the whole tenant.
+
+| | `/me/activity` | `/admin/audit` |
+|---|---|---|
+| Denials | excluded | **included** — an investigation is looking for them |
+| Reads | excluded | **included** — the first question after a suspected exfiltration |
+| `ip`, `country`, `user_agent`, `session_id`, `device_id`, `detail` | excluded | **included** — the only surface they are reachable from |
+| Scope | trimmed per row on `file.metadata_read` | the whole tenant |
+| Order | newest first, no cursor | newest first, cursored on `sequence` |
+
+**Query parameters.** `limit` (1–200, default 50), `before` (a `sequence`), `actor` (a UUID),
+`action` (a `family.verb` string), `outcome` (`ALLOW`, `DENY`, `ERROR`), `since` (RFC 3339). An
+unparseable narrowing answers `400 VALIDATION_FAILED` and is never silently dropped — a dropped
+filter *widens* the answer, and the caller cannot tell a filtered page from an unfiltered one by
+looking at it. `action` is deliberately **not** validated against the current vocabulary: the column
+holds whatever spelling was written, and a reader that refuses to look for a verb this build does
+not know cannot investigate the past.
+
+**`nextCursor`** is the last row's `sequence`, and is `null` when the page came back short. Cursored
+on `sequence` rather than `occurred_at` because timestamps are not unique — rows written in one
+transaction share one to the microsecond, so a timestamp cursor would repeat one row and skip
+another.
+
+**What is not built.** `/admin/audit/verify` and `/admin/audit/export` remain unbuilt.
+`verify` is the more serious gap and is worth stating plainly: `PgAuditSink::verify_tenant` and
+`chain::verify_chain` are implemented and tested, and are called by nothing. The product writes a
+tamper-evident log and has never had a way to check that it has not been tampered with. Reading rows
+shows what the table *says*; only the chain walk shows whether the table was edited underneath.
+That is `ENC-969`.
+
+
 #### Activity (`ENC-960`)
 
 `GET /me/activity` lists recent **changes** to content this caller can see. It is the first reader
 `audit_events` has ever had: the hash-chained log has been written since Phase 0 and nothing had
-ever selected from it — including the `/admin/audit` endpoint this section's map has listed since it
-was drawn, which remains unbuilt (`ENC-961`).
+ever selected from it. `/admin/audit`, listed in this section's map since it was drawn, was the
+second (`ENC-961`) and is the deliberate opposite of this one.
 
 Three exclusions, and the second is the one to read twice.
 

@@ -338,6 +338,12 @@ pub fn router(state: ApiState, delivery: Delivery) -> Router {
             "/api/v1/admin/retention/policies/{id}/assignments",
             post(admin::retention::assign).delete(admin::retention::withdraw),
         )
+        // `ENC-961`. `audit_events` has been written since Phase 0 and, until `ENC-960`, read by
+        // nothing. That built the member feed and deliberately withheld denials, reads and the
+        // actor's circumstances, because any member can open it. This is the surface those belong
+        // to: `AdminAction::ReadAudit`, whole rows, newest first. `docs/05 §14` has listed it since
+        // the map was drawn.
+        .route("/api/v1/admin/audit", get(admin::audit::read))
         .route("/api/v1/admin/dlp/rules", get(admin::dlp::list_rules).post(admin::dlp::create_rule))
         .route("/api/v1/admin/dlp/rules/{id}", delete(admin::dlp::withdraw_rule))
         // Workflows (docs/05-API.md §16, docs/15-WORKFLOWS-AND-SIGNING.md). `ENC-739`.

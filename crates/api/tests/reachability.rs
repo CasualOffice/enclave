@@ -800,6 +800,18 @@ const SPECS: &[Spec] = &[
     // shipped without entries here, this test went red on `main` the moment they merged, and
     // nothing said so: the CI queue had not drained a run since. That is `ENC-941`'s cost paid in
     // full — a gate that works, on a merge nobody built, is a gate that is off.
+    // `ENC-961`. `/admin/audit` was in `docs/05 §14`'s endpoint map from the day it was drawn and
+    // was registered by nothing for the whole of Phase 0 and Phase 1 — the product wrote a
+    // compliance log no administrator could read. A probe with no narrowings reads the head of the
+    // tenant's own log, which the fixture has been filling since the first request in this suite.
+    Spec {
+        method: "GET",
+        path: "/api/v1/admin/audit",
+        target: "/api/v1/admin/audit?limit=1",
+        body: None,
+        credential: Credential::Bearer,
+        expect: Expect::Served,
+    },
     Spec {
         method: "GET",
         path: "/api/v1/admin/retention/policies",
