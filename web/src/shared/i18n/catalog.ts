@@ -103,8 +103,6 @@ export const catalog = {
     message: 'Files',
     description: 'Sidebar navigation: the file libraries of the current workspace.',
   },
-  'nav.lists': { message: 'Lists', description: 'Sidebar navigation: structured list surfaces.' },
-  'nav.pages': { message: 'Pages', description: 'Sidebar navigation: authored page surfaces.' },
   'nav.activity': {
     message: 'Activity',
     description: 'Sidebar navigation: the workspace activity feed.',
