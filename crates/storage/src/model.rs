@@ -190,6 +190,45 @@ pub struct MultipartLimits {
     pub max_parts: u32,
 }
 
+/// What the object store says about where an object actually is (`ENC-947`).
+///
+/// The product's own `file_versions.storage_tier` is a *record* of what it believes; this is the
+/// observation it is reconciled against. The two disagree routinely and for a legitimate reason:
+/// **most content reaches a cold tier through a bucket lifecycle rule**, written by an operator and
+/// executed by the provider, with nothing telling this product it happened.
+///
+/// Four states rather than two, because a restore has a middle. S3 reports it in a header
+/// (`x-amz-restore`) that is separate from the storage class, so an object can be `DEEP_ARCHIVE`
+/// *and* temporarily readable — and reading the class alone would put a file that is back and
+/// working into `ARCHIVED` for the length of its restore window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ObservedTier {
+    /// A warm storage class, with no restore in play. The bytes are there now.
+    Hot,
+    /// A cold storage class and no restore requested. The bytes are not retrievable now.
+    Archived,
+    /// A cold storage class with a restore **in progress**. Not readable yet.
+    Restoring,
+    /// A cold storage class with a restore that has **completed**. Readable now, for a while.
+    ///
+    /// Distinct from [`ObservedTier::Hot`] on purpose: the object's storage class is still cold and
+    /// the readable copy expires. A caller that collapsed the two would record `HOT` permanently and
+    /// stop refusing after the window closed, which is the failure `ENC-946` exists to prevent
+    /// arriving on a delay.
+    Restored,
+}
+
+impl ObservedTier {
+    /// Whether the bytes can be fetched right now.
+    #[must_use]
+    pub const fn is_readable(self) -> bool {
+        match self {
+            Self::Hot | Self::Restored => true,
+            Self::Archived | Self::Restoring => false,
+        }
+    }
+}
+
 /// What a store actually supports, as reported by the store rather than assumed by the caller.
 ///
 /// `docs/08-BYO-INFRA.md §2` annotates `capabilities()` with "multipart, single-use URLs, object

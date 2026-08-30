@@ -37,6 +37,8 @@ use enclave_worker::{Result, Stop};
 
 /// Ticks fast enough that nothing waits, and raises the signal itself.
 const IMPATIENT: Cadence = Cadence {
+    // `ENC-947`. Same as the rest here: the point of this fixture is that no loop waits.
+    tiering: Duration::from_millis(1),
     indexing_idle: Duration::ZERO,
     antivirus_idle: Duration::ZERO,
     scan_idle: Duration::ZERO,

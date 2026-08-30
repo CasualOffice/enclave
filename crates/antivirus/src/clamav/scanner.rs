@@ -65,15 +65,16 @@ impl ClamavConfig {
             });
         }
 
-        let address = config
-            .endpoint
-            .as_deref()
-            .map(str::trim)
-            .filter(|endpoint| !endpoint.is_empty())
-            .ok_or_else(|| AntivirusError::Configuration {
-                reason: "antivirus.endpoint is required for the `clamav` provider, as `host:port`"
-                    .to_owned(),
-            })?;
+        // `endpoint_ref`, not `endpoint`: the `endpoint_env` shorthand is what `enclave.yaml` and
+        // `README.md` tell an operator to use, and reading the field directly ignored it —
+        // `ENC-952`, a worker that refused to start on a deployment configured as documented.
+        let resolved = config.endpoint_ref();
+        let address = resolved.as_deref().ok_or_else(|| AntivirusError::Configuration {
+            reason: "antivirus.endpoint is required for the `clamav` provider, as \
+                         `host:port` — set it directly, or name an environment variable in \
+                         `antivirus.endpoint_env` and export it"
+                .to_owned(),
+        })?;
 
         // A host with no port is the commonest configuration mistake and produces a connect error
         // that says nothing useful, so complete it here rather than reporting it later.

@@ -122,6 +122,7 @@ pub mod print_tokens;
 pub mod scan;
 pub mod schedule;
 pub mod tenants;
+pub mod tiering;
 pub mod uploads;
 
 pub use error::{Result, WorkerError};

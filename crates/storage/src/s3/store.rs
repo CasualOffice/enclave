@@ -591,6 +591,54 @@ impl BlobStore for S3BlobStore {
         Ok(())
     }
 
+    async fn observed_tier(&self, key: &str) -> Result<crate::ObservedTier> {
+        // Not gated on `storage_tiers`. A backend with no cold tier still answers `HeadObject`, and
+        // "everything here is STANDARD" is a true and useful observation — it is what lets the
+        // reconciler correct a row that says `ARCHIVED` on a deployment whose bucket has no such
+        // thing. Gating this on the *write* capability would make the read unavailable exactly
+        // where the row is most likely to be wrong.
+        let key = ObjectKey::parse(key)?;
+        let head = self
+            .client
+            .head_object()
+            .bucket(&self.config.bucket)
+            .key(key.as_str())
+            .send()
+            .await
+            .map_err(|err| self.map_err("HeadObject(tier)", Some(key.as_str()), &err))?;
+
+        // The storage class is absent for `STANDARD` — S3 omits the header rather than sending it —
+        // so `None` means warm. Reading `None` as "unknown, assume cold" would archive every object
+        // in a standard bucket.
+        let cold = matches!(
+            head.storage_class(),
+            Some(
+                aws_sdk_s3::types::StorageClass::Glacier
+                    | aws_sdk_s3::types::StorageClass::GlacierIr
+                    | aws_sdk_s3::types::StorageClass::DeepArchive
+            )
+        );
+        if !cold {
+            return Ok(crate::ObservedTier::Hot);
+        }
+
+        // `x-amz-restore` is a *separate* header from the storage class, and the reason this
+        // function has four states rather than two: an object can be `DEEP_ARCHIVE` and temporarily
+        // readable. Its form is `ongoing-request="true"` while the retrieval runs, and
+        // `ongoing-request="false", expiry-date="..."` once the copy is available.
+        //
+        // Matched on the `true` substring rather than parsed, because the only distinction that
+        // decides anything here is in-progress versus not, and a parser for a header this shape is
+        // a second thing to get wrong for an answer it does not change.
+        Ok(match head.restore() {
+            None => crate::ObservedTier::Archived,
+            Some(restore) if restore.contains("ongoing-request=\"true\"") => {
+                crate::ObservedTier::Restoring
+            }
+            Some(_) => crate::ObservedTier::Restored,
+        })
+    }
+
     async fn archive(&self, key: &str) -> Result<()> {
         // Refused where the backend has no cold tier, rather than issued and ignored. MinIO accepts
         // `x-amz-storage-class` and stores the header; the bytes do not move, `RestoreObject` is

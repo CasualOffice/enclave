@@ -61,8 +61,8 @@ pub use blob_store::BlobStore;
 pub use error::{Result, StorageError};
 pub use key::{KeyError, ObjectKey};
 pub use model::{
-    ByteRange, ByteStream, CompletedPart, MultipartLimits, ObjectMeta, PartTarget, RequiredHeader,
-    StoreCapabilities, Support, UploadRequest, UploadSession, UploadTarget,
+    ByteRange, ByteStream, CompletedPart, MultipartLimits, ObjectMeta, ObservedTier, PartTarget,
+    RequiredHeader, StoreCapabilities, Support, UploadRequest, UploadSession, UploadTarget,
 };
 pub use public_access::{
     Probe, ProbeResult, PublicAccessCheck, PublicAccessError, PublicAccessReport, Verdict,

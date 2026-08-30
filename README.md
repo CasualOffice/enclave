@@ -295,7 +295,7 @@ is behind a Compose profile:
 
 ```bash
 docker compose -f deploy/compose/dev.yml --profile av up -d --wait
-export CLAMD_ADDR=tcp://localhost:3310
+export CLAMD_ADDR=localhost:3310          # host:port — not a URL; `tcp://…` is refused
 ```
 
 On **Apple Silicon** that image is `linux/amd64` only. `dev.yml` pins the platform so it runs under

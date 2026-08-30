@@ -1,6 +1,6 @@
 # 08 — BYO Infrastructure & Configuration
 
-> **Status:** Draft · **Version:** 2.7 · **Owner:** Platform Engineering · **Last updated:** 2026-08-30
+> **Status:** Draft · **Version:** 2.8 · **Owner:** Platform Engineering · **Last updated:** 2026-08-30
 > **Authoritative for:** provider traits, BYO infrastructure, configuration model and precedence.
 
 ## 1. Principle
@@ -159,7 +159,29 @@ request, and the product already promises a rehydration measured in hours.
 **In practice most content reaches a cold tier through a bucket lifecycle rule, not through these
 verbs.** That is the deployment shape this release supports best: `docs/04 §12A`'s column is what
 the product reads, every byte path is honest about it, and `POST /files/{id}/rehydrate` is the way
-back. Reconciling the column against the store's actual storage class is `ENC-947`.
+back.
+
+`BlobStore::observed_tier` is what the product asks when it needs the truth rather than its own
+record, and the `tier-reconciler` worker pass (`ENC-947`) is its only caller. It resolves the two
+transient states — an `ARCHIVING` row the provider has finished moving, and a `RESTORING` row whose
+bytes have landed — and **without it a rehydration never completes**: the row stays `RESTORING`, and
+every read path goes on refusing content that is sitting there readable.
+
+`observed_tier` is deliberately **not** gated on `storage_tiers`. A backend with no cold tier still
+answers `HeadObject`, and *"everything here is STANDARD"* is a true and useful observation — it is
+what lets the reconciler correct a row that says `ARCHIVED` on a deployment whose bucket has no such
+thing. Gating the read on the write capability would make it unavailable exactly where the row is
+most likely to be wrong.
+
+Four observed states, not two, because a restore has a middle: S3 reports it in `x-amz-restore`,
+which is a separate header from the storage class, so an object can be `DEEP_ARCHIVE` *and*
+temporarily readable. Reading the class alone would put a file the user just waited hours for back
+into `ARCHIVED`.
+
+What the pass does **not** do is scan warm rows for drift. Detecting a lifecycle-rule transition
+means one `HeadObject` per version of every file in the deployment; that is a different economics
+from resolving a handful of transient rows, and folding them would make the cheap urgent half wait
+on the expensive one. `ENC-951`.
 
 ## 4. Storage profile
 
@@ -486,6 +508,22 @@ embedding_model: "/var/lib/enclave/bge-m3"
 antivirus:
   provider: "clamav"
   endpoint_env: "CLAMD_ADDR"
+```
+
+**`endpoint_env` is read by `AntivirusConfig::endpoint_ref`, and until `ENC-952` it was read by
+nothing.** The spelling was specified here, shipped in `enclave.yaml` and instructed in `README.md`
+while `ClamavScanner::new` read `endpoint`, which nothing populated from it — so `enclave-worker`
+refused to start with *"antivirus.endpoint is required"* on a deployment configured exactly as this
+document describes. The worker is what moves `av_status`, so nothing in such a deployment ever
+became `AVAILABLE`.
+
+Unlike the other `*_env` keys, this one resolves straight from the environment rather than through a
+`SecretRef`. That follows the field's own definition — an engine address is a host and a port, not a
+secret — and avoids requiring a secret provider before antivirus can start, which would put a
+non-secret in the one place `CLAUDE.md` rule 11 reserves for secrets.
+
+```yaml
+antivirus:                       # continued
   max_scan_bytes: 2147483648
   archive_depth: 5
   unavailable_policy: "HOLD"

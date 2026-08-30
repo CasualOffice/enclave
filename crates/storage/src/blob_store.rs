@@ -192,6 +192,27 @@ pub trait BlobStore: PublicAccessCheck + Send + Sync {
         Err(crate::StorageError::Unsupported { capability: "restoring an object from a cold tier" })
     }
 
+    /// Where the object actually is, according to the store (`ENC-947`).
+    ///
+    /// The reconciler's read. `file_versions.storage_tier` is what this product *believes*; this is
+    /// what is true, and the two disagree routinely — **most content reaches a cold tier through a
+    /// bucket lifecycle rule**, executed by the provider with nothing telling this product.
+    ///
+    /// The default is [`crate::StorageError::Unsupported`] rather than
+    /// [`ObservedTier::Hot`]. A default of `Hot` would be a store asserting that nothing it holds is
+    /// ever cold, which the reconciler would believe and act on — writing `HOT` over a row that was
+    /// correctly `ARCHIVED` and putting the product back to minting URLs for bytes in Glacier. An
+    /// unsupported answer is a pass that skips; a wrong answer is a pass that breaks things.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::StorageError::Unsupported`] when the store cannot report it,
+    /// [`crate::StorageError::NotFound`] when the object is gone, and any provider failure.
+    async fn observed_tier(&self, key: &str) -> Result<crate::ObservedTier> {
+        let _ = key;
+        Err(crate::StorageError::Unsupported { capability: "reporting an object's storage tier" })
+    }
+
     /// What this store supports — multipart, single-use URLs, object lock.
     ///
     /// Reports what was *observed* at connect time, not what the provider family is assumed to

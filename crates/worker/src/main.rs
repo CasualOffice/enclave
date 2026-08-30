@@ -222,7 +222,10 @@ async fn main() -> anyhow::Result<()> {
             .with_antivirus(passes.antivirus)
             .with_indexing(passes.indexing)
             .with_scanning(passes.scanning)
-            .with_upload_reaper(passes.reaping);
+            .with_upload_reaper(passes.reaping)
+            // `ENC-947`. Without this the rehydrate endpoint accepts a request and never completes
+            // it: the bytes land, the row stays `RESTORING`, and every read path goes on refusing.
+            .with_tier_reconciler(passes.store);
     }
     if let Some(census) = index_census(config, &secrets)? {
         scheduler = scheduler.with_coverage(census, CoverageFloor::percent(COVERAGE_FLOOR));
@@ -268,6 +271,13 @@ struct ContentPasses {
     indexing: Arc<dyn IndexRunner>,
     /// Detector counts into `security_facts` (`ENC-613`).
     scanning: Arc<dyn ScanRunner>,
+    /// The store the tier reconciler asks where an object actually is (`ENC-947`).
+    ///
+    /// The same `Arc` the three passes above already hold. Carried here rather than composed
+    /// separately because it is the same absence: a deployment with no object storage has no store
+    /// to ask, and a tier reconciler pointed at nothing would resolve every `RESTORING` row by
+    /// failing to read it.
+    store: Arc<dyn enclave_storage::BlobStore>,
     /// Staged objects out of the bucket, for sessions nothing will ever read (`ENC-806`).
     ///
     /// Here rather than in a struct of its own because the dependency is identical — this bucket,
@@ -491,6 +501,10 @@ async fn content_passes(
         REAP_BATCH,
     ));
 
+    // Cloned before the scanner takes it: `ENC-947`'s reconciler needs the same store, and the
+    // coercion to `dyn BlobStore` has to happen while a concrete `Arc` is still in hand.
+    let tier_store: Arc<dyn enclave_storage::BlobStore> = store.clone();
+
     let antivirus = Arc::new(VersionScanner::new(
         pool,
         scanner,
@@ -502,7 +516,7 @@ async fn content_passes(
         AV_BATCH,
     ));
 
-    Ok(Some(ContentPasses { antivirus, indexing, scanning, reaping }))
+    Ok(Some(ContentPasses { antivirus, indexing, scanning, store: tier_store, reaping }))
 }
 
 /// The embedding-and-vector-write stage, or `None` when this deployment embeds nothing.

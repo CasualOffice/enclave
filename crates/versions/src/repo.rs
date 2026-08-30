@@ -25,9 +25,12 @@ use enclave_core::{FileId, TenantId, VersionId};
 use enclave_db::sql;
 use sqlx::PgConnection;
 
+use enclave_db::RowIdExt as _;
+use sqlx::Row as _;
+
 use crate::error::Result;
-use crate::model::{readable_predicate, FileVersion, VersionNumber};
-use crate::row::{version_columns, version_from_row};
+use crate::model::{readable_predicate, FileVersion, StorageTier, VersionNumber};
+use crate::row::{parse_enum, version_columns, version_from_row};
 
 /// How many versions one page of history may hold.
 ///
@@ -248,9 +251,108 @@ impl VersionRepository {
             .await?;
         Ok(changed.is_some())
     }
+    /// Versions mid-transition, oldest first, for the reconciler (`ENC-947`).
+    ///
+    /// `ARCHIVING` and `RESTORING` only — the two states that cannot resolve themselves. A
+    /// `RESTORING` row whose bytes have landed stays `RESTORING` for ever without this, which makes
+    /// `POST /files/{id}/rehydrate` a request that is accepted and never completes.
+    ///
+    /// Bounded by `limit` and ordered by `restore_requested_at NULLS FIRST` so an `ARCHIVING` row —
+    /// which has no timestamp — is never starved behind a queue of restores, and so the longest
+    /// wait is served first. Reads `idx_file_versions_in_transition`, the partial index
+    /// `migrations/0032` added for exactly this query.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures.
+    pub async fn in_transition(
+        conn: &mut PgConnection,
+        tenant: TenantId,
+        limit: i64,
+    ) -> Result<Vec<InTransition>> {
+        let rows = sqlx::query(IN_TRANSITION)
+            .bind(tenant.as_uuid())
+            .bind(limit)
+            .fetch_all(&mut *conn)
+            .await?;
+        rows.iter()
+            .map(|row| {
+                Ok(InTransition {
+                    id: row.try_get_id("id")?,
+                    object_key: row.try_get("object_key")?,
+                    tier: parse_enum::<StorageTier>(
+                        row,
+                        "storage_tier",
+                        "not a known storage tier",
+                    )?,
+                })
+            })
+            .collect()
+    }
+
+    /// Records what the store actually reported, if the row still says what it said (`ENC-947`).
+    ///
+    /// Returns whether the row moved. `expected` is in the predicate, so a reconciler that read a
+    /// row, spent a network round trip at the provider, and came back to find a user's rehydrate
+    /// had changed it does **not** overwrite that: it loses, reports `false`, and picks the row up
+    /// next pass with a fresh observation. A blind `UPDATE ... WHERE id = $2` would let a stale
+    /// observation put an `ARCHIVED` row back over a restore somebody had just started.
+    ///
+    /// `restore_requested_at` is untouched. It is evidence of how long the last restore took, and
+    /// the moment it becomes useful is the moment the restore completes (`migrations/0032`).
+    ///
+    /// # Errors
+    ///
+    /// Storage failures.
+    pub async fn reconcile_tier(
+        conn: &mut PgConnection,
+        tenant: TenantId,
+        version: VersionId,
+        expected: StorageTier,
+        observed: StorageTier,
+    ) -> Result<bool> {
+        let changed = sqlx::query(RECONCILE_TIER)
+            .bind(tenant.as_uuid())
+            .bind(version.as_uuid())
+            .bind(expected.as_str())
+            .bind(observed.as_str())
+            .fetch_optional(&mut *conn)
+            .await?;
+        Ok(changed.is_some())
+    }
 }
 
-/// `now()` from the database's clock, not the caller's: `restore_requested_at` is what a sweep
+/// One version the reconciler has to resolve.
+///
+/// Three fields and no more: the reconciler needs an id to write back, a key to ask the store
+/// about, and the tier it is leaving so the write can be conditional on it. Returning a whole
+/// [`FileVersion`] would put every column of a table this pass walks in bulk onto the wire for
+/// three values.
+#[derive(Debug, Clone)]
+pub struct InTransition {
+    /// Which version.
+    pub id: VersionId,
+    /// The object to ask the store about.
+    pub object_key: String,
+    /// What the row says now, and what the reconciling write is conditional on.
+    pub tier: StorageTier,
+}
+
+const IN_TRANSITION: &str = "
+    SELECT id, object_key, storage_tier
+      FROM file_versions
+     WHERE tenant_id = $1
+       AND storage_tier IN ('ARCHIVING','RESTORING')
+     ORDER BY restore_requested_at ASC NULLS FIRST
+     LIMIT $2";
+
+const RECONCILE_TIER: &str = "
+    UPDATE file_versions
+       SET storage_tier = $4
+     WHERE tenant_id = $1 AND id = $2 AND storage_tier = $3
+    RETURNING id";
+
+/// `now()` from the database's clock, not the caller's:/// `now()` from the database's clock, not the caller's: `restore_requested_at` is what a sweep
 /// measures a stuck restore against, and a wall clock that disagrees with the sweep's would make
 /// "waiting six hours" a number nobody can act on.
 const MARK_RESTORING: &str = "
