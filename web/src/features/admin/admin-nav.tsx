@@ -34,14 +34,26 @@ import type { DlpRule } from './dlp/model.ts';
 
 interface Section {
   readonly label: MessageKey;
-  readonly items: readonly { readonly label: MessageKey; readonly current?: boolean }[];
+  readonly items: readonly {
+    readonly label: MessageKey;
+    /** The `?section=` value, for entries that lead somewhere. */
+    readonly section?: string;
+  }[];
 }
 
+/* An entry with a `section` is built and navigates; one without is `unbuilt`
+ * and is not focusable, because there is nowhere to go (`docs/17 §6`).
+ *
+ * Until `ENC-945` every entry but DLP was in the second class and the rail had
+ * no notion of navigation at all — `current: true` was a literal on one row.
+ * Retention is the second built surface, so the distinction has to be a
+ * property rather than a hard-coded row. */
 const SECTIONS: readonly Section[] = [
   {
     label: 'admin.nav.security',
     items: [
-      { label: 'admin.nav.dlp', current: true },
+      { label: 'admin.nav.dlp', section: 'dlp' },
+      { label: 'admin.nav.retention', section: 'retention' },
       { label: 'admin.nav.conditionalAccess' },
       { label: 'admin.nav.classification' },
       { label: 'admin.nav.barriers' },
@@ -55,6 +67,8 @@ const SECTIONS: readonly Section[] = [
 ];
 
 export function AdminNav({
+  section,
+  onSection,
   rules,
   selectedId,
   query,
@@ -64,6 +78,8 @@ export function AdminNav({
   onCreate,
   readOnly,
 }: {
+  section: string;
+  onSection: (next: string) => void;
   rules: readonly DlpRule[];
   selectedId: string | undefined;
   query: string;
@@ -77,14 +93,23 @@ export function AdminNav({
 
   return (
     <nav className="adm-nav" aria-label={t('admin.nav.label')}>
-      {SECTIONS.map((section) => (
-        <div key={section.label}>
-          <div className="adm-nav-group">{t(section.label)}</div>
-          {section.items.map((item) =>
-            item.current === true ? (
-              <span className="ui-row" key={item.label} aria-current="page">
+      {SECTIONS.map((group) => (
+        <div key={group.label}>
+          <div className="adm-nav-group">{t(group.label)}</div>
+          {group.items.map((item) =>
+            item.section !== undefined ? (
+              /* A real control: the built surfaces are reachable from each
+               * other, which is what makes the rail a rail rather than a
+               * heading with one live row. */
+              <button
+                type="button"
+                className="ui-row adm-nav-link"
+                key={item.label}
+                aria-current={item.section === section ? 'page' : undefined}
+                onClick={() => onSection(item.section as string)}
+              >
                 {t(item.label)}
-              </span>
+              </button>
             ) : (
               /* Not an anchor and not focusable: there is nowhere to go and
                * nothing to find out (`docs/17 §6`). */
@@ -98,6 +123,12 @@ export function AdminNav({
         </div>
       ))}
 
+      {/* Everything below is the DLP surface's own index — its rule search and
+        * rule list — and belongs to that section rather than to the rail. Left
+        * visible on the retention section it would offer a search over rules
+        * the pane beside it is not showing (`ENC-945`). */}
+      {section === 'dlp' && (
+        <>
       <div className="adm-nav-group">
         {t('admin.dlp.rules.title')}
         {!readOnly && (
@@ -143,6 +174,8 @@ export function AdminNav({
           </li>
         ))}
       </ul>
+        </>
+      )}
     </nav>
   );
 }

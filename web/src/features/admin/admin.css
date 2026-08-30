@@ -668,3 +668,116 @@
     grid-template-columns: var(--adm-bar-label) minmax(0, 1fr) var(--ctl-h-lg);
   }
 }
+
+/* -------------------------------------------------------- retention (ENC-945) */
+
+/* A nav entry that goes somewhere. It is a `button`, not an anchor, because the
+ * section lives in `?section=` and is set through the same `replaceState` path
+ * the rest of this screen uses — an anchor would advertise a document to open in
+ * a new tab that the click handler then prevents. Reset to look like the `ui-row`
+ * it shares a class with; the row's own padding, colour and focus ring apply. */
+.adm-nav-link {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  inline-size: 100%;
+  text-align: start;
+  cursor: pointer;
+}
+
+.adm-writefail {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  margin-block: var(--sp-4) 0;
+  font-size: var(--fs-meta);
+  color: var(--fg2);
+  max-inline-size: 78ch;
+}
+
+.adm-retlist {
+  list-style: none;
+  margin: var(--sp-6) 0 0;
+  padding: 0;
+  display: grid;
+  gap: var(--sp-5);
+  max-inline-size: 78ch;
+}
+
+.adm-retcard {
+  border: 1px solid var(--line);
+  border-radius: var(--r-ctrl);
+  background: var(--sheet);
+  padding: var(--sp-5);
+  display: grid;
+  gap: var(--sp-3);
+}
+
+.adm-rethead {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+}
+
+.adm-retscopes {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--sp-2);
+  font-size: var(--fs-meta);
+}
+
+.adm-retscopes li {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-block-size: 28px;
+}
+
+.adm-retapply,
+.adm-retform {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+}
+
+.adm-retform {
+  border: 1px solid var(--line);
+  border-radius: var(--r-ctrl);
+  background: var(--sunken);
+  padding: var(--sp-5);
+  margin-block-start: var(--sp-5);
+  max-inline-size: 78ch;
+}
+
+/* A native select. No custom control: the platform one is keyboard-navigable,
+ * announces its options, and follows the writing direction without help
+ * (`docs/09 §15`). What is styled is the frame, so it sits with `ui-field`. */
+.adm-select {
+  font: inherit;
+  color: var(--fg);
+  background: var(--sheet);
+  border: 1px solid var(--line);
+  border-radius: var(--r-ctrl);
+  padding-block: var(--sp-2);
+  padding-inline: var(--sp-3);
+  min-block-size: 28px;
+}
+
+.adm-check {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  font-size: var(--fs-meta);
+  color: var(--fg2);
+}
+
+.ui-label {
+  font-size: var(--fs-meta);
+  color: var(--fg2);
+}

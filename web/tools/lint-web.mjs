@@ -153,7 +153,20 @@ const catalogKeys = new Map();
   let match;
   while ((match = entry.exec(catalogSource)) !== null) {
     const key = match[1];
-    const tail = catalogSource.slice(match.index, catalogSource.indexOf('},', match.index));
+    /* The entry runs to the start of the next key, or to the end of the object.
+     *
+     * It used to run to the next `},`, which is wrong for any message
+     * containing an ICU placeholder followed by a comma: `'Applies {action},
+     * measured from…'` carries `},` inside the *message*, so the tail stopped
+     * before `description:` and the entry was reported as having none. A false
+     * positive on this rule is worse than it looks — the obvious way to satisfy
+     * it is to reword the user-facing string until the linter stops
+     * complaining, which is a tool editing copy. Found by `ENC-945`, whose two
+     * summary strings are the first in the catalog to punctuate that way. */
+    const nextKey = /^\s{2}'[^']+':\s*\{$/gm;
+    nextKey.lastIndex = match.index + match[0].length;
+    const next = nextKey.exec(catalogSource);
+    const tail = catalogSource.slice(match.index, next === null ? undefined : next.index);
     const lineNumber = catalogSource.slice(0, match.index).split('\n').length;
     catalogKeys.set(key, {
       line: lineNumber,
