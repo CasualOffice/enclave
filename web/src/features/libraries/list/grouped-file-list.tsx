@@ -1,4 +1,4 @@
-import { memo, useCallback, useMemo, type CSSProperties } from 'react';
+import { memo, useCallback, useMemo, useRef, type CSSProperties } from 'react';
 import { useT } from '../../../shared/i18n/index.tsx';
 import { useFormatters } from '../../../shared/i18n/format.ts';
 import { ChevronIcon } from '../../../shared/ui/icons.tsx';
@@ -48,6 +48,16 @@ export interface GroupedFileListProps {
   readonly onRetry?: (() => void) | undefined;
   readonly onClearFilters?: (() => void) | undefined;
   readonly onUpload?: (() => void) | undefined;
+  /**
+   * Called as the reader approaches the end of what has been fetched
+   * (`ENC-973`).
+   *
+   * The list owns the scroller, so it owns the signal; the screen owns the
+   * query, so it owns the fetch. Idempotent by contract — this fires on scroll
+   * frames and the caller is expected to ignore it while a page is already in
+   * flight or there is nothing left, which is what `fetchNextPage` does.
+   */
+  readonly onEndReached?: (() => void) | undefined;
   /**
    * Uploads in flight into *this* container, drawn as rows.
    *
@@ -477,6 +487,7 @@ export function GroupedFileList({
   onRetry,
   onClearFilters,
   onUpload,
+  onEndReached,
   uploads = NO_UPLOADS,
 }: GroupedFileListProps) {
   const t = useT();
@@ -525,13 +536,35 @@ export function GroupedFileList({
 
   const keyboard = useGridKeyboard(layout, slice, COLUMN_COUNT, actions);
 
+  const scrollerNode = useRef<HTMLDivElement | null>(null);
   const setScroller = useCallback(
     (node: HTMLDivElement | null) => {
+      scrollerNode.current = node;
       scrollerRef(node);
       keyboard.scrollerRef(node);
     },
     [scrollerRef, keyboard],
   );
+
+  /* One scroll handler, two jobs (`ENC-973`).
+   *
+   * `onScroll` from the window engine is the hot path — it coalesces into a
+   * frame and usually writes two `transform`s and returns — so the end check
+   * rides on the same event rather than adding a listener. It is a comparison
+   * of three numbers already in memory; no layout is read that the engine has
+   * not read anyway.
+   *
+   * The threshold is a screenful. Waiting for the true bottom means the reader
+   * hits a wall and then waits for a request; a screenful ahead means the next
+   * page is usually there before they arrive, which is the difference between a
+   * list that pages and a list that stutters. */
+  const handleScroll = useCallback(() => {
+    onScroll();
+    if (onEndReached === undefined) return;
+    const node = scrollerNode.current;
+    if (node === null) return;
+    if (node.scrollTop + node.clientHeight * 2 >= node.scrollHeight) onEndReached();
+  }, [onScroll, onEndReached]);
 
   const onFocusRow = useCallback(
     (groupIndex: number, rowInGroup: number | null, column: number | null) => {
@@ -604,7 +637,7 @@ export function GroupedFileList({
       <div
         className="egl-scroller"
         ref={setScroller}
-        onScroll={onScroll}
+        onScroll={handleScroll}
         onKeyDown={keyboard.onKeyDown}
         onBlur={keyboard.onBlur}
         onFocus={keyboard.onFocus}

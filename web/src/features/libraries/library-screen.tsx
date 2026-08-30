@@ -135,8 +135,11 @@ export default function LibraryScreen() {
   const target = useUploadTarget(hasLibrary ? libraryId : undefined, folderId, canCreate);
 
   const { groups, ordered } = useMemo(
-    () => groupItems(items.data?.items ?? []),
-    [items.data?.items],
+    /* Every page, flattened. The window (`shared/list/use-grouped-window.ts`)
+     * mounts thirty rows whatever this holds, so growing it is cheap — what
+     * changes is how far a reader can scroll before the list stops. */
+    () => groupItems(items.data?.pages.flatMap((page) => page.items) ?? []),
+    [items.data?.pages],
   );
 
   const rows = useMemo(() => ordered.map(rowFromItem), [ordered]);
@@ -342,7 +345,16 @@ export default function LibraryScreen() {
             selected
             {...(items.data === undefined
               ? {}
-              : { count: formatters.count(items.data.items.length) })}
+              : /* What has been *fetched*, not what the library holds. The
+                 * server sends no total and counting one would be a scan of
+                 * every partition; a number that grew as somebody scrolled and
+                 * claimed to be the total would be worse than one that is
+                 * honestly a running count (`ENC-973`). */
+                {
+                  count: formatters.count(
+                    items.data.pages.reduce((sum, page) => sum + page.items.length, 0),
+                  ),
+                })}
           />
         </TabList>
 
@@ -450,6 +462,13 @@ export default function LibraryScreen() {
               status={items.isPending ? 'loading' : 'ready'}
               filtersActive={false}
               onUpload={canCreate ? target.pickFiles : undefined}
+              /* Paging (`ENC-973`). `fetchNextPage` is idempotent while a page
+               * is in flight and a no-op when `hasNextPage` is false, so the
+               * guard is TanStack's rather than a second one kept in step with
+               * it here. */
+              onEndReached={() => {
+                if (items.hasNextPage && !items.isFetchingNextPage) void items.fetchNextPage();
+              }}
             />
           )}
         </div>
