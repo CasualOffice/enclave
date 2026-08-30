@@ -2455,6 +2455,201 @@ export const catalog = {
    * word. They are given a translatable *frame*, and the token itself is a
    * placeholder inside it.
    */
+  'admin.audit.title': {
+    message: 'Audit log',
+    description: 'Heading of the audit administration surface.',
+  },
+  'admin.audit.intro': {
+    message:
+      'Every decision the policy chain made in this tenant, newest first — including the ones it refused. Rows are written when the decision is made and cannot be edited or deleted afterwards.',
+    description:
+      'Paragraph under the audit heading. The second sentence is the claim the surface exists to support: the log is append-only by database grant, not by convention, and an administrator reading it should know they are not reading something another administrator could have tidied.',
+  },
+  'admin.audit.appendOnly': {
+    message: 'Append-only',
+    description:
+      'Chip beside the audit heading. States that no one, including an administrator, can edit or erase rows.',
+  },
+  'admin.audit.tableCaption': {
+    message: 'Audit events, newest first',
+    description: 'Screen-reader caption for the audit table.',
+  },
+  'admin.audit.outcomeLabel': {
+    message: 'Outcome',
+    description: 'Label for the tab strip that narrows the audit log by outcome.',
+  },
+  'admin.audit.outcome.all': {
+    message: 'All',
+    description: 'Tab showing every audit row regardless of outcome.',
+  },
+  'admin.audit.outcome.allow': {
+    message: 'Allowed',
+    description: 'Tab narrowing the audit log to decisions the policy chain permitted.',
+  },
+  'admin.audit.outcome.deny': {
+    message: 'Refused',
+    description:
+      'Tab narrowing the audit log to decisions the policy chain refused. "Refused" rather than "Denied" — the row records the chain working, not an incident.',
+  },
+  'admin.audit.outcome.error': {
+    message: 'Errors',
+    description:
+      'Tab narrowing the audit log to decisions that failed rather than being allowed or refused.',
+  },
+  'admin.audit.actionLabel': {
+    message: 'Action',
+    description: 'Label of the field that narrows the audit log to one action.',
+  },
+  'admin.audit.actionPlaceholder': {
+    message: 'file.download',
+    description:
+      'Placeholder in the audit action filter. An example of the stored spelling rather than a translated word, because the field matches the recorded string exactly.',
+  },
+  'admin.audit.clearActor': {
+    message: 'All people',
+    description:
+      'Button that removes the narrowing to one actor and returns the audit log to everybody.',
+  },
+  'admin.audit.filterToActor': {
+    message: 'Show only this person’s activity',
+    description: 'Tooltip on an actor’s name in the audit table, which narrows the log to them.',
+  },
+  'admin.audit.somebody': {
+    message: 'somebody',
+    description:
+      'Stands in for an actor with no directory entry — a service account, an MCP client, a link bearer or the system itself. Lower case because it reads as part of a row rather than as a name, and never the internal identifier.',
+  },
+  'admin.audit.noResource': {
+    message: '—',
+    description:
+      'Shown in the resource column when the decision was about the tenant itself rather than an object.',
+  },
+  'admin.audit.showDetail': {
+    message: 'Details',
+    description:
+      'Expands one audit row to show the circumstances of the request: address, device, session and the chain hashes.',
+  },
+  'admin.audit.hideDetail': {
+    message: 'Hide',
+    description: 'Collapses an expanded audit row.',
+  },
+  'admin.audit.newer': {
+    message: 'Newer',
+    description: 'Pages the audit log towards the most recent events.',
+  },
+  'admin.audit.older': {
+    message: 'Older',
+    description: 'Pages the audit log towards earlier events.',
+  },
+  'admin.audit.pageOf': {
+    message: 'Page {page}',
+    description: 'Position in the audit log. There is no total: the log is append-only and counting it would be a scan of every partition.',
+  },
+  'admin.audit.col.when': {
+    message: 'When',
+    description: 'Audit table column: when the decision was made.',
+  },
+  'admin.audit.col.who': {
+    message: 'Who',
+    description: 'Audit table column: the principal the decision was about.',
+  },
+  'admin.audit.col.action': {
+    message: 'Action',
+    description: 'Audit table column: what was attempted, in the stored spelling.',
+  },
+  'admin.audit.col.outcome': {
+    message: 'Outcome',
+    description: 'Audit table column: whether the chain allowed, refused or failed.',
+  },
+  'admin.audit.col.resource': {
+    message: 'Resource',
+    description: 'Audit table column: what the decision was about.',
+  },
+  'admin.audit.field.sequence': {
+    message: 'Sequence',
+    description: 'Audit row detail: the row’s position in the tenant’s chain.',
+  },
+  'admin.audit.field.requestId': {
+    message: 'Request',
+    description:
+      'Audit row detail: the request id, which is also what a user was shown in an error and what ties their report to this row.',
+  },
+  'admin.audit.field.sessionId': {
+    message: 'Session',
+    description: 'Audit row detail: the sign-in this request belonged to.',
+  },
+  'admin.audit.field.client': {
+    message: 'Client',
+    description: 'Audit row detail: which kind of client made the request.',
+  },
+  'admin.audit.field.device': {
+    message: 'Device',
+    description: 'Audit row detail: the registered device, where there was one.',
+  },
+  'admin.audit.field.ip': {
+    message: 'Address',
+    description: 'Audit row detail: the network address the request came from.',
+  },
+  'admin.audit.field.country': {
+    message: 'Country',
+    description: 'Audit row detail: the country the address resolved to.',
+  },
+  'admin.audit.field.userAgent': {
+    message: 'User agent',
+    description: 'Audit row detail: the client’s self-reported identification.',
+  },
+  'admin.audit.field.onBehalfOf': {
+    message: 'On behalf of',
+    description:
+      'Audit row detail: the person a service acted for, when the actor was not acting for itself.',
+  },
+  'admin.audit.field.workspace': {
+    message: 'Workspace',
+    description: 'Audit row detail: the workspace the decision was scoped to.',
+  },
+  'admin.audit.field.eventHash': {
+    message: 'Event hash',
+    description:
+      'Audit row detail: this row’s digest in the tamper-evident chain. Shown so the links are visible; nothing in this release verifies them.',
+  },
+  'admin.audit.field.previousHash': {
+    message: 'Previous hash',
+    description:
+      'Audit row detail: the digest of the row before this one, which is what chains them.',
+  },
+  'admin.audit.field.detail': {
+    message: 'Detail',
+    description:
+      'Audit row detail: structured context the policy chain recorded, already redacted when it was written.',
+  },
+  'admin.audit.empty.heading': {
+    message: 'Nothing has been recorded',
+    description:
+      'Heading of the audit empty state. Deliberately not reassuring: the policy chain writes a row for every decision, so an empty log in a tenant anybody has used means auditing is not working.',
+  },
+  'admin.audit.empty.body': {
+    message:
+      'The policy chain records every decision it makes, so an empty log in a tenant that is in use means events are not reaching this table.',
+    description: 'Body of the audit empty state. Says what the absence implies.',
+  },
+  'admin.audit.filtered.heading': {
+    message: 'No matching events',
+    description: 'Heading shown when audit filters exclude every row.',
+  },
+  'admin.audit.filtered.body': {
+    message: 'Nothing on this page of the log matches what you asked for.',
+    description:
+      'Body shown when audit filters exclude every row. Says "this page" because the log is paged and earlier pages may still match.',
+  },
+  'admin.audit.filtered.action': {
+    message: 'Clear filters',
+    description: 'Removes every audit narrowing and returns to the whole log.',
+  },
+  'admin.nav.audit': {
+    message: 'Audit log',
+    description:
+      'Rail entry for the audit surface: the record of what the policy chain decided, including what it refused.',
+  },
   'admin.retention.title': {
     message: 'Retention',
     description: 'Heading of the retention administration surface.',

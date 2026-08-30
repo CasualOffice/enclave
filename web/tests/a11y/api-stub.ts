@@ -477,6 +477,70 @@ export async function stubApi(page: Page, plan: ApiPlan = {}): Promise<void> {
       return json(route, { items: [], page: { nextCursor: null, hasMore: false } });
     }
 
+    /* The audit table (`ENC-961`'s screen). Two rows rather than one, and the
+     * second refused: the outcome column, the reason code and the marker on a
+     * refused row are the parts of this surface axe has something to say
+     * about, and one allowed row exercises none of them. */
+    if (path === '/admin/audit') {
+      return json(route, {
+        items: [
+          {
+            id: '01a0532c-3a10-7d60-ae53-9c10030eee8e',
+            sequence: 4089,
+            occurredAt: '2026-08-30T14:56:42.512078Z',
+            actorType: 'user',
+            actorId: '6f1d7ad4-4b1e-4d55-9a2f-4c9a7b2e1d33',
+            actorName: 'Ada Lovelace',
+            onBehalfOf: null,
+            action: 'file.download',
+            resourceType: 'file',
+            resourceId: 'e2d1b6a4-0c31-4a55-8b2f-1c9a7b2e1d44',
+            workspaceId: null,
+            outcome: 'ALLOW',
+            reasonCode: null,
+            policyRefs: [],
+            requestId: '01a0532b-b595-79a2-9d1c-c21e01536bb1',
+            sessionId: null,
+            clientType: 'web',
+            deviceId: null,
+            ip: '198.51.100.24',
+            country: 'GB',
+            userAgent: null,
+            detail: {},
+            previousHash: null,
+            eventHash: null,
+          },
+          {
+            id: '01a0532c-3a10-7d60-ae53-9c10030eee8f',
+            sequence: 4088,
+            occurredAt: '2026-08-30T14:32:47.673443Z',
+            actorType: 'service',
+            actorId: '9c1f52f0-1d3a-4c77-9c9e-4e0d0c4b2a11',
+            actorName: null,
+            onBehalfOf: null,
+            action: 'file.delete',
+            resourceType: 'file',
+            resourceId: 'a1b2c3d4-0c31-4a55-8b2f-1c9a7b2e1d55',
+            workspaceId: null,
+            outcome: 'DENY',
+            reasonCode: 'RETENTION_HOLD',
+            policyRefs: [],
+            requestId: '01a0532b-b595-79a2-9d1c-c21e01536bb2',
+            sessionId: null,
+            clientType: 'api',
+            deviceId: null,
+            ip: null,
+            country: null,
+            userAgent: null,
+            detail: {},
+            previousHash: null,
+            eventHash: null,
+          },
+        ],
+        nextCursor: null,
+      });
+    }
+
     return json(route, { items: [], page: { nextCursor: null, hasMore: false } });
   });
 }

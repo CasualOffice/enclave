@@ -6,6 +6,7 @@ import { Pill } from '../../shared/ui/primitives.tsx';
 import { DeniedPanel } from '../../shared/ui/surface-states.tsx';
 import { AdminNav } from './admin-nav.tsx';
 import { RetentionScreen } from './retention/retention-screen.tsx';
+import { AuditScreen } from './audit/audit-screen.tsx';
 import {
   AdminEmptyState,
   AdminErrorState,
@@ -97,7 +98,9 @@ export default function Screen() {
    * `unbuilt` and cannot select itself. An unknown value falls back to `dlp`
    * rather than rendering nothing, because a hand-edited URL should not be a
    * blank screen. */
-  const section = params.get('section') === 'retention' ? 'retention' : 'dlp';
+  const sectionParam = params.get('section');
+  const section =
+    sectionParam === 'retention' || sectionParam === 'audit' ? sectionParam : 'dlp';
   const query = params.get('q') ?? '';
   const selectedId = params.get('rule') ?? undefined;
   /* Auditor mode is a *rendering* of a decision the server does not send yet:
@@ -141,6 +144,29 @@ export default function Screen() {
    * DLP fetch that has nothing to do with the pane they asked for. The rail is
    * rendered in both arms, which is what keeps the two surfaces reachable from
    * each other. */
+  /* Audit owns its own states for the same reason retention does, and is
+   * returned first because it is the surface most likely to be opened directly
+   * from a link in an incident ticket. */
+  if (section === 'audit') {
+    return (
+      <div className="adm">
+        <AdminNav
+          section={section}
+          onSection={(next) => setParam('section', next === 'dlp' ? undefined : next)}
+          rules={[]}
+          selectedId={undefined}
+          query={query}
+          onQuery={(next) => setParam('q', next)}
+          hrefFor={(ruleId) => `${window.location.pathname}?rule=${encodeURIComponent(ruleId)}`}
+          onSelect={onSelect}
+          onCreate={onCreate}
+          readOnly={readOnly}
+        />
+        <AuditScreen />
+      </div>
+    );
+  }
+
   if (section === 'retention') {
     return (
       <div className="adm">

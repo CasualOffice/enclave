@@ -781,3 +781,192 @@
   font-size: var(--fs-meta);
   color: var(--fg2);
 }
+
+/* Audit (`ENC-961`'s screen).
+ *
+ * A dense table rather than the card list the other admin surfaces use. An
+ * audit log is scanned down a column — *when did this person start downloading*
+ * — and a card list makes that a scroll through paragraphs. Rows are quiet on
+ * purpose: fifty at a time, one weight of text, and colour spent only on the
+ * outcome, which is the one thing being scanned for.
+ *
+ * Every inset is logical (`padding-inline`, `border-inline-start`). Rule 12:
+ * no physical `left`/`right`, so the table reads correctly right-to-left
+ * without a second stylesheet.
+ */
+.aud-table {
+  inline-size: 100%;
+  border-collapse: collapse;
+  margin-block-start: var(--sp-4);
+  font-size: var(--fs-meta);
+}
+
+.aud-table th {
+  text-align: start;
+  font-weight: 600;
+  color: var(--fg2);
+  padding-block: var(--sp-2);
+  padding-inline: var(--sp-3);
+  border-block-end: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+.aud-table td {
+  padding-block: var(--sp-2);
+  padding-inline: var(--sp-3);
+  border-block-end: 1px solid var(--line);
+  vertical-align: baseline;
+}
+
+/* The refused rows carry a marker on the inline start edge. A tint across the
+ * whole row would make a page of ordinary refusals look like a page of
+ * incidents; an edge is findable when scanning and invisible when not. */
+.aud-row[data-outcome='DENY'] td:first-child {
+  box-shadow: inset 2px 0 0 var(--warn);
+}
+
+.aud-row[data-outcome='ERROR'] td:first-child {
+  box-shadow: inset 2px 0 0 var(--danger);
+}
+
+.aud-who {
+  font-weight: 500;
+}
+
+/* An actor is a control, because clicking one narrows the log to them — the
+ * only filter on this screen that is not typed, and the reason no field asks
+ * anybody to paste a UUID. */
+.aud-who-link {
+  font: inherit;
+  font-weight: 500;
+  color: var(--fg);
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: var(--line);
+  text-underline-offset: 2px;
+}
+
+.aud-who-link:hover {
+  text-decoration-color: var(--fg2);
+}
+
+.aud-actor-kind,
+.aud-reason {
+  display: block;
+  font-size: var(--fs-micro, 11px);
+  color: var(--fg2);
+}
+
+.aud-action,
+.aud-id,
+.aud-mono {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: inherit;
+  color: var(--fg2);
+}
+
+.aud-outcome {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+/* Mixed toward `--fg`, the same recipe `.ui-pill` uses, and for the reason axe
+ * found here: the raw tokens are chosen for fills and larger text, and at this
+ * size `--ok` reaches 4.35:1 and `--warn` 3.64:1 against the sheet — both below
+ * 4.5. Mixing keeps the hue that makes an outcome scannable and buys back the
+ * contrast that makes it readable. The colour is never the only carrier either:
+ * the word `DENY` is beside it, and the refused row has its own edge marker. */
+.aud-outcome[data-tone='ok'] {
+  color: color-mix(in srgb, var(--ok) 70%, var(--fg));
+}
+
+.aud-outcome[data-tone='warn'] {
+  color: color-mix(in srgb, var(--warn) 66%, var(--fg));
+}
+
+.aud-outcome[data-tone='danger'] {
+  color: color-mix(in srgb, var(--danger) 74%, var(--fg));
+}
+
+.aud-disclose {
+  font: inherit;
+  font-size: var(--fs-micro, 11px);
+  color: var(--fg2);
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.aud-detail-row td {
+  background: var(--sheet);
+  padding-block: var(--sp-3);
+}
+
+/* The circumstances, two columns of label and value. `dl` rather than a nested
+ * table: they are pairs, not a grid, and a screen reader announcing "column
+ * three" of somebody's IP address is worse than one announcing "Address". */
+.aud-detail {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: var(--sp-2) var(--sp-5);
+  margin: 0;
+}
+
+.aud-field dt {
+  font-size: var(--fs-micro, 11px);
+  color: var(--fg2);
+}
+
+.aud-field dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.aud-filters {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+  margin-block-start: var(--sp-3);
+}
+
+.aud-quick {
+  display: flex;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+
+.aud-chip {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--fs-micro, 11px);
+  color: var(--fg2);
+  background: var(--sheet);
+  border: 1px solid var(--line);
+  border-radius: var(--r-ctrl);
+  padding-block: 2px;
+  padding-inline: var(--sp-2);
+  cursor: pointer;
+}
+
+.aud-chip[aria-pressed='true'] {
+  color: var(--accent);
+  border-color: var(--accent-ring);
+  background: var(--accent-soft);
+}
+
+.aud-pager {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  margin-block-start: var(--sp-4);
+}
+
+.aud-pageno {
+  font-size: var(--fs-meta);
+  color: var(--fg2);
+}

@@ -729,7 +729,7 @@ pub async fn read_page(
     tx: &mut TenantScoped,
     filter: &AuditFilter,
     limit: i64,
-) -> Result<Vec<AuditEvent>> {
+) -> Result<Vec<AuditRecord>> {
     let tenant = tx.tenant_id();
     let rows = sqlx::query(SELECT_ADMIN_PAGE_SQL)
         .bind(tenant.as_uuid())
@@ -741,7 +741,38 @@ pub async fn read_page(
         .bind(limit)
         .fetch_all(&mut **tx)
         .await?;
-    rows.iter().map(event_from_row).collect()
+    rows.iter()
+        .map(|row| {
+            Ok(AuditRecord {
+                event: event_from_row(row)?,
+                actor_display_name: row.try_get("actor_display_name").map_err(AuditError::from)?,
+            })
+        })
+        .collect()
+}
+
+/// One stored row, plus the one thing the row cannot say about itself.
+///
+/// # Why the name is not on [`AuditEvent`]
+///
+/// `AuditEvent` is the canonical record — the thing the hash chain covers, and the thing
+/// `crate::canonical` encodes. A display name is neither: it lives in `users`, it changes when
+/// somebody is renamed, and putting it on the event would invite a future encoder to hash a value
+/// that is not part of what happened. So the join rides alongside the event rather than inside it.
+///
+/// # Why the join at all
+///
+/// `ENC-958`: two screens could say when something happened and not who did it, because the id was
+/// on the wire and the name was not. Printing a UUID at a reader is worse than not naming them, and
+/// a query per row from the API layer is the other way this goes wrong. `None` — an actor with no
+/// `users` row, which is every service account, link bearer and `system` action — renders as
+/// *"somebody"*, which is true of all of them.
+#[derive(Debug, Clone)]
+pub struct AuditRecord {
+    /// The stored row.
+    pub event: AuditEvent,
+    /// The actor's display name, or `None` when the actor has no `users` row.
+    pub actor_display_name: Option<String>,
 }
 
 /// What an administrator is asking the log.
@@ -769,15 +800,17 @@ pub struct AuditFilter {
 // Cursored on `sequence` rather than `occurred_at`, which is not unique: two events in the same
 // microsecond would make a timestamp cursor repeat one and skip the other, and an audit reader that
 // can silently drop a row is worse than no reader at all.
-const SELECT_ADMIN_PAGE_SQL: &str = "SELECT id, tenant_id, sequence, occurred_at, actor_id, \
-     actor_type, on_behalf_of, action, resource_type, resource_id, workspace_id, outcome, \
-     reason_code, policy_refs, request_id, session_id, client_type, mcp_client_id, device_id, \
-     host(ip) AS ip, country, user_agent, detail, previous_hash, event_hash \
-     FROM audit_events \
-     WHERE tenant_id = $1 \
-       AND ($2::bigint IS NULL OR sequence < $2) \
-       AND ($3::uuid IS NULL OR actor_id = $3) \
-       AND ($4::text IS NULL OR action = $4) \
-       AND ($5::text IS NULL OR outcome = $5) \
-       AND ($6::timestamptz IS NULL OR occurred_at >= $6) \
-     ORDER BY sequence DESC LIMIT $7";
+const SELECT_ADMIN_PAGE_SQL: &str = "SELECT a.id, a.tenant_id, a.sequence, a.occurred_at, \
+     a.actor_id, a.actor_type, a.on_behalf_of, a.action, a.resource_type, a.resource_id, \
+     a.workspace_id, a.outcome, a.reason_code, a.policy_refs, a.request_id, a.session_id, \
+     a.client_type, a.mcp_client_id, a.device_id, host(a.ip) AS ip, a.country, a.user_agent, \
+     a.detail, a.previous_hash, a.event_hash, u.display_name AS actor_display_name \
+     FROM audit_events a \
+     LEFT JOIN users u ON u.tenant_id = a.tenant_id AND u.id = a.actor_id \
+     WHERE a.tenant_id = $1 \
+       AND ($2::bigint IS NULL OR a.sequence < $2) \
+       AND ($3::uuid IS NULL OR a.actor_id = $3) \
+       AND ($4::text IS NULL OR a.action = $4) \
+       AND ($5::text IS NULL OR a.outcome = $5) \
+       AND ($6::timestamptz IS NULL OR a.occurred_at >= $6) \
+     ORDER BY a.sequence DESC LIMIT $7";
