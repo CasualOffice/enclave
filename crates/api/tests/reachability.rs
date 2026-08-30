@@ -317,6 +317,16 @@ const SPECS: &[Spec] = &[
         credential: Credential::Bearer,
         expect: Expect::Served,
     },
+    // `ENC-960`. `Served`: an empty feed is a `200` with an empty array, and this suite asks
+    // whether the binary answers the route it registered.
+    Spec {
+        method: "GET",
+        path: "/api/v1/me/activity",
+        target: "/api/v1/me/activity",
+        body: None,
+        credential: Credential::Bearer,
+        expect: Expect::Served,
+    },
     Spec {
         method: "GET",
         path: "/api/v1/workspaces",

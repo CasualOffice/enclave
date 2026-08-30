@@ -133,6 +133,9 @@ pub fn router(state: ApiState, delivery: Delivery) -> Router {
         // `ENC-959`. Favorites has carried a `Later` chip since the shell was written and had no
         // table until `migrations/0034`.
         .route("/api/v1/me/favorites", get(routes::favorites::list))
+        // `ENC-960`. The first reader `audit_events` has ever had — the hash-chained log has been
+        // written since Phase 0 and nothing has ever selected from it.
+        .route("/api/v1/me/activity", get(routes::activity::activity))
         // did not exist and must not be improvised out of `audit_events`, which is hash-chained
         // and deliberately not a feed (rule 10). It is a purpose-built read model instead —
         // `migrations/0029` — and every candidate it returns goes through the chain before it

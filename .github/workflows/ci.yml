@@ -1003,6 +1003,14 @@ jobs:
           ./target/debug/enclave-cli seed
           printf '%s' "$ENCLAVE_E2E_PASSWORD" | ./target/debug/enclave-cli \
             set-password --tenant tenant-alpha --email admin@tenant-alpha.example
+          # `member@` as well (`ENC-962`). `seed` writes users and has never written a credential
+          # (`ENC-931`), so a seeded account answers `401` until a password is set — and
+          # `tests/e2e/shared.spec.ts` needs a *second* real person, because "somebody shared this
+          # with you" is not a property one account can demonstrate against itself. That test went
+          # red on `main` the moment it merged: it was verified locally against a password set by
+          # hand, which is state CI does not have and no fixture creates.
+          printf '%s' "$ENCLAVE_E2E_PASSWORD" | ./target/debug/enclave-cli \
+            set-password --tenant tenant-alpha --email member@tenant-alpha.example
         env:
           ENCLAVE_E2E_PASSWORD: ${{ secrets.ENCLAVE_E2E_PASSWORD || 'Walkthrough-Pass-2026!' }}
 

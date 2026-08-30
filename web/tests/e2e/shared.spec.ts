@@ -88,14 +88,22 @@ test('a folder shared through the product appears on the recipient’s Shared wi
   expect(created.ok(), `folder creation answered ${created.status()}`).toBe(true);
   const folder = Node.parse(await created.json());
 
-  // The recipient. Seeded, and given a password by the same walkthrough the
-  // README documents.
+  // The recipient. Seeded, and given a password by the CI step beside the
+  // admin one — `seed` writes users and never a credential (`ENC-931`), which
+  // is why this test went red on `main` the moment it merged: it was verified
+  // locally against a password set by hand.
   const recipient = 'member@tenant-alpha.example';
   const recipientId = await (async () => {
     const response = await request.post('/api/v1/auth/login', {
       data: { email: recipient, password: PASSWORD },
     });
-    expect(response.ok(), 'the recipient must be able to sign in').toBe(true);
+    expect(
+      response.ok(),
+      `the recipient (${recipient}) could not sign in: ${response.status()}. \`seed\` writes ` +
+        'users and never a credential (ENC-931), so this account answers 401 until something sets ' +
+        'its password — the CI step does, beside the admin one. A local run needs ' +
+        '`enclave-cli set-password --tenant tenant-alpha --email member@tenant-alpha.example`.',
+    ).toBe(true);
     const theirToken = Login.parse(await response.json()).accessToken;
     const who = await request.get('/api/v1/me', {
       headers: { authorization: `Bearer ${theirToken}` },

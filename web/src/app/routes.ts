@@ -23,6 +23,7 @@ export type RouteName =
   | 'library'
   | 'search'
   | 'ask'
+  | 'activity'
   | 'favorites'
   | 'shared'
   | 'trash'
@@ -34,6 +35,7 @@ const PATHS: Record<RouteName, string> = {
   library: '/library',
   search: '/search',
   ask: '/ask',
+  activity: '/activity',
   favorites: '/favorites',
   shared: '/shared',
   trash: '/trash',
