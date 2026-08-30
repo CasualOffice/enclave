@@ -498,7 +498,7 @@ object, the same `capabilities`, the same `obligations`:
 ```json
 {
   "id": "01937fb3-…",
-  "type": "FOLDER",
+  "nodeType": "FOLDER",
   "name": "Q3 Board Pack",
   "mimeType": "inode/directory",
   "sizeBytes": 0,
@@ -1568,7 +1568,7 @@ was reachable only by somebody holding an id they had written down first.
 {
   "items": [
     {
-      "fileId": "01a04eb4-…", "name": "Q3 Notes.pdf", "type": "FILE",
+      "fileId": "01a04eb4-…", "name": "Q3 Notes.pdf", "nodeType": "FILE",
       "mimeType": "application/pdf", "libraryId": "01a04eb4-…", "parentFolderId": null,
       "deletedAt": "2026-08-29T20:11:04Z", "purgeAfter": "2026-09-28T20:11:04Z",
       "deletedBy": { "id": "…", "displayName": "…" },

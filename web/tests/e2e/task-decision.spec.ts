@@ -73,9 +73,9 @@ test('a task on Home is approved by pressing the button, and the workflow comple
   const libraryId = Page.parse(await libraries.json()).items[0]?.id;
   const items = await request.get(`/api/v1/libraries/${libraryId}/items`, { headers: auth });
   const file = z
-    .object({ items: z.array(z.object({ id: z.string(), type: z.string() })) })
+    .object({ items: z.array(z.object({ id: z.string(), nodeType: z.string() })) })
     .parse(await items.json())
-    .items.find((row) => row.type === 'FILE');
+    .items.find((row) => row.nodeType === 'FILE');
   expect(file, 'the seeded library must hold a file to run a workflow against').toBeDefined();
 
   const started = await request.post(`/api/v1/files/${file?.id}/workflows`, {

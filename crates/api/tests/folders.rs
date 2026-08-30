@@ -381,7 +381,7 @@ async fn a_caller_without_the_grant_cannot_create_and_is_told_nothing() {
 
     assert_eq!(status, StatusCode::CREATED, "{created}");
     assert_eq!(created["name"], "Quarterly Reports", "{created}");
-    assert_eq!(created["type"], "FOLDER", "{created}");
+    assert_eq!(created["nodeType"], "FOLDER", "{created}");
     assert_eq!(created["libraryId"], alpha.library.to_string(), "{created}");
     assert!(created["parentId"].is_null(), "a root folder has no parent: {created}");
     assert_eq!(

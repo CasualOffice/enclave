@@ -234,7 +234,7 @@ function item(index: number) {
   const modified = new Date(Date.UTC(2026, 7, 20) - index * 3_600_000).toISOString();
   return {
     id: `file-${index}`,
-    type: index < 3 ? 'FOLDER' : 'FILE',
+    nodeType: index < 3 ? 'FOLDER' : 'FILE',
     name: index < 3 ? `Folder ${index + 1}` : `${NAMES[index % NAMES.length]}`,
     mimeType: index < 3 ? 'application/x-directory' : (MIMES[index % MIMES.length] ?? 'text/plain'),
     sizeBytes: index < 3 ? 0 : 100_000 + index * 977,

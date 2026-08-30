@@ -31,7 +31,7 @@ const OBLIGATIONS = { watermark: false, justificationRequired: [], approvalRequi
 function wireItem(capabilityReasons?: Record<string, string>): unknown {
   return {
     id: 'item-1',
-    type: 'FILE',
+    nodeType: 'FILE',
     name: 'Board Pack.pdf',
     mimeType: 'application/pdf',
     sizeBytes: 4_718_592,

@@ -160,8 +160,8 @@ function Row({
 
   return (
     <li className="trash-row">
-      <span className="trash-icon" data-kind={item.type} aria-hidden="true">
-        <Icon name={item.type === 'FOLDER' ? 'folder' : 'file'} size={16} />
+      <span className="trash-icon" data-kind={item.nodeType} aria-hidden="true">
+        <Icon name={item.nodeType === 'FOLDER' ? 'folder' : 'file'} size={16} />
       </span>
       <span className="trash-name">
         <Truncate>

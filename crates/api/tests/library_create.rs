@@ -422,7 +422,7 @@ async fn a_library_created_here_can_immediately_be_listed_and_written_into() {
         "the workspace grant must reach the new library's contents: {folder}"
     );
     assert_eq!(folder["libraryId"], library, "{folder}");
-    assert_eq!(folder["type"], "FOLDER", "{folder}");
+    assert_eq!(folder["nodeType"], "FOLDER", "{folder}");
 }
 
 // ---------------------------------------------------------------------------------------------

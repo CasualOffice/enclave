@@ -45,8 +45,8 @@ function groupItems(items: readonly Item[]): {
   readonly groups: readonly GroupSpec[];
   readonly ordered: readonly Item[];
 } {
-  const folders = items.filter((item) => item.type === 'FOLDER');
-  const files = items.filter((item) => item.type === 'FILE');
+  const folders = items.filter((item) => item.nodeType === 'FOLDER');
+  const files = items.filter((item) => item.nodeType === 'FILE');
 
   const groups: GroupSpec[] = [];
   if (folders.length > 0) groups.push({ id: 'folders', name: 'FOLDER', count: folders.length });
