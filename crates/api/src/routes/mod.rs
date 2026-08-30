@@ -13,6 +13,7 @@
 //! The policy-routing lint walks `crates/api/src` recursively (`xtask/src/policy_routing.rs`), so a
 //! handler here is checked exactly as one at the crate root is.
 
+pub mod activity;
 pub mod auth;
 pub mod bootstrap;
 pub mod delivery;

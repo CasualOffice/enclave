@@ -2710,6 +2710,84 @@ export const catalog = {
     description:
       'Chip carrying the file’s classification label as the server sent it, on a Favorites row.',
   },
+
+  /* Activity (`ENC-960`).
+   *
+   * One sentence per recorded verb rather than a template with the action
+   * substituted in. "was edited" and "was moved" are not one string with a word
+   * swapped in any language that inflects, and a translator has to see all of
+   * them (`docs/14 §8`).
+   *
+   * All are passive and none names the actor. That is not a style choice: the
+   * server sends an opaque principal id and no directory read resolves one
+   * (`ENC-958`), so "Alice edited this" is a sentence this product cannot yet
+   * write truthfully.
+   */
+  'activity.title': {
+    message: 'Activity',
+    description: 'Heading of the screen listing recent changes to content this account can see.',
+  },
+  'activity.subline': {
+    message: 'Recent changes to files and folders you can see.',
+    description:
+      'Sentence under the Activity heading. "You can see" is load-bearing: the feed is trimmed to what this person has access to, so it is not a record of everything that happened in the tenant.',
+  },
+  'activity.empty.heading': {
+    message: 'Nothing has changed',
+    description: 'Heading of the empty state when no visible content has changed recently.',
+  },
+  'activity.empty.body': {
+    message:
+      'Edits, moves, deletions and permission changes to content you can see will appear here. Opening a file is not a change and is never listed.',
+    description:
+      'Body of the Activity empty state. The second sentence is deliberate: a reader who expects a record of views would otherwise read the blank screen as broken, and the product declines to keep that record at all.',
+  },
+  'activity.filtered.heading': {
+    message: 'Nothing you can see has changed',
+    description:
+      'Heading of the empty state when changes happened but every one of them was to content this account cannot see.',
+  },
+  'activity.filtered.body': {
+    message:
+      '{count, plural, one {# recent change was} other {# recent changes were}} to content you do not have access to.',
+    description:
+      'Body of the filtered-empty state. Says how many and never which — CLAUDE.md rule 7. This is the common case in a busy tenant, not an edge case, which is why it gets its own sentence rather than sharing the empty one.',
+  },
+  'activity.action.edit': {
+    message: 'was edited',
+    description: 'Activity row: a new version was committed. Passive; the actor is not named.',
+  },
+  'activity.action.delete': {
+    message: 'was moved to the bin',
+    description:
+      'Activity row: the item was trashed. "Moved to the bin" rather than "deleted", because it is recoverable and calling it deletion would alarm a reader about something reversible.',
+  },
+  'activity.action.restore': {
+    message: 'was restored',
+    description: 'Activity row: the item was brought back from the bin.',
+  },
+  'activity.action.move': {
+    message: 'was moved',
+    description: 'Activity row: the item was relocated, which changes inherited permissions.',
+  },
+  'activity.action.copy': {
+    message: 'was copied',
+    description: 'Activity row: the item was duplicated elsewhere.',
+  },
+  'activity.action.permissions': {
+    message: 'had its permissions changed',
+    description: 'Activity row: an access-control entry on the item was written or withdrawn.',
+  },
+  'activity.action.share': {
+    message: 'was shared',
+    description:
+      'Activity row: access was granted to somebody. Covers both internal and external sharing — the distinction matters enormously to policy and not to a person reading their own feed, and naming external sharing separately here would disclose that it happened to everybody who can see the file.',
+  },
+  'activity.action.other': {
+    message: 'was changed',
+    description:
+      'Activity row for a recorded action this client does not have a sentence for. Deliberately vague rather than absent: dropping the row would hide something that happened, and printing the raw action name would put an internal identifier in front of a reader.',
+  },
 } as const satisfies Record<string, CatalogEntry>;
 
 export type MessageKey = keyof typeof catalog;

@@ -86,6 +86,7 @@
 //! See `plans/M0-FOUNDATIONS.md` D3 for the decision record behind [`TenantScoped`], and
 //! `docs/02-HLD.md §4` for where this crate sits.
 
+pub mod activity;
 pub mod auth_tokens;
 pub mod classifications;
 pub mod conditional_access;

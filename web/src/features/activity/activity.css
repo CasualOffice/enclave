@@ -1,0 +1,108 @@
+/* Activity (`ENC-960`).
+ *
+ * Trash's measure and rhythm, deliberately. Both are a short list of files with a
+ * timestamp on the right, and two screens that look alike because they *are*
+ * alike is the whole point of a token scale. The one structural difference is
+ * that every row here is a link — a share exists to be opened — so the hover and
+ * focus treatments sit on the anchor rather than on the `li`.
+ */
+
+.act {
+  padding-block: var(--sp-9);
+  padding-inline: var(--sp-10);
+  overflow: auto;
+  block-size: 100%;
+}
+
+.act-page {
+  max-inline-size: var(--page-measure);
+  margin-inline: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+}
+
+.act-title {
+  margin: 0;
+  font-family: var(--tight);
+  font-size: var(--fs-display);
+  line-height: var(--lh-tight);
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.act-subline {
+  margin: 0;
+  margin-block-start: var(--sp-2);
+  font-size: var(--fs-meta);
+  color: var(--fg2);
+}
+
+.act-list ul,
+.act-loading ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+/* The divider is an inset shadow rather than a border, so the last row's rule is
+ * clipped by the card's `overflow: hidden` instead of needing a `:last-child`
+ * exception every future insertion has to remember. On the `li`, not the anchor,
+ * so a focused row's ring is not drawn over a line. */
+.act-row {
+  box-shadow: inset 0 -1px 0 var(--line);
+}
+
+.act-link {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  padding-block: var(--sp-4);
+  padding-inline: var(--sp-6);
+  min-block-size: 52px;
+  text-decoration: none;
+  color: inherit;
+}
+
+.act-link:hover {
+  background: var(--hover);
+}
+
+/* The shared ring, resolved through its `var()` indirection rather than
+ * `--accent` by name — `ENC-702` found every `:focus-visible` in the tree
+ * drawing a 30–40% wash that measured under `docs/09 §15`'s 3:1 floor. */
+.act-link:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+
+.act-row--skeleton {
+  background: var(--sunken);
+  opacity: 0.55;
+  min-block-size: 52px;
+}
+
+.act-icon {
+  display: flex;
+  flex: none;
+  color: var(--fg3);
+}
+
+.act-name {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  min-inline-size: 0;
+  font-size: var(--fs-body);
+  color: var(--fg);
+}
+
+.act-ext {
+  color: var(--fg4);
+  font-weight: 400;
+}
+
+.act-meta {
+  font-size: var(--fs-sm);
+  color: var(--fg3);
+}

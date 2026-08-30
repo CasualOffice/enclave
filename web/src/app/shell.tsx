@@ -68,7 +68,10 @@ const WORKSPACE: readonly NavItem[] = [
   { label: 'nav.files', icon: 'folder', route: 'library' },
   { label: 'nav.lists', icon: 'list', unbuilt: true },
   { label: 'nav.pages', icon: 'page', unbuilt: true },
-  { label: 'nav.activity', icon: 'act', unbuilt: true },
+  /* Built by `ENC-960`. It was `unbuilt: true` while `audit_events` had no
+   * reader at all — the log has been written since Phase 0 and nothing had ever
+   * selected from it. Fourth of the seven to stop needing the chip. */
+  { label: 'nav.activity', icon: 'act', route: 'activity' },
 ];
 
 const PERSONAL: readonly NavItem[] = [
