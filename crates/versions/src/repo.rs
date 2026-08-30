@@ -220,7 +220,44 @@ impl VersionRepository {
 
         Ok(VersionPage { versions, next_before, has_more, limit })
     }
+    /// Marks a version as being restored from cold storage, if it is archived (`ENC-946`).
+    ///
+    /// Returns whether this call is the one that changed it. `false` means the version was not
+    /// `ARCHIVED` when the statement ran — already restoring, already hot, or mid-archive — and the
+    /// caller must **not** issue a provider retrieval on the strength of it: every restore is
+    /// billed, and two callers clicking at once would otherwise pay twice for one object.
+    ///
+    /// The predicate names the tier it is leaving, so the check and the write are one statement.
+    /// A `SELECT` then an `UPDATE` is the download-budget defect in `plans/M1-CONTENT-CORE.md` D18:
+    /// under `READ COMMITTED` the loser of a race re-evaluates this `WHERE` against the updated row
+    /// and matches nothing, which is what makes "exactly one caller starts the restore" a property
+    /// of the database rather than of the handler's ordering.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures.
+    pub async fn mark_restoring(
+        conn: &mut PgConnection,
+        tenant: TenantId,
+        version: VersionId,
+    ) -> Result<bool> {
+        let changed = sqlx::query(MARK_RESTORING)
+            .bind(tenant.as_uuid())
+            .bind(version.as_uuid())
+            .fetch_optional(&mut *conn)
+            .await?;
+        Ok(changed.is_some())
+    }
 }
+
+/// `now()` from the database's clock, not the caller's: `restore_requested_at` is what a sweep
+/// measures a stuck restore against, and a wall clock that disagrees with the sweep's would make
+/// "waiting six hours" a number nobody can act on.
+const MARK_RESTORING: &str = "
+    UPDATE file_versions
+       SET storage_tier = 'RESTORING', restore_requested_at = now()
+     WHERE tenant_id = $1 AND id = $2 AND storage_tier = 'ARCHIVED'
+    RETURNING id";
 
 /// One version of one file. `file_id` is in the predicate as well as `id` so that a version id
 /// belonging to a different file cannot be read through a URL naming this one.

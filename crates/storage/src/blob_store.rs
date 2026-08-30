@@ -147,6 +147,51 @@ pub trait BlobStore: PublicAccessCheck + Send + Sync {
         Err(crate::StorageError::Unsupported { capability: "aborting a multipart upload" })
     }
 
+    /// Moves an object to the coldest tier this store offers (`ENC-946`).
+    ///
+    /// # This is refused, never simulated
+    ///
+    /// The default is [`crate::StorageError::Unsupported`], and a store that has no cold tier must
+    /// keep it. The tempting alternative — succeed, change nothing, let the caller record the row
+    /// as archived — produces a deployment where content is *marked* unavailable and is in fact
+    /// still sitting in the hot bucket being paid for at hot prices, while every read path refuses
+    /// it. That is worse than not having the feature: it is a cost saving that does not happen and
+    /// an outage that does.
+    ///
+    /// The transition is **not** instant on any provider that has a cold tier, so a caller records
+    /// [`ARCHIVING`](https://docs.rs/enclave-versions) before calling and confirms afterwards.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::StorageError::Unsupported`] when the store has no cold tier, and any provider
+    /// failure.
+    async fn archive(&self, key: &str) -> Result<()> {
+        let _ = key;
+        Err(crate::StorageError::Unsupported { capability: "moving an object to a cold tier" })
+    }
+
+    /// Asks for an archived object to be made readable again, for at least `days`.
+    ///
+    /// **Asynchronous by contract.** Returning `Ok` means the provider accepted the request, never
+    /// that the bytes are back — S3 Glacier Deep Archive takes hours. A caller records
+    /// `RESTORING` and polls; anything that waited here would hold a connection for the length of
+    /// somebody else's SLA.
+    ///
+    /// `days` is how long the restored copy stays readable before falling back to cold. It is the
+    /// caller's because it is a cost decision, not a storage one: a longer window is a second copy
+    /// billed at hot rates for longer.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::StorageError::Unsupported`] when the store has no cold tier, and any provider
+    /// failure — including the provider's own answer that a restore is already in progress, which
+    /// is *not* mapped to success here. A caller that treats "already restoring" as an error it can
+    /// ignore is making a decision this layer should not make for it.
+    async fn request_restore(&self, key: &str, days: i32) -> Result<()> {
+        let _ = (key, days);
+        Err(crate::StorageError::Unsupported { capability: "restoring an object from a cold tier" })
+    }
+
     /// What this store supports — multipart, single-use URLs, object lock.
     ///
     /// Reports what was *observed* at connect time, not what the provider family is assumed to

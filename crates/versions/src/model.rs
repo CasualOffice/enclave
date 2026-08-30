@@ -288,6 +288,56 @@ impl AvScan {
     }
 }
 
+db_enum! {
+    /// Where a version's bytes physically live, and therefore how long fetching them takes
+    /// (`file_versions.storage_tier`, `migrations/0032`).
+    ///
+    /// **Orthogonal to [`VersionStatus`], and that separation is the design** (`ENC-946`).
+    /// `VersionStatus` answers *"is this content processed and safe to serve"* — it is the column
+    /// `CLAUDE.md` rule 9 is about. This answers *"how long will it take"*. A version that is
+    /// clean, scanned, approved and cold is `AVAILABLE` **and** [`StorageTier::Archived`].
+    ///
+    /// Folding the two together would make an archived version indistinguishable from a
+    /// quarantined one at every `status = 'AVAILABLE'` predicate in the workspace, so archiving
+    /// content would silently make it look infected — and rule 9's column would start carrying a
+    /// latency fact, leaving no way to tell which of its values are safety and which are speed.
+    pub enum StorageTier {
+        /// Immediately readable. Every version written before `migrations/0032`, and every new one.
+        Hot => "HOT",
+        /// A transition to cold storage has been requested and the provider has not confirmed it.
+        ///
+        /// Read paths refuse from here rather than from [`StorageTier::Archived`]: the provider may
+        /// move the object at any point after accepting the request, and the window between *asked*
+        /// and *confirmed* is exactly when a mint produces a URL that fails at the object store —
+        /// outside this product, as an opaque error the caller cannot act on.
+        Archiving => "ARCHIVING",
+        /// Cold. The bytes exist and are not immediately retrievable.
+        Archived => "ARCHIVED",
+        /// A rehydration has been requested and the bytes are not back yet.
+        ///
+        /// A state to poll, never a request that blocks. The product is designed for **slow**
+        /// rehydration — S3 Glacier Deep Archive is measured in hours — because a design that
+        /// assumes minutes breaks on the slow provider, and one that assumes hours degrades to
+        /// minutes without changing shape.
+        Restoring => "RESTORING",
+    }
+}
+
+impl StorageTier {
+    /// Whether bytes at this tier can be fetched now.
+    ///
+    /// Only [`StorageTier::Hot`]. An exhaustive match with no `_` arm, so a fifth tier has to be
+    /// classified rather than silently joining the readable side — the direction of that mistake is
+    /// a signed URL minted for bytes that are not there.
+    #[must_use]
+    pub const fn is_immediately_readable(self) -> bool {
+        match self {
+            Self::Hot => true,
+            Self::Archiving | Self::Archived | Self::Restoring => false,
+        }
+    }
+}
+
 /// One row of `file_versions`.
 ///
 /// Immutable in the database once [`VersionStatus::Available`], for the five columns that make up
@@ -343,6 +393,14 @@ pub struct FileVersion {
     pub created_at: DateTime<Utc>,
     /// The check-in comment, as the user typed it.
     pub comment: Option<String>,
+    /// Where the bytes live, and therefore how fast they can be fetched (`ENC-946`).
+    pub storage_tier: StorageTier,
+    /// When rehydration was last requested, kept after it completes.
+    ///
+    /// Not cleared on success: how long the last restore took is the only evidence a deployment has
+    /// that its archive tier is behaving, and clearing it destroys that evidence at the moment it
+    /// becomes useful.
+    pub restore_requested_at: Option<DateTime<Utc>>,
 }
 
 impl FileVersion {
@@ -401,6 +459,48 @@ mod tests {
                 "the migration allows `{spelling}` and VersionStatus does not"
             );
         }
+    }
+
+    /// `migrations/0032` adds the tier vocabulary; this is the same drift check for it.
+    const TIER_MIGRATION: &str = include_str!("../../../migrations/0032_storage_tier.sql");
+
+    #[test]
+    fn every_storage_tier_the_check_constraint_allows_has_a_rust_variant() {
+        for tier in StorageTier::all() {
+            assert!(
+                TIER_MIGRATION.contains(&format!("'{}'", tier.as_str())),
+                "{tier} is not in migrations/0032"
+            );
+        }
+        let line = TIER_MIGRATION
+            .lines()
+            .find(|l| l.contains("CHECK (storage_tier IN"))
+            .expect("the storage_tier CHECK constraint");
+        for spelling in line.split('\'').skip(1).step_by(2) {
+            assert!(
+                StorageTier::from_str(spelling).is_ok(),
+                "the migration allows `{spelling}` and StorageTier does not; a tier the decoder \
+                 cannot read refuses the row, so a version stored with it becomes unreadable"
+            );
+        }
+    }
+
+    /// Exactly one tier is immediately readable, and it is `HOT`.
+    ///
+    /// The assertion is on the **count** as well as the value, and that is the point. Checking only
+    /// that `Hot` is readable passes against an implementation where every tier is; checking only
+    /// that `Archived` is not passes against one where none is. A fifth tier added without thought
+    /// fails this, which is what the exhaustive match in `is_immediately_readable` is for — the
+    /// direction of that mistake is a signed URL minted for bytes that are in Glacier.
+    #[test]
+    fn exactly_one_tier_can_be_read_without_asking_for_it_back() {
+        let readable: Vec<_> =
+            StorageTier::all().iter().filter(|t| t.is_immediately_readable()).collect();
+        assert_eq!(
+            readable,
+            vec![&StorageTier::Hot],
+            "the set of immediately-readable tiers must be exactly [HOT]; it is {readable:?}"
+        );
     }
 
     #[test]
@@ -470,6 +570,8 @@ mod tests {
             created_by: UserId::new_v7(),
             created_at: Utc::now(),
             comment: None,
+            storage_tier: StorageTier::Hot,
+            restore_requested_at: None,
         };
         assert!(base.is_readable());
 
@@ -521,6 +623,8 @@ mod tests {
                 created_by: UserId::new_v7(),
                 created_at: Utc::now(),
                 comment: None,
+                storage_tier: StorageTier::Hot,
+                restore_requested_at: None,
             };
             assert!(!version.is_readable(), "SCANNING/{av} was served");
         }
@@ -545,6 +649,8 @@ mod tests {
             created_by: UserId::new_v7(),
             created_at: Utc::now(),
             comment: None,
+            storage_tier: StorageTier::Hot,
+            restore_requested_at: None,
         };
         assert!(served.is_readable(), "ALLOW_WITH_FLAG buys no availability at all — ENC-828");
     }

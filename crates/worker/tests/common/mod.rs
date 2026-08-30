@@ -116,6 +116,8 @@ impl PublicAccessCheck for RecordingStore {
 impl BlobStore for RecordingStore {
     fn capabilities(&self) -> StoreCapabilities {
         StoreCapabilities {
+            // No cold tier: this double serves from memory (`ENC-946`).
+            storage_tiers: Support::No,
             backend: "recording-stub",
             multipart: Some(MultipartLimits {
                 min_part_bytes: 5 * 1024 * 1024,

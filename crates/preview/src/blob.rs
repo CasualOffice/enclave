@@ -143,6 +143,8 @@ mod tests {
         }
         fn capabilities(&self) -> StoreCapabilities {
             StoreCapabilities {
+                // No cold tier (`ENC-946`): a double, or a backend with nowhere colder to put bytes.
+                storage_tiers: Support::No,
                 backend: "test",
                 multipart: None,
                 signed_urls: false,

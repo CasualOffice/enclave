@@ -1345,6 +1345,8 @@ impl BlobStore for RecordingStore {
 
 fn capabilities(backend: &'static str) -> StoreCapabilities {
     StoreCapabilities {
+        // No cold tier (`ENC-946`): a double, or a backend with nowhere colder to put bytes.
+        storage_tiers: Support::No,
         backend,
         multipart: Some(MultipartLimits {
             min_part_bytes: 5 * 1024 * 1024,

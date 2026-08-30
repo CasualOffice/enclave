@@ -191,7 +191,18 @@ pub async fn download(
         }
     }
 
-    let version = readable_version(&state, &ctx, file, request.version_id, request_id).await?;
+    let version = readable_version_for(&state, &ctx, file, request.version_id, request_id).await?;
+
+    // Before the mint, never after. A pre-signed URL for a Glacier object is fetched directly by
+    // the caller and answered by the object store with `InvalidObjectState` — as XML, from a
+    // hostname that is not ours, in a shape no client of this API parses. The product never sees
+    // that failure and cannot explain it, so the only place this can be caught is here
+    // (`crate::tiering`, `ENC-946`).
+    if !version.storage_tier.is_immediately_readable() {
+        return Ok(
+            crate::tiering::archived(version.storage_tier.as_str()).into_response(request_id)
+        );
+    }
 
     // Minted here and nowhere else in this crate. The transaction is already committed: an
     // external call inside a database transaction holds a connection for the duration of somebody
@@ -222,7 +233,7 @@ pub async fn download(
 /// has not cleared — is the same [`Error::NotFound`]. `CLAUDE.md` rule 9 is enforced by
 /// [`VersionRepository::find_readable`] rather than by a status comparison here, so a read path
 /// cannot forget it.
-async fn readable_version(
+pub(crate) async fn readable_version_for(
     state: &ApiState,
     ctx: &RequestContext,
     file: FileId,
@@ -404,7 +415,7 @@ fn parse_body(body: &Bytes) -> Result<DownloadRequest, Envelope> {
 /// does not know what an HTTP status is. The distinction that matters to a caller is whether an
 /// identical retry could work, and [`enclave_storage::StorageError::retryable`] already decides it
 /// in one place.
-fn storage_failure(error: &enclave_storage::StorageError) -> Error {
+pub(crate) fn storage_failure(error: &enclave_storage::StorageError) -> Error {
     tracing::error!(?error, "minting a signed download URL failed");
     Error::Upstream {
         dependency: enclave_core::Dependency::ObjectStorage,

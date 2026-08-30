@@ -98,6 +98,21 @@ impl S3BlobStore {
                 versioning: Support::Unknown,
                 object_lock: Support::Unknown,
                 server_side_encryption: Support::Unknown,
+                // **Inferred from configuration, not observed** (`ENC-946`), and the exception to
+                // this struct's rule is stated rather than hidden. There is no cheap probe for
+                // "does this backend implement RestoreObject": the only way to find out is to
+                // archive an object and try, which is a test that costs a retrieval and cannot be
+                // run at connect time.
+                //
+                // So: an endpoint override means an S3-*compatible* backend — MinIO, Ceph, R2 —
+                // and none of them has a cold tier or implements `RestoreObject`. No override means
+                // real AWS S3, which always has Glacier.
+                //
+                // The inference fails in one direction only, and it is the safe one: a compatible
+                // backend that *did* grow Glacier semantics would be reported as `No` and its
+                // archive surface would refuse. Under-reporting costs a feature; over-reporting
+                // would mark content unavailable that never moved and cannot be brought back.
+                storage_tiers: if config.endpoint.is_none() { Support::Yes } else { Support::No },
                 range_reads: true,
                 server_side_copy: true,
             },
@@ -573,6 +588,67 @@ impl BlobStore for S3BlobStore {
             .send()
             .await
             .map_err(|err| self.map_err("CopyObject", Some(from.as_str()), &err))?;
+        Ok(())
+    }
+
+    async fn archive(&self, key: &str) -> Result<()> {
+        // Refused where the backend has no cold tier, rather than issued and ignored. MinIO accepts
+        // `x-amz-storage-class` and stores the header; the bytes do not move, `RestoreObject` is
+        // not implemented, and a caller that believed this would mark content unavailable that is
+        // still in the hot bucket and cannot be brought back through this API.
+        if !self.capabilities.storage_tiers.is_confirmed() {
+            return Err(crate::StorageError::Unsupported {
+                capability: "moving an object to a cold tier",
+            });
+        }
+        let key = ObjectKey::parse(key)?;
+        // A self-copy is how S3 changes an existing object's storage class; there is no
+        // `SetStorageClass`. `metadata_directive` is left at its default of `COPY`, so the object's
+        // own metadata survives the transition — `REPLACE` would silently drop it, and the content
+        // type is what every read path uses to decide how to render the bytes.
+        self.client
+            .copy_object()
+            .bucket(&self.config.bucket)
+            .copy_source(format!("{}/{key}", self.config.bucket))
+            .key(key.as_str())
+            .storage_class(aws_sdk_s3::types::StorageClass::DeepArchive)
+            .send()
+            .await
+            .map_err(|err| self.map_err("CopyObject(archive)", Some(key.as_str()), &err))?;
+        Ok(())
+    }
+
+    async fn request_restore(&self, key: &str, days: i32) -> Result<()> {
+        if !self.capabilities.storage_tiers.is_confirmed() {
+            return Err(crate::StorageError::Unsupported {
+                capability: "restoring an object from a cold tier",
+            });
+        }
+        let key = ObjectKey::parse(key)?;
+        // `Bulk` and not `Standard` or `Expedited`, and it is a cost decision made once here rather
+        // than a knob: Deep Archive does not offer `Expedited` at all, `Standard` is materially
+        // dearer per request, and the product is already designed for a rehydration measured in
+        // hours (`enclave_versions::StorageTier::Restoring`). A tier that promised minutes would be
+        // a promise this schema does not make.
+        let request = aws_sdk_s3::types::RestoreRequest::builder()
+            .days(days)
+            .glacier_job_parameters(
+                aws_sdk_s3::types::GlacierJobParameters::builder()
+                    .tier(aws_sdk_s3::types::Tier::Bulk)
+                    .build()
+                    .map_err(|_| crate::StorageError::Unsupported {
+                        capability: "building a restore request",
+                    })?,
+            )
+            .build();
+        self.client
+            .restore_object()
+            .bucket(&self.config.bucket)
+            .key(key.as_str())
+            .restore_request(request)
+            .send()
+            .await
+            .map_err(|err| self.map_err("RestoreObject", Some(key.as_str()), &err))?;
         Ok(())
     }
 

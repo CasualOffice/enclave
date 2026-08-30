@@ -1,6 +1,6 @@
 # 08 — BYO Infrastructure & Configuration
 
-> **Status:** Draft · **Version:** 2.6 · **Owner:** Platform Engineering · **Last updated:** 2026-08-29
+> **Status:** Draft · **Version:** 2.7 · **Owner:** Platform Engineering · **Last updated:** 2026-08-30
 > **Authoritative for:** provider traits, BYO infrastructure, configuration model and precedence.
 
 ## 1. Principle
@@ -121,6 +121,45 @@ Requirements for any provider used in production:
 - multipart upload for large files;
 - versioning or object-lock where records/legal hold are used;
 - a bucket that is **not** publicly readable, verified by a startup self-check.
+
+## 3A. Archival and cold storage (`ENC-946`)
+
+A store may or may not have a colder tier. `StoreCapabilities.storage_tiers` reports it, and the two
+verbs — `BlobStore::archive` and `BlobStore::request_restore` — default to
+`StorageError::Unsupported` so a backend that cannot do this **says so** rather than accepting the
+call and changing nothing.
+
+**Refusing is the whole point.** The tempting alternative is to succeed, move nothing, and let the
+caller record the version as archived. That produces a deployment where content is *marked*
+unavailable while sitting in the hot bucket at hot prices, and every read path refuses it — a cost
+saving that does not happen and an outage that does. It is the `UnconfiguredRetention` mistake in
+another crate: a control that reports success and enforces nothing.
+
+| Backend | `storage_tiers` | Why |
+|---|---|---|
+| AWS S3 (no endpoint override) | `Yes` | Glacier and Deep Archive, with `RestoreObject` |
+| MinIO, Ceph, R2, any endpoint override | `No` | accepts a storage-class header, has nowhere colder, implements no `RestoreObject` |
+| Unconfigured | `No` | nothing is configured, so nothing is supported |
+
+**This one capability is inferred from configuration rather than probed**, and the exception to §2's
+rule is stated rather than hidden. There is no cheap probe for *"does this backend implement
+`RestoreObject`"* — the only way to find out is to archive an object and try, a test that costs a
+retrieval and cannot run at connect time. So an endpoint override is read as an S3-compatible
+backend and no override as real AWS. The inference fails in one direction only, and it is the safe
+one: a compatible backend that did grow Glacier semantics is reported `No` and its archive surface
+refuses. Under-reporting costs a feature; over-reporting marks content unavailable that never moved
+and cannot be brought back.
+
+Archiving is `CopyObject` onto itself with a `DEEP_ARCHIVE` storage class — S3 has no
+`SetStorageClass` — leaving `metadata_directive` at `COPY`, because `REPLACE` silently drops the
+content type every read path uses to decide how to render the bytes. Restoring is `RestoreObject`
+at the `Bulk` tier: Deep Archive offers no `Expedited` at all, `Standard` is materially dearer per
+request, and the product already promises a rehydration measured in hours.
+
+**In practice most content reaches a cold tier through a bucket lifecycle rule, not through these
+verbs.** That is the deployment shape this release supports best: `docs/04 §12A`'s column is what
+the product reads, every byte path is honest about it, and `POST /files/{id}/rehydrate` is the way
+back. Reconciling the column against the store's actual storage class is `ENC-947`.
 
 ## 4. Storage profile
 

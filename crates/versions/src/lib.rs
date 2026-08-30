@@ -89,7 +89,7 @@ pub use commit::{
 };
 pub use error::{classify_write, Result, VersionsError};
 pub use model::{
-    is_readable_pair, ApprovalState, AvScan, AvStatus, FileVersion, VersionBump, VersionNumber,
-    VersionStatus, READABLE_PREDICATE,
+    is_readable_pair, ApprovalState, AvScan, AvStatus, FileVersion, StorageTier, VersionBump,
+    VersionNumber, VersionStatus, READABLE_PREDICATE,
 };
 pub use repo::{PageLimit, VersionPage, VersionRepository};
