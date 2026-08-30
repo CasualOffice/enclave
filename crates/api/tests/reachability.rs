@@ -888,6 +888,29 @@ const SPECS: &[Spec] = &[
         credential: Credential::Bearer,
         expect: Expect::Served,
     },
+    // `ENC-965`. `Served`: an empty list is a `200`, and a `POST` with a valid one-stage document
+    // is a `201` — both are answers from the handler, which is what this suite asks about.
+    Spec {
+        method: "GET",
+        path: "/api/v1/workflows/definitions",
+        target: "/api/v1/workflows/definitions",
+        body: None,
+        credential: Credential::Bearer,
+        expect: Expect::Served,
+    },
+    // The document is the smallest one the engine accepts: one stage, one approval step, one
+    // assignee. A body the decoder refuses would answer `422` — still `Served`, still a pass, but it
+    // would stop proving the route reaches its handler rather than its parser.
+    Spec {
+        method: "POST",
+        path: "/api/v1/workflows/definitions",
+        target: "/api/v1/workflows/definitions",
+        body: Some(
+            r#"{"name":"reachability-probe","scopeType":"TENANT","definition":{"stages":[{"name":"Review","steps":[{"type":"APPROVAL","assignees":["00000000-0000-0000-0000-000000000000"]}]}]}}"#,
+        ),
+        credential: Credential::Bearer,
+        expect: Expect::Served,
+    },
     Spec {
         method: "POST",
         path: "/api/v1/workflows/definitions/{id}/simulate",

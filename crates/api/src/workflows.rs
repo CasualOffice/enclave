@@ -319,11 +319,14 @@ struct Page {
 /// personal inbox *is*, and `crates/api/src/me.rs`'s shape exactly. The per-item trim is
 /// deliberately not a second audit event, for `docs/07 §6.2`'s reason.
 ///
-/// `ENC-746` records what that costs in the *deployed binary*: `main.rs` composes
-/// `AdminAuthorization(PgAdminRoles, SelfServiceAuthorization)` and no ACL resolver, so the
-/// self-read is allowed and every trim is denied — the inbox answers `200` with an empty list.
-/// That is the fail-closed direction and it is the state every file endpoint in this crate is
-/// already in (`ENC-619`).
+/// `ENC-746` recorded that the deployed binary composed no ACL resolver, so every trim was denied
+/// and the inbox always answered `200` with an empty list. **That is no longer true** (`ENC-965`):
+/// `main.rs` composes `PgAclAuthorization` inside `SelfServiceOr` (`ENC-126`), the trim is real, and
+/// this endpoint returns the steps a person actually holds — verified end to end against the
+/// running binary the day the first workflow definition could be written.
+///
+/// What kept it empty until then was one layer further back: `workflow_definitions` had no writer
+/// but a test fixture, so no instance could start and no step could exist to be held.
 ///
 /// # Errors
 ///
@@ -1538,5 +1541,281 @@ mod tests {
             simulate_body.contains("plan_start_for"),
             "simulate no longer calls the evaluator a real start calls, so the two can diverge"
         );
+    }
+}
+
+// =================================================================================================
+// Definitions — `ENC-965`
+// =================================================================================================
+
+/// Authoring a workflow is changing tenant policy, not editing a document.
+///
+/// `AdminAction::ManagePolicy`, the same action DLP rules, conditional-access rules and retention
+/// policies are written under. A definition decides *whose approval a document needs before it is
+/// published*, which is a rule about the tenant rather than a property of any file — and scoping it
+/// to a file action would let anybody who can edit one document write a rule governing every
+/// document in the library it names.
+const AUTHOR_DEFINITION: Action = Action::Admin(enclave_core::AdminAction::ManagePolicy);
+
+/// Reading the list is `ReadConfig`, as the sibling admin surfaces are.
+const READ_DEFINITIONS: Action = Action::Admin(enclave_core::AdminAction::ReadConfig);
+
+/// How many definitions one page returns.
+const DEFINITION_PAGE: i64 = 200;
+
+/// A definition as an author submits one.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct DefinitionRequest {
+    name: String,
+    /// `TENANT`, `WORKSPACE` or `LIBRARY`.
+    scope_type: String,
+    #[serde(default)]
+    scope_id: Option<uuid::Uuid>,
+    /// The stages document, decoded by `enclave_workflows::WorkflowDefinition` before it is stored.
+    definition: serde_json::Value,
+    #[serde(default = "enabled_by_default")]
+    enabled: bool,
+    #[serde(default)]
+    allow_self_approval: bool,
+    #[serde(default = "delegation_default")]
+    delegation: String,
+    #[serde(default = "on_new_version_default")]
+    on_new_version: String,
+}
+
+const fn enabled_by_default() -> bool {
+    true
+}
+fn delegation_default() -> String {
+    "ONCE".to_owned()
+}
+fn on_new_version_default() -> String {
+    "INVALIDATE".to_owned()
+}
+
+/// A definition as the listing returns it.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DefinitionView {
+    id: String,
+    name: String,
+    scope_type: String,
+    scope_id: Option<String>,
+    version: i32,
+    enabled: bool,
+    created_at: chrono::DateTime<Utc>,
+}
+
+/// The listing.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DefinitionList {
+    items: Vec<DefinitionView>,
+}
+
+/// Handles `POST /api/v1/workflows/definitions`.
+///
+/// # The writer this table has never had
+///
+/// `workflow_definitions` has existed since `migrations/0024` and its only writer in the whole tree
+/// was a test fixture. Everything downstream — the engine, `approve`, `reject`, `delegate` and the
+/// inbox at `GET /workflows/tasks` — was reachable and permanently idle, because a start names a
+/// definition and no definition could exist.
+///
+/// # The document is decoded before it is stored, and that is the point
+///
+/// `WorkflowDefinition::decode` runs the validation `crates/workflows/src/definition.rs` owns —
+/// non-empty stages, a resolvable assignee on every step, a quorum no smaller than one and no
+/// larger than the assignee set. A document that reached storage undecoded would be a definition
+/// the *engine* rejects at start time, which turns an author's mistake into a runtime failure for
+/// whoever tries to use it.
+///
+/// # Errors
+///
+/// [`ApiError`] for a policy denial, an unusable caller, or a database failure. A rejected document
+/// is a `422` envelope in the `Ok` arm, carrying the decoder's own sentence — *"unknown variant
+/// `AUTOMATION`"* tells an author what to change.
+pub async fn create_definition(
+    State(state): State<ApiState>,
+    Authenticated { ctx }: Authenticated,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    let request_id = ctx.request_id;
+    let resource = ResourceRef::tenant(ctx.tenant_id);
+
+    let decision = state
+        .policy
+        .enforce(&ctx, AUTHOR_DEFINITION, &resource)
+        .await
+        .map_err(|error| ApiError::new(error, request_id))?;
+    if let Err(refused) = none_dischargeable(&decision.into_obligations()) {
+        return Err(state.audit.refuse(&ctx, AUTHOR_DEFINITION, &resource, refused).await);
+    }
+    if let Err(envelope) = crate::admin::require_step_up(&ctx, state.step_up, "workflow.definition")
+    {
+        return Ok(envelope.into_response(request_id));
+    }
+    let author = match attributable_actor(&ctx) {
+        Ok(author) => author,
+        Err(refused) => {
+            return Err(state.audit.refuse(&ctx, AUTHOR_DEFINITION, &resource, refused).await)
+        }
+    };
+
+    let request: DefinitionRequest = match serde_json::from_slice(&body) {
+        Ok(request) => request,
+        Err(error) => {
+            return Ok(Envelope::new(
+                StatusCode::BAD_REQUEST,
+                "VALIDATION_FAILED",
+                "That workflow definition could not be read.",
+                "Correct the body and retry.",
+            )
+            .with_details(vec![serde_json::json!({ "detail": error.to_string() })])
+            .into_response(request_id))
+        }
+    };
+
+    let Some(scope) = scope_from(&request.scope_type, request.scope_id) else {
+        return Ok(Envelope::new(
+            StatusCode::BAD_REQUEST,
+            "VALIDATION_FAILED",
+            "That scope is not one this schema defines.",
+            "Use TENANT with no scopeId, or WORKSPACE or LIBRARY with one.",
+        )
+        .into_response(request_id));
+    };
+
+    // Decoded here, before storage. See the doc comment.
+    if let Err(error) = enclave_workflows::WorkflowDefinition::decode(&request.definition) {
+        return Ok(Envelope::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "DEFINITION_REJECTED",
+            "That workflow definition is not one this engine can run.",
+            "Correct the stages the detail names and retry.",
+        )
+        .with_details(vec![serde_json::json!({ "detail": error.to_string() })])
+        .into_response(request_id));
+    }
+
+    let new = enclave_workflows::repo::NewDefinition {
+        id: enclave_workflows::WorkflowDefinitionId::new_v7(),
+        scope,
+        name: request.name.trim().to_owned(),
+        definition: request.definition,
+        enabled: request.enabled,
+        allow_self_approval: request.allow_self_approval,
+        delegation: request.delegation,
+        on_new_version: request.on_new_version,
+        created_by: author,
+    };
+
+    let mut tx = state
+        .db
+        .begin(ctx.tenant_id)
+        .await
+        .map_err(|error| ApiError::new(error.into(), request_id))?;
+    if let Err(error) = enclave_workflows::repo::insert_definition(&mut tx, &new).await {
+        return Ok(Envelope::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "DEFINITION_REJECTED",
+            "That workflow definition is not one this schema allows.",
+            "Correct the field the detail names and retry.",
+        )
+        .with_details(vec![serde_json::json!({ "detail": error.to_string() })])
+        .into_response(request_id));
+    }
+    tx.commit().await.map_err(|error| ApiError::new(error.into(), request_id))?;
+
+    tracing::info!(
+        %ctx.request_id,
+        %ctx.tenant_id,
+        definition_id = %new.id,
+        scope = new.scope.columns().0,
+        "a workflow definition was written"
+    );
+
+    let location = format!("/api/v1/workflows/definitions/{}", new.id);
+    Ok((
+        StatusCode::CREATED,
+        [(header::CACHE_CONTROL, NO_STORE)],
+        [(header::LOCATION, location)],
+        Json(DefinitionView {
+            id: new.id.to_string(),
+            name: new.name,
+            scope_type: new.scope.columns().0.to_owned(),
+            scope_id: new.scope.columns().1.map(|id| id.to_string()),
+            version: 1,
+            enabled: new.enabled,
+            created_at: Utc::now(),
+        }),
+    )
+        .into_response())
+}
+
+/// Handles `GET /api/v1/workflows/definitions`.
+///
+/// The stages document is deliberately not returned — see
+/// `enclave_workflows::repo::list_definitions`.
+///
+/// # Errors
+///
+/// [`ApiError`] for a policy denial or a database failure.
+pub async fn list_definitions(
+    State(state): State<ApiState>,
+    Authenticated { ctx }: Authenticated,
+) -> Result<Response, ApiError> {
+    let request_id = ctx.request_id;
+    let resource = ResourceRef::tenant(ctx.tenant_id);
+
+    let decision = state
+        .policy
+        .enforce(&ctx, READ_DEFINITIONS, &resource)
+        .await
+        .map_err(|error| ApiError::new(error, request_id))?;
+    if let Err(refused) = none_dischargeable(&decision.into_obligations()) {
+        return Err(state.audit.refuse(&ctx, READ_DEFINITIONS, &resource, refused).await);
+    }
+
+    let mut tx = state
+        .db
+        .begin(ctx.tenant_id)
+        .await
+        .map_err(|error| ApiError::new(error.into(), request_id))?;
+    let rows = enclave_workflows::repo::list_definitions(&mut tx, DEFINITION_PAGE)
+        .await
+        .map_err(|error| workflow_fault(error, request_id))?;
+    tx.commit().await.map_err(|error| ApiError::new(error.into(), request_id))?;
+
+    let items = rows
+        .into_iter()
+        .map(|row| DefinitionView {
+            id: row.id.to_string(),
+            name: row.name,
+            scope_type: row.scope_type,
+            scope_id: row.scope_id.map(|id| id.to_string()),
+            version: row.version,
+            enabled: row.enabled,
+            created_at: row.created_at,
+        })
+        .collect();
+
+    // `no-store`: a shared cache holding this would serve one tenant's approval rules out of a
+    // proxy another caller's browser talked to.
+    Ok(([(header::CACHE_CONTROL, NO_STORE)], Json(DefinitionList { items })).into_response())
+}
+
+/// Reads the stored `(scope_type, scope_id)` pair back into a [`Scope`].
+///
+/// `None` for a pair the schema's `workflow_definitions_scope_target` constraint would refuse
+/// anyway — a `TENANT` naming something, or any other scope naming nothing. Checked here so the
+/// caller meets a `400` that says which field, rather than a constraint violation.
+fn scope_from(scope_type: &str, scope_id: Option<uuid::Uuid>) -> Option<enclave_workflows::Scope> {
+    match (scope_type, scope_id) {
+        ("TENANT", None) => Some(enclave_workflows::Scope::Tenant),
+        ("WORKSPACE", Some(id)) => Some(enclave_workflows::Scope::Workspace(id)),
+        ("LIBRARY", Some(id)) => Some(enclave_workflows::Scope::Library(id)),
+        _ => None,
     }
 }
