@@ -146,9 +146,13 @@ jobs:
           # pull them in. Named explicitly because these are the crates being *moved out* of the
           # default shard, and a list that grows is safe in this direction — anything forgotten
           # here still runs, in `rest`.
-          - name: pipeline
+          # Split again: `pipeline` measured 26 minutes once and went over thirty on the next
+          # run. Four minutes of margin is not margin. The vector and model crates are one half.
+          - name: pipeline-index
             args: >-
               -p enclave-search -p enclave-indexing -p enclave-embeddings -p enclave-ai
+          - name: pipeline-docs
+            args: >-
               -p enclave-mcp -p enclave-workflows -p enclave-signing -p enclave-preview
               -p enclave-storage -p enclave-sync
           # Everything else, by subtraction — and this is the shard a newly added crate lands in
