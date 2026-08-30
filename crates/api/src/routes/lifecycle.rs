@@ -176,11 +176,19 @@ const REINSTATE: Action = Action::File(FileAction::Restore);
 /// repository would become the answer by accident". The column is `NOT NULL`-free but the function
 /// is not, so this endpoint has to supply *something*.
 ///
-/// Thirty days, and it is a placeholder rather than a policy: nothing reads it. [`enclave_files`]'s
-/// purge is [`FilesError::PurgeUnavailable`] in every build, so no row is destroyed on the strength
-/// of this value; when the retention setting lands it replaces this constant and the stored value
-/// becomes meaningful for the first time. Naming it here, rather than inlining `Utc::now() + 30
-/// days` at the call site, is what makes it findable on that day.
+/// Thirty days, and it is now a **floor** rather than the whole answer (`ENC-944`).
+///
+/// It was a placeholder that nothing read: `purge_after` was `now + 30 days` whatever a tenant had
+/// configured, so a seven-year `KEEP` governed the interactive delete and governed nothing on the
+/// purge path. `enclave_retention::purge_deadline` resolves what a policy actually requires, and
+/// `PurgeDeadline::purge_after` combines the two by taking the **later**.
+///
+/// Later, not the policy's deadline alone, and that direction is the point. The bin's dwell is a
+/// promise to a person that a mistaken delete is recoverable for thirty days; a `DELETE_AFTER '1
+/// day'` policy that replaced it outright would turn that promise into a thirty-second undo window
+/// and would do it in the name of a compliance control. A retention policy may extend how long
+/// something is kept and may refuse its destruction; it may not shorten the recovery window a user
+/// was told they had.
 const TRASH_RETENTION_DAYS: i64 = 30;
 
 // ---------------------------------------------------------------------------------------------
@@ -430,7 +438,7 @@ pub async fn trash(
 
     let now = Utc::now();
     let change = Mutation { actor, expected_revision: Some(expected), at: now };
-    let purge_after = now + Duration::days(TRASH_RETENTION_DAYS);
+    let bin_dwell_until = now + Duration::days(TRASH_RETENTION_DAYS);
 
     // --- read, decide, write: three steps, and never two connections at once --------------------
     //
@@ -458,6 +466,30 @@ pub async fn trash(
             WriteFailure::Fatal(error) => return Err(ApiError::new(error, request_id)),
         },
     };
+    // The purge deadline, resolved in the read transaction that is already open — one round trip
+    // per node rather than a second transaction, and finished before the connection is released.
+    //
+    // **The strictest across the subtree wins, and `Indefinite` beats every date.** A cascade
+    // trashes the subtree under one `deleted_at` and `restore` restores exactly that set, so the
+    // deadline has to be one value; taking the strictest is the only choice that never destroys a
+    // node earlier than its own policy allows. It over-retains the nodes whose policies were
+    // shorter, which for a control that exists to preserve is the safe direction, and it is
+    // invisible today because `enclave_files::purge` is unimplemented in every build.
+    //
+    // The loop is bounded by the same subtree the batch below authorizes, so it inherits that
+    // bound rather than needing one of its own (`ENC-923`, `CascadeLimits`).
+    let mut deadline = enclave_retention::PurgeDeadline::Unretained;
+    for node in &planned {
+        let node_deadline = match enclave_retention::purge_deadline(&mut read, node.id).await {
+            Ok(found) => found,
+            // A retention read that fails must not become a thirty-day deadline. `governing_policy`
+            // propagates rather than defaulting for the same reason: every default here is a
+            // retention answer, and the wrong one destroys or preserves for a reason nobody chose.
+            Err(error) => return Err(ApiError::new(error.into(), request_id)),
+        };
+        deadline = deadline.strictest(node_deadline);
+    }
+    let purge_after = deadline.purge_after(bin_dwell_until);
     drop(read);
 
     // The addressed node is included in the batch even though the chain has already allowed it. One

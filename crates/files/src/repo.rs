@@ -477,8 +477,22 @@ impl FileRepository {
     /// own reasons.
     ///
     /// `purge_after` is supplied by the caller rather than computed here. How long the trash keeps
-    /// something is a tenant retention setting, and `plans/M1-CONTENT-CORE.md` Q7 has not been
-    /// answered; a default invented in a repository would become the answer by accident.
+    /// something is a tenant retention setting, and a default invented in a repository would become
+    /// the answer by accident. `plans/M1-CONTENT-CORE.md` Q7 **is** answered now — `ENC-940` created
+    /// `retention_policies` and `ENC-944` made the caller read it — and the parameter stays a
+    /// parameter, because the thing that changed is who computes the value, not where it belongs.
+    ///
+    /// [`None`] means *no sweep may destroy this*, stored as SQL `NULL`, which is what the column
+    /// already meant for a live row. A `LEGAL_HOLD`, or a `KEEP` with no duration, reaches here as
+    /// `None`.
+    ///
+    /// **One deadline for the whole subtree, and that is a decision rather than a limitation.** The
+    /// caller resolves the strictest deadline across the nodes it is trashing and passes that. Per
+    /// node would be more precise and would be wrong: `restore` restores exactly the set sharing a
+    /// `deleted_at`, and the trash lists only cascade roots, so a purge that destroyed the half of a
+    /// subtree whose policy expired first would leave a folder whose children are gone and no
+    /// surface on which anybody would see it happen. The subtree is trashed as a unit and is
+    /// destroyed as a unit.
     ///
     /// Returns every node moved to the trash, the addressed one first — the caller needs the whole
     /// set for audit and for search-index invalidation (`docs/07-SEARCH-INDEXING.md §6`).
@@ -506,7 +520,7 @@ impl FileRepository {
         conn: &mut PgConnection,
         tenant: TenantId,
         file: FileId,
-        purge_after: DateTime<Utc>,
+        purge_after: Option<DateTime<Utc>>,
         change: &Mutation,
     ) -> Result<Vec<FileNode>> {
         let rows = sqlx::query(TRASH_SUBTREE)

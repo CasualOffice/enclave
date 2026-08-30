@@ -325,6 +325,31 @@ impl PurgeDeadline {
             Self::Indefinite => None,
         }
     }
+
+    /// The one of two deadlines that keeps content longer.
+    ///
+    /// A cascading delete trashes a subtree under a single `deleted_at` and [`restore`] restores
+    /// exactly that set, so the subtree needs **one** deadline; this is how a caller folds the
+    /// nodes' answers into it. `Indefinite` beats every date, and between two dates the later wins.
+    ///
+    /// Deliberately a function rather than a derived [`Ord`], for the reason
+    /// `enclave_db::retention::RetentionAction` derives none: an ordering that falls out of variant
+    /// declaration order is a precedence rule nobody wrote down, free to change when somebody
+    /// reorders an enum for readability. Retention precedence is decided in two places in this
+    /// workspace — `GOVERNING_SQL`'s `ORDER BY` and here — and both are explicit.
+    ///
+    /// [`restore`]: https://docs.rs/enclave-files
+    #[must_use]
+    pub fn strictest(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Indefinite, _) | (_, Self::Indefinite) => Self::Indefinite,
+            (Self::Until(a), Self::Until(b)) => Self::Until(a.max(b)),
+            (Self::Until(a), Self::Unretained) | (Self::Unretained, Self::Until(a)) => {
+                Self::Until(a)
+            }
+            (Self::Unretained, Self::Unretained) => Self::Unretained,
+        }
+    }
 }
 
 /// [`RetentionService`] backed by `retention_policies` and `retention_assignments` in PostgreSQL.
@@ -771,6 +796,74 @@ mod tests {
             PurgeDeadline::Indefinite.purge_after(dwell),
             PurgeDeadline::Unretained.purge_after(dwell),
             "an unretained file and one held forever are opposite instructions to a sweep"
+        );
+    }
+
+    /// The stricter of two deadlines is the one that keeps content longer.
+    ///
+    /// A cascade folds every node's answer into one value, and the fold has to be *safe in one
+    /// direction*: too long preserves something nobody needed, too short destroys something a
+    /// policy required. Each pair is asserted **both ways round**, because `strictest` is a fold
+    /// over an unordered set — a implementation that returned `self` whenever the two differed
+    /// would satisfy half of these and is exactly the bug an argument-order-sensitive test misses.
+    #[test]
+    fn the_stricter_of_two_deadlines_is_the_one_that_keeps_content_longer() {
+        let now = chrono::Utc::now();
+        let soon = PurgeDeadline::Until(now + chrono::Duration::days(1));
+        let late = PurgeDeadline::Until(now + chrono::Duration::days(2555));
+
+        for (a, b, expected, why) in [
+            (soon, late, late, "the later of two dates"),
+            (late, soon, late, "the later of two dates, arguments reversed"),
+            (
+                PurgeDeadline::Unretained,
+                soon,
+                soon,
+                "a governed node in an otherwise ungoverned subtree governs the subtree",
+            ),
+            (soon, PurgeDeadline::Unretained, soon, "and the same with the arguments reversed"),
+            (
+                PurgeDeadline::Indefinite,
+                late,
+                PurgeDeadline::Indefinite,
+                "indefinite beats even the longest date — a hold is not a deadline",
+            ),
+            (
+                late,
+                PurgeDeadline::Indefinite,
+                PurgeDeadline::Indefinite,
+                "and the same with the arguments reversed",
+            ),
+            (
+                PurgeDeadline::Unretained,
+                PurgeDeadline::Unretained,
+                PurgeDeadline::Unretained,
+                "two ungoverned nodes leave the subtree ungoverned",
+            ),
+        ] {
+            assert_eq!(a.strictest(b), expected, "{why}: {a:?}.strictest({b:?})");
+        }
+    }
+
+    /// Folding a subtree never shortens the bin's own promise.
+    ///
+    /// The composition of the two functions, asserted together, because that composition is what
+    /// `routes::lifecycle` actually does and neither half proves it alone: `strictest` could be
+    /// correct and `purge_after` could still return a `DELETE_AFTER '1 day'` deadline that turns a
+    /// thirty-day recycle bin into a one-day one.
+    #[test]
+    fn a_short_policy_in_the_subtree_never_shortens_the_recycle_bin() {
+        let now = chrono::Utc::now();
+        let dwell = now + chrono::Duration::days(30);
+        let one_day = PurgeDeadline::Until(now + chrono::Duration::days(1));
+
+        let folded = PurgeDeadline::Unretained.strictest(one_day);
+        assert_eq!(
+            folded.purge_after(dwell),
+            Some(dwell),
+            "a one-day retention policy shortened the recycle bin to one day; the dwell is a \
+             promise to a person that a mistaken delete is recoverable, and a retention control \
+             may lengthen it but never cut it short"
         );
     }
 

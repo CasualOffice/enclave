@@ -823,11 +823,15 @@ async fn two_deletes_stamped_with_the_same_instant_come_back_together() {
     assert!(restored.iter().any(|node| node.id == leaf.id));
 }
 
-/// When the trash may next be *considered* for purging. Thirty days is a placeholder for a tenant
-/// setting that does not exist yet (`plans/M1-CONTENT-CORE.md` Q7); the repository takes the
-/// instant rather than inventing the window.
-fn purge_at() -> DateTime<Utc> {
-    fixed_time() + Duration::days(30)
+/// When the trash may next be *considered* for purging.
+///
+/// Thirty days is the recycle bin's own dwell. It is no longer the whole answer — `ENC-944` made
+/// `routes::lifecycle` fold the governing retention policy in and pass the later of the two, and
+/// [`None`] now means *no sweep may destroy this* — but these tests are about the repository, which
+/// stores whatever instant it is handed. A test that computed a policy here would be testing
+/// `crates/retention` through the wrong crate.
+fn purge_at() -> Option<DateTime<Utc>> {
+    Some(fixed_time() + Duration::days(30))
 }
 
 // ---------------------------------------------------------------------------
