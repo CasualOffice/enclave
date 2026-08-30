@@ -1,6 +1,6 @@
 # 08 — BYO Infrastructure & Configuration
 
-> **Status:** Draft · **Version:** 2.8 · **Owner:** Platform Engineering · **Last updated:** 2026-08-30
+> **Status:** Draft · **Version:** 2.9 · **Owner:** Platform Engineering · **Last updated:** 2026-08-30
 > **Authoritative for:** provider traits, BYO infrastructure, configuration model and precedence.
 
 ## 1. Principle
@@ -178,10 +178,18 @@ which is a separate header from the storage class, so an object can be `DEEP_ARC
 temporarily readable. Reading the class alone would put a file the user just waited hours for back
 into `ARCHIVED`.
 
-What the pass does **not** do is scan warm rows for drift. Detecting a lifecycle-rule transition
-means one `HeadObject` per version of every file in the deployment; that is a different economics
-from resolving a handful of transient rows, and folding them would make the cheap urgent half wait
-on the expensive one. `ENC-951`.
+The pass also scans warm rows for drift (`ENC-951`), and the two halves are budgeted separately
+because their economics differ. Transitions are bounded by a partial index — a handful of rows on
+any deployment — and somebody is *waiting* on each: a person who asked for a file back hours ago.
+Drift is unbounded in the corpus and nobody waits on any particular row. So transitions are taken
+first and in full, and drift gets a smaller batch of the least-recently-verified warm versions.
+
+**The cycle time is arithmetic an operator should do.** At eight verifications per tenant per
+minute, a million warm versions take about eighty-six days to check once — too slow for a lifecycle
+rule measured in months, far too slow for one measured in days. Raising the batch is the lever and
+it is a provider-cost decision, not a correctness one. Which is why every pass reports the **oldest**
+`tier_verified_at` in the tenant: that number, and not the pass's own success, is what says whether
+the deployment is covered.
 
 ## 4. Storage profile
 

@@ -1407,10 +1407,15 @@ async fn tiering_loop(
                 // At `debug` when nothing moved and `info` when something did. A restore completing
                 // is the end of a wait somebody started hours ago, and it is the one event in this
                 // pass an operator asked about.
-                if outcome.resolved > 0 {
+                if outcome.resolved > 0 || outcome.drifted > 0 {
+                    // `drifted` at `info` beside `resolved`, because they are different events an
+                    // operator reads differently: a resolved transition is a wait ending, and drift
+                    // is a bucket lifecycle rule this product is chasing (`ENC-951`).
                     info!(
                         pass = TIERING,
                         resolved = outcome.resolved,
+                        drifted = outcome.drifted,
+                        verified = outcome.verified,
                         waiting = outcome.still_waiting,
                         "storage tiers reconciled"
                     );
@@ -1418,6 +1423,7 @@ async fn tiering_loop(
                     debug!(
                         pass = TIERING,
                         waiting = outcome.still_waiting,
+                        verified = outcome.verified,
                         unanswerable = outcome.unanswerable,
                         "nothing to reconcile"
                     );

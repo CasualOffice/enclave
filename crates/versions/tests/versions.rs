@@ -1276,3 +1276,77 @@ async fn the_two_spellings_of_readable_agree_against_a_real_database() {
          configuration reaches (ENC-646)"
     );
 }
+
+/// Stamping a verification advances the drift scan's queue (`ENC-951`).
+///
+/// **The property a comment claimed and no test held.** The scan orders warm versions by
+/// `tier_verified_at`, oldest first with `NULL` before everything, and takes a bounded batch. If a
+/// row that is checked and found genuinely warm is *not* stamped, the ordering returns it
+/// immediately — and the scan re-checks one batch for ever while the rest of the corpus goes
+/// unverified, at one `HeadObject` per row per tick, indefinitely.
+///
+/// It is invisible from outside: the pass runs, logs a verified count, and reports success. Only
+/// the queue not moving gives it away, which is what this asserts.
+///
+/// Deleting `mark_tier_verified` from `crates/worker/src/tiering.rs`'s confirmed-warm arm compiles
+/// cleanly and passes every other test in this workspace; it turns this one red.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL with migrations 0004-0006 and 0033"]
+async fn verifying_a_tier_moves_that_version_to_the_back_of_the_drift_queue() {
+    let (_db, pool, alpha, _beta) = setup().await;
+
+    // Three warm versions of the one fixture file, none ever verified. Successive majors rather
+    // than three files: the drift queue is over `file_versions` and does not care which file a row
+    // belongs to, and superseded versions are still warm objects a lifecycle rule can move.
+    let mut ids = Vec::new();
+    for _ in 0..3_u32 {
+        let committed = commit(&pool, &alpha, &alpha.new_version(VersionBump::Major)).await;
+        ids.push(committed.version.id);
+    }
+
+    let mut tx = TenantScoped::begin(&pool, alpha.tenant).await.expect("begin");
+
+    let first = VersionRepository::least_recently_verified(&mut tx, alpha.tenant, 1)
+        .await
+        .expect("read the drift queue");
+    let head = first.first().expect("three warm versions exist, so the queue is not empty").id;
+    assert!(ids.contains(&head), "the queue must return one of the versions just committed");
+
+    // The control: asking again without stamping returns the *same* row. Without this, the
+    // assertion below is satisfied by a query that returns rows at random.
+    let again = VersionRepository::least_recently_verified(&mut tx, alpha.tenant, 1)
+        .await
+        .expect("read the drift queue again");
+    assert_eq!(
+        again.first().map(|v| v.id),
+        Some(head),
+        "an unstamped queue must be stable, or the ordering is not doing the work this test \
+         attributes to the stamp"
+    );
+
+    VersionRepository::mark_tier_verified(&mut tx, alpha.tenant, head)
+        .await
+        .expect("stamp the verification");
+
+    let after = VersionRepository::least_recently_verified(&mut tx, alpha.tenant, 1)
+        .await
+        .expect("read the drift queue after stamping");
+    assert_ne!(
+        after.first().map(|v| v.id),
+        Some(head),
+        "a verified version must move to the back of the queue; if it does not, the drift scan \
+         re-checks one batch for ever and the rest of the corpus is never verified"
+    );
+
+    // And it is still *in* the queue — moved, not dropped. A stamp that removed rows would leave
+    // the deployment with a queue that empties and a corpus that stops being re-checked.
+    let all = VersionRepository::least_recently_verified(&mut tx, alpha.tenant, 10)
+        .await
+        .expect("read the whole queue");
+    assert!(
+        all.iter().any(|v| v.id == head),
+        "verification moves a version to the back of the queue, never out of it: tiers drift \
+         again, so a row checked once still has to be checked later"
+    );
+    tx.commit().await.expect("commit");
+}
