@@ -558,7 +558,7 @@ async fn deleting_a_file_puts_it_in_the_recycle_bin_and_the_listing_carries_what
 
     let item = &after["items"][0];
     assert_eq!(item["name"], "Quarterly Plan.pdf");
-    assert_eq!(item["type"], "FILE");
+    assert_eq!(item["nodeType"], "FILE");
     assert_eq!(item["mimeType"], "application/pdf");
     assert_eq!(item["libraryId"], alpha.library.to_string());
     assert_eq!(
@@ -669,7 +669,7 @@ async fn a_trashed_folder_appears_once_and_not_once_per_document_inside_it() {
 
     let folder = row(&page, alpha.folder);
     assert_eq!(
-        folder["type"], "FOLDER",
+        folder["nodeType"], "FOLDER",
         "a folder must be reported as one: its restore cascades and the confirmation has to say so"
     );
     assert_eq!(folder["parentFolderId"], Value::Null, "this folder sat at the library root");

@@ -22,7 +22,7 @@ import { EMAIL, PASSWORD, signIn } from './support.ts';
 const Login = z.object({ accessToken: z.string().min(1) });
 const Page = z.object({ items: z.array(z.object({ id: z.string(), name: z.string() })) });
 const Items = z.object({
-  items: z.array(z.object({ id: z.string(), name: z.string(), type: z.string(), revision: z.number() })),
+  items: z.array(z.object({ id: z.string(), name: z.string(), nodeType: z.string(), revision: z.number() })),
   page: z.object({ nextCursor: z.string().nullish(), hasMore: z.boolean() }),
 });
 

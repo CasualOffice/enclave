@@ -57,9 +57,9 @@ test('a search returns the files the server matched, with the server’s own tit
     headers: { authorization: `Bearer ${bearer}` },
   });
   const files = z
-    .object({ items: z.array(z.object({ name: z.string(), type: z.string() })) })
+    .object({ items: z.array(z.object({ name: z.string(), nodeType: z.string() })) })
     .parse(await contents.json());
-  const document = files.items.find((item) => item.type !== 'FOLDER');
+  const document = files.items.find((item) => item.nodeType !== 'FOLDER');
   expect(document, 'the library holds no file to search for').toBeDefined();
 
   /* The stem, because the extension is drawn as its own span and a full-name

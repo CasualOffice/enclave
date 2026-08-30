@@ -219,7 +219,6 @@ struct TrashItem {
     name: String,
     /// `FILE` or `FOLDER`. A folder's restore brings back everything trashed with it, which is a
     /// different confirmation dialog and a different icon.
-    #[serde(rename = "type")]
     node_type: &'static str,
     mime_type: String,
     library_id: String,

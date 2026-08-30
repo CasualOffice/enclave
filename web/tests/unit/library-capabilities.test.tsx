@@ -34,7 +34,7 @@ const OBLIGATIONS = { watermark: false, justificationRequired: [], approvalRequi
 function item(over: Partial<Item> = {}): Item {
   return {
     id: 'item-1',
-    type: 'FILE',
+    nodeType: 'FILE',
     name: 'Board Pack.pdf',
     mimeType: 'application/pdf',
     sizeBytes: 4_718_592,
@@ -77,7 +77,7 @@ describe('a folder is not an unclassified zero-byte file', () => {
     renderList([
       item({
         id: 'folder-1',
-        type: 'FOLDER',
+        nodeType: 'FOLDER',
         name: 'Board Meetings 2026',
         mimeType: 'application/x-directory',
         sizeBytes: 0,

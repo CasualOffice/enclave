@@ -29,15 +29,21 @@ const Deleter = z.strictObject({
 const TrashItem = z.strictObject({
   fileId: z.string(),
   name: z.string(),
-  /* `type`, not `nodeType`. The rest of the file surface spells it this way —
-   * `GET /libraries/{id}/items` returns `"type": "FOLDER"` — and a listing that
-   * invented a second name for the same field would make a client hold two
-   * decoders for one concept. This schema said `nodeType` for one afternoon and
-   * the strict parse rejected every row, so the bin drew its non-retryable
-   * failure against a healthy server: `ENC-929`'s exact shape, caught here by
-   * `tests/e2e/trash.spec.ts` on its first run instead of by a person a week
-   * later. `docs/05 §19.2` is corrected to match. */
-  type: z.enum(['FILE', 'FOLDER']),
+  /* `nodeType`, and the whole file surface now agrees (`ENC-957`).
+   *
+   * This said `nodeType` once before and was corrected *to* `type`, because
+   * that is what the server sent here and a client that renames a field is a
+   * client that stops matching the API it is written against — `ENC-929`'s
+   * shape, and the right call at the time. What was wrong was the server: three
+   * endpoints spelled this `type` and three spelled it `nodeType`, for one
+   * concept, and every client had to hold two decoders and remember which
+   * surface wanted which.
+   *
+   * `nodeType` won on merit rather than headcount. `type` is a reserved word in
+   * TypeScript, it is ambiguous — the type of *what*? the media type? — and the
+   * Rust field was already `node_type` everywhere, so producing `type` on the
+   * wire took an explicit `#[serde(rename)]` to arrive at the worse name. */
+  nodeType: z.enum(['FILE', 'FOLDER']),
   mimeType: z.string(),
   libraryId: z.string(),
   parentFolderId: z.string().nullable(),

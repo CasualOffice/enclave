@@ -88,7 +88,7 @@ export type NodeType = z.infer<typeof NodeType>;
 /** One row of a library or folder listing. */
 export const Item = z.object({
   id: z.string(),
-  type: NodeType,
+  nodeType: NodeType,
   name: z.string(),
   mimeType: z.string(),
   sizeBytes: z.number(),
@@ -174,7 +174,7 @@ export type CurrentVersion = z.infer<typeof CurrentVersion>;
  */
 export const FileDetail = z.object({
   id: z.string(),
-  type: NodeType,
+  nodeType: NodeType,
   name: z.string(),
   mimeType: z.string(),
   sizeBytes: z.number(),

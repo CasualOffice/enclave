@@ -187,7 +187,6 @@ struct PageInfo {
 #[serde(rename_all = "camelCase")]
 pub struct Item {
     id: String,
-    #[serde(rename = "type")]
     node_type: &'static str,
     name: String,
     mime_type: String,
@@ -243,7 +242,6 @@ impl Item {
 #[serde(rename_all = "camelCase")]
 pub struct FileMetadata {
     id: String,
-    #[serde(rename = "type")]
     node_type: &'static str,
     name: String,
     mime_type: String,
