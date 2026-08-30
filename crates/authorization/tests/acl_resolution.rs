@@ -872,3 +872,66 @@ async fn the_prefilter_does_not_even_fetch_an_everyone_row_for_a_link_bearer() {
         "the link's own row was not fetched: {fetched:?}"
     );
 }
+
+/// Every file action can be granted and resolves the same way (`ENC-967`).
+///
+/// **Every other test in this file uses one action — `file.download` — so a resolver that worked
+/// for exactly that verb would pass all of them.** `ENC-967` is what happens when that assumption
+/// is wrong: `POST /workflows/steps/{id}/approve` enforces `file.content_read`, and against a
+/// direct `ALLOW` on the file it answered `403 ACCESS_DENIED` — through a library grant with
+/// inheritance on, past the ACL cache TTL, on a fresh process, and finally with a row written
+/// straight onto the file spelled exactly as the working `metadata_read` rows are.
+///
+/// So this grants **each** action in turn and asks for that same action back. `Download` is in the
+/// list as the control: it is what the rest of this file proves, so if it fails here the harness is
+/// wrong rather than the resolver.
+#[tokio::test]
+#[ignore = "needs a live PostgreSQL"]
+async fn every_file_action_can_be_granted_and_resolves_for_itself() {
+    for action in [
+        FileAction::Download,
+        FileAction::ContentRead,
+        FileAction::MetadataRead,
+        FileAction::Preview,
+        FileAction::Print,
+        FileAction::Export,
+        FileAction::Edit,
+        FileAction::VersionRead,
+    ] {
+        let action = Action::File(action);
+        let (db, fixtures) = setup().await;
+        let alpha = fixtures.alpha.id;
+        let user = fixtures.alpha.member;
+        let tree = Tree::new(alpha);
+        let mut admin = db.connect().await.expect("admin connection");
+        tree.insert(&mut admin, fixtures.alpha.owner).await;
+
+        sqlx::query(
+            "INSERT INTO acl_entries
+               (id, tenant_id, resource_type, resource_id, principal_type, principal_id, action,
+                effect, granted_by, granted_at)
+             VALUES ($1, $2, 'FILE', $3, 'USER', $4, $5, 'ALLOW', $6, now())",
+        )
+        .bind(Uuid::new_v4())
+        .bind(alpha.as_uuid())
+        .bind(tree.file.as_uuid())
+        .bind(user.as_uuid())
+        .bind(action.to_string())
+        .bind(Uuid::nil())
+        .execute(&mut admin)
+        .await
+        .expect("insert acl entry");
+
+        let pool = db.pool().await.expect("application-role pool");
+        let authz = PgAclAuthorization::new(pool);
+        let decision =
+            authz.authorize(&ctx(alpha, user), action, &tree.file_ref()).await.expect("resolve");
+
+        assert!(
+            allowed(&decision),
+            "`{action}` was granted directly on the file and the resolver refused it. Every other \
+             test in this file uses `file.download`, so a resolver that handles one verb and not \
+             another passes all of them — which is how `ENC-967` reached a shipped endpoint"
+        );
+    }
+}
