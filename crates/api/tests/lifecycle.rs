@@ -1263,3 +1263,80 @@ async fn neither_a_delete_nor_a_restore_proceeds_without_an_if_match() {
     assert_eq!(restored.status, StatusCode::OK, "{}", restored.body);
     assert!(is_live(&db, spine.tenant, &target).await);
 }
+
+/// A cascade audits every node it deletes, not just the one that was addressed.
+///
+/// `ENC-923`. The addressed node went through `PolicyEngine::enforce`; every other node in the
+/// subtree went through `authorization().authorize_many`, which is the ACL stage **on its own**.
+/// Conditional access, barriers, classification and DLP never ran for a descendant, and
+/// `authorize_many` writes no audit row — so a five-hundred-node cascade left a single
+/// `file.delete` ALLOW in the log, and rule 2 says the chain's order is fixed rather than optional.
+///
+/// The audit half is the one this test asserts, because it is the half that is *observable*: with
+/// barriers and classification `Unconfigured` in every deployment today, running them changes no
+/// answer, and a test that asserted they ran would be asserting against a stub. The row count is
+/// different — it was wrong before this change, is right after it, and `ENC-961`'s reader made it
+/// visible to anybody who deletes a folder and then opens the audit screen.
+///
+/// **The distinctness check is the control.** Four rows could also be four rows about the same
+/// file, which is what the first implementation here produced: the addressed node was in the batch
+/// *and* had already been through `enforce`, so a four-node cascade wrote five rows and one
+/// deletion was recorded twice. Counting distinct resources is what caught it.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL; CI runs it with --include-ignored"]
+async fn a_cascade_writes_one_audit_row_for_every_node_it_deletes() {
+    let (db, fixtures, harness) = setup().await;
+    let spine = spine(&harness, fixtures.alpha.id, fixtures.alpha.admin).await;
+
+    let (parent, parent_revision) = folder(&harness, &spine, "Cascade", None).await;
+    let (_a, _) = folder(&harness, &spine, "One", Some(&parent)).await;
+    let (_b, _) = folder(&harness, &spine, "Two", Some(&parent)).await;
+
+    let before = delete_rows(&db, spine.tenant).await;
+
+    let trashed =
+        delete(&harness, spine.tenant, spine.founder, &parent, &format!("\"{parent_revision}\""))
+            .await;
+    assert_eq!(trashed.status, StatusCode::OK, "{}", trashed.body);
+    assert_eq!(trashed.body["affected"], 3, "three nodes went into the bin: {}", trashed.body);
+
+    let after = delete_rows(&db, spine.tenant).await;
+    let written: Vec<&(String, String)> =
+        after.iter().filter(|row| !before.contains(row)).collect();
+
+    assert_eq!(
+        written.len(),
+        3,
+        "three nodes were deleted and {} audit row(s) were written. Before `ENC-923` this was one: \
+         the descendants went through the ACL stage alone, which records nothing",
+        written.len()
+    );
+    let distinct: std::collections::HashSet<&String> =
+        written.iter().map(|(resource, _)| resource).collect();
+    assert_eq!(
+        distinct.len(),
+        3,
+        "the rows must name three different files. Three rows about one file is the shape the \
+         first version of this change produced — the addressed node was decided twice and audited \
+         twice, so one deletion appeared in the log as two"
+    );
+    for (_, outcome) in &written {
+        assert_eq!(outcome, "ALLOW", "a completed cascade records allows, not denials");
+    }
+}
+
+/// Every `file.delete` row in this tenant, as `(resource_id, outcome)`.
+async fn delete_rows(db: &TestDb, tenant: TenantId) -> Vec<(String, String)> {
+    let mut conn = db.connect().await.expect("connect");
+    sqlx::query_as::<_, (Option<Uuid>, String)>(
+        "SELECT resource_id, outcome FROM audit_events \
+         WHERE tenant_id = $1 AND action = 'file.delete' ORDER BY sequence",
+    )
+    .bind(tenant.as_uuid())
+    .fetch_all(&mut conn)
+    .await
+    .expect("read audit rows")
+    .into_iter()
+    .map(|(resource, outcome)| (resource.map(|id| id.to_string()).unwrap_or_default(), outcome))
+    .collect()
+}

@@ -119,7 +119,12 @@ const ERROR_FILE: &str = "crates/core/src/error.rs";
 /// is a second entry rather than a widening of the file-level rule: a future helper in `engine.rs`
 /// that refused *without* recording must still fail this gate, and it will, because it will not be
 /// named here.
-const AUDITING_ENGINE_FNS: &[&str] = &["enforce", "reevaluate_conditional_access"];
+/// `enforce_many` is the cascade's chain (`ENC-923`). It qualifies on the same terms as `enforce`
+/// and for the same reason: every one of its refusal paths — tenant isolation, each per-resource
+/// stage, and the batch-length mismatch — calls `record_deny` on the line before it returns. It is
+/// named individually rather than the rule being widened to the file, so that a future helper in
+/// `engine.rs` that refuses without recording still fails this gate.
+const AUDITING_ENGINE_FNS: &[&str] = &["enforce", "enforce_many", "reevaluate_conditional_access"];
 
 /// The conversion from a stage's decision into the caller's error.
 const CONVERSION_FN: &str = "ensure_allowed";

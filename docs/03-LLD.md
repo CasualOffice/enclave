@@ -221,6 +221,20 @@ pub trait AuthorizationService: Send + Sync {
 `authorize_many` is mandatory for the search post-filter path in `07-SEARCH-INDEXING.md §6.2`; a
 per-hit loop is not an acceptable implementation.
 
+**It is the ACL stage, and it is not a chain.** A caller that decides a set of resources with
+`authorize_many` alone has run stage 4 and skipped conditional access, barriers, classification,
+DLP and retention — and has written no audit row, because only the engine audits. That is legitimate
+for a *listing*, which trims candidates it will then decide individually, and it is wrong for an
+operation that acts on the whole set.
+
+The delete cascade did exactly that until `ENC-923`: the addressed node went through
+`PolicyEngine::enforce` and every descendant through `authorize_many`, so a five-hundred-node
+cascade ran five stages fewer for four hundred and ninety-nine of them and left one `file.delete`
+ALLOW in the log. `PolicyEngine::enforce_many` is the chain over a set — the same stages in the same
+order, with authorization batched because that is the stage with a batch form and the expensive
+read — and it audits every resource. Use it wherever an operation applies to a set; use
+`authorize_many` only to trim candidates that will be decided individually afterwards.
+
 ## 8. Conditional-access interface
 
 ```rust

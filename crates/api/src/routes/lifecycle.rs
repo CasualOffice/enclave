@@ -145,7 +145,7 @@ use serde::{Deserialize, Serialize};
 use crate::auth::Authenticated;
 use crate::content::{capabilities_for, Item};
 use crate::error::{ApiError, Envelope};
-use crate::refusal::Refused;
+use crate::refusal::{none_dischargeable, Refused};
 use crate::routes::workspaces::{conceal, consume};
 use crate::state::ApiState;
 
@@ -492,33 +492,61 @@ pub async fn trash(
     let purge_after = deadline.purge_after(bin_dwell_until);
     drop(read);
 
-    // The addressed node is included in the batch even though the chain has already allowed it. One
-    // uniform question over the whole set is what makes "every node was asked" a property of the
-    // code rather than of a reader's attention.
-    let resources: Vec<ResourceRef> =
-        planned.iter().map(|node| reference(ctx.tenant_id, node)).collect();
-    let decisions = state
-        .policy
-        .authorization()
-        .authorize_many(&ctx, DISCARD, &resources)
-        .await
-        .map_err(|error| ApiError::new(error, request_id))?;
+    // **The descendants, and not the addressed node** — which the chain has already decided in
+    // full, above, before this handler was willing to enumerate anything.
+    //
+    // It used to be included, and the comment here argued for it: one uniform question over the
+    // whole set made "every node was asked" a property of the code rather than of a reader's
+    // attention. That was right while the batch was `authorize_many`, which writes no audit row —
+    // asking twice cost a duplicate ACL check nobody could see. It is wrong now that the batch runs
+    // the whole chain and audits it: the addressed node would get a second `file.delete` ALLOW for
+    // one deletion, and an auditor reading `/admin/audit` would count two. Proved live — a
+    // four-node cascade wrote five rows.
+    //
+    // The property that comment wanted is kept, and by construction rather than by attention: the
+    // addressed node goes through `enforce`, every descendant goes through `enforce_many`, and both
+    // run the same chain in the same order. Nothing is decided by fewer stages than anything else.
+    let resources: Vec<ResourceRef> = planned
+        .iter()
+        .filter(|node| node.id != file)
+        .map(|node| reference(ctx.tenant_id, node))
+        .collect();
 
-    // Length before content. `zip` would silently drop the tail of a short answer, and a tail that
-    // is dropped here is a node nobody decided about — the one direction this check must not fail
-    // in. `content::readable_children` can tolerate the same shortfall because trimming *more* rows
-    // is safe; trashing more is not.
-    let denied = if decisions.len() == resources.len() {
-        resources
-            .iter()
-            .zip(&decisions)
-            .find(|(_, decision)| !decision.is_allowed())
-            .map(|(r, _)| *r)
-    } else {
-        resources.first().copied()
+    // **The whole chain, over every node** (`ENC-923`).
+    //
+    // This was `authorization().authorize_many`, which is the ACL stage on its own. Barriers,
+    // classification and DLP never ran for a descendant, and no audit row was written for the
+    // allowed ones — so a five-hundred-node cascade left one `file.delete` ALLOW in the log, and
+    // `ENC-961`'s reader made that visible to anybody who deletes a folder and then opens the audit
+    // screen. Rule 2 says the chain's order is fixed; a path that runs one stage of it is not a
+    // shortened chain but a different one.
+    //
+    // `enforce_many` keeps the batched ACL read — the reason the batch form existed — and runs
+    // every other stage per node in the chain's order, auditing each. It returns the first denial
+    // rather than a verdict per row, which is right for a cascade: a partially applied delete is a
+    // worse outcome than a refusal.
+    //
+    // The obligations are discharged the same way the single-node call above discharges them.
+    let decision = match state.policy.enforce_many(&ctx, DISCARD, &resources).await {
+        Ok(decision) => decision,
+        // **Concealed, and this is rule 7 rather than politeness.** A caller holding `file.delete`
+        // on a folder could attempt a delete and learn from a `403` that it contains something
+        // walled off from them — a node they may hold no `file.metadata_read` on, which no listing
+        // would ever have shown them. The thing whose existence the status would confirm is not the
+        // thing the request named.
+        //
+        // `conceal` maps `ACCESS_DENIED` alone, so a retention refusal still answers as itself: a
+        // legal hold is a fact the caller may act on, and hiding it behind a `404` would turn "this
+        // is preserved by policy" into "this does not exist".
+        //
+        // The engine has already audited the denial — that is what `enforce_many` does and what
+        // `refuse_subtree` used to re-run `enforce` in order to achieve, on a path that was already
+        // failing. One less resolution, and the row is written by the stage that took the decision.
+        Err(error) => return Err(ApiError::new(conceal(error), request_id)),
     };
-    if let Some(resource) = denied {
-        return Err(refuse_subtree(&state, &ctx, &resource).await);
+    if let Err(refused) = none_dischargeable(&decision.into_obligations()) {
+        let resource = ResourceRef::file(ctx.tenant_id, file);
+        return Err(state.audit.refuse(&ctx, DISCARD, &resource, refused).await);
     }
 
     let authorized: std::collections::HashSet<FileId> =
