@@ -66,8 +66,23 @@ const PRIMARY: readonly NavItem[] = [
 
 const WORKSPACE: readonly NavItem[] = [
   { label: 'nav.files', icon: 'folder', route: 'library' },
-  { label: 'nav.lists', icon: 'list', unbuilt: true },
-  { label: 'nav.pages', icon: 'page', unbuilt: true },
+  /* `Lists` and `Pages` were here as `unbuilt` chips and are gone (`ENC-964`).
+   *
+   * `docs/17 §6`'s neutral treatment is for a feature that is *coming*: it says
+   * "not yet" honestly, and every other chip it has carried has since become a
+   * screen — Trash, Shared with me, Favorites, Activity, each within a week of
+   * the endpoint it needed existing.
+   *
+   * These two are different in kind. They are SharePoint-class surfaces with no
+   * schema, no crate and no row in `ROADMAP.md`'s Phase 1 or 2 — weeks of work
+   * that nobody has scheduled — and a chip that says "later" for a year is not
+   * an honest treatment of an unbuilt feature, it is an advertisement. Removing
+   * them costs a person nothing they had; leaving them costs the credibility of
+   * the five chips that mean what they say.
+   *
+   * `acl_entries.resource_type` still carries `PAGE`, `LIST` and `LIST_ITEM`,
+   * and `docs/04` still specifies them. That is deliberate: the schema is where
+   * a future intention belongs, because nobody navigates it. */
   /* Built by `ENC-960`. It was `unbuilt: true` while `audit_events` had no
    * reader at all — the log has been written since Phase 0 and nothing had ever
    * selected from it. Fourth of the seven to stop needing the chip. */
