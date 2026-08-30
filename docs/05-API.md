@@ -1,6 +1,6 @@
 # 05 — API Surface
 
-> **Status:** Draft · **Version:** 1.13 · **Owner:** Platform Engineering · **Last updated:** 2026-08-30
+> **Status:** Draft · **Version:** 1.14 · **Owner:** Platform Engineering · **Last updated:** 2026-08-30
 > **Authoritative for:** REST contracts, error model, pagination, idempotency, versioning, rate limits.
 
 ## 1. Principles
@@ -1290,6 +1290,13 @@ it — so a row the read returns and the chain refuses is ordinary and vanishes 
 
 Several grants on one resource are **one row**, carrying the earliest: a share is a thing somebody
 gave you, not a list of the verbs they enabled. `ENC-916`'s founding grant writes fifteen rows.
+
+`sharedByName` is the grantor's display name, resolved server-side by a `LEFT JOIN` on `users`
+(`ENC-958`), and `null` for a principal with no row there — a removed account, a service account, or
+`system`. The client renders *"somebody who has since left"* and never the id: **a UUID in a
+sentence is worse than an honest absence**. `GET /me/activity` carries `actorName` on the same
+terms, and `GET /trash` has carried `deletedBy.displayName` since it shipped — one join, not one
+query per row, which is what keeps a listing's cost independent of its length.
 
 `viaGroup` names the group a grant arrived through, or is `null` for a direct share. The two are
 different answers to *why do I have this*, and somebody who cannot tell them apart cannot reason

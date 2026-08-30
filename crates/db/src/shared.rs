@@ -64,6 +64,14 @@ pub struct SharedCandidate {
     /// Who made it. `acl_entries.granted_by` is `NOT NULL`, because *"the system shared this with
     /// you"* is not an answer to *"who gave me this"*.
     pub shared_by: UserId,
+    /// Their display name, or `None` for a principal with no `users` row (`ENC-958`).
+    ///
+    /// Resolved by a `LEFT JOIN` here rather than by the API layer, for the reason
+    /// [`crate::trash`] gives about `deletedBy`: the alternative is one query per row against
+    /// `users`, which makes the screen's cost proportional to its length for a column that is one
+    /// join. `None` is rendered as *"somebody"* and never as the id — a raw UUID in a sentence is
+    /// worse than an honest absence.
+    pub shared_by_display_name: Option<String>,
     /// The group the grant came through, or `None` when it named the user directly.
     ///
     /// Two different answers to *"why do I have this"*: a direct share is somebody choosing this
@@ -143,6 +151,7 @@ pub async fn shared_with_on(
                 classification: classification(row)?,
                 shared_at: row.try_get("shared_at")?,
                 shared_by: row.try_get_id("shared_by")?,
+                shared_by_display_name: row.try_get("shared_by_display_name")?,
                 via_group: row.try_get_opt_id("via_group")?,
             })
         })
@@ -189,6 +198,7 @@ const SHARED_SQL: &str = "
 SELECT g.resource_id                   AS file_id,
        g.granted_at                    AS shared_at,
        g.granted_by                    AS shared_by,
+       u.display_name                  AS shared_by_display_name,
        g.via_group                     AS via_group,
        f.name                          AS name,
        f.node_type                     AS node_type,
@@ -220,6 +230,9 @@ SELECT g.resource_id                   AS file_id,
   LEFT JOIN classifications c
     ON c.tenant_id = $1
    AND c.id = f.classification_id
+  LEFT JOIN users u
+    ON u.tenant_id = $1
+   AND u.id = g.granted_by
  ORDER BY g.granted_at DESC, g.resource_id DESC
  LIMIT $5
 ";

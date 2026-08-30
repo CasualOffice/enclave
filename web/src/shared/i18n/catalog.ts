@@ -2823,6 +2823,35 @@ export const catalog = {
     description:
       'Shown on the row when a decision fails. The second sentence carries the weight: somebody who has just pressed Approve needs to know the document was not approved.',
   },
+
+  /* Who did it (`ENC-958`).
+   *
+   * A person's name is data and never part of the message (`docs/14 §6`), so it
+   * arrives as a placeholder. The unknown form is a separate key rather than the
+   * same sentence with "Unknown" substituted: `system` and service accounts have
+   * no `users` row, and naming a principal nobody provisioned would be a fiction
+   * a reader cannot check.
+   */
+  'shared.sharedBy': {
+    message: 'Shared by {who}',
+    description:
+      'Activity line on a Shared with me row, naming the person who granted access. {who} is a display name from the directory, never an identifier.',
+  },
+  'shared.sharedByUnknown': {
+    message: 'Shared by somebody who has since left',
+    description:
+      'Used when the grantor has no directory row: a removed account, a service account or the system. "Somebody" rather than "Unknown", because the reader is being told about a person and an absent record is not a mystery.',
+  },
+  'activity.by': {
+    message: 'by {who}',
+    description:
+      'Appended to an Activity row’s sentence, naming who made the change. {who} is a display name.',
+  },
+  'activity.byUnknown': {
+    message: 'by somebody who has since left',
+    description:
+      'Used when the actor has no directory row. Same reasoning as the Shared with me form: an absent record is a departed or non-human principal, not an unknown one.',
+  },
 } as const satisfies Record<string, CatalogEntry>;
 
 export type MessageKey = keyof typeof catalog;

@@ -139,6 +139,13 @@ function Row({ item }: { item: ActivityItem }) {
               * assembled: "was edited" and "was moved" are not one string with a
               * word swapped in any language that inflects. */}
             {t(sentenceFor(item.action))}
+            {' '}
+            {/* Appended to the verb rather than joined with a separator: "was
+              * edited by Ana" is one sentence, and `docs/14 §6` keeps the name a
+              * placeholder inside it rather than a fragment concatenated on. */}
+            {item.actorName === null
+              ? t('activity.byUnknown')
+              : t('activity.by', { who: item.actorName })}
             {' · '}
             <time dateTime={item.occurredAt}>{f.relative(new Date(item.occurredAt), now)}</time>
           </span>

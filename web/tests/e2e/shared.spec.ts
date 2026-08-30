@@ -151,4 +151,19 @@ test('a folder shared through the product appears on the recipient’s Shared wi
     'the recipient must find the folder that was shared with them; before ENC-954 there was no ' +
       'listing at all and the grant was undiscoverable',
   ).toBeVisible({ timeout: 30_000 });
+
+  /* And the row says *who* (`ENC-958`). It shipped saying only *when*, because
+   * no directory read resolved a principal and the alternative was rendering a
+   * UUID at a person. Asserted on the display name rather than on the sentence,
+   * so a wording change is a catalog edit and this stays true. */
+  const row = page.locator('.shr-row', { hasText: name }).first();
+  await expect(
+    row,
+    'the row must name the person who shared it, not a principal id',
+  ).toContainText('admin');
+  await expect(
+    row,
+    'and it must never render the raw principal id: a UUID in a sentence is worse than saying ' +
+      'nothing',
+  ).not.toContainText(me.id);
 });
