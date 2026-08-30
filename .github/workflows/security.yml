@@ -59,13 +59,27 @@ env:
   TOOL_CACHE_EPOCH: "1"
 
 jobs:
-  audit:
-    name: cargo audit — no known-vulnerable dependency
+  # --------------------------------------------------------------------------
+  # The supply-chain checks, in one job (`ENC-974`).
+  #
+  # These were three jobs. Each checked out the tree, installed the same pinned
+  # toolchain and then ran one command — so two thirds of three runners' work was
+  # setting up to do the same thing three times. Merged, the setup happens once
+  # and all three commands still run: `cargo audit`, `cargo deny check` and the
+  # SBOM, in that order, each with its own cache and its own install.
+  #
+  # `continue-on-error` is deliberately **not** used. Each step still fails the
+  # job, and the scheduled-failure reporter below still fires — what is lost is
+  # that `deny` no longer runs when `audit` has already failed, which is the
+  # right trade: a run with a known-vulnerable dependency is not a run whose
+  # licence report anybody is waiting on.
+  # --------------------------------------------------------------------------
+  supply-chain:
+    name: Supply chain — audit, deny, SBOM
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
-
       - name: Install the pinned toolchain
         run: |
           set -euo pipefail
@@ -120,21 +134,6 @@ jobs:
           # condition. --deny warnings keeps unsoundness advisories blocking, not advisory.
           cargo audit --deny warnings
 
-  deny:
-    name: cargo deny — advisories, licences, bans, sources
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Install the pinned toolchain
-        run: |
-          set -euo pipefail
-          channel=$(grep -E '^[[:space:]]*channel' rust-toolchain.toml | head -1 | sed -E 's/.*"(.*)".*/\1/')
-          rustup toolchain install "$channel" --profile minimal --no-self-update
-          rustup default "$channel"
-          rustc --version
-
       - name: Cache cargo-deny binary
         id: deny-cache
         uses: actions/cache@v6
@@ -185,21 +184,6 @@ jobs:
       # without blocking; advisories, licences and sources block.
       - name: cargo deny check
         run: cargo deny --workspace check --show-stats
-
-  sbom:
-    name: SBOM — CycloneDX inventory of the dependency graph
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Install the pinned toolchain
-        run: |
-          set -euo pipefail
-          channel=$(grep -E '^[[:space:]]*channel' rust-toolchain.toml | head -1 | sed -E 's/.*"(.*)".*/\1/')
-          rustup toolchain install "$channel" --profile minimal --no-self-update
-          rustup default "$channel"
-          rustc --version
 
       - name: Cache cargo-cyclonedx binary
         id: cyclonedx-cache
@@ -268,12 +252,13 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
+
   # A weekly run that fails must produce something a human sees. A red scheduled
   # workflow with nobody watching is the same as no workflow at all.
   report-scheduled-failure:
     name: Raise a P0 for a failed scheduled scan
     if: failure() && github.event_name == 'schedule'
-    needs: [audit, deny, sbom]
+    needs: [supply-chain]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
