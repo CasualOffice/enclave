@@ -39,6 +39,21 @@ env:
   # Incremental artifacts are large, cache-hostile and useless on a clean runner.
   CARGO_INCREMENTAL: "0"
   RUST_BACKTRACE: "1"
+  # **No debug info in CI's test and dev builds** (`ENC-978`).
+  #
+  # `ENC-977` sharded the workspace test job and it still could not finish: the log shows 46
+  # crates compiling and **not one test running** before the thirty-minute cap cut it. Sharding
+  # was the wrong lever, and the reason is worth writing down — `--workspace --exclude` removes a
+  # crate from the *test set*, not from the *build graph*, so both shards still compiled almost
+  # everything. Splitting a compile-bound job just buys two of the same compile.
+  #
+  # Debug info is the largest single share of a debug build's time and of its link time, and CI
+  # never opens a debugger. What is given up is line numbers inside backtraces; `RUST_BACKTRACE`
+  # above still names the frames, which is what a failing test in a log is read for.
+  #
+  # This invalidates the existing caches once, by design — the profile is part of the fingerprint.
+  CARGO_PROFILE_TEST_DEBUG: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
 
 jobs:
   fmt:
@@ -123,11 +138,23 @@ jobs:
       fail-fast: false
       matrix:
         shard:
-          # The crates whose tests hold a database, an object store or a cluster role. These are
-          # what `--include-ignored` actually costs.
+          # The crates whose tests hold a database, an object store or a cluster role. Measured
+          # at seventeen minutes — about ten compiling and six running — so this one fits.
           - name: services
             args: -p enclave-api -p enclave-db -p enclave-audit -p enclave-testing
-          # Everything else, by subtraction.
+          # The heavy half of what is left: search, indexing, embeddings and the subsystems that
+          # pull them in. Named explicitly because these are the crates being *moved out* of the
+          # default shard, and a list that grows is safe in this direction — anything forgotten
+          # here still runs, in `rest`.
+          - name: pipeline
+            args: >-
+              -p enclave-search -p enclave-indexing -p enclave-embeddings -p enclave-ai
+              -p enclave-mcp -p enclave-workflows -p enclave-signing -p enclave-preview
+              -p enclave-storage -p enclave-sync
+          # Everything else, by subtraction — and this is the shard a newly added crate lands in
+          # without anybody deciding. `ENC-977` split four crates from forty-three and the big
+          # half never finished; three shards is that split rebalanced against the measurement
+          # rather than against my guess about which half was expensive.
           - name: rest
             args: >-
               --workspace
@@ -135,6 +162,16 @@ jobs:
               --exclude enclave-db
               --exclude enclave-audit
               --exclude enclave-testing
+              --exclude enclave-search
+              --exclude enclave-indexing
+              --exclude enclave-embeddings
+              --exclude enclave-ai
+              --exclude enclave-mcp
+              --exclude enclave-workflows
+              --exclude enclave-signing
+              --exclude enclave-preview
+              --exclude enclave-storage
+              --exclude enclave-sync
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -224,7 +261,13 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: ${{ runner.os }}-cargo-test-${{ matrix.shard.name }}-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('**/Cargo.lock') }}
+          # **One key for both shards, not one each** (`ENC-978`). `ENC-977` gave each shard its
+          # own key on the assumption they built different things. They do not: `--exclude`
+          # removes a crate from the *test set* and not from the *build graph*, so both shards
+          # compile almost the same 46 crates. Two keys meant two caches of the same artifacts,
+          # each warmed only by its own shard. One key means whichever shard finishes first warms
+          # the other. Concurrent saves are safe — the loser reports that the entry already exists.
+          key: ${{ runner.os }}-cargo-test-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-test-${{ hashFiles('rust-toolchain.toml') }}-
             ${{ runner.os }}-cargo-test-
