@@ -13,21 +13,29 @@ governance, customer-controlled infrastructure, hybrid vector search and MCP-nat
 It is not a file server. It is an information boundary combining content, identity, permissions,
 governance, search, collaboration, DLP, retention, audit and AI access.
 
-> **Status: in development.** The specification pack is complete, and implementation is
-> underway against the phasing in [`docs/01-PRD.md §37`](docs/01-PRD.md).
-> **Phase 0 — Foundations** and **Phase 1 — MVP** are done: the Cargo workspace and its
-> crates, layered config, the `db` crate with RLS-enforced tenancy, the append-only audit
-> hash chain, the transactional outbox, `PolicyEngine::enforce` with all six stages wired
-> and a CI gate proving every handler reaches it, Argon2id + JWT auth with refresh
-> rotation, then tenancy and groups, real ACL resolution with inheritance and deny-wins,
-> workspaces and libraries, the `BlobStore` upload state machine, files and folders with
-> trash and move/copy, immutable versions with atomic commit and restore, ClamAV scanning
-> ahead of `AVAILABLE`, paginated read paths, and the first three sections of the security
-> leakage matrix. **Phase 2 — Enterprise V1** has not started.
+> **Status: in development. No release, no hosted demo, nothing production-ready.**
 >
-> There is no release, no hosted demo, and nothing here is ready for production.
-> [`TRACKER.md`](TRACKER.md) is authoritative for what is built; [`ROADMAP.md`](ROADMAP.md)
-> for what comes next and what "complete" means at each gate.
+> **Phase 0 — Foundations is complete** (19 of 19). The Cargo workspace and its 46 crates,
+> layered configuration, the `db` crate with RLS-enforced tenancy, the append-only audit hash
+> chain, the transactional outbox, and `PolicyEngine::enforce` with every stage wired and a CI
+> gate proving all 75 route handlers reach it.
+>
+> **Phase 1 — MVP is substantially built and not finished: 280 rows done, 156 open.**
+> Working end to end today — sign-in with Argon2id and rotating refresh tokens, tenancy and
+> groups, ACL resolution with inheritance and deny-wins, provisioning workspaces and libraries,
+> the upload state machine through `BlobStore`, files and folders with move, copy, trash and
+> restore, immutable versions with atomic commit, ClamAV ahead of `AVAILABLE`, full-text search,
+> retention policies an administrator configures from the admin surface and which govern both
+> interactive deletion and the purge deadline, and storage tiering with an honest read path and
+> a rehydrate that completes. 32 migrations, 37 rows in the security leakage matrix.
+>
+> What is not built is easy to find and deliberately visible in the product: seven of twelve
+> navigation entries and most of the administration surface render as `Later` chips rather than
+> pretending. Permanent deletion is unimplemented and says why. **Phase 2 — Enterprise V1 has
+> not started** (0 of 20).
+>
+> [`TRACKER.md`](TRACKER.md) is authoritative for what is built, row by row;
+> [`ROADMAP.md`](ROADMAP.md) for what comes next and what "complete" means at each gate.
 
 ## What it does
 
