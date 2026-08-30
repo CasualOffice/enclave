@@ -307,6 +307,16 @@ const SPECS: &[Spec] = &[
         credential: Credential::Bearer,
         expect: Expect::Served,
     },
+    // `ENC-959`. `Served`: an empty star list is a `200` with an empty array, which is the correct
+    // answer and the one this suite asks about.
+    Spec {
+        method: "GET",
+        path: "/api/v1/me/favorites",
+        target: "/api/v1/me/favorites",
+        body: None,
+        credential: Credential::Bearer,
+        expect: Expect::Served,
+    },
     Spec {
         method: "GET",
         path: "/api/v1/workspaces",
@@ -455,6 +465,28 @@ const SPECS: &[Spec] = &[
         body: None,
         credential: Credential::Bearer,
         expect: Expect::ServedOrAbsent,
+    },
+    // `ENC-959`. `Served` and not `ServedOrAbsent`: starring resolves no version, so unlike
+    // `download` and `rehydrate` it does not need the fixture to have committed bytes — the chain
+    // decides on the file node, which exists.
+    Spec {
+        method: "PUT",
+        path: "/api/v1/files/{id}/favorite",
+        target: "/api/v1/files/{file}/favorite",
+        body: None,
+        credential: Credential::Bearer,
+        expect: Expect::Served,
+    },
+    // Un-starring something never starred is `200 {removed: false}`, deliberately: the state the
+    // caller asked for is the state that holds, and a `404` would make the ordinary double-click
+    // look like a failure.
+    Spec {
+        method: "DELETE",
+        path: "/api/v1/files/{id}/favorite",
+        target: "/api/v1/files/{file}/favorite",
+        body: None,
+        credential: Credential::Bearer,
+        expect: Expect::Served,
     },
     Spec {
         method: "GET",

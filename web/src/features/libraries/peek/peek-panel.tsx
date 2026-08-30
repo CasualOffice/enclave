@@ -3,6 +3,7 @@ import { useT } from '../../../shared/i18n/index.tsx';
 import { useFormatters } from '../../../shared/i18n/format.ts';
 import type { MessageKey } from '../../../shared/i18n/catalog.ts';
 import { IconButton, Kbd, LaterChip, Skeleton } from '../../../shared/ui/primitives.tsx';
+import { useIsFavorite, useStar } from '../../../entities/favorite/api.ts';
 import { Bar, Push, Tab, TabList } from '../../../shared/ui/layout.tsx';
 import { PreviewTab } from './preview-tab.tsx';
 import { FailureState } from '../../../shared/ui/surface-states.tsx';
@@ -107,16 +108,21 @@ export interface PeekNavigation {
 
 function PeekChrome({
   title,
+  fileId,
   onClose,
   navigation,
   children,
 }: {
   title: string;
+  /** The file the panel describes, or `undefined` while it is loading. */
+  fileId: string | undefined;
   onClose: () => void;
   navigation?: PeekNavigation | undefined;
   children: ReactNode;
 }) {
   const t = useT();
+  const { toggle } = useStar();
+  const starred = useIsFavorite(fileId);
   return (
     /* `.enc-enter-panel` rather than a local `@keyframes encPeek`. The local
      * copy held `translateX(calc(14px * var(--icon-flip, 1)))`, which was the
@@ -141,6 +147,25 @@ function PeekChrome({
            * has already returned and already filtered. Being at the end of the
            * list is a neutral disabled state, and it must not borrow the denial
            * treatment — there is nothing the user lacks permission to do. */}
+          {/* The star, first in the group and separated from the navigation
+            * controls it sits beside: prev/next/close move *the panel*, and this
+            * acts on *the file*. `ENC-959` — the only optimistic control in this
+            * client, and `docs/17` Q25 permits it here for the reason
+            * `features/favorites/api.ts` gives: a favourite touches no access,
+            * so the cost of being wrong is an outline that fills and empties
+            * again rather than a document somebody believes they can reach.
+            *
+            * Two catalog keys rather than one conditional string, so a
+            * translator sees both sentences and neither is assembled at run
+            * time (`docs/14 §8`). */}
+          {fileId !== undefined && (
+            <IconButton
+              name="star"
+              label={starred ? 'favorites.starred' : 'favorites.star'}
+              aria-pressed={starred}
+              onClick={() => toggle(fileId, !starred)}
+            />
+          )}
           <span className="library-peek-prev">
             <IconButton
               name="chev"
@@ -379,7 +404,12 @@ export function PeekPanel({
 
   if (error !== null && error !== undefined) {
     return (
-      <PeekChrome title={t('library.peek.unavailable')} onClose={onClose} navigation={navigation}>
+      <PeekChrome
+        title={t('library.peek.unavailable')}
+        fileId={undefined}
+        onClose={onClose}
+        navigation={navigation}
+      >
         <div className="library-peek-body">
           <FailureState failure={failureOf(error)} onRetry={onRetry} />
         </div>
@@ -417,7 +447,7 @@ export function PeekPanel({
   const modified = new Date(detail.modifiedAt);
 
   return (
-    <PeekChrome title={detail.name} onClose={onClose} navigation={navigation}>
+    <PeekChrome title={detail.name} fileId={fileId} onClose={onClose} navigation={navigation}>
       <div className="library-peek-title">
         {/* One ICU message with named placeholders, not four fragments joined
          * with ' · ' in JavaScript. A translator controls both the order and the

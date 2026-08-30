@@ -1,6 +1,6 @@
 # 05 — API Surface
 
-> **Status:** Draft · **Version:** 1.11 · **Owner:** Platform Engineering · **Last updated:** 2026-08-30
+> **Status:** Draft · **Version:** 1.12 · **Owner:** Platform Engineering · **Last updated:** 2026-08-30
 > **Authoritative for:** REST contracts, error model, pagination, idempotency, versioning, rate limits.
 
 ## 1. Principles
@@ -1200,6 +1200,30 @@ and the list that would identify the row cannot be reached. The handler decodes 
 individually and would report it; the stage above it is what fails. `ENC-651`, and the same shape as
 `ENC-623` one stage over.
 
+
+#### Favorites (`ENC-959`)
+
+| Method | Path | |
+|---|---|---|
+| `GET` | `/me/favorites` | what this account has starred, most recent first |
+| `PUT` | `/files/{id}/favorite` | star it |
+| `DELETE` | `/files/{id}/favorite` | un-star it |
+
+Both writes are authorized as **`file.metadata_read`**. The question is *may this person see that
+this file exists*: a caller who may not read it must not learn that it does by starring it. Not
+`file.edit` — starring changes nothing about the document, and requiring an edit permission would
+stop a reader bookmarking something they are allowed to read, which is most of what favorites are
+for.
+
+**`PUT`, not `POST`**, and both writes are idempotent. Starring an already-starred file and
+un-starring an unstarred one are `200`, not `409`: the state the caller asked for is the state that
+holds, and a conflict would teach a client that the ordinary double-click looks like a failure.
+`created` and `removed` report which of the two happened, for a client that wants to count rather
+than guess.
+
+**A star is not permission.** The listing runs every row through the chain before returning it — a
+file starred a year ago may have been re-permissioned since — and `filteredCount` says how many were
+withheld, never which (rule 7).
 
 #### Shared with me (`ENC-954`)
 
