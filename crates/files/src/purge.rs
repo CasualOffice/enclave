@@ -7,17 +7,25 @@
 //! >
 //! > Purge cascades to derived state: renditions, extracted text, chunks in Milvus, sync tombstones.
 //!
-//! Two of those four checks cannot be made from this crate today. `retention_policies` and
-//! `retention_labels` have no crate behind them, `legal_hold_items` has none either, and while
-//! `files.on_legal_hold` and `files.is_record` are denormalized flags maintained *transactionally*
-//! with those tables (`docs/04-DATA-MODEL.md §8`) — so reading them is not a shortcut — nothing
-//! maintains them yet, because nothing writes the tables they mirror. A purge implemented against
-//! those columns now would read `FALSE` for every row in the system and destroy content under
+//! **One of those four gates now exists, and the other three still do not** (`ENC-944`).
+//!
+//! *Retention schedule* is built: `ENC-940` created `retention_policies` and `retention_assignments`
+//! and `crates/retention` reads them, `ENC-943` gave a tenant administrator a way to write one, and
+//! `ENC-944` made `files.purge_after` reflect what a policy actually requires instead of a
+//! thirty-day constant — so `purge_after` in the past is, for the first time, a statement about
+//! this tenant's retention rather than about the calendar. Gate 1 and gate 2 collapse into one
+//! column comparison because of it.
+//!
+//! What is still missing is gates 3 and 4 and the cascade. `legal_hold_items` has no crate behind
+//! it; `files.on_legal_hold` and `files.is_record` are denormalized flags maintained
+//! *transactionally* with tables nothing writes (`docs/04-DATA-MODEL.md §8`), so reading them is
+//! not a shortcut — it is reading `FALSE` for every row in the system and destroying content under
 //! hold. The cascade has the same problem: no rendition store, no chunk index, no sync tombstones
 //! to cascade to.
 //!
 //! So the function is written, documented and refuses. A refusal is recoverable and an audited
-//! non-event; a purge that ran with two of its four gates missing is not.
+//! non-event; a purge that ran with two of its four gates missing is not — and *three of four* is
+//! the more dangerous number, because it is close enough to look finished.
 
 use chrono::{DateTime, Utc};
 use enclave_core::{FileId, TenantId};
