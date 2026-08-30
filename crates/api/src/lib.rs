@@ -126,6 +126,10 @@ pub fn router(state: ApiState, delivery: Delivery) -> Router {
         .route("/api/v1/me", get(me::me))
         // `ENC-930`. The home screen's Continue-working list, and the endpoint it had been
         // rendering nothing for: `home-screen.tsx`'s own header said `GET /api/v1/me/recent`
+        // `ENC-954`. `acl_entries` has had a writer since `ENC-916` and nothing has ever listed
+        // what a person was given — so a colleague could share a document outside any workspace
+        // this user belongs to and they had no way to find it.
+        .route("/api/v1/me/shared", get(routes::shared::shared))
         // did not exist and must not be improvised out of `audit_events`, which is hash-chained
         // and deliberately not a feed (rule 10). It is a purpose-built read model instead —
         // `migrations/0029` — and every candidate it returns goes through the chain before it
