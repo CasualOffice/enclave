@@ -67,7 +67,7 @@ jobs:
   clippy:
     name: clippy — --workspace --all-targets -D warnings
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 
@@ -105,7 +105,7 @@ jobs:
   test:
     name: test — cargo test --workspace
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 30
 
     # The suite needs a real PostgreSQL. Without one, 24 of the workspace's tests are silently
     # skipped — including `no_transaction_ever_observes_another_tenants_context`, the
@@ -674,7 +674,7 @@ jobs:
   build:
     name: build — release binaries
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 
@@ -780,7 +780,7 @@ jobs:
   reachability:
     name: reachability — the binary answers every route it registers
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
 
     # A job of its own rather than a step inside `test`, and the reason is what a red check says.
     # `test` runs some two thousand assertions; when it goes red it says "something broke" and the

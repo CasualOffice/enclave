@@ -15,6 +15,16 @@ which is the difference between a defect somebody fixes and a defect somebody wa
 
 This gate is deliberately structural rather than a review habit: the cost of a missing
 timeout is paid by whoever pushes next, not by whoever omitted it.
+
+It also enforces a **ceiling**. A timeout of ninety minutes bounds nothing anybody cares
+about: it stops the six-hour case and permits an hour and a half of one runner held by a
+job nobody is watching. On 2026-08-30 this repository's 29-job-per-push workflows starved
+every other repository in the organisation for an afternoon (`ENC-974`), and the jobs at
+the top of that queue were the ones allowed 45 and 90 minutes.
+
+Thirty minutes is the ceiling, and it is a design constraint rather than a limit to raise
+when something bumps it: a job that cannot finish in half an hour is a job to split, cache
+or narrow. Raising the number is how a repository arrives back at ninety.
 """
 
 from __future__ import annotations
@@ -31,7 +41,11 @@ WORKFLOWS = pathlib.Path(".github/workflows")
 JOB = re.compile(r"^  ([a-z0-9_-]+):\s*$")
 KEY = re.compile(r"^    ([a-z0-9_-]+):")
 
+#: No job may hold a runner longer than this. See the module docstring.
+CEILING_MINUTES = 30
+
 missing: list[tuple[str, str]] = []
+over: list[tuple[str, str, int]] = []
 
 for path in sorted(WORKFLOWS.glob("*.yml")):
     lines = path.read_text().splitlines()
@@ -52,8 +66,25 @@ for path in sorted(WORKFLOWS.glob("*.yml")):
         k = KEY.match(line)
         if k and job is not None:
             seen.add(k.group(1))
+            if k.group(1) == "timeout-minutes":
+                value = line.split(":", 1)[1].strip()
+                if value.isdigit() and int(value) > CEILING_MINUTES:
+                    over.append((path.name, job, int(value)))
     if job is not None and "timeout-minutes" not in seen:
         missing.append((path.name, job))
+
+if over:
+    for wf, job, value in over:
+        print(
+            f"::error file=.github/workflows/{wf},title=GATE FAILED: workflow timeouts::"
+            f"job '{job}' allows {value} minutes, over the {CEILING_MINUTES}-minute ceiling. "
+            f"A job that cannot finish in half an hour is one to split, cache or narrow — "
+            f"raising the number is how a repository arrives back at ninety (ENC-974)."
+        )
+    print(
+        f"\n{len(over)} job(s) over the {CEILING_MINUTES}-minute ceiling."
+    )
+    sys.exit(1)
 
 if missing:
     for wf, job in missing:
@@ -74,4 +105,6 @@ total = sum(
     for l in p.read_text().splitlines()
     if l.strip().startswith("timeout-minutes:")
 )
-print(f"every workflow job declares a timeout ({total} jobs).")
+print(
+    f"every workflow job declares a timeout, none over {CEILING_MINUTES} minutes ({total} jobs)."
+)
