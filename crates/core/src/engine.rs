@@ -538,6 +538,145 @@ impl PolicyEngine {
         Ok(PolicyDecision::allow(obligations))
     }
 
+    /// The whole chain over a set of resources, in the same order, auditing every one
+    /// (`ENC-923`).
+    ///
+    /// # What this replaces, and why that was a rule-2 defect
+    ///
+    /// A delete cascade addressed one node and decided the rest with
+    /// [`AuthorizationService::authorize_many`] — the ACL stage **on its own**. Barriers,
+    /// classification and DLP never ran for a descendant, and no audit row was written for the
+    /// allowed ones: a five-hundred-node cascade left a single `file.delete` ALLOW in the log. Rule
+    /// 2 says the chain's order is fixed, and a path that runs one stage of it is not a shortened
+    /// chain, it is a different one.
+    ///
+    /// It cost nothing to be wrong for as long as barriers and classification were
+    /// `Unconfigured` in every deployment, which is exactly why it needed closing before they are
+    /// not. `ENC-961`'s audit reader made the second half visible from outside: an administrator
+    /// can now open the log, delete a folder of twenty files, and count one row.
+    ///
+    /// # Why this is not a loop over [`Self::enforce`]
+    ///
+    /// Authorization is the stage with a real batch form, and it exists because the ACL read is the
+    /// expensive one — `authorize_many` asks once for the whole set. Calling `enforce` in a loop
+    /// would give up that batching and issue one ACL round trip per node. Every other stage is
+    /// evaluated per resource here exactly as `enforce` evaluates it, in the same order, so this is
+    /// the same chain with one stage batched rather than a second chain that resembles it.
+    ///
+    /// Conditional access is still evaluated per resource even though every implementation in the
+    /// tree ignores the `ResourceRef` it is handed. Skipping it on that basis would encode a
+    /// property of today's implementations into the engine, and the engine is the one place that
+    /// must not assume what a stage does.
+    ///
+    /// # The first denial ends it
+    ///
+    /// A cascade is one operation. A partially applied delete — some descendants trashed, one
+    /// refused — is a worse outcome than a refusal, so this returns the first denial rather than a
+    /// per-resource verdict, and the denial is audited by the stage that raised it exactly as it
+    /// would be in [`Self::enforce`]. Callers that want a per-row answer are asking a different
+    /// question and want `authorize_many` plus their own trimming, which is what the listings do.
+    ///
+    /// # Errors
+    ///
+    /// The first stage denial, as [`Error::denied`]; [`Error::NotFound`] for a cross-tenant
+    /// resource (rule 7); or a stage's own failure.
+    pub async fn enforce_many(
+        &self,
+        ctx: &RequestContext,
+        action: Action,
+        resources: &[ResourceRef],
+    ) -> Result<PolicyDecision> {
+        // Binds the first resource as well as answering the empty case, so the batch-mismatch
+        // branch below has a resource to audit against rather than an `Option` it would have to
+        // refuse on. A refusal with nowhere to record it is precisely what `audit-coverage` exists
+        // to stop, and this method is on that gate's inline-auditing list on the strength of every
+        // refusal path here recording first.
+        let Some(first) = resources.first() else {
+            return Ok(PolicyDecision::allow(Obligations::none()));
+        };
+
+        // Stage 1, per resource and before anything else reads, for the same reason `enforce` does
+        // it first: a resource from another tenant must not reach a stage that could disclose it.
+        for resource in resources {
+            if ctx.tenant_id != resource.tenant_id {
+                self.audit
+                    .record_deny(
+                        ctx,
+                        action,
+                        resource,
+                        Stage::TenantIsolation,
+                        ReasonCode::AccessDenied,
+                    )
+                    .await?;
+                return Err(Error::NotFound);
+            }
+        }
+
+        let mut obligations = Obligations::none();
+
+        macro_rules! stage_for {
+            ($resource:expr, $stage:expr, $call:expr) => {{
+                let decision = $call.await?;
+                if let StageOutcome::Deny(code) = *decision.outcome() {
+                    self.audit.record_deny(ctx, action, $resource, $stage, code).await?;
+                    return Err(Error::denied(code));
+                }
+                obligations.merge(decision.ensure_allowed()?);
+            }};
+        }
+
+        // Stage 3, per resource. See the note above on why this is not skipped.
+        for resource in resources {
+            stage_for!(
+                resource,
+                Stage::ConditionalAccess,
+                self.conditional_access.evaluate(ctx, action, resource)
+            );
+        }
+
+        // Stage 4, batched — the one stage that has a batch form, and the reason this method
+        // exists rather than a loop.
+        let decisions = self.authorization.authorize_many(ctx, action, resources).await?;
+        if decisions.len() != resources.len() {
+            // A batch that does not line up with what it was asked about cannot be read
+            // positionally, and reading it positionally anyway is how a node nobody decided about
+            // gets deleted. The whole operation is refused, and the first resource carries the
+            // denial into the log.
+            self.audit
+                .record_deny(ctx, action, first, Stage::Authorization, ReasonCode::AccessDenied)
+                .await?;
+            return Err(Error::denied(ReasonCode::AccessDenied));
+        }
+        for (resource, decision) in resources.iter().zip(decisions) {
+            if let StageOutcome::Deny(code) = *decision.outcome() {
+                self.audit.record_deny(ctx, action, resource, Stage::Authorization, code).await?;
+                return Err(Error::denied(code));
+            }
+            obligations.merge(decision.ensure_allowed()?);
+        }
+
+        // Stages 5 to 8, per resource, in the chain's order.
+        for resource in resources {
+            let facts = self.facts.gather(ctx, action, resource).await?;
+            stage_for!(resource, Stage::Barriers, self.barriers.evaluate(ctx, resource));
+            stage_for!(
+                resource,
+                Stage::Classification,
+                self.classification.evaluate(ctx, action, resource)
+            );
+            stage_for!(resource, Stage::Dlp, self.dlp.evaluate(ctx, action, resource, &facts));
+            stage_for!(resource, Stage::Retention, self.retention.evaluate(ctx, action, resource));
+        }
+
+        // One row per resource. This is the half of `ENC-923` that was visible from outside: the
+        // audit log recorded a cascade as a single event, so the record of a five-hundred-node
+        // deletion named one file.
+        for resource in resources {
+            self.audit.record_allow(ctx, action, resource, &obligations).await?;
+        }
+        Ok(PolicyDecision::allow(obligations))
+    }
+
     /// Re-runs tenant isolation and **conditional access alone**, for a caller that has a principal
     /// and no resource operation to authorize.
     ///
