@@ -3,6 +3,7 @@ import { useLocale, useT } from '../shared/i18n/index.tsx';
 import { initialsOf, toneOf } from '../entities/user/model.ts';
 import { signOut } from '../features/auth/sign-out.ts';
 import { UploadTray } from '../features/upload/upload-tray.tsx';
+import { UploadListingRefresh } from '../features/upload/refresh-listing.tsx';
 import { useViewer } from '../entities/user/viewer.tsx';
 import { Icon, type IconName } from '../shared/ui/icon-sprite.tsx';
 import { Mark } from '../shared/ui/mark.tsx';
@@ -355,6 +356,10 @@ export function Shell({ children }: { children: ReactNode }) {
          * Search, and the transfer would continue with nothing on screen saying
          * so. It renders nothing when the queue is empty. */}
         <UploadTray />
+        {/* Renders nothing. It holds the effect that refreshes the listing an
+          * upload landed in, mounted beside the tray rather than inside it so
+          * the tray keeps needing no query context (`ENC-972`). */}
+        <UploadListingRefresh />
       </main>
     </div>
   );
