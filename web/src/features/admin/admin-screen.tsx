@@ -5,6 +5,7 @@ import { useT } from '../../shared/i18n/index.tsx';
 import { Pill } from '../../shared/ui/primitives.tsx';
 import { DeniedPanel } from '../../shared/ui/surface-states.tsx';
 import { AdminNav } from './admin-nav.tsx';
+import { RetentionScreen } from './retention/retention-screen.tsx';
 import {
   AdminEmptyState,
   AdminErrorState,
@@ -92,6 +93,11 @@ export default function Screen() {
   const surface: Surface = (SURFACES as readonly string[]).includes(surfaceParam)
     ? (surfaceParam as Surface)
     : 'live';
+  /* Which admin surface. Two are built (`ENC-945`); the rest of the rail is
+   * `unbuilt` and cannot select itself. An unknown value falls back to `dlp`
+   * rather than rendering nothing, because a hand-edited URL should not be a
+   * blank screen. */
+  const section = params.get('section') === 'retention' ? 'retention' : 'dlp';
   const query = params.get('q') ?? '';
   const selectedId = params.get('rule') ?? undefined;
   /* Auditor mode is a *rendering* of a decision the server does not send yet:
@@ -129,6 +135,31 @@ export default function Screen() {
 
   const fixture = surface === 'fixture' || offline;
   const live: readonly DlpRule[] = fixture ? RULES : rules.data?.items ?? [];
+
+  /* Retention owns its own loading, error and denial states, so it is returned
+   * before the DLP query's — otherwise a retention visitor would sit behind a
+   * DLP fetch that has nothing to do with the pane they asked for. The rail is
+   * rendered in both arms, which is what keeps the two surfaces reachable from
+   * each other. */
+  if (section === 'retention') {
+    return (
+      <div className="adm">
+        <AdminNav
+          section={section}
+          onSection={(next) => setParam('section', next === 'dlp' ? undefined : next)}
+          rules={[]}
+          selectedId={undefined}
+          query={query}
+          onQuery={(next) => setParam('q', next)}
+          hrefFor={(ruleId) => `${window.location.pathname}?rule=${encodeURIComponent(ruleId)}`}
+          onSelect={onSelect}
+          onCreate={onCreate}
+          readOnly={readOnly}
+        />
+        <RetentionScreen readOnly={readOnly} />
+      </div>
+    );
+  }
 
   if (surface === 'loading' || (surface === 'live' && rules.isPending)) {
     return (
@@ -186,6 +217,8 @@ export default function Screen() {
   return (
     <div className="adm">
       <AdminNav
+        section={section}
+        onSection={(next) => setParam('section', next === 'dlp' ? undefined : next)}
         rules={visible}
         selectedId={selected?.id}
         query={query}

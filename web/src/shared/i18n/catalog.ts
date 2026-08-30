@@ -1615,6 +1615,11 @@ export const catalog = {
     description:
       'Rail entry and breadcrumb step for the DLP surface. Spelled out rather than abbreviated because the abbreviation is English-specific.',
   },
+  'admin.nav.retention': {
+    message: 'Retention',
+    description:
+      'Rail entry for the retention surface: what the tenant has committed to preserving and for how long. Not one file’s sensitivity label.',
+  },
   'admin.nav.conditionalAccess': {
     message: 'Conditional access',
     description: 'Rail entry for the conditional-access surface, which this release does not have.',
@@ -2440,6 +2445,165 @@ export const catalog = {
   'library.peek.preview.noRenderer.note': {
     message: 'This deployment renders images only. Other formats need the document renderer.',
     description: 'Release note behind the unbuilt Preview state, naming the actual blocker.',
+  },
+
+  /* Retention (`ENC-945`).
+   *
+   * The vocabulary values — KEEP, DELETE_AFTER, CREATED and the rest — are
+   * **not** in this catalog and render as the server sent them. They are
+   * `migrations/0031`'s stored spellings, and a translated copy here would be a
+   * second vocabulary free to drift from the one the database enforces — with
+   * the drift invisible, because a mistranslated action still renders as a
+   * word. They are given a translatable *frame*, and the token itself is a
+   * placeholder inside it.
+   */
+  'admin.retention.title': {
+    message: 'Retention',
+    description: 'Heading of the retention administration surface.',
+  },
+  'admin.retention.intro': {
+    message:
+      'A retention policy decides how long content is kept and whether anyone may delete it. Where two policies overlap, the stricter one applies.',
+    description:
+      'Paragraph under the retention heading. The second sentence states the precedence rule, which is strictest-wins — the opposite of the most-specific-wins rule administrators expect from permissions, so it is said rather than assumed.',
+  },
+  'admin.retention.new': {
+    message: 'New policy',
+    description: 'Button that opens the form for writing a retention policy.',
+  },
+  'admin.retention.writeRefused': {
+    message: 'Not saved',
+    description: 'Chip beside the explanation of why a retention change was refused by the server.',
+  },
+  'admin.retention.writeFailed': {
+    message: 'That change did not reach the server. Nothing was altered.',
+    description:
+      'Shown when a retention write fails for a reason that is not a policy refusal — a network fault or a server error. The second sentence carries the weight: an administrator needs to know the previous state still stands.',
+  },
+  'admin.retention.empty.title': {
+    message: 'No retention policies',
+    description: 'Heading of the empty state on the retention surface.',
+  },
+  'admin.retention.empty.body': {
+    message:
+      'Nothing in this tenant is preserved by policy, so anyone with permission can delete anything they can reach.',
+    description:
+      'Body of the retention empty state. States the consequence rather than only the absence, because the absence is the risk.',
+  },
+  'admin.retention.actionLabel': {
+    message: '{action}',
+    description:
+      'Chip showing a policy’s action. The value is the server’s stored spelling — KEEP, KEEP_THEN_DELETE, DELETE_AFTER, RECORD or LEGAL_HOLD — deliberately not translated; see the note above this block.',
+  },
+  'admin.retention.userDeletable': {
+    message: 'Users may delete',
+    description:
+      'Warning chip on a policy whose allowUserDelete is set. Surfaced because such a policy appears in every listing as a control and does not stop a deletion.',
+  },
+  'admin.retention.summary.plain': {
+    message: 'Applies {action}, measured from when content was {basis}.',
+    description:
+      'Summary of a policy with no duration. {action} and {basis} are the server’s stored spellings.',
+  },
+  'admin.retention.summary.duration': {
+    message:
+      'Applies {action} for {days, plural, one {# day} other {# days}}, measured from when content was {basis}.',
+    description:
+      'Summary of a policy carrying a duration. {days} is a whole number of days; the database stores a calendar interval and days are what a form can express without ambiguity.',
+  },
+  'admin.retention.noScopes': {
+    message: 'Not applied anywhere, so it governs nothing.',
+    description:
+      'Shown under a policy with no assignments. Says the consequence, because a written policy reads as an active control until somebody notices it was never applied.',
+  },
+  'admin.retention.scope.tenant': {
+    message: 'Everything in this tenant',
+    description: 'The TENANT scope, in the scope picker and in the list of where a policy applies.',
+  },
+  'admin.retention.scope.workspace': {
+    message: 'One workspace',
+    description: 'The WORKSPACE scope, as an option in the scope picker.',
+  },
+  'admin.retention.scope.workspacePicker': {
+    message: 'Workspace',
+    description: 'Accessible name of the select that chooses which workspace a policy applies to.',
+  },
+  'admin.retention.scope.choose': {
+    message: 'Choose a workspace…',
+    description: 'Placeholder option in the workspace select, before one is chosen.',
+  },
+  'admin.retention.scope.named': {
+    message: '{scope} · {name}',
+    description:
+      'One row in the list of where a policy applies: the scope kind as the server spells it, then the name of the thing it names.',
+  },
+  'admin.retention.scope.others': {
+    message: 'Library, content type and single-file scopes',
+    description:
+      'Neutral row naming the three scopes the server accepts and this screen does not offer, because each would need an identifier pasted by hand.',
+  },
+  'admin.retention.live': {
+    message: 'In force',
+    description: 'Chip on an assignment that currently applies.',
+  },
+  'admin.retention.withdrawn': {
+    message: 'Withdrawn',
+    description:
+      'Chip on an assignment that has been withdrawn. The row remains: the record that a control once applied is part of the control.',
+  },
+  'admin.retention.withdraw': {
+    message: 'Withdraw',
+    description:
+      'Button that stops a policy applying to one scope from now on. Deliberately not "Remove" — nothing is deleted.',
+  },
+  'admin.retention.applyTo': {
+    message: 'Apply to',
+    description: 'Label of the scope select beneath a policy.',
+  },
+  'admin.retention.apply': {
+    message: 'Apply',
+    description: 'Button that applies a policy to the chosen scope.',
+  },
+  'admin.retention.chooseScope': {
+    message: 'Choose a workspace first.',
+    description:
+      'Note on the Apply button while the workspace scope is selected and no workspace has been chosen.',
+  },
+  'admin.retention.form.name': {
+    message: 'Policy name',
+    description: 'Text field for the name an administrator will recognise the policy by.',
+  },
+  'admin.retention.form.action': {
+    message: 'What it does',
+    description: 'Select for the policy’s action. Options are the server’s stored vocabulary.',
+  },
+  'admin.retention.form.basis': {
+    message: 'Measured from',
+    description:
+      'Select for what the retention period is measured from. Options are the server’s stored vocabulary.',
+  },
+  'admin.retention.form.days': {
+    message: 'Days',
+    description:
+      'Number field for the retention period in whole days. Days rather than seconds: the database adds a calendar interval, and a period expressed in seconds lands on a different date.',
+  },
+  'admin.retention.form.allowUserDelete': {
+    message: 'Users may still delete governed content',
+    description:
+      'Checkbox, off by default — the safe half: a policy written carelessly retains rather than releases.',
+  },
+  'admin.retention.form.absoluteNote': {
+    message: 'A legal hold or record cannot permit user deletion. The server refuses such a policy.',
+    description:
+      'Shown when the chosen action makes the allow-deletion checkbox unavailable. Names the server as the authority, because it is — this screen only hides the control.',
+  },
+  'admin.retention.form.cancel': {
+    message: 'Cancel',
+    description: 'Dismisses the new-policy form without writing anything.',
+  },
+  'admin.retention.form.save': {
+    message: 'Save policy',
+    description: 'Submits the new-policy form.',
   },
 } as const satisfies Record<string, CatalogEntry>;
 
