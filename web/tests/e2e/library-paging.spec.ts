@@ -51,6 +51,28 @@ async function get(request: APIRequestContext, path: string, bearer: string) {
   return Items.parse(await response.json());
 }
 
+
+/** The server's default page size for `GET /libraries/{id}/items` (`docs/05 §6`). */
+const PAGE = 50;
+
+async function createFolder(
+  request: APIRequestContext,
+  bearer: string,
+  library: string,
+  name: string,
+  parentId?: string,
+): Promise<string> {
+  const body: Record<string, unknown> = { name };
+  if (parentId !== undefined) body['parentId'] = parentId;
+  const response = await request.post(`/api/v1/libraries/${library}/folders`, {
+    headers: { authorization: `Bearer ${bearer}` },
+    data: body,
+  });
+  expect(response.ok(), `folder creation failed: ${response.status()}`).toBe(true);
+  const created = (await response.json()) as { id: string };
+  return created.id;
+}
+
 test('a library longer than one page keeps going when you scroll', async ({ page, request }) => {
   const bearer = await token(request);
   const workspaces = (await request.get('/api/v1/workspaces', {
@@ -64,17 +86,36 @@ test('a library longer than one page keeps going when you scroll', async ({ page
   const library = libraries.items[0];
   expect(library, 'the workspace has no libraries').toBeDefined();
 
-  const first = await get(request, `/api/v1/libraries/${library?.id}/items`, bearer);
-  test.skip(
-    !first.page.hasMore,
-    'the seeded library fits in one page, so there is no second page to reach',
+  /* **Make the second page exist**, rather than hoping the seed does.
+   *
+   * This skipped when the library fitted in one page — which is every freshly
+   * seeded tenant, so on `main` it proved nothing and said so quietly in the
+   * report. A test that stands down on the machine that matters is worse than
+   * one that is slow: `ENC-973` shipped a paging fix whose only proof never ran
+   * in CI.
+   *
+   * Fifty-one children in a folder of this test's own, because the server's
+   * default page is fifty. Created concurrently — one at a time is about a
+   * minute, which is the kind of cost that gets a test deleted. */
+  const libraryId = library?.id as string;
+  const parent = await createFolder(request, bearer, libraryId, `paging-${Date.now()}`);
+  await Promise.all(
+    Array.from({ length: PAGE + 1 }, (_unused, n) =>
+      createFolder(request, bearer, libraryId, `row-${String(n).padStart(3, '0')}`, parent),
+    ),
   );
+
+  const first = await get(request, `/api/v1/libraries/${library?.id}/items?parentId=${parent}`, bearer);
+  expect(
+    first.page.hasMore,
+    'fifty-one children were created and the server still reports one page',
+  ).toBe(true);
   const cursor = first.page.nextCursor;
   expect(cursor, 'hasMore was true and no cursor came with it').toBeTruthy();
 
   const second = await get(
     request,
-    `/api/v1/libraries/${library?.id}/items?cursor=${encodeURIComponent(cursor as string)}`,
+    `/api/v1/libraries/${library?.id}/items?parentId=${parent}&cursor=${encodeURIComponent(cursor as string)}`,
     bearer,
   );
   const target = second.items[0];
@@ -83,7 +124,7 @@ test('a library longer than one page keeps going when you scroll', async ({ page
   expect(first.items.some((item) => item.id === target?.id)).toBe(false);
 
   await signIn(page);
-  await page.goto(`/library?library=${library?.id}`);
+  await page.goto(`/library?library=${library?.id}&folder=${parent}`);
   const scroller = page.locator('.egl-scroller');
   await expect(scroller).toBeVisible({ timeout: 30_000 });
 
