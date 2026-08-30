@@ -88,7 +88,7 @@ use crate::indexing::{index_pass, IndexPass, VectorStage};
 use crate::ocr::MountedOcr;
 use crate::scan::{scan_pass, ScanCursor, ScanPass};
 use crate::uploads::{released_a_full_batch, ReapPass};
-use crate::{coverage, epoch, invalidation, print_tokens, Result, Stop, Woke};
+use crate::{coverage, epoch, invalidation, print_tokens, tiering, Result, Stop, Woke};
 use enclave_dlp::detector::DetectorSet;
 
 /// The names [`Scheduler::scheduled`] reports and the loops log under.
@@ -115,6 +115,14 @@ pub const UPLOADS: &str = "upload-reaper";
 /// exists only where object storage is configured. The reasoning is in
 /// `crates/worker/src/print_tokens.rs`.
 pub const PRINT_TOKENS: &str = "print-token-reaper";
+/// See [`INDEXING`]. `ENC-947` — the pass that finishes a rehydration.
+///
+/// Conditional on object storage, like [`UPLOADS`] and unlike [`PRINT_TOKENS`]: it asks the store
+/// where an object actually is, so a deployment with no store has nothing for it to ask. Absent, a
+/// version marked `RESTORING` by `POST /files/{id}/rehydrate` **stays that way for ever** — the
+/// bytes land and every read path goes on refusing them, which is a request that is accepted and
+/// never completes. `Scheduler::scheduled` is what makes that absence a line an operator reads.
+pub const TIERING: &str = "tier-reconciler";
 
 /// How long each loop waits after a tick that found nothing to do.
 ///
@@ -192,6 +200,15 @@ pub struct Cadence {
     /// interval cannot be wrong in the direction that matters — only in the direction of a larger
     /// table.
     pub print_tokens: Duration,
+    /// How long the tier reconciler waits after a tick that resolved nothing (`ENC-947`).
+    ///
+    /// Sixty seconds. The population it walks is empty on a deployment with nothing
+    /// mid-transition, which is most of them most of the time, so the cost of a tick is one
+    /// bounded query per tenant and no provider call at all. What sets the *upper* bound is that
+    /// this interval is the tail a person waits after their file has already come back: a
+    /// rehydration takes hours, and adding ten minutes of polling to the end of it would be the
+    /// product wasting the one part of the wait it controls.
+    pub tiering: Duration,
 }
 
 impl Default for Cadence {
@@ -205,6 +222,7 @@ impl Default for Cadence {
             coverage: Duration::from_secs(60),
             uploads_idle: Duration::from_secs(600),
             print_tokens: Duration::from_secs(60),
+            tiering: Duration::from_secs(60),
         }
     }
 }
@@ -730,16 +748,33 @@ struct CoverageProbe {
 /// describes is a *decision* — which passes exist in this deployment and at what cadence — and a
 /// decision that needed a live database to express could not be asserted on without one. The tests
 /// below exercise every branch of [`Scheduler::scheduled`] with no PostgreSQL anywhere.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Scheduler {
     tenants: Arc<dyn TenantSource>,
     antivirus: Option<Arc<dyn AvRunner>>,
     indexing: Option<Arc<dyn IndexRunner>>,
     scanning: Option<Arc<dyn ScanRunner>>,
     reaping: Option<Arc<dyn ReaperRunner>>,
+    /// The store the tier reconciler asks. `None` where no object storage is configured.
+    tiering: Option<Arc<dyn enclave_storage::BlobStore>>,
     coverage: Option<CoverageProbe>,
     reconciler: ReconcilerConfig,
     cadence: Cadence,
+}
+
+/// Written by hand rather than derived (`ENC-947`).
+///
+/// `BlobStore` is not `Debug` — it is a provider client, and a bound requiring one would land on
+/// every test double in the workspace to print connection state nobody wants. What a reader of this
+/// type actually wants is the same thing [`Scheduler::scheduled`] reports, so that is what it
+/// prints: which passes this process will run.
+impl fmt::Debug for Scheduler {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Scheduler")
+            .field("scheduled", &self.scheduled())
+            .field("cadence", &self.cadence)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Scheduler {
@@ -757,6 +792,7 @@ impl Scheduler {
             indexing: None,
             scanning: None,
             reaping: None,
+            tiering: None,
             coverage: None,
             reconciler: ReconcilerConfig::default(),
             cadence: Cadence::default(),
@@ -825,6 +861,21 @@ impl Scheduler {
         self
     }
 
+    /// Schedules the tier reconciler (`ENC-947`).
+    ///
+    /// Without it, `RESTORING` is a state nothing leaves: `POST /files/{id}/rehydrate` asks the
+    /// provider for bytes back, the bytes land hours later, and the row never changes — so every
+    /// read path goes on refusing content that is sitting there readable. A request accepted and
+    /// never completed is worse than one refused, which is why this reads more like
+    /// `with_antivirus` than like `with_coverage`.
+    ///
+    /// It takes the store rather than a runner trait because it has one dependency and one verb.
+    #[must_use]
+    pub fn with_tier_reconciler(mut self, store: Arc<dyn enclave_storage::BlobStore>) -> Self {
+        self.tiering = Some(store);
+        self
+    }
+
     /// Schedules the coverage probe. Without this call, the coverage gauges have no producer and
     /// `SearchIndexCoverageUnreported` keeps describing the deployment (`docs/11 §5.7` step 5).
     #[must_use]
@@ -872,6 +923,9 @@ impl Scheduler {
         }
         if self.reaping.is_some() {
             passes.push(UPLOADS);
+        }
+        if self.tiering.is_some() {
+            passes.push(TIERING);
         }
         if self.coverage.is_some() {
             passes.push(COVERAGE);
@@ -949,6 +1003,14 @@ impl Scheduler {
                 (Arc::clone(&self.tenants), self.cadence.uploads_idle, stop.clone());
             tasks.push(tokio::spawn(async move {
                 uploads_loop(tenants.as_ref(), runner.as_ref(), cadence, &stop).await;
+            }));
+        }
+
+        if let Some(store) = self.tiering.clone() {
+            let (pool, tenants, cadence, stop) =
+                (pool.clone(), Arc::clone(&self.tenants), self.cadence.tiering, stop.clone());
+            tasks.push(tokio::spawn(async move {
+                tiering_loop(&pool, tenants.as_ref(), &store, cadence, &stop).await;
             }));
         }
 
@@ -1325,6 +1387,52 @@ fn report_reaped(tenant: TenantId, pass: &ReapPass) {
     }
 }
 
+/// Resolves versions the store has finished moving, on a fixed cadence (`ENC-947`).
+///
+/// [`Tick::Worked`] when a full batch came back, so the loop comes straight round rather than
+/// waiting a minute per thirty-two rows — the case that matters is a deployment whose lifecycle
+/// rule has just moved a lot of objects at once, and a fixed idle would drain it at half a row a
+/// second.
+async fn tiering_loop(
+    pool: &DbPool,
+    tenants: &dyn TenantSource,
+    store: &Arc<dyn enclave_storage::BlobStore>,
+    idle: Duration,
+    stop: &Stop,
+) {
+    run_loop(TIERING, idle, stop, move || async move {
+        let Some(tenants) = tenants_for(TIERING, tenants).await else { return Tick::Idle };
+        match tiering::sweep(pool, store, &tenants, stop).await {
+            Ok(outcome) => {
+                // At `debug` when nothing moved and `info` when something did. A restore completing
+                // is the end of a wait somebody started hours ago, and it is the one event in this
+                // pass an operator asked about.
+                if outcome.resolved > 0 {
+                    info!(
+                        pass = TIERING,
+                        resolved = outcome.resolved,
+                        waiting = outcome.still_waiting,
+                        "storage tiers reconciled"
+                    );
+                } else {
+                    debug!(
+                        pass = TIERING,
+                        waiting = outcome.still_waiting,
+                        unanswerable = outcome.unanswerable,
+                        "nothing to reconcile"
+                    );
+                }
+                if outcome.more_to_take {
+                    return Tick::Progressed;
+                }
+            }
+            Err(error) => warn!(pass = TIERING, %error, "tier reconciliation failed"),
+        }
+        Tick::Idle
+    })
+    .await;
+}
+
 /// Lifts expired suppressions on a fixed cadence.
 ///
 /// Always [`Tick::Idle`], even after a sweep that lifted thousands: what it deleted was rows that
@@ -1530,6 +1638,37 @@ mod tests {
         let with_coverage = Scheduler::new(tenants)
             .with_coverage(Arc::new(SilentCensus), CoverageFloor::percent(80));
         assert_eq!(with_coverage.scheduled(), vec![INVALIDATION, EPOCH, PRINT_TOKENS, COVERAGE]);
+    }
+
+    /// The tier reconciler is scheduled with a store and absent without one (`ENC-947`).
+    ///
+    /// Its own test rather than a line in the one above, because the **absence** is what has to be
+    /// asserted and it is the half that is easy to get backwards. A reconciler scheduled against no
+    /// store would call `observed_tier` on `UnconfiguredBlobStore`, get `Unsupported` for every
+    /// row, and count it as `unanswerable` for ever — a pass that runs, logs, and resolves nothing,
+    /// which is indistinguishable in every dashboard from one that has nothing to do.
+    ///
+    /// And the presence half matters for a different reason: without this pass a version marked
+    /// `RESTORING` never leaves that state, so `POST /files/{id}/rehydrate` accepts a request and
+    /// never completes it.
+    #[test]
+    fn the_tier_reconciler_is_scheduled_only_where_there_is_a_store_to_ask() {
+        let tenants = FixedTenants::of(1);
+
+        let bare = Scheduler::new(tenants.clone());
+        assert!(
+            !bare.scheduled().contains(&TIERING),
+            "a deployment with no object storage has no store to ask where an object is, and a \
+             reconciler pointed at nothing resolves every row as unanswerable for ever"
+        );
+
+        let with_store = Scheduler::new(tenants)
+            .with_tier_reconciler(Arc::new(enclave_storage::UnconfiguredBlobStore));
+        assert!(
+            with_store.scheduled().contains(&TIERING),
+            "with a store composed the reconciler must run: without it a RESTORING row is \
+             permanent and every rehydrate is a request that is accepted and never completes"
+        );
     }
 
     /// The three housekeeping passes are not optional, because none has a dependency that could be

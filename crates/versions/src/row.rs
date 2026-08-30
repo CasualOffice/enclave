@@ -94,7 +94,11 @@ pub(crate) fn version_from_row(row: &PgRow) -> Result<FileVersion> {
 ///
 /// The `reason` is a fixed phrase supplied by the caller, so the error can say which vocabulary
 /// rejected the value without the value itself appearing anywhere.
-fn parse_enum<T: FromStr>(row: &PgRow, column: &'static str, reason: &'static str) -> Result<T> {
+pub(crate) fn parse_enum<T: FromStr>(
+    row: &PgRow,
+    column: &'static str,
+    reason: &'static str,
+) -> Result<T> {
     let raw: String = row.try_get(column)?;
     T::from_str(&raw).map_err(|_| VersionsError::MalformedRow { column, reason })
 }

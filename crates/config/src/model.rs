@@ -1295,6 +1295,36 @@ pub struct AntivirusConfig {
     pub unsupported_policy: UnsupportedPolicy,
 }
 
+impl AntivirusConfig {
+    /// The effective engine address, preferring `endpoint` over the `endpoint_env` shorthand.
+    ///
+    /// **`endpoint_env` was declared, documented and read by nothing** (`ENC-952`). `docs/08 §15`
+    /// specifies the spelling, `enclave.yaml` ships it, `README.md` tells an operator to
+    /// `export CLAMD_ADDR=…` — and `ClamavScanner::new` reads `endpoint`, which nothing populated
+    /// from it. The consequence is not subtle: `enclave-worker` refuses to start with
+    /// *"antivirus.endpoint is required"* on a deployment configured exactly as documented, and
+    /// since the worker is what moves `av_status`, **nothing in that deployment ever becomes
+    /// `AVAILABLE`**.
+    ///
+    /// Read directly from the environment rather than through a [`SecretRef`], unlike
+    /// [`DatabaseConfig::url_ref`] beside it. That is deliberate and follows the field's own
+    /// documentation: an engine address is *"not a secret — a host and port"*, so routing it
+    /// through the secret provider would require a provider to be configured before antivirus can
+    /// start, and would put a non-secret in the one place `CLAUDE.md` rule 11 reserves for secrets.
+    ///
+    /// An `endpoint_env` naming an unset variable returns [`None`], which the scanner reports as
+    /// the missing-endpoint error it already has. A blank value is treated as unset for the same
+    /// reason the scanner trims: `export CLAMD_ADDR=` is an operator who meant to set it.
+    #[must_use]
+    pub fn endpoint_ref(&self) -> Option<String> {
+        if let Some(endpoint) = self.endpoint.as_deref().map(str::trim).filter(|e| !e.is_empty()) {
+            return Some(endpoint.to_owned());
+        }
+        let name = self.endpoint_env.as_deref()?;
+        std::env::var(name).ok().map(|value| value.trim().to_owned()).filter(|v| !v.is_empty())
+    }
+}
+
 impl Default for AntivirusConfig {
     fn default() -> Self {
         Self {
@@ -1412,6 +1442,62 @@ fn env_ref(explicit: Option<&SecretRef>, env_name: Option<&str>) -> Option<Secre
 mod tests {
     use super::*;
     use enclave_core::Exposure;
+
+    /// `antivirus.endpoint_env` is read (`ENC-952`).
+    ///
+    /// **It was declared, documented and read by nothing.** `docs/08 §15` specifies the spelling,
+    /// `enclave.yaml` ships `endpoint_env: "CLAMD_ADDR"`, `README.md` tells an operator to export
+    /// it — and `ClamavScanner::new` read `endpoint`, which nothing populated from it. The result
+    /// is not a degraded feature: `enclave-worker` refuses to start with *"antivirus.endpoint is
+    /// required"* on a deployment configured exactly as documented, and the worker is what moves
+    /// `av_status`, so **nothing in that deployment ever becomes `AVAILABLE`**.
+    ///
+    /// All four arms are asserted because each is a different way to get this wrong, and three of
+    /// them look harmless: an explicit `endpoint` must still win (otherwise adding the shorthand
+    /// silently changes deployments that never used it), an unset variable must read as absent
+    /// rather than as an empty address the scanner would try to connect to, and a blank export must
+    /// too — `export CLAMD_ADDR=` is an operator who meant to set it.
+    #[test]
+    fn the_antivirus_endpoint_env_shorthand_is_actually_read() {
+        // A name no other test uses: these run in one process and the environment is shared.
+        const VAR: &str = "ENCLAVE_TEST_ENC952_CLAMD";
+
+        let mut config =
+            AntivirusConfig { endpoint_env: Some(VAR.to_owned()), ..Default::default() };
+
+        std::env::remove_var(VAR);
+        assert_eq!(
+            config.endpoint_ref(),
+            None,
+            "an endpoint_env naming an unset variable is absent, not an empty address"
+        );
+
+        std::env::set_var(VAR, "   ");
+        assert_eq!(
+            config.endpoint_ref(),
+            None,
+            "a blank export is an operator who meant to set it, and connecting to \"\" would \
+             report a connect error that says nothing useful"
+        );
+
+        std::env::set_var(VAR, " clamd.internal:3310 ");
+        assert_eq!(
+            config.endpoint_ref(),
+            Some("clamd.internal:3310".to_owned()),
+            "this is the whole defect: the shorthand every document tells an operator to use was \
+             read by nothing, and the worker refused to start"
+        );
+
+        config.endpoint = Some("explicit:3310".to_owned());
+        assert_eq!(
+            config.endpoint_ref(),
+            Some("explicit:3310".to_owned()),
+            "an explicit endpoint wins, or introducing the shorthand changes the behaviour of \
+             deployments that never used it"
+        );
+
+        std::env::remove_var(VAR);
+    }
 
     #[test]
     fn defaults_are_the_safe_choice() {

@@ -32,6 +32,15 @@ pub enum WorkerError {
     #[error("a call into enclave-search failed")]
     Search(#[from] enclave_search::SearchError),
 
+    /// A call into `enclave-versions` failed (`ENC-947`).
+    ///
+    /// The tier reconciler's reads and writes. A variant of its own rather than folding into
+    /// [`WorkerError::Database`], for the reason `Search` has one: both would render the same
+    /// sentence, and a pass that says only "database failure" gives an operator nothing to grep
+    /// for when the failure is in one crate's statements.
+    #[error("a call into enclave-versions failed")]
+    Versions(#[from] enclave_versions::VersionsError),
+
     /// Indexing a version failed for a reason that is not the document's fault.
     ///
     /// A document that will not parse is **not** this: that is an `Outcome`, recorded on the
