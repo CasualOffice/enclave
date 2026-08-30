@@ -302,6 +302,150 @@ const LOAD_DEFINITION: &str = "\
 /// # Errors
 ///
 /// [`WorkflowError::Db`], or [`WorkflowError::Stored`] if the row does not decode.
+/// A definition as an author submits one.
+///
+/// A separate type from [`DefinitionFacts`], which is what the engine reads: this one has been
+/// validated against nothing but its own shape, and the four `CHECK` constraints in
+/// `migrations/0024` are what it must survive. Keeping them apart means a handler cannot pass a
+/// half-built row where a stored one is expected.
+#[derive(Debug, Clone)]
+pub struct NewDefinition {
+    /// Identifier the caller minted, so the row it gets back is the row it named.
+    pub id: WorkflowDefinitionId,
+    /// Where it may be started.
+    pub scope: Scope,
+    /// What an author calls it.
+    pub name: String,
+    /// The document, already decoded once by the handler so a malformed one never reaches storage.
+    pub definition: serde_json::Value,
+    /// Whether a start may name it.
+    pub enabled: bool,
+    /// Whether the person who started an instance may approve their own step.
+    pub allow_self_approval: bool,
+    /// `FORBIDDEN` or `ONCE`.
+    pub delegation: String,
+    /// `INVALIDATE` or `CONTINUE`.
+    pub on_new_version: String,
+    /// Who wrote it. `NOT NULL` with a composite key onto `users`, because *"the system"* is not an
+    /// answer to *"who decided this document needs two approvals"*.
+    pub created_by: UserId,
+}
+
+/// Writes a definition at version 1 (`ENC-965`).
+///
+/// # Nothing could write one of these before
+///
+/// `workflow_definitions` has been in the schema since `migrations/0024` and its only writer in the
+/// whole tree was a **test fixture**. `docs/05 §16` specifies `GET|POST /workflows/definitions`;
+/// neither was registered. So the workflow engine, its evaluator, `approve`, `reject`, `delegate`
+/// and the inbox at `GET /workflows/tasks` were all reachable and all permanently idle — a start
+/// names a definition, and no definition could exist.
+///
+/// **Version 1, and versioning is deliberately not implemented here.** `docs/15 §2` says a
+/// definition is versioned and an instance pins the version it started under, which means an edit
+/// is a *new row at version n+1* and not an `UPDATE` — the instances already running must go on
+/// reading the document they began with. That is `PATCH`'s design and it is `ENC-966`; writing a
+/// first version is what unblocks everything else, and pretending to support edits by mutating the
+/// row in place would silently rewrite the rules under every running approval.
+///
+/// # Errors
+///
+/// [`WorkflowError`] wrapping the query failure, including the four `CHECK` constraints and the
+/// composite foreign key onto `users`.
+pub async fn insert_definition(
+    tx: &mut TenantScoped,
+    new: &NewDefinition,
+) -> Result<(), WorkflowError> {
+    let (scope_type, scope_id) = new.scope.columns();
+    sqlx::query(INSERT_DEFINITION)
+        .bind(sql(tx.tenant_id()))
+        .bind(sql(new.id))
+        .bind(scope_type)
+        .bind(scope_id)
+        .bind(&new.name)
+        .bind(&new.definition)
+        .bind(new.enabled)
+        .bind(new.allow_self_approval)
+        .bind(&new.delegation)
+        .bind(&new.on_new_version)
+        .bind(sql(new.created_by))
+        .execute(&mut **tx)
+        .await
+        .map_err(DbError::Query)?;
+    Ok(())
+}
+
+/// One definition as a listing returns it.
+#[derive(Debug, Clone)]
+pub struct DefinitionSummary {
+    /// Identifier.
+    pub id: WorkflowDefinitionId,
+    /// What it is called.
+    pub name: String,
+    /// Where it may be started.
+    pub scope_type: String,
+    /// The workspace or library named, or `None` for a tenant scope.
+    pub scope_id: Option<Uuid>,
+    /// Which version this row is.
+    pub version: i32,
+    /// Whether a start may name it.
+    pub enabled: bool,
+    /// When it was written.
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Every definition in this tenant, newest first.
+///
+/// The **document is not returned**, and that is not an oversight: a listing exists to let somebody
+/// choose one, and a stages array is neither summarisable nor useful at a glance. `GET
+/// /workflows/definitions/{id}` is where the document belongs and is `ENC-966` along with `PATCH`.
+///
+/// # Errors
+///
+/// [`WorkflowError`] wrapping the query failure.
+pub async fn list_definitions(
+    tx: &mut TenantScoped,
+    limit: i64,
+) -> Result<Vec<DefinitionSummary>, WorkflowError> {
+    let rows = sqlx::query(LIST_DEFINITIONS)
+        .bind(sql(tx.tenant_id()))
+        .bind(limit)
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(DbError::Query)?;
+
+    rows.iter()
+        .map(|row| {
+            Ok(DefinitionSummary {
+                id: row.try_get_id("id")?,
+                name: row.try_get("name")?,
+                scope_type: row.try_get("scope_type")?,
+                scope_id: row.try_get("scope_id")?,
+                version: row.try_get("version")?,
+                enabled: row.try_get("enabled")?,
+                created_at: row.try_get("created_at")?,
+            })
+        })
+        .collect::<Result<Vec<_>, sqlx::Error>>()
+        .map_err(|error| WorkflowError::from(DbError::Query(error)))
+}
+
+// Version is literal `1`: this writes a first version and `ENC-966` owns the rest. A definition
+// edited in place would rewrite the rules under every instance already running against it, which is
+// what `docs/15 §2`'s pinning exists to prevent.
+const INSERT_DEFINITION: &str = "
+    INSERT INTO workflow_definitions
+        (tenant_id, id, scope_type, scope_id, name, version, definition,
+         enabled, allow_self_approval, delegation, on_new_version, created_by)
+    VALUES ($1, $2, $3, $4, $5, 1, $6, $7, $8, $9, $10, $11)";
+
+const LIST_DEFINITIONS: &str = "
+    SELECT id, name, scope_type, scope_id, version, enabled, created_at
+      FROM workflow_definitions
+     WHERE tenant_id = $1
+     ORDER BY created_at DESC, id DESC
+     LIMIT $2";
+
 pub async fn load_definition(
     tx: &mut TenantScoped,
     id: WorkflowDefinitionId,

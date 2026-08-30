@@ -353,6 +353,14 @@ pub fn router(state: ApiState, delivery: Delivery) -> Router {
         // D28's requirement that a simulation not take a cheaper path than the thing it rehearses.
         .route("/api/v1/workflows/tasks", get(workflows::tasks))
         .route("/api/v1/files/{id}/workflows", post(workflows::start))
+        // `ENC-965`. `workflow_definitions` has existed since `migrations/0024` and its only
+        // writer in the tree was a test fixture — so the engine, `approve`, `reject`, `delegate`
+        // and the inbox were all reachable and permanently idle, because a start names a definition
+        // and none could exist. `docs/05 §16` has specified both of these since it was written.
+        .route(
+            "/api/v1/workflows/definitions",
+            get(workflows::list_definitions).post(workflows::create_definition),
+        )
         .route("/api/v1/workflows/definitions/{id}/simulate", post(workflows::simulate))
         .route("/api/v1/workflows/instances/{id}", get(workflows::instance))
         .route("/api/v1/workflows/instances/{id}/cancel", post(workflows::cancel))
