@@ -298,9 +298,54 @@ test('the workspace and library on screen are the tenant’s own, down to ids mi
    * `r:0:6` and shares the row's `r:` — matching on the prefix alone counts
    * every cell and answered 16 for a two-row listing. */
   const rows = page.locator('[role="row"][data-cursor^="r:"]');
-  await expect(rows).toHaveCount(itemNames.length);
-  for (const name of itemNames) {
-    await expect(rows.filter({ hasText: name })).toHaveCount(1);
+
+  /* **A subset, and the count assertion is gone** (`ENC-971`, `ENC-973`).
+   *
+   * This asserted `rows` had exactly `itemNames.length` entries, and it was
+   * wrong twice over. The list is *windowed* — `shared/list/use-grouped-window.ts`
+   * mounts about thirty rows whatever the layout holds — so the DOM has never
+   * contained the whole listing and the equality held only while the seed was
+   * small enough to fit one window. And `itemNames` is one *page*: the client
+   * now follows the cursor (`ENC-973`), so the rendered set can legitimately be
+   * larger than what a single request returned.
+   *
+   * The claim this test exists to make survives both, because it was never
+   * about cardinality. `ENC-928` was a client that rendered *no* row from this
+   * server — a `strictObject` two fields behind `content.rs` turned every item
+   * into a parse error and drew the failure state against a healthy listing.
+   * Names from the server, found in the DOM, disprove that. A prefix of the
+   * first page is certain to be inside the first window, which is what makes
+   * this assertion stable rather than seed-sized. */
+  await expect(rows.first()).toBeVisible();
+
+  /* Every mounted row carries a name the *server* sent. The direction matters:
+   * asserting the server's names are all on screen is impossible against a
+   * window, and asserting a prefix of them is on screen is wrong too, because
+   * the client groups before it renders — `fox.txt` is the API's first item and
+   * is nowhere near the first row. What *is* invariant is that the client
+   * cannot render a row it was not given. Paired with the non-empty check
+   * above, that is precisely `ENC-928`'s claim: rows exist, and they came from
+   * this server.
+   *
+   * Scoped honestly: it inspects the *mounted* rows, so it catches wholesale
+   * invention — renaming every row fails it — and would miss a single fabricated
+   * row that happened to fall outside the window. Both were tried. The claim is
+   * about the client's parse of the server's payload, which is a whole-listing
+   * property, and `library-paging.spec.ts` is what walks further down. */
+  const rendered = await rows.locator('.egl-name-text').allInnerTexts();
+  expect(rendered.length, 'nothing was rendered, so nothing is being asserted').toBeGreaterThan(0);
+  const known = new Set(itemNames);
+  for (const text of rendered) {
+    /* `.egl-name-text` holds the stem and the extension in two spans, so the
+     * innerText is the whole name with no separator — exactly what the server
+     * sent. The first attempt at this read `[data-cursor$=":0"]`, which is the
+     * *selection* cell: it has no text, every entry came back `''`, and
+     * `item.startsWith('')` is true for every item. The assertion passed
+     * against nothing at all, which is `docs/12 §1.2` in one line. */
+    const name = text.trim();
+    expect(known.has(name), `the list rendered "${name}", which the server did not send`).toBe(
+      true,
+    );
   }
 });
 

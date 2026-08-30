@@ -181,6 +181,16 @@ tenant (`03-LLD.md §17`). Total counts are **not** returned by default: countin
 ACL-trimmed set is expensive and leaks information about inaccessible items. `?includeApproximateCount=true`
 returns a lower-bounded estimate over accessible rows only.
 
+**Stop on `hasMore`, never on the presence of `nextCursor`.** A page may hold fewer items than
+`limit` and still have more behind it — the ACL trim runs after the read, so a page that started
+full can arrive short — and `content.rs` *omits* `nextCursor` rather than nulling it. A client that
+treats a missing cursor as the end therefore stops early on exactly the page the trim shortened.
+
+This is worth stating because it was got wrong for the whole of Phase 1 in the other direction:
+`web/src` parsed both fields and read neither, so every library listing showed its first fifty rows
+and nothing else, with nothing on screen saying so (`ENC-973`). A paged endpoint that no client
+pages is indistinguishable from an unpaged one until somebody's library outgrows a page.
+
 ## 7. Files and folders
 
 | Method | Path | Notes |

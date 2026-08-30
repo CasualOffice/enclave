@@ -23,6 +23,7 @@ const Login = z.object({ accessToken: z.string().min(1) });
 const Page = z.object({ items: z.array(z.object({ id: z.string(), name: z.string() })) });
 const Items = z.object({
   items: z.array(z.object({ id: z.string(), name: z.string(), type: z.string(), revision: z.number() })),
+  page: z.object({ nextCursor: z.string().nullish(), hasMore: z.boolean() }),
 });
 
 async function token(request: APIRequestContext): Promise<string> {
@@ -42,6 +43,28 @@ async function get<T>(
   const response = await request.get(path, { headers: { authorization: `Bearer ${bearer}` } });
   expect(response.ok(), `${path} answered ${response.status()}`).toBe(true);
   return schema.parse(await response.json());
+}
+
+
+/** Whether the library holds this id, following the cursor to the end. */
+async function libraryHolds(
+  request: APIRequestContext,
+  bearer: string,
+  library: string,
+  id: string,
+): Promise<boolean> {
+  let cursor: string | undefined;
+  /* Bounded, because an unterminated cursor loop in a test is a hang rather
+   * than a failure. Fifty pages is far more than any seed and still finite. */
+  for (let page = 0; page < 50; page += 1) {
+    const query = cursor === undefined ? '' : `?cursor=${encodeURIComponent(cursor)}`;
+    const answer = await get(request, `/api/v1/libraries/${library}/items${query}`, Items, bearer);
+    if (answer.items.some((item) => item.id === id)) return true;
+    if (!answer.page.hasMore) return false;
+    cursor = answer.page.nextCursor ?? undefined;
+    if (cursor === undefined) return false;
+  }
+  throw new Error('the listing did not terminate within fifty pages');
 }
 
 test('a file deleted over HTTP is found in Trash and restored from its own row', async ({
@@ -109,10 +132,17 @@ test('a file deleted over HTTP is found in Trash and restored from its own row',
   await expect(page.getByText(catalog['trash.restore.failed'].message)).toHaveCount(0);
 
   /* And it is genuinely back, read from the server rather than from the screen
-   * that just claimed it. */
-  const after = await get(request, `/api/v1/libraries/${library}/items`, Items, bearer);
+   * that just claimed it.
+   *
+   * **Every page of it** (`ENC-973`). This asked for one page and treated it as
+   * the library, which held only while the seeded library fitted inside fifty
+   * rows. Past that the restored file sorted to the end, this reported *"the row
+   * left the bin but the file is not back in its library"*, and the sentence was
+   * false: the restore had worked and the assertion was looking at the wrong
+   * fifty. A paged endpoint has to be read to the end before an absence means
+   * anything. */
   expect(
-    after.items.some((item) => item.id === id),
+    await libraryHolds(request, bearer, library, id),
     'the row left the bin but the file is not back in its library',
   ).toBe(true);
 });

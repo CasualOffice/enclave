@@ -1,4 +1,10 @@
-import { useQuery, type UseQueryResult } from '@tanstack/react-query';
+import {
+  useInfiniteQuery,
+  useQuery,
+  type UseInfiniteQueryResult,
+  type InfiniteData,
+  type UseQueryResult,
+} from '@tanstack/react-query';
 import { request } from '../../shared/api/client.ts';
 import { FileDetail, ItemPage, VersionPage } from '../../entities/file/api-model.ts';
 
@@ -22,10 +28,14 @@ import { FileDetail, ItemPage, VersionPage } from '../../entities/file/api-model
 export function browse(
   libraryId: string,
   parentId: string | undefined,
+  cursor?: string | undefined,
   signal?: AbortSignal,
 ): Promise<ItemPage> {
   const params = new URLSearchParams();
   if (parentId !== undefined) params.set('parentId', parentId);
+  /* `?cursor=` has been accepted by `content.rs` since the endpoint was written
+   * and was sent by nothing for as long as this client has existed (`ENC-973`). */
+  if (cursor !== undefined) params.set('cursor', cursor);
   const query = params.toString();
   return request(
     `/libraries/${encodeURIComponent(libraryId)}/items${query.length > 0 ? `?${query}` : ''}`,
@@ -34,15 +44,53 @@ export function browse(
   );
 }
 
+/**
+ * The listing, paged (`ENC-973`).
+ *
+ * # What this was, and why it was wrong
+ *
+ * A plain `useQuery` that asked once and kept the first page. The server has
+ * always answered fifty rows with `hasMore: true` and a `nextCursor`, and
+ * `entities/file/api-model.ts` has always parsed both — **and nothing in
+ * `web/src` read either.** So a library with more than fifty files silently
+ * showed fifty, in the server's order, with nothing on screen saying anything
+ * was missing. For a product whose purpose is being the place a team's
+ * documents live, that ceiling is reached in the second week of real use.
+ *
+ * It was not a quiet defect either: it made `tests/e2e/sign-in.spec.ts` and
+ * `tests/e2e/trash.spec.ts` fail — the second reporting *"the row left the bin
+ * but the file is not back in its library"*, which was never a restore defect.
+ * The restore worked and the file sat at index 63 of a listing the client asked
+ * fifty of. And it capped `ENC-972`: refreshing after an upload does nothing if
+ * the new row sorts past the end of the only page fetched.
+ *
+ * # The key is unchanged, deliberately
+ *
+ * `['library', libraryId, parentId ?? null]` — the same key `ENC-972`'s
+ * `UploadListingRefresh` invalidates. An infinite query invalidates as a whole:
+ * every fetched page is refetched in order, so an upload still lands in a list
+ * the user has scrolled deep into. Changing the key here would have silently
+ * unhooked that fix.
+ *
+ * `parentId` stays part of it, so opening a folder is a different query rather
+ * than a refetch that briefly shows the parent's rows.
+ */
 export function useLibraryItems(
   libraryId: string | undefined,
   parentId: string | undefined,
-): UseQueryResult<ItemPage> {
-  return useQuery({
-    /* `parentId` is part of the key, so opening a folder is a different query
-     * rather than a refetch that briefly shows the parent's rows. */
+): UseInfiniteQueryResult<InfiniteData<ItemPage>> {
+  return useInfiniteQuery({
     queryKey: ['library', libraryId, parentId ?? null],
-    queryFn: ({ signal }) => browse(libraryId ?? '', parentId, signal),
+    queryFn: ({ pageParam, signal }) =>
+      browse(libraryId ?? '', parentId, pageParam ?? undefined, signal),
+    initialPageParam: undefined as string | undefined,
+    /* `hasMore` decides, not the presence of a cursor. `content.rs` omits
+     * `nextCursor` rather than nulling it, and a page may hold fewer items than
+     * `limit` and still have more behind it — the endpoint's own header says so.
+     * Reading the cursor alone would stop early on exactly the page the trim
+     * shortened. */
+    getNextPageParam: (last) =>
+      last.page.hasMore ? (last.page.nextCursor ?? undefined) : undefined,
     enabled: libraryId !== undefined && libraryId.length > 0,
     /* Every row carries `capabilities`, which is a property of this user, this
      * action and this moment — never cached beyond its request (`docs/17 §4.1`). */
