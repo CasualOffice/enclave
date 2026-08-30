@@ -2786,6 +2786,43 @@ export const catalog = {
     description:
       'Activity row for a recorded action this client does not have a sentence for. Deliberately vague rather than absent: dropping the row would hide something that happened, and printing the raw action name would put an internal identifier in front of a reader.',
   },
+
+  /* Deciding a task (`ENC-968`).
+   *
+   * These replace the `Later` note that Home's attention actions carried from
+   * `ENC-739`. The chip was honest — the endpoints worked and no task could
+   * exist to act on, because nothing could author a workflow definition — and
+   * `ENC-965` is what changed that.
+   */
+  'home.attention.action.reject': {
+    message: 'Reject',
+    description:
+      'Button on an attention row that begins a rejection. It reveals a reason field rather than acting immediately: a rejection ends the workflow for everybody and the server requires a comment.',
+  },
+  'home.attention.action.rejectReason': {
+    message: 'Why',
+    description:
+      'Label of the reason field revealed by Reject. Short because it sits inline on a row; the sentence explaining that a reason is required is on the confirm button’s note.',
+  },
+  'home.attention.action.rejectConfirm': {
+    message: 'Reject',
+    description:
+      'Confirms the rejection once a reason has been given. Deliberately the same word as the control that revealed the field: the first press opens the reason, the second is the decision, and renaming it would suggest a third step.',
+  },
+  'home.attention.action.rejectNeedsReason': {
+    message: 'A rejection needs a reason. It ends the workflow for everybody who is waiting on it.',
+    description:
+      'Note on the disabled confirm button before a reason is typed. Says why rather than that: "required" tells somebody the rule, and this tells them the consequence, which is what makes the rule reasonable.',
+  },
+  'home.attention.action.cancel': {
+    message: 'Cancel',
+    description: 'Abandons a rejection in progress and restores the row’s two buttons.',
+  },
+  'home.attention.action.failed': {
+    message: 'That decision did not reach the server. Nothing has changed.',
+    description:
+      'Shown on the row when a decision fails. The second sentence carries the weight: somebody who has just pressed Approve needs to know the document was not approved.',
+  },
 } as const satisfies Record<string, CatalogEntry>;
 
 export type MessageKey = keyof typeof catalog;

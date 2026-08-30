@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import type { ReactElement } from 'react';
 import { I18nProvider } from '../../src/shared/i18n/index.tsx';
 import { Button } from '../../src/shared/ui/primitives.tsx';
@@ -153,5 +153,95 @@ describe('Home’s DOM ids', () => {
         node.getAttribute('aria-describedby') ?? node.getAttribute('aria-labelledby') ?? '';
       expect(container.querySelectorAll(`[id="${target}"]`)).toHaveLength(1);
     }
+  });
+});
+
+describe('Home’s task decisions', () => {
+  /**
+   * With the capability handed down, a task is actionable; without it, it is not.
+   *
+   * **The pair is the assertion.** `ENC-968` made these controls real, and the
+   * test above still passes — because it renders `HomeView` with no `decisions`,
+   * which is the `?surface=fixture` case where acting on a sample task would be
+   * wrong. So "the actions are unbuilt" and "the actions work" are both true, of
+   * different renders, and only asserting both says which is which.
+   *
+   * A `SIGNATURE` step stays unbuilt in both: it is `crates/signing`'s ceremony,
+   * decided by a different endpoint, and an Approve button on it would offer a
+   * control the server answers `WRONG_STEP_TYPE`.
+   */
+  it('is actionable only when the container hands down the capability', () => {
+    const decisions = {
+      decide: () => undefined,
+      pendingId: undefined,
+      failedId: undefined,
+    };
+    const { container } = renderWith(
+      <HomeView data={buildHome(NOW)} now={NOW} decisions={decisions} />,
+    );
+
+    const unbuilt = [...container.querySelectorAll('button[data-state="unbuilt"]')];
+    expect(
+      unbuilt.map((node) => node.textContent),
+      'only the signature step stays unbuilt: approve and review are decided by endpoints that ' +
+        'exist and work, and a signature is a different ceremony',
+    ).toEqual(['Sign']);
+
+    /* Two controls per actionable row — Reject before Approve. An approval
+     * surface that offers only "yes" is not neutral, and putting the
+     * destructive one first is what stops it reading as a formality. */
+    const actionable = [...container.querySelectorAll('button')].filter(
+      (node) => node.getAttribute('data-state') !== 'unbuilt',
+    );
+    const labels = actionable.map((node) => node.textContent);
+    expect(labels.filter((text) => text === 'Reject')).toHaveLength(3);
+    expect(labels.filter((text) => text === 'Approve')).toHaveLength(2);
+    expect(labels.filter((text) => text === 'Review')).toHaveLength(1);
+  });
+
+  /**
+   * Rejecting asks for a reason before it will act.
+   *
+   * `docs/05 §16` requires the comment, and the server refuses without it — so a
+   * confirm that fired on an empty field would produce a `422` a person cannot
+   * read. The control is `unbuilt` rather than `denied` while the field is
+   * empty: nothing has refused this person, and the note says the one thing they
+   * can act on.
+   */
+  it('will not confirm a rejection without a reason', async () => {
+    const decisions = {
+      decide: () => undefined,
+      pendingId: undefined,
+      failedId: undefined,
+    };
+    const { container } = renderWith(
+      <HomeView data={buildHome(NOW)} now={NOW} decisions={decisions} />,
+    );
+
+    const reject = [...container.querySelectorAll('button')].find(
+      (node) => node.textContent === 'Reject',
+    );
+    expect(reject, 'an actionable row must offer Reject').toBeDefined();
+    reject?.click();
+
+    /* Scoped to the row that is *in* reject mode, not to the first matching
+     * button on the screen. Three rows are actionable, so clicking one leaves
+     * two other ready `Reject` controls in the DOM — an unscoped `find` picks
+     * one of those and asserts nothing about the confirm. The first draft of
+     * this test did exactly that and failed against correct code. */
+    const form = await waitFor(() => {
+      const node = container.querySelector('.home-card-reject');
+      expect(node, 'pressing Reject must reveal the reason form on that row').not.toBeNull();
+      return node as HTMLElement;
+    });
+    const confirm = [...form.querySelectorAll('button')].find(
+      (candidate) => candidate.textContent === 'Reject',
+    );
+    expect(confirm, 'the form must carry a confirm').toBeDefined();
+    expect(
+      confirm?.getAttribute('aria-disabled'),
+      'the confirm must not act on an empty reason: the server refuses without one, and a 422 is ' +
+        'not a sentence a person can read',
+    ).toBe('true');
   });
 });

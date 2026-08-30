@@ -4,7 +4,7 @@ import type { MessageKey } from '../../shared/i18n/catalog.ts';
 import { useT } from '../../shared/i18n/index.tsx';
 import { useFormatters } from '../../shared/i18n/format.ts';
 import { Icon } from '../../shared/ui/icon-sprite.tsx';
-import { Card, Eyebrow, Push, Truncate } from '../../shared/ui/layout.tsx';
+import { Card, Eyebrow, Field, Push, Truncate } from '../../shared/ui/layout.tsx';
 import {
   Avatar,
   Button,
@@ -14,6 +14,7 @@ import {
 } from '../../shared/ui/primitives.tsx';
 import { attentionFromTask, recentFromItem, useRecent, useTasks } from './api.ts';
 import { useViewer } from '../../entities/user/viewer.tsx';
+import { useDecide, type Decision } from '../../entities/workflow/api.ts';
 import { FailureState } from '../../shared/ui/surface-states.tsx';
 import { failureOf } from '../../shared/api/failure.ts';
 import type { AttentionKind, HomeData, HomeError } from './model.ts';
@@ -151,7 +152,15 @@ function SectionHead({
   );
 }
 
-function AttentionSection({ data, now }: { data: HomeData; now: Date }) {
+function AttentionSection({
+  data,
+  now,
+  decisions,
+}: {
+  data: HomeData;
+  now: Date;
+  decisions?: Decisions | undefined;
+}) {
   const t = useT();
   return (
     <section aria-label={t('home.attention.title')}>
@@ -182,22 +191,38 @@ function AttentionSection({ data, now }: { data: HomeData; now: Date }) {
                   </div>
                 </div>
                 <div className="home-card-actions">
-                  {/* Neutral, not accent-filled: `unbuilt` must never look like a
-                   * control that is one click from working, and it must never
-                   * look like a refusal either.
-                   *
-                   * `describedById` is keyed on the *item*, not on the label.
-                   * `Button` otherwise derives the note's id from the catalog key,
-                   * and a real attention list has two approvals in it far more
-                   * often than it has one of each kind — two controls sharing a
-                   * label would then emit one id twice and their
-                   * `aria-describedby` would resolve to the same node. That is an
-                   * axe `duplicate-id-aria` failure, tagged `wcag2a`. */}
-                  <Button
-                    label={ACTION_KEY[item.kind]}
-                    state={UNBUILT}
-                    describedById={`home-attention-${item.id}-note`}
-                  />
+                  {/* `ENC-968`. These were `unbuilt` from `ENC-739` until now, and
+                    * the chip was honest: the endpoints worked, and no task could
+                    * exist to act on, because nothing could author a workflow
+                    * definition (`ENC-965`).
+                    *
+                    * A `SIGNATURE` step is still unbuilt and stays so — it is
+                    * `crates/signing`'s ceremony, decided by a different endpoint,
+                    * and drawing Approve on it would offer a control that answers
+                    * `WRONG_STEP_TYPE`.
+                    *
+                    * `describedById` is keyed on the *item*, not on the label.
+                    * `Button` otherwise derives the note's id from the catalog key,
+                    * and a real attention list has two approvals in it far more
+                    * often than one of each kind — two controls sharing a label
+                    * would emit one id twice and their `aria-describedby` would
+                    * resolve to the same node: an axe `duplicate-id-aria` failure,
+                    * tagged `wcag2a`. */}
+                  {item.kind === 'sign' || decisions === undefined ? (
+                    <Button
+                      label={ACTION_KEY[item.kind]}
+                      state={UNBUILT}
+                      describedById={`home-attention-${item.id}-note`}
+                    />
+                  ) : (
+                    <TaskDecision
+                      stepId={item.id}
+                      label={ACTION_KEY[item.kind]}
+                      busy={decisions.pendingId === item.id}
+                      failed={decisions.failedId === item.id}
+                      onDecide={decisions.decide}
+                    />
+                  )}
                 </div>
               </Card>
             </li>
@@ -205,6 +230,120 @@ function AttentionSection({ data, now }: { data: HomeData; now: Date }) {
         </ul>
       )}
     </section>
+  );
+}
+
+/**
+ * The capability to decide a task, handed down rather than reached for.
+ *
+ * **`HomeView` is presentational and stays that way.** `useDecide` calls
+ * `useQueryClient`, so calling it inside `AttentionSection` made every unit test
+ * that renders `HomeView` directly fail with *"No QueryClient set"* — the
+ * component had quietly acquired a context dependency it never declared. The
+ * container owns the hook; the view takes the three values.
+ *
+ * Absent means **not actionable**, and the rows render `unbuilt`. That is the
+ * right answer for the `?surface=fixture` and `?surface=empty` previews, where
+ * acting on a task that does not exist would be worse than a chip.
+ */
+export interface Decisions {
+  decide: (stepId: string, decision: Decision, comment?: string) => void;
+  pendingId: string | undefined;
+  failedId: string | undefined;
+}
+
+/**
+ * The two decisions a task offers, with the comment a rejection requires.
+ *
+ * # Why the comment is inline and not a dialog
+ *
+ * `docs/05 §16` requires a comment on a rejection — *"rejected, no reason given"*
+ * is the state a workflow exists to avoid — so Reject cannot be one click. A
+ * modal would be the reflex and is wrong here: it takes focus away from a list
+ * somebody is working through, and the thing being explained is one row of it.
+ * Revealing a field on the row keeps the decision beside the thing decided.
+ *
+ * Approve stays one click, and the asymmetry is deliberate. It is the server's
+ * (`docs/05 §16`) rather than a preference: an approval advances a stage, and a
+ * rejection ends the instance for everybody.
+ *
+ * Neither is optimistic (`docs/17` Q25) — see `entities/workflow/api.ts`.
+ */
+function TaskDecision({
+  stepId,
+  label,
+  busy,
+  failed,
+  onDecide,
+}: {
+  stepId: string;
+  label: MessageKey;
+  busy: boolean;
+  failed: boolean;
+  onDecide: (stepId: string, decision: Decision, comment?: string) => void;
+}) {
+  const t = useT();
+  const [rejecting, setRejecting] = useState(false);
+  const [comment, setComment] = useState('');
+
+  if (rejecting) {
+    return (
+      <div className="home-card-reject">
+        <Field
+          label="home.attention.action.rejectReason"
+          value={comment}
+          size="sm"
+          onChange={(event) => setComment(event.target.value)}
+        />
+        <Button
+          label="home.attention.action.rejectConfirm"
+          size="sm"
+          state={
+            busy
+              ? { kind: 'busy' }
+              : comment.trim() === ''
+                ? /* Unbuilt, not denied: nothing has refused this person. The
+                   * note says what is missing, which is the one thing they can
+                   * act on. */
+                  { kind: 'unbuilt', note: 'home.attention.action.rejectNeedsReason' }
+                : { kind: 'ready' }
+          }
+          onClick={() => onDecide(stepId, 'reject', comment.trim())}
+        />
+        <Button
+          label="home.attention.action.cancel"
+          size="sm"
+          onClick={() => {
+            setRejecting(false);
+            setComment('');
+          }}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <>
+      {failed && (
+        /* On the row, because that is where the decision was taken. A toast
+         * would move the explanation away from the thing it is about. */
+        <span className="home-card-failed" role="alert">
+          {t('home.attention.action.failed')}
+        </span>
+      )}
+      <Button
+        label="home.attention.action.reject"
+        size="sm"
+        onClick={() => setRejecting(true)}
+      />
+      <Button
+        label={label}
+        size="sm"
+        variant="primary"
+        state={busy ? { kind: 'busy' } : { kind: 'ready' }}
+        onClick={() => onDecide(stepId, 'approve')}
+      />
+    </>
   );
 }
 
@@ -298,6 +437,14 @@ export interface HomeViewProps {
   readonly data: HomeData;
   /** Passed in rather than read from the clock, so a relative time is assertable. */
   readonly now: Date;
+  /**
+   * How to decide a task, or absent when the rows are not actionable.
+   *
+   * Optional so this component stays renderable with no query context — every
+   * unit test does exactly that, and `?surface=fixture` renders sample tasks
+   * nobody should be able to approve (`ENC-968`).
+   */
+  readonly decisions?: Decisions | undefined;
 }
 
 /**
@@ -322,7 +469,7 @@ function greetingKey(now: Date): MessageKey {
  * Exported so the states can be rendered under test without a fixture and
  * without a clock. The default export below is the router's entry point.
  */
-export function HomeView({ data, now }: HomeViewProps) {
+export function HomeView({ data, now, decisions }: HomeViewProps) {
   const t = useT();
   const f = useFormatters();
 
@@ -360,7 +507,7 @@ export function HomeView({ data, now }: HomeViewProps) {
           </p>
         </header>
 
-        <AttentionSection data={data} now={now} />
+        <AttentionSection data={data} now={now} decisions={decisions} />
         <RecentSection data={data} now={now} />
         <AsksSection data={data} />
       </div>
@@ -406,6 +553,17 @@ export default function Screen() {
   const [now] = useState(() => new Date());
   const [retried, setRetried] = useState(false);
   const viewer = useViewer();
+  /* With the other hooks and above every early return.
+   *
+   * Two mistakes were made putting this here, and both are worth the comment.
+   * It began inside `AttentionSection`, which gave a presentational component a
+   * context dependency it never declared — every unit test rendering `HomeView`
+   * directly failed with *"No QueryClient set"*. Moving it to the container was
+   * right and I put it below the loading and error returns, which is a
+   * conditional hook: React renders fewer hooks on those paths and the screen
+   * breaks. The unit suite could not see it, because it tests the view and this
+   * is the container. `tests/e2e/home.spec.ts` did, immediately. */
+  const { decide, pendingId, failedId } = useDecide();
   const tasks = useTasks();
   /* A second, independent read. Deliberately **not** gated with `tasks` below:
    * `specs/home.md` gives each of Home's three surfaces its own four states,
@@ -465,5 +623,6 @@ export default function Screen() {
     );
   }
 
-  return <HomeView data={data} now={now} />;
+  const decisions: Decisions = { decide, pendingId, failedId };
+  return <HomeView data={data} now={now} decisions={decisions} />;
 }
