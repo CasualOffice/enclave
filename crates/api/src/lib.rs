@@ -302,6 +302,21 @@ pub fn router(state: ApiState, delivery: Delivery) -> Router {
         // DLP rules (docs/05-API.md §14.2). There is no `PATCH`: a DLP rule carries no mode, which
         // is D28's structural guarantee rather than an omission — see `admin/dlp.rs`.
         .route("/api/v1/admin/workspaces", post(routes::workspaces::create))
+        // `ENC-943`. `ENC-940` shipped a retention stage that refuses deletes and two tables it
+        // reads, and left the only path to a policy row as `psql` — a control the product enforces
+        // on every delete that nobody using the product could configure. `docs/05 §14`'s endpoint
+        // map has carried `/admin/retention` since it was drawn.
+        .route(
+            "/api/v1/admin/retention/policies",
+            get(admin::retention::list).post(admin::retention::create_policy),
+        )
+        // Assignments hang off their policy and carry no identifier of their own: `migrations/0031`
+        // keys them by the scope tuple, so withdrawal names the scope in the query string rather
+        // than an opaque handle the caller would have to look up first.
+        .route(
+            "/api/v1/admin/retention/policies/{id}/assignments",
+            post(admin::retention::assign).delete(admin::retention::withdraw),
+        )
         .route("/api/v1/admin/dlp/rules", get(admin::dlp::list_rules).post(admin::dlp::create_rule))
         .route("/api/v1/admin/dlp/rules/{id}", delete(admin::dlp::withdraw_rule))
         // Workflows (docs/05-API.md §16, docs/15-WORKFLOWS-AND-SIGNING.md). `ENC-739`.

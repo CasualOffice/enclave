@@ -19,6 +19,7 @@
 
 pub mod conditional_access;
 pub mod dlp;
+pub mod retention;
 
 use axum::http::StatusCode;
 use enclave_core::RequestContext;
