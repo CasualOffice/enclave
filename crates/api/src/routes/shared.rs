@@ -96,8 +96,14 @@ pub struct SharedItem {
     parent_folder_id: Option<String>,
     classification: Option<ClassificationView>,
     shared_at: DateTime<Utc>,
-    /// Who shared it, as an opaque id the client resolves against its own directory cache.
+    /// Who shared it. An opaque id, and the name beside it when the principal has a `users` row.
     shared_by: String,
+    /// Their display name, or `null` for a principal with no `users` row (`ENC-958`).
+    ///
+    /// A person's name is data rather than a message (`docs/14 §6`), and `null` is not *"Unknown"*:
+    /// a service account has no row here, and inventing a name for a principal nobody provisioned
+    /// puts a fiction in front of a reader. The client says *"somebody"*.
+    shared_by_name: Option<String>,
     /// The group it came through, or `null` for a direct share.
     via_group: Option<String>,
     capabilities: Capabilities,
@@ -271,6 +277,7 @@ async fn item(
         }),
         shared_at: candidate.shared_at,
         shared_by: candidate.shared_by.to_string(),
+        shared_by_name: candidate.shared_by_display_name.clone(),
         via_group: candidate.via_group.map(|id| id.to_string()),
         capabilities,
     })

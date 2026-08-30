@@ -42,8 +42,16 @@ const SharedItem = z.strictObject({
     .strictObject({ key: z.string(), label: z.string(), rank: z.number() })
     .nullable(),
   sharedAt: z.string(),
-  /** Who shared it, as an opaque id. No directory lookup exists to resolve it yet. */
+  /** Who shared it, as an opaque id. */
   sharedBy: z.string(),
+  /**
+   * Their display name, or `null` for a principal with no `users` row.
+   *
+   * `null` is not "Unknown" (`ENC-958`): a service account has no row, and
+   * inventing a name for a principal nobody provisioned puts a fiction in front
+   * of a reader. The row says "somebody".
+   */
+  sharedByName: z.string().nullable(),
   /** The group it arrived through, or `null` for a direct share. */
   viaGroup: z.string().nullable(),
   capabilities: FileCapabilities,

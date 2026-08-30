@@ -97,10 +97,12 @@ pub struct ActivityItem {
     /// The `family.verb` spelling, which the client maps to a sentence.
     action: String,
     /// Who did it, as an opaque id, or `null` for a principal with no user row.
-    ///
-    /// The same limitation `GET /me/shared`'s `sharedBy` has and for the same reason: no directory
-    /// read resolves a principal to a display name (`ENC-958`).
     actor_id: Option<String>,
+    /// Their display name, or `null` when the actor has no `users` row (`ENC-958`).
+    ///
+    /// A person's name is data rather than a message (`docs/14 §6`), and `null` is not *"Unknown"*.
+    /// The client renders *"somebody"*, which is true of a service account and of `system` alike.
+    actor_name: Option<String>,
     occurred_at: DateTime<Utc>,
 }
 
@@ -206,6 +208,7 @@ fn item(candidate: &ActivityCandidate) -> ActivityItem {
         library_id: candidate.library_id.to_string(),
         action: candidate.action.clone(),
         actor_id: candidate.actor_id.map(|id| id.to_string()),
+        actor_name: candidate.actor_display_name.clone(),
         occurred_at: candidate.occurred_at,
     }
 }

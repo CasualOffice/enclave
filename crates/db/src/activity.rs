@@ -56,6 +56,12 @@ pub struct ActivityCandidate {
     pub action: String,
     /// Who did it, or `None` for a principal with no user id — a service account or `system`.
     pub actor_id: Option<UserId>,
+    /// Their display name, or `None` when the actor has no `users` row (`ENC-958`).
+    ///
+    /// Resolved by a `LEFT JOIN`, as [`crate::trash`] resolves `deletedBy`, rather than by a query
+    /// per row from the API layer. `None` renders as *"somebody"*: a feed that printed a UUID would
+    /// be putting an internal identifier in front of a reader, which is worse than not naming them.
+    pub actor_display_name: Option<String>,
     /// When.
     pub occurred_at: DateTime<Utc>,
 }
@@ -108,6 +114,7 @@ pub async fn recent_changes_on(
                 library_id: row.try_get_id("library_id")?,
                 action: row.try_get("action")?,
                 actor_id: row.try_get_opt_id("actor_id")?,
+                actor_display_name: row.try_get("actor_display_name")?,
                 occurred_at: row.try_get("occurred_at")?,
             })
         })
@@ -146,6 +153,7 @@ const RECENT_SQL: &str = "
 SELECT a.resource_id                   AS file_id,
        a.action                        AS action,
        a.actor_id                      AS actor_id,
+       u.display_name                  AS actor_display_name,
        a.occurred_at                   AS occurred_at,
        f.name                          AS name,
        f.node_type                     AS node_type,
@@ -155,6 +163,9 @@ SELECT a.resource_id                   AS file_id,
     ON f.tenant_id = a.tenant_id
    AND f.id = a.resource_id
    AND f.deleted_at IS NULL
+  LEFT JOIN users u
+    ON u.tenant_id = a.tenant_id
+   AND u.id = a.actor_id
  WHERE a.tenant_id = $1
    AND a.outcome = 'ALLOW'
    AND a.resource_type = 'file'

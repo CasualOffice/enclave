@@ -145,6 +145,13 @@ function Row({ item }: { item: SharedItem }) {
             <span className="shr-ext">{extension}</span>
           </Truncate>
           <span className="shr-meta">
+            {/* Who, then when. A share is somebody's act, and the person is the
+              * first thing a reader wants — `ENC-955` shipped this row unable to
+              * say it, because no directory read resolved a principal. */}
+            {item.sharedByName === null
+              ? t('shared.sharedByUnknown')
+              : t('shared.sharedBy', { who: item.sharedByName })}
+            {' · '}
             <time dateTime={item.sharedAt}>{f.relative(new Date(item.sharedAt), now)}</time>
             {item.viaGroup !== null && (
               <>

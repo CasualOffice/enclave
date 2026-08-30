@@ -26,8 +26,15 @@ const ActivityItem = z.strictObject({
    * be a second copy that turns a newly-shown action into a parse failure —
    * every row of the feed refused because one verb was added. */
   action: z.string(),
-  /** Opaque, and `null` for a principal with no user row. No directory read resolves it (`ENC-958`). */
+  /** Opaque, and `null` for a principal with no user row. */
   actorId: z.string().nullable(),
+  /**
+   * Their display name, or `null` when the actor has no `users` row (`ENC-958`).
+   *
+   * `null` is not "Unknown": `system` and service accounts have no row, and the
+   * row says "somebody" rather than naming a principal nobody provisioned.
+   */
+  actorName: z.string().nullable(),
   occurredAt: z.string(),
 });
 
