@@ -25,6 +25,7 @@ use enclave_core::{FileId, TenantId, VersionId};
 use enclave_db::sql;
 use sqlx::PgConnection;
 
+use chrono::{DateTime, Utc};
 use enclave_db::RowIdExt as _;
 use sqlx::Row as _;
 
@@ -320,9 +321,93 @@ impl VersionRepository {
             .await?;
         Ok(changed.is_some())
     }
+    /// The least-recently-verified warm versions, for the drift scan (`ENC-951`).
+    ///
+    /// `HOT` rows only, oldest verification first, `NULL` before everything. Ordered so the scan is
+    /// **fair**: every row is reached eventually and the wait is bounded by the corpus size divided
+    /// by the batch rate, rather than by luck. Reads `idx_file_versions_tier_unverified`.
+    ///
+    /// This is the expensive half of tier reconciliation and it is bounded here rather than by the
+    /// caller's patience: each row costs a `HeadObject`, and the population is every version of
+    /// every file in the deployment.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures.
+    pub async fn least_recently_verified(
+        conn: &mut PgConnection,
+        tenant: TenantId,
+        limit: i64,
+    ) -> Result<Vec<InTransition>> {
+        let rows = sqlx::query(LEAST_RECENTLY_VERIFIED)
+            .bind(tenant.as_uuid())
+            .bind(limit)
+            .fetch_all(&mut *conn)
+            .await?;
+        rows.iter()
+            .map(|row| {
+                Ok(InTransition {
+                    id: row.try_get_id("id")?,
+                    object_key: row.try_get("object_key")?,
+                    tier: parse_enum::<StorageTier>(
+                        row,
+                        "storage_tier",
+                        "not a known storage tier",
+                    )?,
+                })
+            })
+            .collect()
+    }
+
+    /// Records that the store confirmed this row's tier, without changing it (`ENC-951`).
+    ///
+    /// Separate from [`VersionRepository::reconcile_tier`] because *"still `HOT`"* is the answer
+    /// the scan gets almost every time, and it must not be a no-op: a row that is checked and not
+    /// stamped is a row the ordering returns again immediately, and the scan would re-check the
+    /// same batch for ever while the rest of the corpus went unverified.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures.
+    pub async fn mark_tier_verified(
+        conn: &mut PgConnection,
+        tenant: TenantId,
+        version: VersionId,
+    ) -> Result<()> {
+        sqlx::query(MARK_VERIFIED)
+            .bind(tenant.as_uuid())
+            .bind(version.as_uuid())
+            .execute(&mut *conn)
+            .await?;
+        Ok(())
+    }
+
+    /// The oldest verification in this tenant, or [`None`] when nothing is warm (`ENC-951`).
+    ///
+    /// **The number that makes the scan's coverage a fact rather than a hope.** A drift scan whose
+    /// worst-case staleness nobody can state is a scan nobody can trust: it runs, it logs, and it
+    /// is indistinguishable from one that has fallen a month behind. `NULL` sorts first, so an
+    /// unverified row reports as the oldest — which is correct, it is infinitely stale.
+    ///
+    /// Returns `Some(None)` when the oldest row has never been verified, and `None` when the tenant
+    /// has no warm versions at all. The two are different and the caller reports them differently.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures.
+    pub async fn oldest_tier_verification(
+        conn: &mut PgConnection,
+        tenant: TenantId,
+    ) -> Result<Option<Option<DateTime<Utc>>>> {
+        let row: Option<(Option<DateTime<Utc>>,)> = sqlx::query_as(OLDEST_VERIFICATION)
+            .bind(tenant.as_uuid())
+            .fetch_optional(&mut *conn)
+            .await?;
+        Ok(row.map(|(at,)| at))
+    }
 }
 
-/// One version the reconciler has to resolve.
+/// One version the reconciler has to resolve./// One version the reconciler has to resolve.
 ///
 /// Three fields and no more: the reconciler needs an id to write back, a key to ask the store
 /// about, and the tier it is leaving so the write can be conditional on it. Returning a whole
@@ -345,6 +430,32 @@ const IN_TRANSITION: &str = "
        AND storage_tier IN ('ARCHIVING','RESTORING')
      ORDER BY restore_requested_at ASC NULLS FIRST
      LIMIT $2";
+
+const LEAST_RECENTLY_VERIFIED: &str = "
+    SELECT id, object_key, storage_tier
+      FROM file_versions
+     WHERE tenant_id = $1
+       AND storage_tier = 'HOT'
+     ORDER BY tier_verified_at ASC NULLS FIRST
+     LIMIT $2";
+
+// `now()` from the database's clock, for the reason `MARK_RESTORING` uses it: the staleness a
+// reconciler reports is measured against the same clock that stamped the row, and a worker whose
+// wall clock disagrees would report a number nobody can act on.
+const MARK_VERIFIED: &str = "
+    UPDATE file_versions
+       SET tier_verified_at = now()
+     WHERE tenant_id = $1 AND id = $2";
+
+// `LIMIT 1` over the same index the scan reads, so this is an index scan and not an aggregate over
+// the table. `MIN()` would be the obvious spelling and would ignore NULLs — reporting the oldest
+// *verified* row while never-verified rows sat unreported, which is the opposite of the question.
+const OLDEST_VERIFICATION: &str = "
+    SELECT tier_verified_at
+      FROM file_versions
+     WHERE tenant_id = $1 AND storage_tier = 'HOT'
+     ORDER BY tier_verified_at ASC NULLS FIRST
+     LIMIT 1";
 
 const RECONCILE_TIER: &str = "
     UPDATE file_versions
