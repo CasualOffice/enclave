@@ -103,7 +103,38 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   test:
-    name: test — cargo test --workspace
+    name: test — ${{ matrix.shard.name }}
+    # **Two shards, because one job could not finish inside the ceiling** (`ENC-977`).
+    #
+    # `cargo test --workspace -- --include-ignored` needed more than twenty-two minutes on top of
+    # roughly eight of setup, and `ENC-974` capped every job at thirty. It was cancelled at the cap,
+    # which is the cap working: a job that cannot finish in half an hour is one to split, and
+    # raising the number is how a repository arrives back at ninety.
+    #
+    # A matrix rather than two hand-written jobs, so the six hundred lines of setup below — disk,
+    # toolchain, cache, MinIO, ClamAV, Milvus, the embedding model — are written once and cannot
+    # drift apart between shards.
+    #
+    # **The split is `--workspace --exclude`, deliberately, and not two `-p` lists.** A crate added
+    # to neither list would be silently untested, and a silent gap in coverage is the failure this
+    # repository keeps finding in itself. Subtraction means a new crate lands in `rest` by default
+    # and the partition holds without anybody maintaining it.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard:
+          # The crates whose tests hold a database, an object store or a cluster role. These are
+          # what `--include-ignored` actually costs.
+          - name: services
+            args: -p enclave-api -p enclave-db -p enclave-audit -p enclave-testing
+          # Everything else, by subtraction.
+          - name: rest
+            args: >-
+              --workspace
+              --exclude enclave-api
+              --exclude enclave-db
+              --exclude enclave-audit
+              --exclude enclave-testing
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -193,7 +224,7 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: ${{ runner.os }}-cargo-test-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-test-${{ matrix.shard.name }}-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-test-${{ hashFiles('rust-toolchain.toml') }}-
             ${{ runner.os }}-cargo-test-
@@ -633,11 +664,11 @@ jobs:
         # rather than leaving a bus error to be diagnosed from first principles (ENC-156).
         run: df -h / | tail -1
 
-      - name: cargo test --workspace
+      - name: cargo test — ${{ matrix.shard.name }}
         # `--skip` excludes the one test that cannot share a cluster: it drops the cluster-wide
         # roles to recreate the race it exists to prove, which would break every other binary
         # holding a database. It runs in the `role-race` job below, against its own server.
-        run: cargo test --workspace --locked -- --include-ignored --skip a_lost_role_creation_race
+        run: cargo test ${{ matrix.shard.args }} --locked -- --include-ignored --skip a_lost_role_creation_race
 
       - name: Report free disk after building
         if: always()
