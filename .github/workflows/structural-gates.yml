@@ -518,12 +518,41 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      # `fetch-depth: 0` because the migrations gate below compares against the base
+      # ref, and a shallow clone has no base ref to compare with. It belonged to that
+      # gate's own checkout before these jobs were merged; merging them made it a
+      # property of the one checkout they now share, and dropping it would have left
+      # the gate running green against a history it could not see.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
     # --- no-conflict-markers ---
       - name: No unresolved conflict markers
         id: g_no_conflict_markers
         run: python3 .github/scripts/no_conflict_markers.py
+
+    # --- workflow-shape ---
+      - name: Every workflow is a shape GitHub will actually run
+        id: g_workflow_shape
+        run: python3 .github/scripts/workflow_shape.py
+      - name: Explain on failure
+        if: failure() && steps.g_workflow_shape.outcome == 'failure'
+        run: |
+          {
+            echo "### FAILED - Workflow shape"
+            echo ""
+            echo "A workflow GitHub cannot parse does not fail loudly. It fails as a red"
+            echo "tick with **zero jobs and no log**, and the natural reading of that is"
+            echo "\"something flaked\" rather than \"every gate in this file is off\"."
+            echo ""
+            echo "That is what happened on 2026-08-30: a merge dropped a \`- uses:\` line"
+            echo "and kept the \`with:\` block under it, and thirteen gates - including the"
+            echo "secrets scan - were silently absent from \`main\` until somebody looked."
+            echo ""
+            echo "PyYAML parses that file happily. This gate is the gap between \"is this"
+            echo "YAML\" and \"is this a workflow\"."
+          } >> "$GITHUB_STEP_SUMMARY"
 
     # --- workflow-timeouts ---
       - name: Every job bounds how long it may hold a runner
@@ -728,10 +757,6 @@ jobs:
           echo "No credential literals found."
 
     # --- migrations ---
-        with:
-          # Needs history: the forward-only check compares against the base ref.
-          fetch-depth: 0
-
       - name: Assert numbering, and that no applied migration was edited
         id: g_migrations
         run: |
