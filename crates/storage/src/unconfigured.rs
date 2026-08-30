@@ -76,6 +76,9 @@ impl BlobStore for UnconfiguredBlobStore {
     /// several steps further from the cause than this one.
     fn capabilities(&self) -> StoreCapabilities {
         StoreCapabilities {
+            // Nothing is configured, so nothing is supported. `No` rather than `Unknown` because
+            // this store knows exactly what it can do, which is nothing.
+            storage_tiers: Support::No,
             backend: "unconfigured",
             multipart: None,
             signed_urls: false,

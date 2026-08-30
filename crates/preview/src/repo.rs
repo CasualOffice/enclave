@@ -40,6 +40,15 @@ pub struct ReadableVersion {
     object_key: String,
     media_type: String,
     size_bytes: i64,
+    /// The stored `storage_tier`, kept as text.
+    ///
+    /// This crate has no dependency on `enclave-versions`, where `StorageTier` lives, and adding
+    /// one to name four strings would be the heavier change. What matters here is the *question* —
+    /// can these bytes be fetched now — and [`ReadableVersion::bytes_are_reachable`] answers it
+    /// against the one value that means yes, so an unrecognised tier reads as unreachable. That is
+    /// the safe direction: refusing bytes that were there costs a request, and serving a URL for
+    /// bytes that are in Glacier costs an opaque failure outside the product (`ENC-946`).
+    storage_tier: String,
 }
 
 impl ReadableVersion {
@@ -47,6 +56,21 @@ impl ReadableVersion {
     #[must_use]
     pub const fn id(&self) -> VersionId {
         self.version
+    }
+
+    /// Whether these bytes can be fetched now, or are in a colder tier (`ENC-946`).
+    ///
+    /// `HOT` and nothing else. Written as an equality against the one readable value rather than as
+    /// a list of the unreadable ones, so a tier added to `migrations/0032`'s `CHECK` in future is
+    /// unreachable-until-classified instead of readable-by-omission.
+    ///
+    /// This is **not** rule 9. Rule 9 is `status`/`av_status`, applied by this type's only
+    /// constructor, and it decides whether the content may be served at all. This decides whether
+    /// it is *there*, and a caller must answer the two differently: unscanned content is a `404`
+    /// and archived content is a `409` with a way to get it back.
+    #[must_use]
+    pub fn bytes_are_reachable(&self) -> bool {
+        self.storage_tier == "HOT"
     }
 
     /// The file it belongs to.
@@ -119,6 +143,7 @@ pub async fn readable_version(
         object_key: column(&row, "object_key")?,
         media_type: column(&row, "mime_type")?,
         size_bytes: column(&row, "size_bytes")?,
+        storage_tier: column(&row, "storage_tier")?,
     }))
 }
 
@@ -255,7 +280,7 @@ pub const READABLE_PREDICATE: &str = "status = 'AVAILABLE' AND av_status IN ('CL
 
 const READABLE_VERSION_SQL: &str = concat!(
     "
-SELECT file_id, object_key, mime_type, size_bytes
+SELECT file_id, object_key, mime_type, size_bytes, storage_tier
   FROM file_versions
  WHERE tenant_id = $1
    AND id = $2

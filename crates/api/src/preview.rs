@@ -193,6 +193,14 @@ pub async fn preview(
     // way to reach the pipeline, so an unscanned version cannot be rendered even by mistake.
     let version = readable_version(&mut tx, &ctx, file, request_id).await?;
 
+    // The same refusal as `download`, and it belongs here too even though this path reads ranges
+    // through our own code rather than handing out a URL: a `read_range` against an archived object
+    // fails as a storage error, which this surface would report as a `502`-shaped incident rather
+    // than as the recoverable, actionable state it is (`ENC-946`).
+    if !version.bytes_are_reachable() {
+        return Ok(crate::tiering::archived("ARCHIVED").into_response(request_id));
+    }
+
     // Read inside the same tenant-scoped transaction as everything else, and only when a mark is
     // actually required — a preview with no watermark obligation must not pay for a lookup, and
     // must not read a viewer's email at all.

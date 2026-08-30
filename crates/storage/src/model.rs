@@ -221,6 +221,16 @@ pub struct StoreCapabilities {
     pub object_lock: Support,
     /// Whether default server-side encryption is configured.
     pub server_side_encryption: Support,
+    /// Whether this store has a cold tier at all (`ENC-946`).
+    ///
+    /// [`Support::No`] on MinIO and on most S3-compatible backends: they accept a storage-class
+    /// header and have nowhere colder to put the bytes, and none of them implements `RestoreObject`.
+    /// Reporting honestly is what makes the archive surface refuse on those deployments instead of
+    /// marking content unavailable that never moved.
+    ///
+    /// [`Support::Unknown`] is treated as `No` by every caller, for the reason
+    /// [`Support::is_confirmed`] exists: an archive that may not be reversible is not one to start.
+    pub storage_tiers: Support,
     /// Whether byte-range reads are supported. Required by preview and by resumable download.
     pub range_reads: bool,
     /// Whether the backend can copy server-side, without the bytes passing through this process.

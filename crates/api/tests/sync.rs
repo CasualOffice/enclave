@@ -112,6 +112,8 @@ impl BlobStore for ForbiddenStore {
     }
     fn capabilities(&self) -> StoreCapabilities {
         StoreCapabilities {
+            // No cold tier: this double serves from memory (`ENC-946`).
+            storage_tiers: Support::No,
             backend: "forbidden-stub",
             multipart: None,
             signed_urls: true,

@@ -1,6 +1,6 @@
 # 05 — API Surface
 
-> **Status:** Draft · **Version:** 1.9 · **Owner:** Platform Engineering · **Last updated:** 2026-08-30
+> **Status:** Draft · **Version:** 1.10 · **Owner:** Platform Engineering · **Last updated:** 2026-08-30
 > **Authoritative for:** REST contracts, error model, pagination, idempotency, versioning, rate limits.
 
 ## 1. Principles
@@ -1200,6 +1200,34 @@ and the list that would identify the row cannot be reached. The handler decodes 
 individually and would report it; the stage above it is what fails. `ENC-651`, and the same shape as
 `ENC-623` one stage over.
 
+
+#### Rehydration (`ENC-946`)
+
+`POST /api/v1/files/{id}/rehydrate` asks for an archived version's bytes back. `202 Accepted` with
+`{ storageTier, started }`; `started` is `false` when there was nothing to do or a restore was
+already running, so a double click costs nothing.
+
+Decided as **`file.content_read`**. Rehydration is not a new power — it returns a file to the state
+it was already in, for a caller who could already read it — so giving it an action of its own would
+create a permission an administrator must grant for something nobody would withhold. `content_read`
+and not `download`, because a caller who may preview but not download still needs a preview that
+works.
+
+Every byte path answers **`409 CONTENT_ARCHIVED`** for a version that is not `HOT`, with
+`details[0].storageTier` naming the state. It is deliberately not a `404`: every other miss on
+those paths is one, so this is the easy mistake to make, and it would tell a caller their intact
+file is gone rather than naming the action that gets it back. Nothing rule 7 protects is leaked —
+the caller has already passed the chain for this file and this action, so existence was established
+before the check runs.
+
+The check happens **before** a signed URL is minted, never after the fetch fails. Once the URL
+exists the fetch is between the caller and the object store, and a Glacier object answers it with
+`InvalidObjectState` as XML from a hostname that is not ours — a failure the product never sees and
+cannot explain.
+
+Two other answers, both `409`: `ARCHIVE_IN_PROGRESS` when a transition to cold has not finished,
+and `RESTORE_UNSUPPORTED` when the deployment's object store has no cold tier to restore from
+(`docs/08 §3A`).
 
 #### Retention (`ENC-943`)
 

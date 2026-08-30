@@ -433,6 +433,19 @@ const SPECS: &[Spec] = &[
         credential: Credential::Bearer,
         expect: Expect::Served,
     },
+    // `ENC-946`. `ServedOrAbsent` for the same reason `POST /download` above carries it, and it is
+    // the same cause rather than a coincidence: both resolve through `readable_version_for`, and
+    // the fixture file has no committed version with bytes — an upload this probe cannot perform,
+    // because it would have to PUT to a pre-signed URL and then wait for an antivirus pass. The
+    // tier arms are proved against a real archived version in `crates/api/tests/tiering.rs`.
+    Spec {
+        method: "POST",
+        path: "/api/v1/files/{id}/rehydrate",
+        target: "/api/v1/files/{file}/rehydrate",
+        body: None,
+        credential: Credential::Bearer,
+        expect: Expect::ServedOrAbsent,
+    },
     Spec {
         method: "GET",
         path: "/api/v1/files/{id}/permissions",
@@ -730,6 +743,51 @@ const SPECS: &[Spec] = &[
         body: None,
         credential: Credential::Bearer,
         expect: Expect::Served,
+    },
+    // `ENC-943`'s four routes, **added by `ENC-946` because they were never added at all**. They
+    // shipped without entries here, this test went red on `main` the moment they merged, and
+    // nothing said so: the CI queue had not drained a run since. That is `ENC-941`'s cost paid in
+    // full — a gate that works, on a merge nobody built, is a gate that is off.
+    Spec {
+        method: "GET",
+        path: "/api/v1/admin/retention/policies",
+        target: "/api/v1/admin/retention/policies",
+        body: None,
+        credential: Credential::Bearer,
+        expect: Expect::Served,
+    },
+    // The body is a valid policy the schema accepts: `KEEP` needs no duration, and `CREATED` needs
+    // no event key. A body the constraints refuse would answer `422` — still `Served`, and still a
+    // pass, but it would stop proving that the route reaches its handler rather than its parser.
+    Spec {
+        method: "POST",
+        path: "/api/v1/admin/retention/policies",
+        target: "/api/v1/admin/retention/policies",
+        body: Some(r#"{"name":"reachability-probe","action":"KEEP","basis":"CREATED"}"#),
+        credential: Credential::Bearer,
+        expect: STEP_UP,
+    },
+    // `{id}` names no policy this fixture created, so the composite foreign key refuses the insert
+    // and the handler renders `422 POLICY_REJECTED` — an answer, from the handler, which is what
+    // this suite asks about.
+    Spec {
+        method: "POST",
+        path: "/api/v1/admin/retention/policies/{id}/assignments",
+        target: "/api/v1/admin/retention/policies/00000000-0000-0000-0000-000000000000/assignments",
+        body: Some(r#"{"scopeType":"TENANT"}"#),
+        credential: Credential::Bearer,
+        expect: STEP_UP,
+    },
+    // `ServedOrAbsent`: withdrawing an assignment that does not exist is `404 ASSIGNMENT_NOT_FOUND`
+    // by design — already-withdrawn and never-existed are deliberately one answer — so the `404`
+    // this route gives a probe is the correct answer rather than an unreachable handler.
+    Spec {
+        method: "DELETE",
+        path: "/api/v1/admin/retention/policies/{id}/assignments",
+        target: "/api/v1/admin/retention/policies/00000000-0000-0000-0000-000000000000/assignments?scopeType=TENANT",
+        body: None,
+        credential: Credential::Bearer,
+        expect: Expect::ServedOrAbsent,
     },
     // `ENC-916`. Provisioning is an administrative act against the tenant, not a container action:
     // `classify` calls a tenant reference `Target::Unsupported`, so `crates/authorization/admin.rs`

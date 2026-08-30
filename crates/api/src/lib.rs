@@ -20,6 +20,7 @@ pub mod refusal;
 pub mod routes;
 pub mod state;
 pub mod sync;
+pub mod tiering;
 pub mod workflows;
 
 use std::sync::Arc;
@@ -208,6 +209,10 @@ pub fn router(state: ApiState, delivery: Delivery) -> Router {
                 .delete(routes::lifecycle::trash),
         )
         .route("/api/v1/files/{id}/restore", post(routes::lifecycle::restore))
+        // `ENC-946`. Asking for archived bytes back, decided as `content_read` — restoring a file
+        // to the state it was already in is not a new power, and giving it an action of its own
+        // would create a permission an administrator must grant for something nobody withholds.
+        .route("/api/v1/files/{id}/rehydrate", post(routes::rehydrate::rehydrate))
         .route("/api/v1/files/{id}/versions", get(content::file_versions))
         .route(
             "/api/v1/files/{id}/permissions",

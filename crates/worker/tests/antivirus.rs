@@ -116,6 +116,8 @@ impl PublicAccessCheck for KeyedStore {
 impl BlobStore for KeyedStore {
     fn capabilities(&self) -> StoreCapabilities {
         StoreCapabilities {
+            // No cold tier: this double serves from memory (`ENC-946`).
+            storage_tiers: Support::No,
             backend: "keyed-stub",
             multipart: Some(MultipartLimits {
                 min_part_bytes: 5 * 1024 * 1024,

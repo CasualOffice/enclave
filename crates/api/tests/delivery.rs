@@ -133,6 +133,8 @@ impl BlobStore for CountingStore {
 
     fn capabilities(&self) -> StoreCapabilities {
         StoreCapabilities {
+            // No cold tier: this double serves from memory (`ENC-946`).
+            storage_tiers: Support::No,
             backend: "counting-stub",
             multipart: Some(MultipartLimits {
                 min_part_bytes: 5 * 1024 * 1024,
@@ -1067,4 +1069,80 @@ async fn an_unconfigured_deployment_refuses_delivery_instead_of_failing_opaquely
     download.carries_no_original(&content);
 
     drop(db);
+}
+
+/// An archived version is refused on both byte paths, and the caller is told how to get it back.
+///
+/// `ENC-946`. **The control is in the same test and runs first**: the identical request against the
+/// identical fixture, while the version is `HOT`, must produce a signed URL. Without it,
+/// *"download refused"* is satisfied by a chain that refused for any of nine other reasons, by a
+/// fixture with no bytes, and by a handler that never ran — and `crates/api/tests/reachability.rs`
+/// already records that this fixture's file has no committed version on the paths that need one.
+///
+/// The refusal must be `409` and **not** `404`. Every other miss on this path is `NotFound` by
+/// design, so getting this wrong is the easy mistake: it would tell a caller their file is gone
+/// when it is intact, hours away, and retrievable by the one action the remediation names.
+///
+/// Deleting the tier guard in `download.rs` turns this red on the `409` — and leaves the `HOT` half
+/// green, which is what makes the pair worth having.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL with migrations 0004-0006 and 0032; CI runs it with --include-ignored"]
+async fn an_archived_version_is_refused_with_a_way_back_rather_than_reported_missing() {
+    let db = TestDb::start().await.expect("start");
+    let fixtures = db.seed().await.expect("seed");
+    let (app, key, _store) = app(&db, Arc::new(enclave_dlp::DisabledDlp)).await;
+
+    let user = fixtures.alpha.member;
+    let content = Content::new(fixtures.alpha.id, fixtures.alpha.owner);
+    let mut admin = db.connect().await.expect("admin connection");
+    content.insert(&mut admin, "AVAILABLE", "CLEAN").await;
+    grant(&mut admin, &content, user, FileAction::MetadataRead, "ALLOW").await;
+    grant(&mut admin, &content, user, FileAction::Preview, "ALLOW").await;
+    grant(&mut admin, &content, user, FileAction::Download, "ALLOW").await;
+    let bearer = token(&key, fixtures.alpha.id, user);
+
+    // The control. Everything below is only meaningful if this passes.
+    let hot = post_download(&app, &bearer, content.file).await;
+    assert_eq!(
+        hot.status,
+        StatusCode::OK,
+        "the control failed: a HOT version must download, or the refusal below proves nothing: {}",
+        hot.body
+    );
+
+    // Archived out of band — which is how content actually reaches Glacier in practice: an S3
+    // bucket lifecycle rule, not a call this product makes.
+    sqlx::query(
+        "UPDATE file_versions SET storage_tier = 'ARCHIVED' WHERE tenant_id = $1 AND id = $2",
+    )
+    .bind(fixtures.alpha.id.as_uuid())
+    .bind(content.version.as_uuid())
+    .execute(&mut admin)
+    .await
+    .expect("archive the version");
+
+    let cold = post_download(&app, &bearer, content.file).await;
+    assert_eq!(
+        cold.status,
+        StatusCode::CONFLICT,
+        "an archived version must be refused as a conflict with a remediation, not as a 404 that \
+         tells the caller their intact file is gone: {}",
+        cold.body
+    );
+    assert!(
+        cold.body.contains("CONTENT_ARCHIVED"),
+        "the refusal must carry the code a client branches on: {}",
+        cold.body
+    );
+
+    // The same refusal on the other byte path. Preview reads ranges through our own code rather
+    // than minting a URL, so without this guard it would surface as a storage incident rather than
+    // as the recoverable state it is.
+    let preview = get_preview(&app, &bearer, content.file).await;
+    assert_eq!(
+        preview.status,
+        StatusCode::CONFLICT,
+        "preview must refuse an archived version the same way download does: {}",
+        preview.body
+    );
 }
