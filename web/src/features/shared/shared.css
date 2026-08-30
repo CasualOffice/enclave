@@ -1,0 +1,108 @@
+/* Shared with me (`ENC-955`).
+ *
+ * Trash's measure and rhythm, deliberately. Both are a short list of files with a
+ * timestamp on the right, and two screens that look alike because they *are*
+ * alike is the whole point of a token scale. The one structural difference is
+ * that every row here is a link — a share exists to be opened — so the hover and
+ * focus treatments sit on the anchor rather than on the `li`.
+ */
+
+.shr {
+  padding-block: var(--sp-9);
+  padding-inline: var(--sp-10);
+  overflow: auto;
+  block-size: 100%;
+}
+
+.shr-page {
+  max-inline-size: var(--page-measure);
+  margin-inline: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+}
+
+.shr-title {
+  margin: 0;
+  font-family: var(--tight);
+  font-size: var(--fs-display);
+  line-height: var(--lh-tight);
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.shr-subline {
+  margin: 0;
+  margin-block-start: var(--sp-2);
+  font-size: var(--fs-meta);
+  color: var(--fg2);
+}
+
+.shr-list ul,
+.shr-loading ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+/* The divider is an inset shadow rather than a border, so the last row's rule is
+ * clipped by the card's `overflow: hidden` instead of needing a `:last-child`
+ * exception every future insertion has to remember. On the `li`, not the anchor,
+ * so a focused row's ring is not drawn over a line. */
+.shr-row {
+  box-shadow: inset 0 -1px 0 var(--line);
+}
+
+.shr-link {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  padding-block: var(--sp-4);
+  padding-inline: var(--sp-6);
+  min-block-size: 52px;
+  text-decoration: none;
+  color: inherit;
+}
+
+.shr-link:hover {
+  background: var(--hover);
+}
+
+/* The shared ring, resolved through its `var()` indirection rather than
+ * `--accent` by name — `ENC-702` found every `:focus-visible` in the tree
+ * drawing a 30–40% wash that measured under `docs/09 §15`'s 3:1 floor. */
+.shr-link:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+
+.shr-row--skeleton {
+  background: var(--sunken);
+  opacity: 0.55;
+  min-block-size: 52px;
+}
+
+.shr-icon {
+  display: flex;
+  flex: none;
+  color: var(--fg3);
+}
+
+.shr-name {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  min-inline-size: 0;
+  font-size: var(--fs-body);
+  color: var(--fg);
+}
+
+.shr-ext {
+  color: var(--fg4);
+  font-weight: 400;
+}
+
+.shr-meta {
+  font-size: var(--fs-sm);
+  color: var(--fg3);
+}

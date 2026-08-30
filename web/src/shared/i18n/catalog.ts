@@ -2605,6 +2605,54 @@ export const catalog = {
     message: 'Save policy',
     description: 'Submits the new-policy form.',
   },
+
+  /* Shared with me (`ENC-955`).
+   *
+   * The screen behind a nav entry that carried a `Later` chip until `ENC-954`
+   * gave it an endpoint. Its sentences are about *other people's* acts, which
+   * is what makes them different from Trash's: the person reading did not do
+   * any of this, so nothing here is phrased as something they can undo.
+   */
+  'shared.title': {
+    message: 'Shared with me',
+    description: 'Heading of the screen listing what other people granted this account access to.',
+  },
+  'shared.subline': {
+    message: 'Files and folders other people have given you access to.',
+    description:
+      'Sentence under the Shared with me heading. Says "given you access to" rather than "sent you": nothing is copied or moved by a share, and describing it as sending would suggest the reader now holds their own copy.',
+  },
+  'shared.empty.heading': {
+    message: 'Nothing shared with you',
+    description: 'Heading of the empty state when nobody has shared anything with this account.',
+  },
+  'shared.empty.body': {
+    message:
+      'When somebody gives you access to a file or folder, it appears here. Content in workspaces you belong to is not a share and is found under Files.',
+    description:
+      'Body of the Shared with me empty state. The second sentence pre-empts the commonest confusion: a person who can see plenty of documents through team membership would otherwise read this screen as broken.',
+  },
+  'shared.filtered.heading': {
+    message: 'Nothing you can open',
+    description:
+      'Heading of the empty state when shares exist but policy removed every one of them from this listing.',
+  },
+  'shared.filtered.body': {
+    message:
+      '{count, plural, one {# item was} other {# items were}} shared with you and cannot be opened now. A policy or a permission changed after the share was made.',
+    description:
+      'Body of the filtered-empty state. Says how many and never which — CLAUDE.md rule 7 — and names the reason in general terms because the specific one is not the reader’s to know.',
+  },
+  'shared.viaGroup': {
+    message: 'Through a group',
+    description:
+      'Shown on a row whose access arrived through group membership rather than a grant naming this person. Kept distinct because the two differ in what the reader loses when they leave the team.',
+  },
+  'shared.classification': {
+    message: '{label}',
+    description:
+      'Chip carrying the file’s classification label as the server sent it. Surfaced on this screen in particular because a document that arrived from somebody else is one whose sensitivity the reader has not seen before.',
+  },
 } as const satisfies Record<string, CatalogEntry>;
 
 export type MessageKey = keyof typeof catalog;
