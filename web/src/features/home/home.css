@@ -336,3 +336,29 @@
 .home-asks .ui-skeleton {
   block-size: var(--ctl-h);
 }
+
+/* Deciding a task (`ENC-968`).
+ *
+ * The reject flow replaces the row's two buttons in place rather than opening a
+ * dialog: the thing being explained is one row of a list somebody is working
+ * through, and taking focus out of that list to explain one row of it is the
+ * wrong trade. The field and its two controls share the actions cell.
+ */
+.home-card-reject {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  max-inline-size: 34ch;
+}
+
+/* Not `--c-restr`'s colour: this is a failure, not a classification, and reusing
+ * a sensitivity token for an error state is how a palette stops meaning
+ * anything. The same reasoning `trash.css` records for `.trash-failed`. */
+.home-card-failed {
+  font-size: var(--fs-sm);
+  color: var(--fg2);
+  max-inline-size: 30ch;
+  text-align: end;
+}
