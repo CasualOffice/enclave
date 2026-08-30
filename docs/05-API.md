@@ -1,6 +1,6 @@
 # 05 — API Surface
 
-> **Status:** Draft · **Version:** 1.12 · **Owner:** Platform Engineering · **Last updated:** 2026-08-30
+> **Status:** Draft · **Version:** 1.13 · **Owner:** Platform Engineering · **Last updated:** 2026-08-30
 > **Authoritative for:** REST contracts, error model, pagination, idempotency, versioning, rate limits.
 
 ## 1. Principles
@@ -1200,6 +1200,37 @@ and the list that would identify the row cannot be reached. The handler decodes 
 individually and would report it; the stage above it is what fails. `ENC-651`, and the same shape as
 `ENC-623` one stage over.
 
+
+#### Activity (`ENC-960`)
+
+`GET /me/activity` lists recent **changes** to content this caller can see. It is the first reader
+`audit_events` has ever had: the hash-chained log has been written since Phase 0 and nothing had
+ever selected from it — including the `/admin/audit` endpoint this section's map has listed since it
+was drawn, which remains unbuilt (`ENC-961`).
+
+Three exclusions, and the second is the one to read twice.
+
+**Denials are excluded.** A `DENY` row says somebody tried and was refused, disclosing both that
+they tried and that the resource exists — the second is what rule 7 spends a `404` to protect.
+Reading refusals is an administrative power (`AdminAction::ReadAudit`), not a member's.
+
+**Reads are excluded.** `metadata_read`, `preview` and `download` are the bulk of any real audit log
+— `file.metadata_read` alone outnumbers every other file action by an order of magnitude in a live
+tenant. A feed carrying them would be a record of who looked at what, readable by everybody who can
+open the file. That is a surveillance tool, and the data already sitting in the table is not an
+argument for surfacing it: an activity feed answers *what happened to this*, and reading is not
+something happening to it.
+
+**The actor's circumstances are excluded.** `ip`, `country`, `user_agent`, `session_id`, `device_id`
+and `detail` exist so a security investigation can reconstruct a session. Putting a colleague's IP
+address on a screen anybody with read access can open is a disclosure with no upside.
+
+Rows are trimmed on **`file.metadata_read`**, not on the action they record. Deciding on the
+recorded action reads as *"you may see the edit if you may edit"* and would hide every change from
+everybody holding read access alone, which is most of the people a feed is for. `filteredCount` says
+how many were withheld, never which — and it matters more here than on the sibling listings, because
+an audit log is dominated by activity on content most callers cannot see, so three rows out of two
+hundred candidates is the surface working correctly.
 
 #### Favorites (`ENC-959`)
 
