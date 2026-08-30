@@ -45,7 +45,7 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, Timelike as _, Utc};
 use enclave_core::{FileId, TenantId, UserId};
 use enclave_db::trash::{
     roots, roots_on, TrashCandidate, TrashCandidates, TrashedKind, OVER_FETCH,
@@ -77,7 +77,7 @@ async fn harness(connections: u32) -> (TestDb, Fixtures, DbPool) {
 /// rather than the query.
 async fn spine(conn: &mut PgConnection, tenant: TenantId, owner: UserId) -> Spine {
     let spine = Spine::new(tenant);
-    spine.insert(conn, owner, Utc::now()).await.expect("insert a content spine");
+    spine.insert(conn, owner, now()).await.expect("insert a content spine");
     spine
 }
 
@@ -123,6 +123,69 @@ async fn add_node(
 /// matter to the query under test are both present: the recursion stops at an already-trashed node,
 /// and every row it does reach receives the *same* `deleted_at`.
 ///
+/// The clock, truncated to what PostgreSQL can actually store (`ENC-953`).
+///
+/// `timestamptz` is **microsecond** precision. `now()` is nanosecond, and on Linux it really
+/// does return nanoseconds — so a value written from Rust and read back differs from the original
+/// by the sub-microsecond remainder, and any test comparing the two fails.
+///
+/// It passed on macOS for the reason that makes this class of bug survive: `clock_gettime` there
+/// reports microseconds, so the remainder is always zero and the truncation is a no-op. The tests
+/// were written on macOS, they ran on macOS, and they failed the first time CI got far enough to
+/// execute them — which was only after `ENC-950` fixed the reachability failure that had been
+/// aborting the run before `crates/db` was reached.
+///
+/// Truncating here rather than comparing with a tolerance is the point: a tolerance would also
+/// accept a cascade that stamped a *different* instant a microsecond away, which is the thing these
+/// tests exist to detect.
+fn now() -> DateTime<Utc> {
+    to_micros(Utc::now())
+}
+
+/// The truncation itself, as a pure function.
+///
+/// Separated from the clock **so that it can be tested on a machine whose clock does not expose
+/// the defect**. `now()` cannot be: on macOS `Utc::now()` already returns whole microseconds, so
+/// deleting the truncation changes nothing observable and any test built on the real clock passes
+/// against the bug. Handed a constructed instant with a nanosecond remainder, this one fails.
+fn to_micros(at: DateTime<Utc>) -> DateTime<Utc> {
+    at.with_nanosecond(at.timestamp_subsec_micros() * 1_000)
+        .expect("a whole number of microseconds is always a valid nanosecond count")
+}
+
+/// The truncation drops a sub-microsecond remainder and changes nothing else (`ENC-953`).
+///
+/// **A pure test on a constructed instant, and that shape is the whole point.** The defect is
+/// invisible to the real clock on macOS — `Utc::now()` returns whole microseconds there, so a test
+/// built on it passes whether the truncation exists or not, which is how this survived until a
+/// Linux runner executed the suite. Feeding in a value that *has* a remainder is the only way to
+/// assert the behaviour on any machine, and deleting the truncation turns this red everywhere.
+///
+/// The second assertion is the one that stops an over-eager fix: truncating to the *second*, or
+/// rounding, would also satisfy the first and would move the instant these tests compare.
+#[test]
+fn truncating_to_microseconds_drops_the_remainder_and_nothing_else() {
+    let with_remainder = DateTime::from_timestamp(1_772_000_000, 865_909_598)
+        .expect("a valid instant")
+        .with_timezone(&Utc);
+
+    let truncated = to_micros(with_remainder);
+
+    assert_eq!(
+        truncated.timestamp_subsec_nanos(),
+        865_909_000,
+        "the sub-microsecond remainder must be dropped: PostgreSQL stores timestamptz to the \
+         microsecond, so a value written from Rust and read back differs by exactly this much"
+    );
+    assert_eq!(
+        truncated.timestamp(),
+        with_remainder.timestamp(),
+        "only the remainder may change — truncating to the second, or rounding, would move the \
+         instant these tests compare against a stored one"
+    );
+    assert_eq!(truncated.timestamp_subsec_nanos() % 1_000, 0, "a whole number of microseconds");
+}
+
 /// `by` is written to `modified_by`, which is where the contract's `deletedBy` comes from. Returns
 /// the instant, so a test can build the "deleted separately, before its parent" case deliberately
 /// rather than by racing the clock.
@@ -241,7 +304,7 @@ async fn a_trashed_folder_is_listed_once_and_not_once_per_descendant() {
     let sibling = add_node(&mut admin, &s, user, "notes.txt", "FILE", Some(s.folder)).await;
     let alone = add_node(&mut admin, &s, user, "alone.txt", "FILE", None).await;
 
-    let now = Utc::now();
+    let now = now();
     let _folder_at = trash_subtree(&mut admin, alpha, s.folder, now, user, None).await;
     let _alone_at =
         trash_subtree(&mut admin, alpha, alone, now + Duration::seconds(1), user, None).await;
@@ -303,9 +366,9 @@ async fn a_file_deleted_before_the_folder_above_it_is_still_its_own_row() {
 
     // Monday: the document alone. Tuesday: the folder, which cascades over `later` but cannot reach
     // `s.file`, because the recursion stops at an already-trashed node.
-    let monday = Utc::now() - Duration::days(1);
+    let monday = now() - Duration::days(1);
     let _early = trash_subtree(&mut admin, alpha, s.file, monday, user, None).await;
-    let tuesday = Utc::now();
+    let tuesday = now();
     let _cascade = trash_subtree(&mut admin, alpha, s.folder, tuesday, user, None).await;
 
     let stored: Option<DateTime<Utc>> =
@@ -365,7 +428,7 @@ async fn a_live_file_never_appears_in_the_recycle_bin() {
          is about a query that returns rows regardless"
     );
 
-    let _at = trash_subtree(&mut admin, alpha, s.file, Utc::now(), user, None).await;
+    let _at = trash_subtree(&mut admin, alpha, s.file, now(), user, None).await;
 
     assert_eq!(
         listed(&pool, alpha, 50).await,
@@ -412,7 +475,7 @@ async fn another_tenants_recycle_bin_stays_out_of_this_tenants_list() {
         add_node(&mut conn, &alpha, fx.alpha.owner, "Q3 Notes.pdf", "FILE", None).await;
     let beta_file = add_node(&mut conn, &beta, fx.beta.owner, "Q3 Notes.pdf", "FILE", None).await;
 
-    let now = Utc::now();
+    let now = now();
     let _a = trash_subtree(&mut conn, fx.alpha.id, alpha_file, now, fx.alpha.owner, None).await;
     let _b = trash_subtree(&mut conn, fx.beta.id, beta_file, now, fx.beta.owner, None).await;
 
@@ -481,7 +544,7 @@ async fn the_bin_is_ordered_most_recently_deleted_first() {
     let b = add_node(&mut admin, &s, user, "b.txt", "FILE", None).await;
     let c = add_node(&mut admin, &s, user, "c.txt", "FILE", None).await;
 
-    let start = Utc::now() - Duration::hours(1);
+    let start = now() - Duration::hours(1);
     /* Three deletions a minute apart, so the ordering assertion below is about `deleted_at` and
      * not about insertion order — which would pass against a statement with no `ORDER BY` at all. */
     let _oldest = trash_subtree(&mut admin, alpha, s.file, start, user, None).await;
@@ -497,7 +560,7 @@ async fn the_bin_is_ordered_most_recently_deleted_first() {
     );
 
     untrash(&mut admin, alpha, s.file).await;
-    let _again = trash_subtree(&mut admin, alpha, s.file, Utc::now(), user, None).await;
+    let _again = trash_subtree(&mut admin, alpha, s.file, now(), user, None).await;
 
     assert_eq!(
         listed(&pool, alpha, 50).await,
@@ -542,8 +605,8 @@ async fn a_row_carries_the_revision_the_restore_requires_and_who_deleted_it() {
     let s = spine(&mut admin, alpha, owner).await;
     let at_root = add_node(&mut admin, &s, owner, "Q3 Notes.pdf", "FILE", None).await;
 
-    let purge = Utc::now() + Duration::days(30);
-    let deleted_at = Utc::now();
+    let purge = now() + Duration::days(30);
+    let deleted_at = now();
     let _nested = trash_subtree(&mut admin, alpha, s.file, deleted_at, deleter, Some(purge)).await;
     // Deleted by a path that set no retention — the case `purgeAfter: null` describes.
     let _rooted =
@@ -631,7 +694,7 @@ async fn the_window_over_fetches_and_reports_whether_it_stopped_short() {
     for n in 0..5 {
         deleted.push(add_node(&mut admin, &s, user, &format!("file-{n}.txt"), "FILE", None).await);
     }
-    let start = Utc::now() - Duration::hours(1);
+    let start = now() - Duration::hours(1);
     for (n, node) in deleted.iter().enumerate() {
         let at = start + Duration::minutes(n as i64);
         let _at = trash_subtree(&mut admin, alpha, *node, at, user, None).await;
