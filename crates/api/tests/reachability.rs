@@ -812,6 +812,17 @@ const SPECS: &[Spec] = &[
         credential: Credential::Bearer,
         expect: Expect::Served,
     },
+    // `ENC-969`. The walk is O(rows), which is fine here: the fixture tenant's chain is small, and
+    // a probe that verifies it really does exercise the whole path rather than a stub of it. No
+    // body — the route takes none, and a `POST` with no body is exactly what the client sends.
+    Spec {
+        method: "POST",
+        path: "/api/v1/admin/audit/verify",
+        target: "/api/v1/admin/audit/verify",
+        body: None,
+        credential: Credential::Bearer,
+        expect: Expect::Served,
+    },
     Spec {
         method: "GET",
         path: "/api/v1/admin/retention/policies",

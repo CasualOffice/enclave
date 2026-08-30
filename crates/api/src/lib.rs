@@ -344,6 +344,11 @@ pub fn router(state: ApiState, delivery: Delivery) -> Router {
         // to: `AdminAction::ReadAudit`, whole rows, newest first. `docs/05 §14` has listed it since
         // the map was drawn.
         .route("/api/v1/admin/audit", get(admin::audit::read))
+        // `ENC-969`. `verify_tenant` and `verify_chain` were implemented, tested and called
+        // by nothing: the product wrote a tamper-evident log and had no way to look at the
+        // evidence. `POST` rather than `GET` because the walk is O(rows) — a `GET` invites a
+        // cache, a prefetch and a retry, none of which should start a full chain walk.
+        .route("/api/v1/admin/audit/verify", post(admin::audit::verify))
         .route("/api/v1/admin/dlp/rules", get(admin::dlp::list_rules).post(admin::dlp::create_rule))
         .route("/api/v1/admin/dlp/rules/{id}", delete(admin::dlp::withdraw_rule))
         // Workflows (docs/05-API.md §16, docs/15-WORKFLOWS-AND-SIGNING.md). `ENC-739`.
