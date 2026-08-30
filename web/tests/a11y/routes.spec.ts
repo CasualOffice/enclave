@@ -227,6 +227,12 @@ const SURFACES: readonly Surface[] = [
    * class with the error state (`docs/17 §10` F2/F3). Both are listed, and the
    * auditor view is listed separately because it is the same screen with every
    * mutating control removed (`docs/09 §21`) rather than a poorer one. */
+  /* Admin — audit (`ENC-961`'s screen). The only `<table>` in the product, and
+   * the markup axe has most to say about: a caption, header scopes, a
+   * disclosure whose expanded state has to be announced, and colour carrying
+   * the outcome — which must not be the *only* thing carrying it, since the
+   * text says `DENY` beside it. */
+  { name: 'admin audit', url: '/admin?section=audit', ready: '.aud-table' },
   { name: 'admin dlp, policy builder', url: '/admin?surface=fixture', ready: '.adm-builder' },
   {
     name: 'admin dlp, auditor read-only',

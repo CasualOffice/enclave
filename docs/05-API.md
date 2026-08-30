@@ -1221,6 +1221,13 @@ of them survives a caller holding `ReadAudit` over the whole tenant.
 | Scope | trimmed per row on `file.metadata_read` | the whole tenant |
 | Order | newest first, no cursor | newest first, cursored on `sequence` |
 
+Each row carries **`actorName`** beside `actorId` — the actor's display name, resolved by a
+`LEFT JOIN` on `users`, or `null` for every service account, MCP client, link bearer and system
+action. `null` is not *"Unknown"*: the client renders *"somebody"*, which is true of all of them,
+and never the identifier (`ENC-958`). The name is not part of the audit record and is deliberately
+not on `AuditEvent` — the hash chain covers what happened, and a display name changes when somebody
+is renamed.
+
 **Query parameters.** `limit` (1–200, default 50), `before` (a `sequence`), `actor` (a UUID),
 `action` (a `family.verb` string), `outcome` (`ALLOW`, `DENY`, `ERROR`), `since` (RFC 3339). An
 unparseable narrowing answers `400 VALIDATION_FAILED` and is never silently dropped — a dropped

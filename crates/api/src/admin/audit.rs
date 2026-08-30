@@ -43,7 +43,7 @@ use axum::http::header;
 use axum::response::{IntoResponse as _, Response};
 use axum::Json;
 use chrono::{DateTime, Utc};
-use enclave_audit::{AuditEvent, AuditFilter};
+use enclave_audit::{AuditFilter, AuditRecord};
 use enclave_core::{
     Action, AdminAction, Error, FieldError, RequestContext, RequestId, ResourceRef, ValidationCode,
 };
@@ -109,6 +109,12 @@ pub struct AuditRow {
     actor_type: String,
     /// The actor's identifier, absent for `system`.
     actor_id: Option<String>,
+    /// Their display name, or `null` when the actor has no `users` row (`ENC-958`).
+    ///
+    /// `null` is not *"Unknown"*: it is every service account, link bearer and system action, and
+    /// the client renders *"somebody"*, which is true of all of them. A name is data rather than a
+    /// message (`docs/14 §6`), so it is not a catalog key.
+    actor_name: Option<String>,
     /// Set when a service acted for a person (`docs/03 §5`).
     on_behalf_of: Option<String>,
     /// The `family.verb` spelling.
@@ -166,7 +172,7 @@ pub async fn read(
 
     // A cursor only when the page was filled — see [`AuditPage::next_cursor`].
     let next_cursor = (events.len() == limit as usize)
-        .then(|| events.last().map(|event| event.sequence.to_string()))
+        .then(|| events.last().map(|record| record.event.sequence.to_string()))
         .flatten();
 
     // `no-store`: this is the one response in the product whose body is the security record itself.
@@ -177,13 +183,15 @@ pub async fn read(
         .into_response())
 }
 
-fn row(event: &AuditEvent) -> AuditRow {
+fn row(record: &AuditRecord) -> AuditRow {
+    let event = &record.event;
     AuditRow {
         id: event.id.to_string(),
         sequence: event.sequence,
         occurred_at: event.occurred_at,
         actor_type: event.actor.kind().as_str().to_owned(),
         actor_id: event.actor.subject_id().map(|id| id.to_string()),
+        actor_name: record.actor_display_name.clone(),
         on_behalf_of: event.on_behalf_of.map(|id| id.to_string()),
         action: event.action.to_string(),
         resource_type: event.resource_kind().map(|kind| kind.as_str().to_owned()),

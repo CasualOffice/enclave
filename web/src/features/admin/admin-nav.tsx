@@ -46,14 +46,15 @@ interface Section {
  *
  * Until `ENC-945` every entry but DLP was in the second class and the rail had
  * no notion of navigation at all — `current: true` was a literal on one row.
- * Retention is the second built surface, so the distinction has to be a
- * property rather than a hard-coded row. */
+ * Retention is the second built surface and audit the third, so the
+ * distinction has to be a property rather than a hard-coded row. */
 const SECTIONS: readonly Section[] = [
   {
     label: 'admin.nav.security',
     items: [
       { label: 'admin.nav.dlp', section: 'dlp' },
       { label: 'admin.nav.retention', section: 'retention' },
+      { label: 'admin.nav.audit', section: 'audit' },
       { label: 'admin.nav.conditionalAccess' },
       { label: 'admin.nav.classification' },
       { label: 'admin.nav.barriers' },

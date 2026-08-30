@@ -105,9 +105,9 @@ async fn a_page_holds_one_tenants_rows_and_no_others() {
     tx.commit().await.expect("commit");
 
     assert!(!page.is_empty(), "the control: alpha wrote rows, so an empty page proves nothing");
-    for event in &page {
+    for record in &page {
         assert_eq!(
-            event.tenant_id, alpha,
+            record.event.tenant_id, alpha,
             "a row belonging to another tenant reached an administrator's page. `audit_events` \
              describes every other table, so this leaks file names, holders and refusals at once"
         );
@@ -140,8 +140,8 @@ async fn narrowing_to_denials_returns_denials_and_not_the_rest() {
         "the control: without the narrowing the page is wider. Without this, a reader that \
          returned one row whatever it was asked would satisfy the assertion above"
     );
-    for event in &denials {
-        assert_eq!(event.outcome, enclave_audit::Outcome::Deny);
+    for record in &denials {
+        assert_eq!(record.event.outcome, enclave_audit::Outcome::Deny);
     }
 }
 
@@ -161,25 +161,110 @@ async fn the_page_is_newest_first_and_pages_backwards_without_repeating_a_row() 
 
     let mut tx = TenantScoped::begin(&pool, alpha).await.expect("begin");
     let first = read_page(&mut tx, &AuditFilter::default(), 3).await.expect("read");
-    let cursor = first.last().expect("a full page").sequence;
+    let cursor = first.last().expect("a full page").event.sequence;
     let second =
         read_page(&mut tx, &AuditFilter { before: Some(cursor), ..AuditFilter::default() }, 3)
             .await
             .expect("read");
     tx.commit().await.expect("commit");
 
-    let descending: Vec<i64> = first.iter().map(|event| event.sequence).collect();
+    let descending: Vec<i64> = first.iter().map(|record| record.event.sequence).collect();
     let mut sorted = descending.clone();
     sorted.sort_unstable_by(|a, b| b.cmp(a));
     assert_eq!(descending, sorted, "newest first");
 
-    for event in &second {
+    for record in &second {
         assert!(
-            event.sequence < cursor,
+            record.event.sequence < cursor,
             "sequence {} came back on the page after the cursor {cursor} — a cursor that repeats \
              a row is a cursor an auditor cannot count with",
-            event.sequence
+            record.event.sequence
         );
     }
     assert_eq!(second.len(), 3, "six rows, so the second page of three is full");
+}
+
+/// Inserts a user and returns their id.
+async fn user(db: &TestDb, tenant: TenantId, name: &str) -> enclave_core::UserId {
+    let id = Uuid::new_v4();
+    let mut conn = db.connect().await.expect("connect");
+    sqlx::query(
+        "INSERT INTO users (id, tenant_id, email, normalized_email, display_name, status, \
+         source, created_at, updated_at) \
+         VALUES ($1, $2, $3, $3, $4, 'ACTIVE', 'LOCAL', now(), now())",
+    )
+    .bind(id)
+    .bind(tenant.as_uuid())
+    .bind(format!("{name}@example.test"))
+    .bind(name)
+    .execute(&mut conn)
+    .await
+    .expect("insert user");
+    enclave_core::UserId::from_uuid(id)
+}
+
+/// An actor with a `users` row is named; one without is not, and is not a UUID either.
+///
+/// **`ENC-958`'s defect, one surface later.** Two screens could say when something happened and not
+/// who did it, because the id was on the wire and the name was not. An audit table is the worst
+/// place to repeat that: an investigation is a question about *people*, and a column of UUIDs
+/// answers it only for somebody who already has a second window open.
+///
+/// The `None` leg is the half worth keeping. Most audit rows in a live tenant are written by
+/// `system` — sweeps, outbox publishing, index maintenance — and every service account, MCP client
+/// and link bearer is also absent from `users`. `None` must reach the client as `null` so it can
+/// render *"somebody"*; a join that quietly dropped those rows, or a `COALESCE` to the id, would
+/// each be worse than the gap.
+#[tokio::test]
+#[ignore = "needs a live PostgreSQL"]
+async fn an_actor_with_a_directory_row_is_named_and_one_without_is_not() {
+    let db = TestDb::start().await.expect("test database");
+    let pool = pool(&db).await;
+    let alpha = tenant(&db, "alpha").await;
+    let who = user(&db, alpha, "Ada Lovelace").await;
+
+    let mut ctx = RequestContext::system(alpha);
+    ctx.actor = enclave_core::Actor::User(who);
+    let mut tx = TenantScoped::begin(&pool, alpha).await.expect("begin");
+    let event = enclave_audit::AuditEvent::builder(
+        &ctx,
+        Action::File(FileAction::Download),
+        enclave_audit::Outcome::Allow,
+    )
+    .resource(&ResourceRef::file(alpha, enclave_core::FileId::from_uuid(Uuid::new_v4())))
+    .build();
+    record_in_tx(&mut tx, event, ChainMode::Enabled).await.expect("record");
+    tx.commit().await.expect("commit");
+    // A second row from a **service account** — an actor that has an id and no `users` row. Not a
+    // `system` row, whose actor id is already null: `COALESCE(u.display_name, a.actor_id::text)`
+    // survives that control unnoticed, and it is exactly the plausible "improvement" somebody makes
+    // to stop the column looking empty. It would print an internal identifier at a reader for every
+    // service account, MCP client and guest in the tenant.
+    let mut machine = RequestContext::system(alpha);
+    machine.actor = enclave_core::Actor::ServiceAccount(enclave_core::ServiceAccountId::from_uuid(
+        Uuid::new_v4(),
+    ));
+    let mut tx = TenantScoped::begin(&pool, alpha).await.expect("begin");
+    let event = enclave_audit::AuditEvent::builder(
+        &machine,
+        Action::File(FileAction::Download),
+        enclave_audit::Outcome::Allow,
+    )
+    .resource(&ResourceRef::file(alpha, enclave_core::FileId::from_uuid(Uuid::new_v4())))
+    .build();
+    record_in_tx(&mut tx, event, ChainMode::Enabled).await.expect("record");
+    tx.commit().await.expect("commit");
+
+    let mut tx = TenantScoped::begin(&pool, alpha).await.expect("begin");
+    let page = read_page(&mut tx, &AuditFilter::default(), 100).await.expect("read");
+    tx.commit().await.expect("commit");
+
+    let named: Vec<&str> =
+        page.iter().filter_map(|record| record.actor_display_name.as_deref()).collect();
+    assert_eq!(named, ["Ada Lovelace"], "the directory row's name reached the reader");
+    assert_eq!(page.len(), 2, "both rows came back — the join drops neither");
+    assert!(
+        page.iter().any(|record| record.actor_display_name.is_none()),
+        "the control: the service account's row must come back with **no** name rather than be dropped by the join or filled in with its identifier"
+    );
 }
