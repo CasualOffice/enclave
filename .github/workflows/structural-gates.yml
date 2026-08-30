@@ -496,45 +496,46 @@ jobs:
             echo "cargo test -p enclave-audit --test policy_audit_coverage"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-
   # --------------------------------------------------------------------------
-  # Gate: no conflict markers — the cheapest gate here, and the one whose absence
-  # cost the most in a single day.
+  # The static gates, in one job (`ENC-974`).
+  #
+  # These were eight jobs. Each was a checkout and a single command that finishes
+  # in seconds, and each held a whole runner to do it — so the cheapest gates in
+  # the repository were also, in runner allocations, among the most expensive.
+  # With three workflows firing twenty-nine jobs on every push and again on every
+  # merge, this repository saturated the organisation's Actions concurrency and
+  # starved every other repository in it for hours.
+  #
+  # Merged, they share one checkout and one runner and still run every command,
+  # in order. The cost of merging is that a failure names the job rather than
+  # standing alone in the checks list, which is why each gate keeps its own
+  # explanation step — scoped with `steps.<id>.outcome`, because a bare
+  # `if: failure()` inside one job fires for *every* later step once anything has
+  # failed, which would print eight explanations for one broken gate.
   # --------------------------------------------------------------------------
-  no-conflict-markers:
-    name: 'RULE: no tracked file carries a merge-conflict marker'
+  scripts:
+    name: 'RULES: the static gates'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
+
+    # --- no-conflict-markers ---
       - name: No unresolved conflict markers
+        id: g_no_conflict_markers
         run: python3 .github/scripts/no_conflict_markers.py
 
-  # --------------------------------------------------------------------------
-  # Gate: workflow timeouts — a job that hangs must eventually say so.
-  # --------------------------------------------------------------------------
-  workflow-timeouts:
-    name: 'RULE: every workflow job declares a timeout'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v7
+    # --- workflow-timeouts ---
       - name: Every job bounds how long it may hold a runner
+        id: g_workflow_timeouts
         run: python3 .github/scripts/workflow_timeouts.py
 
-  # --------------------------------------------------------------------------
-  # Gate: no raw pool — enforceable today, purely static.
-  # --------------------------------------------------------------------------
-  no-raw-pool:
-    name: 'RULE: no sqlx query outside the db crate bypasses TenantScoped'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v7
+    # --- no-raw-pool ---
       - name: No database access bypasses TenantScoped
+        id: g_no_raw_pool
         run: python3 .github/scripts/no_raw_pool.py
       - name: Explain on failure
-        if: failure()
+        if: failure() && steps.g_no_raw_pool.outcome == 'failure'
         run: |
           {
             echo "### FAILED - No raw pool"
@@ -550,24 +551,13 @@ jobs:
             echo "in \`.github/scripts/no_raw_pool.py\` **with the reason**, in a commit a reviewer"
             echo "will see."
           } >> "$GITHUB_STEP_SUMMARY"
-  # --------------------------------------------------------------------------
-  # Gate: no tracker ID appears twice. Static, and cheap.
-  #
-  # Separate from the rollup gate because the rollup *cannot* catch this: it
-  # deduplicates by ID with §3 winning, so a duplicated row is silently dropped
-  # from the count while both rows stay on the board -- including two rows with
-  # opposite statuses, which is the board asserting a thing and its negation.
-  # --------------------------------------------------------------------------
-  tracker-unique-ids:
-    name: 'RULE: every tracker ID appears exactly once'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v7
+
+    # --- tracker-unique-ids ---
       - name: No tracker ID is used twice
+        id: g_tracker_unique_ids
         run: python3 .github/scripts/tracker_unique_ids.py
       - name: Explain on failure
-        if: failure()
+        if: failure() && steps.g_tracker_unique_ids.outcome == 'failure'
         run: |
           {
             echo "### FAILED - Duplicate tracker IDs"
@@ -588,19 +578,12 @@ jobs:
             echo "than the table. A falsely closed row costs more than a redundant check."
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # --------------------------------------------------------------------------
-  # Gate: the tracker's rollup agrees with its rows. Static, and cheap.
-  # --------------------------------------------------------------------------
-  tracker-rollup:
-    name: 'RULE: the tracker rollup agrees with its rows'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v7
+    # --- tracker-rollup ---
       - name: The rollup counts what the rows say
+        id: g_tracker_rollup
         run: python3 .github/scripts/tracker_rollup.py
       - name: Explain on failure
-        if: failure()
+        if: failure() && steps.g_tracker_rollup.outcome == 'failure'
         run: |
           {
             echo "### FAILED - Tracker rollup"
@@ -623,18 +606,14 @@ jobs:
             echo "    python3 .github/scripts/tracker_rollup.py --fix"
           } >> "$GITHUB_STEP_SUMMARY"
 
-  obligations:
-    name: "RULE: PolicyDecision is must_use and never discarded"
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v7
+    # --- obligations ---
 
       # Two halves. (a) The attribute still exists — someone removing #[must_use]
       # would turn every other check in the workspace into a no-op, and clippy
       # would report nothing at all. (b) No call site launders the decision
       # through `let _ =`, which suppresses must_use by design.
       - name: Assert must_use survives, and nothing discards a decision
+        id: g_obligations
         run: |
           set -euo pipefail
           # shellcheck disable=SC2016  # ${...} and backticks below are prose, not expansions
@@ -678,15 +657,7 @@ jobs:
           fi
           echo "must_use intact; no discarded decisions."
 
-  # --------------------------------------------------------------------------
-  # Gate: secrets — references only, never literals.
-  # --------------------------------------------------------------------------
-  secrets:
-    name: "RULE: no literal credentials in config, fixtures or code"
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v7
+    # --- secrets ---
 
       # Deliberately self-contained rather than a third-party scanner: this gate
       # must keep working on a fork with no network egress and no marketplace
@@ -694,6 +665,7 @@ jobs:
       # `vault://`, `env://`, `file://` and `${...}` interpolation are the only
       # legal right-hand sides (CLAUDE.md rule 11, docs/08-BYO-INFRA.md §19).
       - name: Scan for credential literals
+        id: g_secrets
         run: |
           set -euo pipefail
           # shellcheck disable=SC2016  # ${VAR} below is prose, not an expansion
@@ -755,20 +727,13 @@ jobs:
           fi
           echo "No credential literals found."
 
-  # --------------------------------------------------------------------------
-  # Gate: migrations — numbered, gapless, forward-only.
-  # --------------------------------------------------------------------------
-  migrations:
-    name: "RULE: migrations are numbered, gapless and forward-only"
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v7
+    # --- migrations ---
         with:
           # Needs history: the forward-only check compares against the base ref.
           fetch-depth: 0
 
       - name: Assert numbering, and that no applied migration was edited
+        id: g_migrations
         run: |
           set -euo pipefail
           RULE='Migrations — numbered NNNN_name.sql, no gaps, no duplicate numbers, forward-only: an already-merged migration is never edited (docs/12-TESTING.md §5, CLAUDE.md SQL conventions)'
@@ -832,6 +797,7 @@ jobs:
             exit 1
           fi
           echo "Migration numbering and immutability hold."
+
 
   # --------------------------------------------------------------------------
   # Gate: dependencies — the work happens in security.yml; this asserts the
@@ -1013,7 +979,7 @@ jobs:
     if: always()
     needs:
       - rls-coverage
-      - no-conflict-markers
+      - scripts
       # Beside rls-coverage deliberately: the two are halves of one property. RLS says which rows a
       # role may see; grants say whether it can reach the table at all. PR #22 is what a schema
       # looks like with the first and not the second — fully green, and quietly bypassed because
@@ -1026,20 +992,14 @@ jobs:
       # anything else) takes leaves a row. A surface that routes correctly and audits nothing is
       # green on the first and is exactly what CLAUDE.md rule 10 forbids.
       - audit-coverage
-      - no-raw-pool
       # Not a code rule, and it belongs here anyway: this gate is the reason the other
-      # fifteen can be trusted to report at all. A job with no timeout that wedges reports
-      # nothing for six hours, and a required check that is silent blocks the merge box in
       # exactly the way a failing one does — without naming a cause anybody can act on.
-      - workflow-timeouts
-      - obligations
-      - secrets
-      - migrations
       - dependencies
       - api-contract
       - web-gates
-      - tracker-rollup
-      - tracker-unique-ids
+      # The eight static gates, merged into one job (`ENC-974`). Each was a checkout and
+      # a single command holding a whole runner; together they were the cheapest checks
+      # in the repository and, in runner allocations, among the most expensive.
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
