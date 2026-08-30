@@ -69,7 +69,16 @@ test('a policy written on the admin screen refuses a delete the chain would othe
   });
 
   // --- write the policy, entirely through the form -------------------------
-  await page.getByRole('button', { name: catalog['admin.retention.new'].message }).click();
+  //
+  // Scoped to the header. On a tenant with no policies the empty state renders its **own** "New
+  // policy" button beside the header's, so an unscoped locator matches two and Playwright refuses
+  // in strict mode. This passed locally and failed in CI for the most ordinary reason there is: the
+  // development database already had a policy in it, so the empty state never rendered — a local
+  // run against dirty state proving something the clean case does not.
+  await page
+    .locator('.adm-head')
+    .getByRole('button', { name: catalog['admin.retention.new'].message })
+    .click();
   await page.getByLabel(catalog['admin.retention.form.name'].message).fill(name);
   /* KEEP, and the option text is the server's stored spelling rather than a
    * translated one — the vocabulary arrives on the wire (`ENC-943`) precisely
