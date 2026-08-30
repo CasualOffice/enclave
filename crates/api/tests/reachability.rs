@@ -297,6 +297,16 @@ const SPECS: &[Spec] = &[
         credential: Credential::Bearer,
         expect: Expect::Served,
     },
+    // `ENC-954`. `Served`: the caller holds every grant on the fixture, and a share list with no
+    // rows is a `200` with an empty array — the correct answer, and the one this suite asks about.
+    Spec {
+        method: "GET",
+        path: "/api/v1/me/shared",
+        target: "/api/v1/me/shared",
+        body: None,
+        credential: Credential::Bearer,
+        expect: Expect::Served,
+    },
     Spec {
         method: "GET",
         path: "/api/v1/workspaces",

@@ -1,6 +1,6 @@
 # 05 — API Surface
 
-> **Status:** Draft · **Version:** 1.10 · **Owner:** Platform Engineering · **Last updated:** 2026-08-30
+> **Status:** Draft · **Version:** 1.11 · **Owner:** Platform Engineering · **Last updated:** 2026-08-30
 > **Authoritative for:** REST contracts, error model, pagination, idempotency, versioning, rate limits.
 
 ## 1. Principles
@@ -1200,6 +1200,45 @@ and the list that would identify the row cannot be reached. The handler decodes 
 individually and would report it; the stage above it is what fails. `ENC-651`, and the same shape as
 `ENC-623` one stage over.
 
+
+#### Shared with me (`ENC-954`)
+
+`GET /api/v1/me/shared` lists resources somebody explicitly granted this caller — an `acl_entries`
+row naming them, or a group they are in, on a `FILE` or `FOLDER`. `?limit=` behaves as
+`GET /me/recent`'s does.
+
+`acl_entries` has had a production writer since `ENC-916` and **nothing has ever listed what a
+person was given**, so a colleague could share a document outside any workspace this user belongs to
+and they had no way to find it. The grant worked, the chain honoured it, and the recipient could not
+discover it.
+
+Three exclusions, each a decision rather than an omission:
+
+- **`WORKSPACE` and `LIBRARY` grants are not shares.** They are how somebody joins a team, and
+  including them would fill the screen with every container the caller belongs to — which is what
+  the navigation already is.
+- **`DENY` rows are excluded**, not merely ignored: a `DENY` is access being taken away, and listing
+  it would offer a door the chain refuses when the user walks through it.
+- **`EVERYONE` is excluded.** A grant to everyone is a property of the tenant, and would put
+  identical rows on every user's screen.
+
+Authorized as **`file.metadata_read`** per row, not `file.share`. The question is *may this person
+see that this exists*; `share` is the permission to **give** access, which is a different act by a
+different person — the sharer — and requiring it here would hide a file from the very user it was
+shared with unless they could also re-share it.
+
+**The read decides nothing.** It is a candidate generator, exactly as the vector index is in
+`docs/07 §6`, and every row goes through `PolicyEngine::enforce` before the caller is told it
+exists. An ACL row is not permission — inheritance, barriers, classification and DLP all sit above
+it — so a row the read returns and the chain refuses is ordinary and vanishes silently.
+`filteredCount` says how many were withheld and never which (rule 7).
+
+Several grants on one resource are **one row**, carrying the earliest: a share is a thing somebody
+gave you, not a list of the verbs they enabled. `ENC-916`'s founding grant writes fifteen rows.
+
+`viaGroup` names the group a grant arrived through, or is `null` for a direct share. The two are
+different answers to *why do I have this*, and somebody who cannot tell them apart cannot reason
+about what they lose when they leave the team.
 
 #### Rehydration (`ENC-946`)
 

@@ -23,6 +23,7 @@ pub mod permissions;
 pub mod recent;
 pub mod rehydrate;
 pub mod search;
+pub mod shared;
 pub mod shares;
 pub mod trash;
 pub mod uploads;

@@ -381,6 +381,21 @@ pub(crate) const ACKNOWLEDGED: &[Acknowledged] = &[
                  matters more here than elsewhere because they once had access to what is hidden.",
     },
     Acknowledged {
+        file: "crates/api/src/routes/shared.rs",
+        function: "admit",
+        kind: SiteKind::Conversion,
+        reason: "The per-row trim behind `GET /me/shared` (`ENC-954`), and the same shape as \
+                 `routes::recent::admit` below. Guarded by `if !decision.is_allowed() { continue }` \
+                 on the line above, so the conversion cannot produce an `Err` and refuses nothing — \
+                 it carries an admitted row's obligations forward rather than dropping them. The \
+                 request itself is audited by the chain. Per-row trimming is deliberately not a \
+                 separate audit event (docs/07 §6.2), and the argument is sharpest on this surface: \
+                 the read returns every resource whose ACL names the caller, so auditing the trim \
+                 would write one speculative ALLOW per grant every time somebody opened the screen \
+                 — a compliance log whose loudest signal is people looking at a list. What the \
+                 caller is told is `filteredCount`, how many and never which (rule 7).",
+    },
+    Acknowledged {
         file: "crates/api/src/routes/recent.rs",
         function: "admit",
         kind: SiteKind::Conversion,

@@ -102,6 +102,7 @@ pub mod recent;
 pub mod retention;
 pub mod routing;
 pub mod security_facts;
+pub mod shared;
 pub mod tenant;
 pub mod tenants;
 pub mod trash;
