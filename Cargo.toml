@@ -235,7 +235,7 @@ milvus-sdk-rust = "2.6.0"
 # enabled parser nobody uses is still a parser in the image (the same argument the `image` pin
 # makes), and the `.rten` models are the only ones `ocrs` publishes.
 ocrs         = "0.12.2"
-rten         = { version = "0.24.0", default-features = false, features = ["rten_format"] }
+rten         = { version = "0.25.0", default-features = false, features = ["rten_format"] }
 
 # text embedding — the same runtime, a second time
 #
