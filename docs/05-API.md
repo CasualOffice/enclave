@@ -944,7 +944,7 @@ body against. It was optional, which gave the sync push path `ENC-820` in the sa
 /admin/retention        /admin/legal-holds        /admin/records
    /admin/retention/policies is built (ENC-943); legal-holds and records are not.
 /admin/audit            /admin/audit/verify       /admin/audit/export
-   /admin/audit is built (ENC-961); verify and export are not.
+   /admin/audit is built (ENC-961) and /admin/audit/verify (ENC-969); export is not.
 /admin/storage-profiles /admin/mail               /admin/secrets/test
 /admin/search/reindex   /admin/search/status
 /admin/mcp/clients      /admin/branding           /admin/domains
@@ -1251,12 +1251,36 @@ on `sequence` rather than `occurred_at` because timestamps are not unique — ro
 transaction share one to the microsecond, so a timestamp cursor would repeat one row and skip
 another.
 
-**What is not built.** `/admin/audit/verify` and `/admin/audit/export` remain unbuilt.
-`verify` is the more serious gap and is worth stating plainly: `PgAuditSink::verify_tenant` and
-`chain::verify_chain` are implemented and tested, and are called by nothing. The product writes a
-tamper-evident log and has never had a way to check that it has not been tampered with. Reading rows
-shows what the table *says*; only the chain walk shows whether the table was edited underneath.
-That is `ENC-969`.
+**`POST /admin/audit/verify`** walks the tenant's chain from its first event and reports whether it
+still agrees with itself (`ENC-969`). Reading rows shows what the table *says*; only the walk shows
+whether the table was edited underneath. Until this route existed, `verify_tenant` and
+`verify_chain` were implemented, tested and called by nothing — the product wrote a tamper-evident
+log and had no way to look at the evidence.
+
+Authorized as `AdminAction::ReadAudit`, the same permission as reading: verification discloses
+strictly less than the rows do, and an auditor who may read the record must be able to ask whether
+the record is intact. `POST` rather than `GET` not because it mutates anything — it does not — but
+because the walk is O(rows), and a `GET` invites a cache, a prefetch and a retry, none of which
+should be able to start a full chain walk.
+
+`outcome` is one of three values and deliberately not a boolean:
+
+| | meaning |
+|---|---|
+| `VALID` | every row hashes to what it claims and every link holds, **from genesis** |
+| `NOT_CHAINED` | no row carried a hash: tamper evidence was *off* when these were written (`08-BYO-INFRA.md §14`). A configuration fact, not a pass — reporting it as valid would let a disabled control look like a working one |
+| `DIVERGED` | the chain stopped agreeing with itself. `divergedAt` is the **first** offending sequence and the walk stops there: every later row will also fail, and only the first says where the tampering began |
+
+`eventsChecked` is `null` on `DIVERGED` rather than `0` — the walk stopped early and the result
+carries no count, so a number there would be invented. `divergence` names the kind
+(`CONTENT_TAMPERED`, `LINK_BROKEN`, `MISSING_HASH`, `SEQUENCE_NOT_INCREASING`, `TENANT_MISMATCH`)
+and never the digests themselves: they say nothing an operator can act on without database access,
+and a response carrying both halves of a hash comparison invites somebody to publish it.
+
+`head` is the chain head in hex, for comparison against an external anchor.
+
+**What is still not built.** `/admin/audit/export` — a different shape: a job, a signed artifact,
+and a retention question of its own.
 
 
 #### Activity (`ENC-960`)

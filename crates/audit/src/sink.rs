@@ -191,58 +191,16 @@ impl PgAuditSink {
 
     /// Verifies a tenant's chain from the beginning, one page at a time.
     ///
-    /// Returns at the first divergence rather than continuing, because every later row will also
-    /// fail and only the first is evidence.
+    /// Delegates to the free [`verify_tenant`], which is where the walk lives so that a handler
+    /// holding an `Arc<dyn AuditSink>` can reach it (`ENC-969`). Kept as an inherent method
+    /// because it reads naturally on the sink and because deleting it would churn callers for no
+    /// gain.
     ///
     /// # Errors
     ///
     /// Storage failures and unreadable rows.
     pub async fn verify_tenant(&self, tenant: TenantId, page_size: i64) -> Result<VerifyResult> {
-        let mut after = 0i64;
-        let mut checked = 0usize;
-        let mut carry: Vec<AuditEvent> = Vec::new();
-        let mut head = None;
-        let mut chained = false;
-
-        loop {
-            let page = self.load_page(tenant, after, page_size).await?;
-            if page.is_empty() {
-                break;
-            }
-            after = page.last().map_or(after, |e| e.sequence);
-
-            // The last row of the previous page is prepended so the link across the page boundary
-            // is verified rather than assumed.
-            let mut window = std::mem::take(&mut carry);
-            let overlap = window.len();
-            window.extend(page);
-
-            match verify_chain(&window) {
-                VerifyResult::Diverged { sequence, divergence } => {
-                    return Ok(VerifyResult::Diverged { sequence, divergence })
-                }
-                VerifyResult::Valid { events_checked, head: page_head, .. } => {
-                    chained = true;
-                    checked += events_checked - overlap;
-                    head = page_head;
-                }
-                VerifyResult::NotChained { events_checked } => {
-                    checked += events_checked - overlap;
-                }
-            }
-
-            if let Some(last) = window.pop() {
-                carry.push(last);
-            }
-        }
-
-        if checked == 0 {
-            return Ok(VerifyResult::Valid { events_checked: 0, from_genesis: true, head: None });
-        }
-        if !chained {
-            return Ok(VerifyResult::NotChained { events_checked: checked });
-        }
-        Ok(VerifyResult::Valid { events_checked: checked, from_genesis: true, head })
+        verify_tenant(&self.pool, tenant, page_size).await
     }
 }
 
@@ -693,6 +651,114 @@ macro_rules! policy_audit_sink {
 
 policy_audit_sink!(PgAuditSink);
 policy_audit_sink!(MemoryAuditSink);
+
+/// Walk a tenant's hash chain from its first event and report what it finds (`ENC-969`).
+///
+/// # Why this exists as a free function
+///
+/// It was a method on [`PgAuditSink`], and it had **no caller of any kind** for the whole of Phase
+/// 0 and Phase 1. The product wrote a hash-chained, advisory-locked, canonically-encoded audit log
+/// and had no way to check that the log had not been edited underneath it. The obstacle was
+/// structural rather than large: handlers hold an `Arc<dyn AuditSink>`, which is a *write*
+/// interface, so nothing reachable from a route could call an inherent method on the concrete
+/// type. Widening the write trait to carry a verifier would make every test double implement a
+/// query it exists to avoid; taking the pool directly, as `read_page` takes a transaction, costs
+/// nothing and keeps the trait about writing.
+///
+/// # What the answer means
+///
+/// [`VerifyResult::Valid`] is the only one that says the log is intact, and it says so *from
+/// genesis* — this walk always starts at the tenant's first event, because a run that begins
+/// mid-chain is internally consistent and says nothing about what came before it.
+/// [`VerifyResult::NotChained`] is a configuration fact rather than a pass: no row carried a hash,
+/// so tamper evidence was off when these were written, and calling that "valid" would let a
+/// disabled control look like a working one. [`VerifyResult::Diverged`] reports the **first**
+/// offending sequence and stops, because every later row will also fail and only the first is
+/// evidence about where the tampering began.
+///
+/// # Cost
+///
+/// O(rows). Every event in the tenant is read and hashed. That is inherent — a chain cannot be
+/// verified by sampling it — and it is why this is a deliberate administrative act rather than
+/// something a screen polls.
+///
+/// # Errors
+///
+/// Storage failures, and unreadable rows — which is itself a tamper signal and is surfaced rather
+/// than skipped.
+pub async fn verify_tenant(
+    pool: &DbPool,
+    tenant: TenantId,
+    page_size: i64,
+) -> Result<VerifyResult> {
+    let mut after = 0i64;
+    let mut checked = 0usize;
+    let mut carry: Vec<AuditEvent> = Vec::new();
+    let mut head = None;
+    let mut chained = false;
+
+    loop {
+        let page = load_chain_page(pool, tenant, after, page_size).await?;
+        if page.is_empty() {
+            break;
+        }
+        after = page.last().map_or(after, |e| e.sequence);
+
+        // The last row of the previous page is prepended so the link across the page boundary is
+        // verified rather than assumed.
+        let mut window = std::mem::take(&mut carry);
+        let overlap = window.len();
+        window.extend(page);
+
+        match verify_chain(&window) {
+            VerifyResult::Diverged { sequence, divergence } => {
+                return Ok(VerifyResult::Diverged { sequence, divergence })
+            }
+            VerifyResult::Valid { events_checked, head: page_head, .. } => {
+                chained = true;
+                checked += events_checked - overlap;
+                head = page_head;
+            }
+            VerifyResult::NotChained { events_checked } => {
+                checked += events_checked - overlap;
+            }
+        }
+
+        if let Some(last) = window.pop() {
+            carry.push(last);
+        }
+    }
+
+    if checked == 0 {
+        return Ok(VerifyResult::Valid { events_checked: 0, from_genesis: true, head: None });
+    }
+    if !chained {
+        return Ok(VerifyResult::NotChained { events_checked: checked });
+    }
+    Ok(VerifyResult::Valid { events_checked: checked, from_genesis: true, head })
+}
+
+/// One ascending page of a tenant's chain, for the verifier.
+///
+/// Ascending and unfiltered, unlike [`read_page`]: a chain can only be walked in the order it was
+/// written, and a narrowed walk would verify links across rows that were never adjacent.
+async fn load_chain_page(
+    pool: &DbPool,
+    tenant: TenantId,
+    after_sequence: i64,
+    limit: i64,
+) -> Result<Vec<AuditEvent>> {
+    let mut tx = TenantScoped::begin(pool, tenant).await?;
+    let rows = sqlx::query(SELECT_PAGE_SQL)
+        .bind(tenant.as_uuid())
+        .bind(after_sequence)
+        .bind(limit)
+        .fetch_all(&mut *tx)
+        .await?;
+    let events: Result<Vec<AuditEvent>> = rows.iter().map(event_from_row).collect();
+    tx.commit().await?;
+    events
+}
 
 /// One page of a tenant's log, newest first, for the administrative reader (`ENC-961`).
 ///

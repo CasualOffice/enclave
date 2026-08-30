@@ -27,13 +27,11 @@
 //!
 //! # What it is still not
 //!
-//! **Not a verifier.** `PgAuditSink::verify_tenant` and `chain::verify_chain` are implemented,
-//! tested, and called by nothing: the product writes a tamper-evident log and has never had a way
-//! to check that it has not been tampered with. Reading rows shows what the table *says*; only the
-//! chain walk shows whether the table has been edited underneath. That is `ENC-969`, kept out of
-//! this change because `verify_tenant` hangs off the concrete sink while handlers hold an
-//! `Arc<dyn AuditSink>`, and widening a write trait to carry a verifier is a decision worth making
-//! on its own.
+//! `POST /api/v1/admin/audit/verify` walks the chain and says whether it still agrees with itself
+//! (`ENC-969`). Reading rows shows what the table *says*; only the walk shows whether the table
+//! has been edited underneath. Until that route existed, `verify_tenant` and `verify_chain` were
+//! implemented, tested and called by nothing — the product wrote a tamper-evident log and had no
+//! way to look at the evidence.
 //!
 //! **Not an export.** `/admin/audit/export` is the third route in `docs/05 §14` and is a different
 //! shape — a job, a signed artifact, a retention question of its own.
@@ -43,7 +41,7 @@ use axum::http::header;
 use axum::response::{IntoResponse as _, Response};
 use axum::Json;
 use chrono::{DateTime, Utc};
-use enclave_audit::{AuditFilter, AuditRecord};
+use enclave_audit::{AuditFilter, AuditRecord, Divergence, VerifyResult};
 use enclave_core::{
     Action, AdminAction, Error, FieldError, RequestContext, RequestId, ResourceRef, ValidationCode,
 };
@@ -183,6 +181,159 @@ pub async fn read(
         .into_response())
 }
 
+/// Handles `POST /api/v1/admin/audit/verify`.
+///
+/// # Why a `POST` for something that changes nothing
+///
+/// `docs/05 §14`'s map says `POST`, and the shape is right for a different reason than mutation:
+/// this is O(rows) — every event in the tenant is read and hashed — and a `GET` invites a cache, a
+/// prefetch and a retry, none of which should be able to start a full chain walk. It is a
+/// deliberate act, not a page load.
+///
+/// Authorized as [`READ_ACTION`], the same permission as reading the log. Verification discloses
+/// strictly less than the rows do, and an auditor who may read the record must be able to ask
+/// whether the record is intact — a separate permission would mean somebody could be shown a log
+/// they were not allowed to check.
+///
+/// # Errors
+///
+/// [`ApiError`] for a policy denial, or a storage failure — including an unreadable row, which is
+/// itself a tamper signal and is surfaced rather than skipped.
+pub async fn verify(
+    State(state): State<ApiState>,
+    Authenticated { ctx }: Authenticated,
+) -> Result<Response, ApiError> {
+    let request_id = ctx.request_id;
+    enforce(&state, &ctx, READ_ACTION).await?;
+
+    let result = enclave_audit::verify_tenant(&state.db, ctx.tenant_id, VERIFY_PAGE)
+        .await
+        .map_err(|error| ApiError::new(Error::Internal(anyhow::anyhow!(error)), request_id))?;
+
+    // A failed verification is logged at `warn` on the way out as well as answered. An operator
+    // watching logs should not have to be the person who pressed the button.
+    if !result.is_valid() {
+        tracing::warn!(
+            %ctx.tenant_id,
+            %request_id,
+            outcome = ?result,
+            "an audit chain verification did not pass"
+        );
+    }
+
+    Ok(([(header::CACHE_CONTROL, NO_STORE)], Json(view(&result))).into_response())
+}
+
+/// How many rows are read per round of the walk.
+///
+/// Larger than the reader's page: nobody is looking at these, they are hashed and dropped, and the
+/// cost that matters is the number of round trips over a chain that can be millions of rows long.
+const VERIFY_PAGE: i64 = 1_000;
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VerifyView {
+    /// `VALID`, `NOT_CHAINED` or `DIVERGED`.
+    ///
+    /// Three values and not a boolean, because `NOT_CHAINED` is neither a pass nor a failure: it
+    /// means no row carried a hash, so tamper evidence was **off** when these were written
+    /// (`docs/08 §14`). Collapsing it into `valid: false` would report a configuration choice as an
+    /// incident; collapsing it into `true` would let a disabled control look like a working one.
+    outcome: &'static str,
+    /// How many rows were read and hashed. `null` when the walk stopped at a divergence.
+    ///
+    /// Not `0` there, which is what this first reported and which reads as *nothing was checked*
+    /// — untrue, and the wrong impression on the one response where an operator is deciding how
+    /// much to trust. `VerifyResult::Diverged` does not carry a count, so any number here would be
+    /// invented; `null` says the walk stopped early, which is the fact.
+    events_checked: Option<usize>,
+    /// Whether the walk began at the tenant's first event.
+    ///
+    /// Always true for this route — it always walks from genesis — and reported anyway, because a
+    /// client that starts trusting the field will keep working if a ranged verification is ever
+    /// added, and one that assumes it will not.
+    from_genesis: bool,
+    /// The chain head, in hex, to compare against an external anchor. `null` for an empty log.
+    head: Option<String>,
+    /// The first sequence that did not verify. `null` unless `outcome` is `DIVERGED`.
+    ///
+    /// The **first**, and the walk stops there: every later row will also fail, and only the first
+    /// says where the tampering began.
+    diverged_at: Option<i64>,
+    /// What was wrong with that row. `null` unless `outcome` is `DIVERGED`.
+    divergence: Option<&'static str>,
+}
+
+fn view(result: &VerifyResult) -> VerifyView {
+    match result {
+        VerifyResult::Valid { events_checked, from_genesis, head } => VerifyView {
+            outcome: "VALID",
+            events_checked: Some(*events_checked),
+            from_genesis: *from_genesis,
+            head: head.map(|hash| hash.to_hex()),
+            diverged_at: None,
+            divergence: None,
+        },
+        VerifyResult::NotChained { events_checked } => VerifyView {
+            outcome: "NOT_CHAINED",
+            events_checked: Some(*events_checked),
+            from_genesis: true,
+            head: None,
+            diverged_at: None,
+            divergence: None,
+        },
+        VerifyResult::Diverged { sequence, divergence } => VerifyView {
+            outcome: "DIVERGED",
+            events_checked: None,
+            from_genesis: true,
+            head: None,
+            diverged_at: Some(*sequence),
+            divergence: Some(divergence_name(divergence)),
+        },
+        // `VerifyResult` is `#[non_exhaustive]`, so a variant added in `crates/audit` reaches here
+        // without breaking this build. **It must never render as `VALID`.** A verifier that
+        // reports "intact" for an outcome it does not recognise is worse than one that fails
+        // outright, and this is the one surface in the product where a false pass is the whole
+        // failure. `UNRECOGNISED` is a refusal to answer, and the log line says so.
+        other => {
+            tracing::error!(
+                outcome = ?other,
+                "audit verification returned a variant this build does not recognise; \
+                 reporting it as unrecognised rather than as valid"
+            );
+            VerifyView {
+                outcome: "UNRECOGNISED",
+                events_checked: None,
+                from_genesis: true,
+                head: None,
+                diverged_at: None,
+                divergence: None,
+            }
+        }
+    }
+}
+
+/// The kind of divergence, as a stable token.
+///
+/// Named rather than described: the *expected* and *found* digests are deliberately not returned.
+/// They say nothing an operator can act on without database access, and a response that carries
+/// both halves of a hash comparison invites somebody to publish it. What an administrator needs is
+/// which row and what kind of wrong, then `crates/audit`'s own types for the rest.
+fn divergence_name(divergence: &Divergence) -> &'static str {
+    match divergence {
+        Divergence::ContentTampered { .. } => "CONTENT_TAMPERED",
+        Divergence::LinkBroken { .. } => "LINK_BROKEN",
+        Divergence::MissingHash => "MISSING_HASH",
+        Divergence::SequenceNotIncreasing { .. } => "SEQUENCE_NOT_INCREASING",
+        Divergence::TenantMismatch => "TENANT_MISMATCH",
+        // `Divergence` is `#[non_exhaustive]`. An unnamed kind still travels as a divergence — the
+        // outcome above is already `DIVERGED` and the sequence is already reported — so the caller
+        // learns a row failed and where, which is the actionable half. Adding the name here is the
+        // job of whoever adds the variant.
+        _ => "UNRECOGNISED",
+    }
+}
+
 fn row(record: &AuditRecord) -> AuditRow {
     let event = &record.event;
     AuditRow {
@@ -320,6 +471,60 @@ mod tests {
     /// written next to them. It would hand every configuration reader the record of who opened what.
     #[test]
     fn reading_the_log_is_its_own_permission() {
+        assert_eq!(READ_ACTION, Action::Admin(AdminAction::ReadAudit));
+    }
+
+    /// `NOT_CHAINED` is never rendered as a pass.
+    ///
+    /// **The most dangerous confusion this surface can make.** No row carried a hash, which means
+    /// tamper evidence was *off* when they were written (`docs/08 §14`). Reporting that as valid
+    /// would let a disabled control look like a working one — an operator would read *"the log is
+    /// intact"* about a log nothing was protecting.
+    #[test]
+    fn an_unchained_log_is_not_reported_as_a_valid_one() {
+        let rendered = view(&VerifyResult::NotChained { events_checked: 12 });
+        assert_eq!(rendered.outcome, "NOT_CHAINED");
+        assert_ne!(rendered.outcome, "VALID");
+        assert_eq!(rendered.events_checked, Some(12));
+    }
+
+    /// A divergence names the first offending row and does not claim a count.
+    #[test]
+    fn a_divergence_names_the_row_and_claims_no_count() {
+        let rendered =
+            view(&VerifyResult::Diverged { sequence: 4_207, divergence: Divergence::MissingHash });
+        assert_eq!(rendered.outcome, "DIVERGED");
+        assert_eq!(rendered.diverged_at, Some(4_207));
+        assert_eq!(rendered.divergence, Some("MISSING_HASH"));
+        assert_eq!(
+            rendered.events_checked, None,
+            "`0` reads as `nothing was checked`, which is untrue, and the variant carries no \
+             count — so any number here would be invented"
+        );
+    }
+
+    /// An intact chain reports its head, which is what an external anchor is compared against.
+    #[test]
+    fn a_valid_chain_reports_its_head() {
+        let head = enclave_audit::EventHash::from_bytes([7u8; 32]);
+        let rendered = view(&VerifyResult::Valid {
+            events_checked: 5_247,
+            from_genesis: true,
+            head: Some(head),
+        });
+        assert_eq!(rendered.outcome, "VALID");
+        assert_eq!(rendered.events_checked, Some(5_247));
+        assert!(rendered.from_genesis);
+        assert_eq!(rendered.head.as_deref(), Some(head.to_hex().as_str()));
+    }
+
+    /// Verification is the same permission as reading, and never a weaker one.
+    ///
+    /// It discloses strictly less than the rows do, and an auditor who may read the record must be
+    /// able to ask whether the record is intact — a separate, lesser permission would mean somebody
+    /// could be shown a log they were not allowed to check.
+    #[test]
+    fn verifying_takes_the_same_permission_as_reading() {
         assert_eq!(READ_ACTION, Action::Admin(AdminAction::ReadAudit));
     }
 

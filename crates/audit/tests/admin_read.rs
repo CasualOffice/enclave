@@ -24,7 +24,7 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
-use enclave_audit::{read_page, record_in_tx, AuditFilter, ChainMode};
+use enclave_audit::{read_page, record_in_tx, verify_tenant, AuditFilter, ChainMode};
 use enclave_core::{Action, AdminAction, FileAction, RequestContext, ResourceRef, TenantId, Uuid};
 use enclave_db::{DbConfig, DbPool, TenantScoped};
 use enclave_testing::TestDb;
@@ -266,5 +266,107 @@ async fn an_actor_with_a_directory_row_is_named_and_one_without_is_not() {
     assert!(
         page.iter().any(|record| record.actor_display_name.is_none()),
         "the control: the service account's row must come back with **no** name rather than be dropped by the join or filled in with its identifier"
+    );
+}
+
+/// A row edited in place is caught, and the walk names the row.
+///
+/// **This is the assertion the whole hash chain exists for, and until `ENC-969` nothing made it
+/// outside `crates/audit`'s own unit tests.** The product spends an advisory lock per tenant, a
+/// canonical encoding and a digest on every audit row so that an edit is detectable, and had no
+/// caller that would ever detect one.
+///
+/// The tampering is done as the **cluster superuser**, which is the only way it can be done:
+/// `migrations/0002` grants `enclave_app` `SELECT` and `INSERT` on `audit_events` and revokes
+/// `UPDATE`, `DELETE` and `TRUNCATE`, so the application cannot rewrite its own trail even if it
+/// tried. That is the threat this control is for — somebody with direct database access — and
+/// simulating it any other way would be simulating something the grants already prevent.
+#[tokio::test]
+#[ignore = "needs a live PostgreSQL"]
+async fn a_row_edited_in_place_is_caught_and_the_walk_names_it() {
+    let db = TestDb::start().await.expect("test database");
+    let pool = pool(&db).await;
+    let alpha = tenant(&db, "alpha").await;
+    write_events(&pool, alpha, 5).await;
+
+    // The control: intact before the edit. Without it, "diverged after tampering" is satisfied by a
+    // verifier that reports divergence on every chain it is ever shown.
+    let before = verify_tenant(&pool, alpha, 100).await.expect("verify");
+    assert!(
+        before.is_valid(),
+        "the chain did not verify before anything was tampered with, so the assertion below would \
+         prove nothing: {before:?}"
+    );
+
+    // Rewrite one row's action. The stored `event_hash` still covers the old content.
+    let target: i64 = {
+        let mut conn = db.connect().await.expect("connect");
+        let row: (i64,) = sqlx::query_as(
+            "SELECT sequence FROM audit_events WHERE tenant_id = $1 ORDER BY sequence OFFSET 2 \
+             LIMIT 1",
+        )
+        .bind(alpha.as_uuid())
+        .fetch_one(&mut conn)
+        .await
+        .expect("pick a row");
+        sqlx::query(
+            "UPDATE audit_events SET action = 'file.delete' WHERE tenant_id = $1 AND sequence = $2",
+        )
+        .bind(alpha.as_uuid())
+        .bind(row.0)
+        .execute(&mut conn)
+        .await
+        .expect("tamper");
+        row.0
+    };
+
+    let after = verify_tenant(&pool, alpha, 100).await.expect("verify");
+    assert!(!after.is_valid(), "an edited row verified as intact: {after:?}");
+    assert_eq!(
+        after.first_divergence(),
+        Some(target),
+        "the walk reported the wrong row. Only the *first* offending sequence is evidence about \
+         where an edit began, so naming a later one would send an investigation to the wrong place"
+    );
+}
+
+/// A row removed from the middle breaks the link, and the walk says so at the row after the gap.
+///
+/// A deletion is the tampering a content digest alone cannot catch — every surviving row still
+/// hashes to what it claims. It is the `previous_hash` link that fails, which is why the chain
+/// exists on top of the per-row digest rather than instead of it.
+#[tokio::test]
+#[ignore = "needs a live PostgreSQL"]
+async fn a_row_removed_from_the_middle_breaks_the_link() {
+    let db = TestDb::start().await.expect("test database");
+    let pool = pool(&db).await;
+    let alpha = tenant(&db, "alpha").await;
+    write_events(&pool, alpha, 5).await;
+
+    let removed: i64 = {
+        let mut conn = db.connect().await.expect("connect");
+        let row: (i64,) = sqlx::query_as(
+            "SELECT sequence FROM audit_events WHERE tenant_id = $1 ORDER BY sequence OFFSET 2 \
+             LIMIT 1",
+        )
+        .bind(alpha.as_uuid())
+        .fetch_one(&mut conn)
+        .await
+        .expect("pick a row");
+        sqlx::query("DELETE FROM audit_events WHERE tenant_id = $1 AND sequence = $2")
+            .bind(alpha.as_uuid())
+            .bind(row.0)
+            .execute(&mut conn)
+            .await
+            .expect("remove");
+        row.0
+    };
+
+    let after = verify_tenant(&pool, alpha, 100).await.expect("verify");
+    assert!(!after.is_valid(), "a chain with a row cut out of it verified as intact: {after:?}");
+    assert!(
+        after.first_divergence().is_some_and(|at| at > removed),
+        "the gap must be reported at the row *after* it — that is the first row whose \
+         `previous_hash` no longer matches — and not at the sequence that is no longer there: {after:?}"
     );
 }

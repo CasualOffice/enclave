@@ -58,6 +58,6 @@ pub use redact::{
 };
 pub use siem::{NullSiemSink, SiemSink};
 pub use sink::{
-    chain_lock_key, read_page, record_in_tx, AuditFilter, AuditRecord, AuditSink, ChainMode,
-    MemoryAuditSink, PgAuditSink, Recorded,
+    chain_lock_key, read_page, record_in_tx, verify_tenant, AuditFilter, AuditRecord, AuditSink,
+    ChainMode, MemoryAuditSink, PgAuditSink, Recorded,
 };
