@@ -73,7 +73,11 @@ const WORKSPACE: readonly NavItem[] = [
 
 const PERSONAL: readonly NavItem[] = [
   { label: 'nav.favorites', icon: 'star', unbuilt: true },
-  { label: 'nav.shared', icon: 'share', unbuilt: true },
+  /* Built by `ENC-955`. It was `unbuilt: true` while `acl_entries` had a writer
+   * and no reader: a colleague could share a document and the recipient had no
+   * way to find it, so the chip was the honest treatment of a screen that could
+   * not be written until `ENC-954` shipped `GET /me/shared`. */
+  { label: 'nav.shared', icon: 'share', route: 'shared' },
   /* Built by `ENC-939`. It was `unbuilt: true` while `ENC-807` shipped a delete
    * with no way back — the endpoint that lists what was deleted did not exist
    * until `ENC-938`, so a nav entry here would have led to a screen that could
