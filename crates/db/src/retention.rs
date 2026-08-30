@@ -525,6 +525,299 @@ pub async fn governing_policy(
     governing_policy_on(&mut *tx, tenant, file).await
 }
 
+/// A policy as an administrative surface lists it.
+///
+/// Distinct from [`GoverningPolicy`] on purpose. That one answers *"what governs this file"* and
+/// carries the assignment that reached it — `scope_type`, `applied_at`, `covering`. This one is the
+/// policy's own row and nothing else, because a listing that folded in one assignment would show a
+/// policy applied to four scopes four times, and a listing that folded in all of them would make
+/// the shape of the response depend on data the caller has not asked for yet.
+#[derive(Debug, Clone)]
+pub struct PolicyRow {
+    /// Identifier, unique within the tenant.
+    pub id: RetentionPolicyId,
+    /// What an administrator called it. Shown in listings and never parsed.
+    pub name: String,
+    /// What the policy does to content it governs.
+    pub action: RetentionAction,
+    /// How long, for the two actions that require one.
+    pub duration: Option<PgInterval>,
+    /// What the duration is measured from.
+    pub basis: RetentionBasis,
+    /// The event a `RetentionBasis::Event` policy waits for.
+    pub event_key: Option<String>,
+    /// Whether governed content is a record.
+    pub is_record: bool,
+    /// Whether a user may still delete governed content themselves.
+    pub allow_user_delete: bool,
+    /// When the policy was written.
+    pub created_at: DateTime<Utc>,
+}
+
+/// One binding of a policy to a scope.
+///
+/// There is no identifier column: `migrations/0031` keys an assignment by
+/// `(tenant_id, policy_id, scope_type, COALESCE(scope_id, …))`, so the tuple *is* the address. An
+/// admin surface withdrawing one therefore names the scope rather than an opaque id, which is also
+/// the form an administrator can read back from the listing they are looking at.
+#[derive(Debug, Clone)]
+pub struct AssignmentRow {
+    /// The policy this applies.
+    pub policy_id: RetentionPolicyId,
+    /// Which kind of thing it is attached to.
+    pub scope_type: RetentionScopeType,
+    /// The thing itself, `None` exactly when the scope is the whole tenant.
+    pub scope_id: Option<Uuid>,
+    /// When it started applying.
+    pub applied_at: DateTime<Utc>,
+    /// When it stops, `None` for indefinitely.
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+/// A policy an administrator has asked to create.
+///
+/// A separate type from [`PolicyRow`] rather than one with an optional id, because the two differ
+/// in what they promise: this one has been validated against nothing yet, and the database's six
+/// `CHECK` constraints are what it must survive. Keeping them apart means a handler cannot pass a
+/// half-built row where a stored one is expected.
+#[derive(Debug, Clone)]
+pub struct NewPolicy {
+    /// Identifier the caller minted, so the row it gets back is the row it named.
+    pub id: RetentionPolicyId,
+    /// What to call it.
+    pub name: String,
+    /// What it does.
+    pub action: RetentionAction,
+    /// How long.
+    pub duration: Option<PgInterval>,
+    /// Measured from what.
+    pub basis: RetentionBasis,
+    /// The event key, for an `EVENT` basis.
+    pub event_key: Option<String>,
+    /// Whether governed content is a record.
+    pub is_record: bool,
+    /// Whether a user may still delete governed content.
+    pub allow_user_delete: bool,
+}
+
+const LIST_POLICIES_SQL: &str = "
+    SELECT id, name, action, duration, basis, event_key, is_record, allow_user_delete, created_at
+      FROM retention_policies
+     WHERE tenant_id = $1
+     ORDER BY created_at DESC, id DESC";
+
+const INSERT_POLICY_SQL: &str = "
+    INSERT INTO retention_policies
+        (tenant_id, id, name, action, duration, basis, event_key, is_record, allow_user_delete)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)";
+
+const LIST_ASSIGNMENTS_SQL: &str = "
+    SELECT policy_id, scope_type, scope_id, applied_at, expires_at
+      FROM retention_assignments
+     WHERE tenant_id = $1
+     ORDER BY applied_at DESC";
+
+// `ON CONFLICT … DO NOTHING` against the unique index rather than a `SELECT` first: two
+// administrators assigning the same policy to the same scope at the same moment is a race a
+// read-then-write loses, and the loser's `INSERT` would raise a constraint violation the handler
+// would have to translate back into the same answer this gives directly. `RETURNING` tells the
+// caller which of the two happened, which is the difference between `201` and `409`.
+//
+// The conflict target is written as the index's expression, not `(tenant_id, policy_id, scope_type,
+// scope_id)`: that tuple is not unique — NULLs are distinct — and naming it would compile, run, and
+// silently permit duplicate TENANT-scoped assignments, which is the one scope where a duplicate is
+// most likely and least visible.
+const INSERT_ASSIGNMENT_SQL: &str = "
+    INSERT INTO retention_assignments (tenant_id, policy_id, scope_type, scope_id)
+    VALUES ($1, $2, $3, $4)
+    ON CONFLICT (tenant_id, policy_id, scope_type,
+                 COALESCE(scope_id, '00000000-0000-0000-0000-000000000000'::uuid))
+    DO NOTHING
+    RETURNING applied_at";
+
+// Withdrawal is an `UPDATE`, because `migrations/0031` grants `enclave_app` no `DELETE` on this
+// table. `now()` rather than a bound timestamp so the value comes from the database's clock, and
+// `expires_at IS NULL` so withdrawing an already-withdrawn assignment reports that it changed
+// nothing instead of moving the deadline a second time.
+//
+// `> applied_at` is not asserted here: `retention_assignments_expiry_after_application` is a table
+// constraint, so an assignment applied in the same transaction — `applied_at = now()` — cannot be
+// withdrawn in it. That is correct rather than awkward. An assignment created and withdrawn in one
+// transaction never applied to anything, and a retention control that can be made to leave no trace
+// of having existed is the one thing this table is for.
+const WITHDRAW_ASSIGNMENT_SQL: &str = "
+    UPDATE retention_assignments
+       SET expires_at = now()
+     WHERE tenant_id = $1
+       AND policy_id = $2
+       AND scope_type = $3
+       AND scope_id IS NOT DISTINCT FROM $4
+       AND expires_at IS NULL
+    RETURNING policy_id";
+
+fn policy_row(row: &sqlx::postgres::PgRow) -> Result<PolicyRow, sqlx::Error> {
+    Ok(PolicyRow {
+        id: row.try_get_id("id")?,
+        name: row.try_get("name")?,
+        action: RetentionAction::from_column(row.try_get("action")?)?,
+        duration: row.try_get("duration")?,
+        basis: RetentionBasis::from_column(row.try_get("basis")?)?,
+        event_key: row.try_get("event_key")?,
+        is_record: row.try_get("is_record")?,
+        allow_user_delete: row.try_get("allow_user_delete")?,
+        created_at: row.try_get("created_at")?,
+    })
+}
+
+/// Every retention policy this tenant has written, newest first.
+///
+/// Withdrawn policies are **not** filtered out, because a policy cannot be withdrawn — only its
+/// assignments can. A policy with no live assignment governs nothing and still belongs in the
+/// listing: it is the thing an administrator re-applies, and hiding it would make re-application
+/// look like authoring a new control.
+///
+/// # Errors
+///
+/// [`DbError::Query`] if the statement fails, or a decode error if the stored vocabulary and this
+/// one have drifted — see [`RetentionAction`].
+pub async fn list_policies(tx: &mut TenantScoped) -> Result<Vec<PolicyRow>, DbError> {
+    let tenant = tx.tenant_id();
+    let rows = sqlx::query(LIST_POLICIES_SQL)
+        .bind(sql(tenant))
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(DbError::Query)?;
+    rows.iter().map(policy_row).collect::<Result<_, _>>().map_err(DbError::Query)
+}
+
+/// Every assignment this tenant has made, live or withdrawn.
+///
+/// Expired rows are returned rather than filtered: this is the administrative view, and *"this
+/// policy stopped applying to the Legal library last Tuesday"* is the question an administrator
+/// most often has. The governing read in [`governing_policy_on`] filters them, which is the place
+/// where the distinction decides something.
+///
+/// # Errors
+///
+/// [`DbError::Query`] if the statement fails or a stored `scope_type` is not one this schema
+/// defines.
+pub async fn list_assignments(tx: &mut TenantScoped) -> Result<Vec<AssignmentRow>, DbError> {
+    let tenant = tx.tenant_id();
+    let rows = sqlx::query(LIST_ASSIGNMENTS_SQL)
+        .bind(sql(tenant))
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(DbError::Query)?;
+    rows.iter()
+        .map(|row| {
+            Ok(AssignmentRow {
+                policy_id: row.try_get_id("policy_id")?,
+                scope_type: RetentionScopeType::from_column(row.try_get("scope_type")?)?,
+                scope_id: row.try_get("scope_id")?,
+                applied_at: row.try_get("applied_at")?,
+                expires_at: row.try_get("expires_at")?,
+            })
+        })
+        .collect::<Result<_, sqlx::Error>>()
+        .map_err(DbError::Query)
+}
+
+/// Writes a policy.
+///
+/// The six `CHECK` constraints in `migrations/0031` are the validation, and they are deliberately
+/// not restated in Rust. A duplicated rule is a rule with two chances to be relaxed one at a time,
+/// and the copy that drifts is the one nobody is reading — so a policy that claims to be a
+/// `LEGAL_HOLD` a user may delete under is refused by the database, and this returns that refusal
+/// rather than pre-empting it.
+///
+/// # Errors
+///
+/// [`DbError::Query`], including a constraint violation whose name identifies which rule was
+/// broken — the constraints are named for exactly that reason.
+pub async fn insert_policy(tx: &mut TenantScoped, policy: &NewPolicy) -> Result<(), DbError> {
+    let tenant = tx.tenant_id();
+    sqlx::query(INSERT_POLICY_SQL)
+        .bind(sql(tenant))
+        .bind(sql(policy.id))
+        .bind(&policy.name)
+        .bind(policy.action.as_str())
+        .bind(policy.duration.as_ref())
+        .bind(policy.basis.as_str())
+        .bind(policy.event_key.as_ref())
+        .bind(policy.is_record)
+        .bind(policy.allow_user_delete)
+        .execute(&mut **tx)
+        .await
+        .map(|_| ())
+        .map_err(DbError::Query)
+}
+
+/// Applies a policy to a scope.
+///
+/// Returns `false` when an identical live assignment already existed, which the caller renders as
+/// `409` rather than as a second `201` — applying a policy twice is almost always a double-submit,
+/// and reporting it as success would leave an administrator believing they had made two changes.
+///
+/// The composite foreign key is what stops another tenant's policy being applied here, and it is
+/// load-bearing rather than decorative: PostgreSQL runs referential integrity with row security
+/// deliberately not enforced, so a single-column reference would accept one.
+///
+/// # Errors
+///
+/// [`DbError::Query`], including the foreign-key violation raised when `policy_id` names no policy
+/// in this tenant, and the `retention_assignments_scope_target` violation when a non-`TENANT` scope
+/// arrives with no `scope_id`.
+pub async fn assign_policy(
+    tx: &mut TenantScoped,
+    policy: RetentionPolicyId,
+    scope_type: RetentionScopeType,
+    scope_id: Option<Uuid>,
+) -> Result<bool, DbError> {
+    let tenant = tx.tenant_id();
+    let applied: Option<(DateTime<Utc>,)> = sqlx::query_as(INSERT_ASSIGNMENT_SQL)
+        .bind(sql(tenant))
+        .bind(sql(policy))
+        .bind(scope_type.as_str())
+        .bind(scope_id)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(DbError::Query)?;
+    Ok(applied.is_some())
+}
+
+/// Stops an assignment applying, from now.
+///
+/// Returns whether a live assignment was withdrawn. `false` means it was already withdrawn or never
+/// existed — indistinguishable here on purpose, and for the same reason `crates/db/src/dlp.rs`
+/// makes the same two indistinguishable: the caller is an administrator of *this* tenant, so the
+/// distinction leaks nothing, but a handler that branched on it would grow two messages that must
+/// keep agreeing about a difference nobody can act on.
+///
+/// The row is left in place. `migrations/0031` grants no `DELETE`, and the reason is on the grants:
+/// a statement that removes the evidence a policy ever applied is the statement a retention table
+/// exists to make impossible.
+///
+/// # Errors
+///
+/// [`DbError::Query`] if the statement fails.
+pub async fn withdraw_assignment(
+    tx: &mut TenantScoped,
+    policy: RetentionPolicyId,
+    scope_type: RetentionScopeType,
+    scope_id: Option<Uuid>,
+) -> Result<bool, DbError> {
+    let tenant = tx.tenant_id();
+    let withdrawn: Option<(Uuid,)> = sqlx::query_as(WITHDRAW_ASSIGNMENT_SQL)
+        .bind(sql(tenant))
+        .bind(sql(policy))
+        .bind(scope_type.as_str())
+        .bind(scope_id)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(DbError::Query)?;
+    Ok(withdrawn.is_some())
+}
+
 #[cfg(test)]
 mod tests {
     // Assertions are the point of a test; the workspace warns on these in non-test code.

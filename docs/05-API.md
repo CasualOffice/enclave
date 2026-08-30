@@ -1,6 +1,6 @@
 # 05 — API Surface
 
-> **Status:** Draft · **Version:** 1.8 · **Owner:** Platform Engineering · **Last updated:** 2026-08-29
+> **Status:** Draft · **Version:** 1.9 · **Owner:** Platform Engineering · **Last updated:** 2026-08-30
 > **Authoritative for:** REST contracts, error model, pagination, idempotency, versioning, rate limits.
 
 ## 1. Principles
@@ -932,6 +932,7 @@ body against. It was optional, which gave the sync push path `ENC-820` in the sa
 /admin/conditional-access/policies                 /admin/conditional-access/simulate
 /admin/classifications  /admin/barriers           /admin/network-zones
 /admin/retention        /admin/legal-holds        /admin/records
+   /admin/retention/policies is built (ENC-943); legal-holds and records are not.
 /admin/audit            /admin/audit/verify       /admin/audit/export
 /admin/storage-profiles /admin/mail               /admin/secrets/test
 /admin/search/reindex   /admin/search/status
@@ -1198,6 +1199,49 @@ set, and the chain runs before this handler — so in a tenant holding such a ro
 and the list that would identify the row cannot be reached. The handler decodes each row
 individually and would report it; the stage above it is what fails. `ENC-651`, and the same shape as
 `ENC-623` one stage over.
+
+
+#### Retention (`ENC-943`)
+
+Implemented. `ENC-940` gave the chain a retention stage and the two tables it reads, and left the
+only path to a policy row as `psql` — a control the product enforces on every delete that nobody
+using the product could configure.
+
+| Method | Path | What it does |
+|---|---|---|
+| `GET` | `/admin/retention/policies` | The tenant's policies, its assignments, and the stored vocabularies |
+| `POST` | `/admin/retention/policies` | Write a policy |
+| `POST` | `/admin/retention/policies/{id}/assignments` | Apply it to a scope |
+| `DELETE` | `/admin/retention/policies/{id}/assignments?scopeType=&scopeId=` | Withdraw it from that scope |
+
+Four things about this surface are decisions rather than defaults.
+
+**One `GET` returns all three collections.** Policies, assignments and vocabularies are one screen
+and are read together every time. Split across three requests, a client can render a policy list
+against an assignment list fetched a moment later and show a live control as unapplied in the gap.
+
+**The vocabularies are served, not published.** `actions`, `bases` and `scopeTypes` come from the
+stored enumerations, so a client builds its pickers from the schema instead of from a copy that
+drifts silently — the drift surfacing later as an option that produces a `400` nobody can explain.
+
+**An assignment has no identifier.** `migrations/0031` keys it by
+`(tenant_id, policy_id, scope_type, COALESCE(scope_id, …))`, so the address *is* the scope, and
+withdrawal names it in the query string. That is also the form an administrator reads straight off
+the listing in front of them rather than a handle they must look up first.
+
+**`DELETE` at the edge is an `UPDATE` underneath.** `enclave_app` holds no `DELETE` on either
+table; withdrawal stamps `expires_at` and leaves the row, because a statement that erases the
+evidence a retention control ever applied is the statement these tables exist to make impossible.
+Withdrawing an assignment that is already withdrawn and one that never existed are the same `404`,
+deliberately: the caller administers this tenant so the distinction leaks nothing, and two messages
+that must keep agreeing about a difference nobody can act on are two messages that stop agreeing.
+
+Validation is the schema's. `migrations/0031` carries six named `CHECK` constraints and **none is
+restated in Rust** — the handler writes, the database refuses, and `write_failure` maps the
+constraint name to a sentence. Two copies of a rule are two chances to relax it one at a time, and
+the copy that drifts is the one nobody is reading. A constraint the mapping does not recognise
+becomes a `500` rather than a generic `400`: a rule the schema enforces and the API cannot explain
+is a gap in that function, not something to paper over.
 
 ## 15. MCP
 
