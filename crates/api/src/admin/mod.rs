@@ -17,6 +17,7 @@
 //! Neither replaces the policy chain. `PolicyEngine::enforce` runs first on every route here, as
 //! `CLAUDE.md` rule 1 requires and as `cargo run -p xtask -- policy-routing` checks.
 
+pub mod audit;
 pub mod conditional_access;
 pub mod dlp;
 pub mod retention;

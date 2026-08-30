@@ -1390,6 +1390,7 @@ dependencies = [
  "chrono",
  "enclave-core",
  "enclave-db",
+ "enclave-testing",
  "serde",
  "serde_json",
  "sha2 0.11.0",

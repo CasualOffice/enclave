@@ -693,3 +693,91 @@ macro_rules! policy_audit_sink {
 
 policy_audit_sink!(PgAuditSink);
 policy_audit_sink!(MemoryAuditSink);
+
+/// One page of a tenant's log, newest first, for the administrative reader (`ENC-961`).
+///
+/// # Why a free function and not a method on the sink
+///
+/// [`AuditSink`] is a *write* interface, held by the policy engine as an `Arc<dyn AuditSink>` so
+/// that the only way to reach the table from domain code is through the engine. A reader hung off
+/// that trait would be reachable only through the write handle, and every test double would have to
+/// implement a query it exists to avoid. Reading takes a `TenantScoped` transaction, exactly as
+/// `enclave_db`'s queries do, so a handler reaches it the same way it reaches everything else.
+///
+/// # Why this is a second query and not `load_page` with a direction flag
+///
+/// [`PgAuditSink::load_page`] exists for **verification**: ascending by sequence, unfiltered, paged
+/// so a mature chain can be walked without loading it whole. Every one of those properties is wrong
+/// for a reader — an auditor wants the newest first, narrowed to what they are asking about — and
+/// one statement serving both questions would make the verifier's correctness depend on a caller
+/// passing the right argument.
+///
+/// # What it returns, and why that differs from `GET /me/activity`
+///
+/// **Everything, including denials and the actor's circumstances.** `crates/db/src/activity.rs`
+/// excludes both and argues it at length: a `DENY` discloses that somebody tried and that the
+/// resource exists, and an IP address on a screen any member can open is a disclosure with no
+/// upside. Neither argument holds here. This surface *is* the compliance log, it is authorized as
+/// `AdminAction::ReadAudit`, and an investigation that cannot see refusals or reconstruct a session
+/// is not an investigation.
+///
+/// # Errors
+///
+/// Storage failures, and a malformed-row error if a stored row cannot be reconstructed — which is
+/// itself a tamper signal, so it is surfaced rather than skipped over.
+pub async fn read_page(
+    tx: &mut TenantScoped,
+    filter: &AuditFilter,
+    limit: i64,
+) -> Result<Vec<AuditEvent>> {
+    let tenant = tx.tenant_id();
+    let rows = sqlx::query(SELECT_ADMIN_PAGE_SQL)
+        .bind(tenant.as_uuid())
+        .bind(filter.before)
+        .bind(filter.actor)
+        .bind(filter.action.as_deref())
+        .bind(filter.outcome.as_deref())
+        .bind(filter.since)
+        .bind(limit)
+        .fetch_all(&mut **tx)
+        .await?;
+    rows.iter().map(event_from_row).collect()
+}
+
+/// What an administrator is asking the log.
+///
+/// Every field narrows and none widens, so `AuditFilter::default()` reads the whole log — which is
+/// the question an auditor most often starts from.
+#[derive(Debug, Clone, Default)]
+pub struct AuditFilter {
+    /// Read rows before this sequence, for paging. `None` starts at the head.
+    pub before: Option<i64>,
+    /// Only this actor's events.
+    pub actor: Option<Uuid>,
+    /// Only this action, in the `family.verb` spelling the column stores.
+    pub action: Option<String>,
+    /// `ALLOW`, `DENY` or `ERROR`.
+    pub outcome: Option<String>,
+    /// Only events at or after this instant.
+    pub since: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+// `$2::bigint IS NULL OR sequence < $2` and its four siblings: one statement serves the unfiltered
+// read and every combination of narrowings. The alternatives are building SQL by concatenation,
+// which is how a filter becomes an injection, or a match over thirty-two shapes nobody maintains.
+//
+// Cursored on `sequence` rather than `occurred_at`, which is not unique: two events in the same
+// microsecond would make a timestamp cursor repeat one and skip the other, and an audit reader that
+// can silently drop a row is worse than no reader at all.
+const SELECT_ADMIN_PAGE_SQL: &str = "SELECT id, tenant_id, sequence, occurred_at, actor_id, \
+     actor_type, on_behalf_of, action, resource_type, resource_id, workspace_id, outcome, \
+     reason_code, policy_refs, request_id, session_id, client_type, mcp_client_id, device_id, \
+     host(ip) AS ip, country, user_agent, detail, previous_hash, event_hash \
+     FROM audit_events \
+     WHERE tenant_id = $1 \
+       AND ($2::bigint IS NULL OR sequence < $2) \
+       AND ($3::uuid IS NULL OR actor_id = $3) \
+       AND ($4::text IS NULL OR action = $4) \
+       AND ($5::text IS NULL OR outcome = $5) \
+       AND ($6::timestamptz IS NULL OR occurred_at >= $6) \
+     ORDER BY sequence DESC LIMIT $7";
