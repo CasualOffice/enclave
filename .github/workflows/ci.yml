@@ -624,7 +624,7 @@ jobs:
         # artefact is platform-independent — a `.rten` graph and a JSON vocabulary — so every job on
         # every runner shares one entry.
         id: embedding-model-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}/embedding-model
           key: bge-m3-rten-convert-0.22.0-v1
