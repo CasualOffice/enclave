@@ -21,7 +21,7 @@
     "check:bundle-size": "npm run build && node tools/check-bundle-size.mjs"
   },
   "dependencies": {
-    "@tanstack/react-query": "^5.102.3",
+    "@tanstack/react-query": "^5.102.8",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-intl": "^7.1.11",
@@ -31,7 +31,7 @@
   "devDependencies": {
     "@axe-core/playwright": "^4.10.2",
     "@playwright/test": "^1.56.0",
-    "@testing-library/react": "^16.3.0",
+    "@testing-library/react": "^16.3.3",
     "@types/node": "^22.18.0",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
