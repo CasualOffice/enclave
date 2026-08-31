@@ -258,7 +258,7 @@ rten         = { version = "0.24.0", default-features = false, features = ["rten
 # `rten-tensor` is not a separate choice. It is the tensor type `rten::Model::run` takes and
 # returns, published in lockstep with `rten`, and `rten` does not re-export it — so a caller that
 # builds an input has to name it.
-rten-tensor  = "0.24.0"
+rten-tensor  = "0.25.0"
 
 # The tokenizer half of the same decision, and it has to be the model's own.
 #
