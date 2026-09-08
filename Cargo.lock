@@ -1353,6 +1353,7 @@ dependencies = [
  "enclave-identity",
  "enclave-information_barriers",
  "enclave-libraries",
+ "enclave-metadata",
  "enclave-observability",
  "enclave-preview",
  "enclave-retention",

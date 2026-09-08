@@ -463,6 +463,19 @@ const SPECS: &[Spec] = &[
         credential: Credential::Bearer,
         expect: Expect::Served,
     },
+    // The custom fields a file carries (`ENC-984`, `docs/05-API.md §12`). `Served` and not
+    // `ServedOrAbsent`: this reads `metadata_fields` and `metadata_values`, neither of which needs
+    // a committed version or an antivirus pass, so the fixture file is enough and a `404` here is
+    // wiring rather than an absent artefact. A tenant with no fields defined answers `200` with an
+    // empty list, which is the correct empty case and not a reason to weaken the expectation.
+    Spec {
+        method: "GET",
+        path: "/api/v1/files/{id}/metadata",
+        target: "/api/v1/files/{file}/metadata",
+        body: None,
+        credential: Credential::Bearer,
+        expect: Expect::Served,
+    },
     // `ENC-946`. `ServedOrAbsent` for the same reason `POST /download` above carries it, and it is
     // the same cause rather than a coincidence: both resolve through `readable_version_for`, and
     // the fixture file has no committed version with bytes — an upload this probe cannot perform,
@@ -541,6 +554,17 @@ const SPECS: &[Spec] = &[
         path: "/api/v1/libraries/{id}/folders",
         target: "/api/v1/libraries/{lib}/folders",
         body: Some(r#"{"name":"smoke-{unknown}"}"#),
+        credential: Credential::Bearer,
+        expect: Expect::Served,
+    },
+    // The field definitions a library's contents carry (`ENC-984`). Decided as `container.read` on
+    // the library, which the spine's caller holds — so, as with folder creation above, a refusal
+    // here is wiring and `Expect::Served` forbids `404`.
+    Spec {
+        method: "GET",
+        path: "/api/v1/libraries/{id}/fields",
+        target: "/api/v1/libraries/{lib}/fields",
+        body: None,
         credential: Credential::Bearer,
         expect: Expect::Served,
     },
