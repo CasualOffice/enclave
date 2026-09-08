@@ -108,28 +108,20 @@ x-enclave-common: &enclave-common
     ENCLAVE_DATABASE__PLATFORM_URL: "env://DATABASE_PLATFORM_URL"
     DATABASE_PLATFORM_URL: "postgres://${ENCLAVE_DEV_DB_USER:-enclave}:${ENCLAVE_DEV_DB_PASSWORD:-enclave}@postgres:5432/${ENCLAVE_DEV_DB_NAME:-enclave}"
 
-    # **The bind and the signing key are one decision, and the product enforces that they are.**
+    # **`0.0.0.0`, and it is not optional — the template's `127.0.0.1` cannot work here.**
     #
-    # Setting this to `0.0.0.0` alone makes the API refuse to start, and the refusal is right:
+    # A published port reaches the container's own address, not its loopback, so a loopback-bound
+    # process is unreachable from the host: `curl` gets `Connection reset by peer` while the
+    # container's *internal* healthcheck passes, because that probe runs inside the namespace. A
+    # stack that reports healthy and answers nothing is the exact shape `docs/11` is written to
+    # prevent, and it is what the first version of this file shipped — the earlier claim here that
+    # Docker Desktop forwards to a loopback bind was wrong, and was believed because a stale
+    # `enclave-api` from another session was holding `127.0.0.1:8080` and answering instead.
     #
-    #   auth.signing_keys.key_ref is required for a deployment that binds a non-loopback address.
-    #   A generated development key is reachable only when server.bind is loopback, because a
-    #   process anyone but this host can reach is not a development process.
-    #
-    # So the default here is loopback, which is what lets `up` work on a clean checkout with no
-    # key material anywhere — the community posture the template already describes. A staging
-    # deployment sets **both**:
-    #
-    #   ENCLAVE_STACK_BIND=0.0.0.0 \
-    #   ENCLAVE_STACK_KEY_REF=vault://workspace/jwt#ed25519 \
-    #   docker compose -f deploy/compose/dev.yml -f deploy/compose/stack.yml up -d --wait
-    #
-    # **The loopback default has a real limit and it is platform-specific.** Docker Desktop
-    # forwards a published port to a loopback-bound process inside the container; on Linux the
-    # published port DNATs to the container's own address and a loopback bind is unreachable from
-    # the host. So the default is fine for a laptop and the two variables above are not optional
-    # on a Linux host — which is the same sentence the product's own refusal is making.
-    ENCLAVE_SERVER__BIND: "${ENCLAVE_STACK_BIND:-127.0.0.1}"
+    # The template is still right to default to loopback: that default is for a process on a host,
+    # where the host's interfaces are the exposure. In a container the container is the boundary
+    # and `ports:` above is the deliberate exposure.
+    ENCLAVE_SERVER__BIND: "0.0.0.0"
 
     # MinIO has no per-bucket DNS, so the endpoint is the container name and `path_style` in the
     # template is already `true`. Getting this wrong produces a DNS failure that reads as a network
@@ -141,27 +133,37 @@ x-enclave-common: &enclave-common
     # not a fault.
     ENCLAVE_SEARCH__MILVUS__URI: "http://milvus:19530"
 
-    # **There is deliberately no `ENCLAVE_AUTH__SIGNING_KEYS__KEY_REF` line here**, and the reason
-    # is worth the four lines because it is not obvious. The field is an `Option<SecretRef>` where
-    # *absent* means "generate a development key"; an **empty string is not absent**, it is an
-    # invalid reference, and Compose's mapping syntax has no way to omit a variable conditionally
-    # — `"${VAR:-}"` sets it to `""`. A `"${ENCLAVE_STACK_KEY_REF:-}"` default therefore broke
-    # `up` on a clean checkout with `Error: load configuration`, which is how this comment exists.
+    # **A signing key is required, because the bind above is not loopback**, and the product makes
+    # that a start-up refusal rather than a warning:
     #
-    # A staging deployment supplies it in its own override file, beside `ENCLAVE_STACK_BIND`:
+    #   auth.signing_keys.key_ref is required for a deployment that binds a non-loopback address.
+    #   A generated development key is reachable only when server.bind is loopback, because a
+    #   process anyone but this host can reach is not a development process.
     #
-    #   # deploy/compose/staging.yml  (not tracked — it names your secret store)
-    #   services:
-    #     api:     { environment: { ENCLAVE_AUTH__SIGNING_KEYS__KEY_REF: "vault://workspace/jwt#ed25519" } }
-    #     worker:  { environment: { ENCLAVE_AUTH__SIGNING_KEYS__KEY_REF: "vault://workspace/jwt#ed25519" } }
+    # So `up` on a clean checkout fails until `STACK_SIGNING_KEY` is exported, and that is the
+    # right failure: the alternative is a stack that starts and cannot be reached. Generate one —
+    # it never enters the repository (`plans/M0-FOUNDATIONS.md` D5: throwaway keys get copied into
+    # production more often than anyone admits):
     #
-    # Leaving it out is safe rather than convenient: with a loopback bind the development provider
-    # generates a key under `deploy/config/dev-keys/` (git-ignored — `plans/M0-FOUNDATIONS.md` D5
-    # is the argument for why no throwaway key is ever committed), and with a non-loopback bind the
-    # API refuses to start until a reference exists. Both halves of that are the product deciding,
-    # not this file.
+    #   export STACK_SIGNING_KEY="$(openssl genpkey -algorithm ed25519 -outform DER | base64 | tr -d '\n')"
+    #
+    # **`STACK_SIGNING_KEY` and not `ENCLAVE_SIGNING_KEY`**, and that is `ENC-544` rather than a
+    # style choice: `ConfigLoader` reads the whole environment and turns *every* `ENCLAVE_*`
+    # variable into a configuration field, so a key named into the prefix arrives as an unknown
+    # field holding an inline credential and stops the process from starting. The loader's own doc
+    # says the fix is always to name the variable out of the prefix, never to teach it to skip one.
+    #
+    # The field below holds a **reference**; the environment holds the value (`CLAUDE.md` rule 11).
+    # A deployment with a secret manager points it at that instead: `vault://workspace/jwt#ed25519`.
+    ENCLAVE_AUTH__SIGNING_KEYS__KEY_REF: "env://STACK_SIGNING_KEY"
+    STACK_SIGNING_KEY: "${STACK_SIGNING_KEY:?generate one — see the comment above this line}"
 
-    RUST_LOG: "${ENCLAVE_STACK_LOG:-info}"
+    # **Not `RUST_LOG`** — this product ignores it. `crates/observability` reserves `ENCLAVE_LOG`
+    # for the filter, *"deliberately not `RUST_LOG`: an operator debugging Enclave inside a
+    # container that also runs other Rust tooling should be able to turn Enclave's logging up
+    # without turning everything else's up with it."* The first version of this file set `RUST_LOG`
+    # and it did nothing, which cost an hour of reading logs that were never going to appear.
+    ENCLAVE_LOG: "${ENCLAVE_LOG:-info}"
   networks:
     - default
 
