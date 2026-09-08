@@ -25,17 +25,52 @@ checkable statement rather than a number that resolves to nothing (`ENC-500`).
 Every date below depends on these. If an assumption changes, the schedule changes — say so rather
 than absorbing it silently.
 
+**Rebased 2026-09-09 (`ENC-981`), and the previous version of this table was fiction.** It assumed
+*4 backend, 2 frontend, 1 platform/SRE* at 70% capacity and a baseline start of `2026-09-01`. The
+repository was initialised on `2026-08-18`, has one human author, and had delivered M0 through M4 by
+`2026-09-09` — so the table's week two was the project's month six, and every date derived from it
+was wrong in the same direction. The numbers below are measured rather than estimated.
+
 | Assumption | Value |
 |---|---|
-| Team | 4 backend (Rust), 2 frontend (React/TS), 1 platform/SRE. Design and product shared, not dedicated. |
-| Baseline start | 2026-09-01 |
-| Sprint cadence | 2 weeks |
-| Effective capacity | 70% of nominal — the rest goes to review, support, interviews, holidays |
-| Estimate basis | Engineer-weeks, then divided by the parallel tracks that can genuinely run at once |
-| Confidence | **High** through M2, **Medium** M3–M5, **Low** beyond M5 — replan at each phase gate |
+| Team | **1 engineer, AI-assisted.** The seven-person team this table named for three weeks never existed |
+| Baseline start | **2026-08-18** — the first commit, not the `2026-09-01` carried here until the rebase |
+| Cadence | Continuous. No sprints: 335 commits in the first three weeks, 224 of them in one |
+| Effective capacity | **Not modelled.** Headcount × utilisation predicts nothing here; throughput is measured per milestone instead |
+| Estimate basis | **Measured duration**, split into work that compresses and work that does not — see below, because the split is the whole of this plan now |
+| Confidence | **High** for M5's remaining build work · **Low** for every calendar-bound criterion · **Low** beyond M5 |
 
 **Estimates are planning instruments, not commitments.** The exit criteria are the commitment; the
-dates are the current best model of when they will be met.
+dates are the current best model of when they will be met. Both GA dates are internal targets, and
+the rebase moves them.
+
+### 1.1 The measured record
+
+| | Budgeted | Actual | Ratio |
+|---|---|---|---|
+| M0 Foundations → M4 Governance baseline | 23 weeks cumulative | **3.0 weeks** (2026-08-18 → 2026-09-09) | **≈ 7.7×** |
+
+Reported as one figure and not five because the milestones were not dated as they closed — that is
+`ENC-991`, and it is the reason a per-milestone ratio would be invented rather than measured.
+
+### 1.2 What compresses and what does not
+
+**This is the load-bearing distinction, and the old plan did not make it.** A 7.7× ratio over
+M0–M4 is real, and it says nothing about the work M5 has left, because that work is a different
+kind. M0–M4 were self-contained: code, tests and documents, where the only dependency was the
+author. What remains is not.
+
+| Compresses at the measured rate | Does not compress |
+|---|---|
+| The leakage-matrix sweep (`ENC-987`) | **External penetration test** — scheduling lead time, execution, remediation, retest |
+| API completion — metadata, fields, views (`ENC-984`) | **A restore drill** — needs a deployment target (`ENC-993`) |
+| A k6 harness, and the budgets it measures | **Screen-reader pass** on NVDA and VoiceOver — a person on real assistive technology |
+| Release documentation and upgrade notes | **An operator who has never seen the repo** installing from `README` |
+| Anything else that is source in this tree | **A chaos pass** — needs an environment to break |
+
+Four of M5's seven exit criteria sit in the right-hand column, and a fifth — the performance
+budgets — is blocked on `ENC-993` before it is blocked on k6. **MVP GA stopped being a velocity
+question somewhere around M4 and nobody said so.** Writing code faster does not move any of them.
 
 ---
 
@@ -55,32 +90,56 @@ Phase 2 ──── M6 Enterprise identity ──┐                       │
              M9 Workflows & signing ──┘
 ```
 
-| # | Milestone | Phase | Duration | Cumulative | Target |
+### 2.1 Delivered
+
+| # | Milestone | Phase | State | Evidence |
+|---|---|---|---|---|
+| M0 | Foundations | 0 | **Delivered** | Gate G0 passed — [`plans/G0-GATE.md`](plans/G0-GATE.md) |
+| M1 | Content core | 1 | **Delivered** | [`plans/M1-CONTENT-CORE.md`](plans/M1-CONTENT-CORE.md); `ENC-144` demonstrated the 5 GB criterion |
+| M2 | Access & delivery | 1 | **Delivered** | [`plans/M2-CLOSEOUT.md`](plans/M2-CLOSEOUT.md) |
+| M3 | Discovery | 1 | **Delivered, one gap carried** | `ENC-161` is `BLOCKED` on OCR model files, so *a scanned PDF is searchable* is **not met** — `§5` already records this |
+| M4 | Governance baseline | 1 | **Delivered** | `ENC-580`–`ENC-585`; DLP, conditional access, retention and the audit sweep are wired in `crates/api/src/main.rs` |
+
+No exit-criteria checkbox in `§5` has ever been ticked, for any of these (`ENC-991`). "Delivered"
+above means the milestone's rows are `DONE` and its plan closed — it does not mean its criteria were
+evidenced one by one, and the difference is exactly what `ENC-991` is for.
+
+### 2.2 Remaining
+
+| # | Milestone | Phase | Basis | Target | Confidence |
 |---|---|---|---|---|---|
-| M0 | Foundations | 0 | 5 weeks | 5 w | 2026-10-03 |
-| M1 | Content core | 1 | 6 weeks | 11 w | 2026-11-14 |
-| M2 | Access & delivery | 1 | 5 weeks | 16 w | 2026-12-19 |
-| M3 | Discovery | 1 | 5 weeks | 19 w¹ | 2027-01-16 |
-| M4 | Governance baseline | 1 | 4 weeks | 23 w | 2027-02-13 |
-| M5 | **MVP GA** | 1 | 4 weeks | 27 w | 2027-03-13 |
-| M6 | Enterprise identity & governance | 2 | 8 weeks | 35 w | 2027-05-08 |
-| M7 | AI & BYO infrastructure | 2 | 7 weeks | 40 w¹ | 2027-06-12 |
-| M8 | Delivery surfaces | 2 | 8 weeks | 46 w¹ | 2027-07-24 |
-| M8b | Content migration | 2 | 5 weeks | 48 w¹ | 2027-08-07 |
-| M9 | Workflows & signing | 2 | 7 weeks | 52 w¹ | 2027-09-04 |
-| M10 | **Enterprise V1 GA** | 2 | 5 weeks | 57 w | 2027-10-09 |
+| M5 | **MVP GA** | 1 | build ~2 w, then calendar-bound | **2026-11-20** ± 3 w | Low — see below |
+| M6 | Enterprise identity & governance | 2 | external IdPs (SAML, SCIM, LDAP) | 2027-01 | Low |
+| M7 | AI & BYO infrastructure | 2 | `enclave-ai` and `enclave-mcp` are five-line stubs | 2027-02 | Low |
+| M8 | Delivery surfaces | 2 | sync is largely built (`ENC-731`–`ENC-734`) | 2027-02 | Low |
+| M8b | Content migration | 2 | needs SharePoint / NetDocuments / iManage to test against | 2027-04 | **Very low** |
+| M9 | Workflows & signing | 2 | `enclave-signing` is a five-line stub; PAdES needs a real TSA and CA | 2027-04 | **Very low** |
+| M10 | **Enterprise V1 GA** | 2 | second penetration test, second set of drills | **2027-05** ± 8 w | **Very low** |
 
-¹ Cumulative is less than the sum because M3 runs partly parallel to M2, and M7–M9 run partly
-parallel to M6. See `§4`.
+**MVP GA moves from 2027-03-13 to approximately 2026-11-20 — roughly sixteen weeks earlier.** The
+shape of that estimate matters more than the date: about two weeks of build work, and then eight to
+ten weeks in which the schedule is set by a penetration testing firm's calendar, a deployment target
+that does not exist yet (`ENC-993`), and three passes that need a human who is not the author. The
+±3 weeks is almost entirely the pen test's booking lead time, which nobody has started.
 
-**M8b moved Enterprise V1 GA by two weeks, from 2027-09-25 to 2027-10-09.** Stated here rather than
-absorbed, because `§8` requires promoted scope to carry its knock-on effect. Content migration
-partly parallelises with M9 — different people, different subsystems — so five weeks of work costs
-two weeks of schedule. It is not optional work: an enterprise does not replace a document system
-without a path off the old one, so the alternative to the two weeks is a product nobody can adopt.
+**Enterprise V1 GA moves from 2027-10-09 to approximately 2027-05, and that number is weak.** M8b
+and M9 both depend on systems outside this repository — three commercial DMS products to migrate
+from, and a timestamping authority and certificate chain to sign against. The 7.7× ratio has no
+evidence behind it for work of that kind, and pretending otherwise is how the old table got here.
+Replan at the M5 gate rather than trusting this row.
 
-**Two dates matter to the business: MVP GA around 2027-03-13, Enterprise V1 GA around 2027-10-09.**
-Everything else is internal sequencing.
+### 2.3 What would move these dates
+
+Named explicitly, because `§1` requires a changed assumption to be stated rather than absorbed:
+
+1. **Booking the penetration test.** It is the longest pole in MVP GA and has no row, no vendor and
+   no date. Every week it is not booked moves MVP GA by a week.
+2. **`ENC-993` — a deployment target.** The restore drill, the performance budgets and the chaos
+   pass are all downstream of it.
+3. **A second person, or a first non-author reader.** Two M5 criteria — the screen-reader pass and
+   the clean-machine install — cannot be satisfied by the person who wrote the thing being tested.
+4. **`ENC-987` — the leakage-matrix sweep.** The last link of the critical path in `§3`, 214 rows,
+   and it had no ID at all until 2026-09-09.
 
 ---
 
@@ -95,11 +154,11 @@ ENC-104 db + TenantScoped
         └─ ENC-109 PolicyEngine::enforce
              └─ ENC-126 ACL resolution
                   └─ ENC-506 search post-filter + retrieval denylist
-                       └─ M5 leakage matrix §4.1–4.6 green  (no row yet)
+                       └─ M5 leakage matrix §4.1–4.6 green  (ENC-987)
                             └─ M5 MVP GA
 ```
 
-The last link has no ID because nothing has been logged for it. `ENC-134` and `ENC-153` filled in
+The last link had no ID for the whole of M0–M4 because nothing had been logged for it; it is `ENC-987`, raised 2026-09-09. `ENC-134` and `ENC-153` filled in
 individual matrix rows as the surfaces they cover landed; **the sweep that takes §4.1–4.6 green as a
 whole is M5 work nobody has written down yet**, and giving it a number here would be inventing one.
 
@@ -335,16 +394,35 @@ web shell, ENC-318 on i18n scaffolding), and it is the milestone gate G1 decides
 
 **Steps**
 
-1. Web shell: navigation, command bar, `⌘K` palette, details panel — *(no row yet)*; the self-hosted
-   typefaces it needs landed early as ENC-135.
-2. Virtualized file views; upload UX with true states through to `Ready` — *(no row yet)*.
-3. i18n scaffolding, `en-US` catalog, `en-XA`/`en-XB` pseudo-locales in CI — *(no row yet)*.
-4. Leakage matrix §4.1–4.6 implemented and green — *(no row yet)*. Rows have been filled in as
-   their surfaces landed (ENC-134 for §4.1/§4.2/§4.8, ENC-153 for A1, A5, A6 and H1–H3); the sweep
-   that takes the whole set green is this step.
-5. `community` deployment profile, install docs, upgrade path — *(no row yet)*.
-6. Accessibility: axe gate, keyboard flows, screen-reader pass — *(no row yet)*.
-7. Release hardening: load test at budget, chaos pass, restore drill, docs review — *(no row yet)*.
+**Corrected 2026-09-09 (`ENC-986`).** Six of these seven read *(no row yet)* while five of them
+were built — the opposite of `§1`'s old error, and read as a project further behind than it is.
+
+1. Web shell: navigation, command bar, `⌘K` palette, details panel — **done**. `ENC-702` gave it a
+   keyboard model from one table the handlers and the `?` reference both read; `ENC-853`–`ENC-868`
+   made `shared/ui` a component library. The self-hosted typefaces landed early as ENC-135.
+2. Virtualized file views; upload UX with true states through to `Ready` — **done**. The
+   virtualization is hand-rolled in `web/src/features/libraries/list/grouped-file-list.tsx` rather
+   than a dependency, which is why `web/package.json` names no windowing library; upload is
+   `ENC-972` and paging past the first fifty rows is `ENC-973`.
+3. i18n scaffolding and the `en-US` catalog — **done** (`web/src/shared/i18n/catalog.ts`, enforced
+   by the `lint:i18n` gate). **The `en-XA`/`en-XB` pseudo-locales are not built** — `ENC-994`.
+   `web/tools/lint-web.mjs` still refers to them in the future tense, and `en-XB` is what would
+   prove the logical-property rule that lint enforces statically.
+4. Leakage matrix §4.1–4.6 implemented and green — **`ENC-987`, open, and on the critical path**.
+   Rows have been filled in as their surfaces landed (ENC-134 for §4.1/§4.2/§4.8, ENC-153 for A1,
+   A5, A6 and H1–H3); the sweep that takes the whole set green is this step and had no ID until
+   2026-09-09.
+5. `community` deployment profile, install docs, upgrade path — **profile done**
+   (`DeploymentProfile::Community`, and a test pins that its generated key is unreachable outside a
+   loopback community deployment); `README.md` and `CONTRIBUTING.md` exist. The **upgrade path** is
+   unevidenced, and exit criterion 5 in `docs/12 §9` asks for a migration verified against the
+   previous release running — which needs a previous release.
+6. Accessibility: axe gate **done** (real Chromium, every primary route, both themes), keyboard
+   flows **done** (`ENC-702`, `ENC-900`). **The screen-reader pass is not done** and cannot be by
+   the author — see `§1.2`.
+7. Release hardening: load test at budget, chaos pass, restore drill, docs review — **not started,
+   and blocked on `ENC-993`**: there is no deployment target above `deploy/compose/dev.yml`, and no
+   k6 harness. This is the step that sets the date.
 
 **Exit criteria — the MVP gate**
 

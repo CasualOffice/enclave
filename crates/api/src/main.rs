@@ -844,6 +844,12 @@ const CONDITIONAL_ACCESS_STAGE: &str = "conditional_access";
 /// The prefix of [`unconfigured_stages`]'s entry for the stage `ENC-594` wired.
 const DLP_STAGE: &str = "dlp";
 
+/// The prefix of [`unconfigured_stages`]'s entry for the stage `ENC-940` wired.
+const RETENTION_STAGE: &str = "retention";
+
+/// The prefix of [`unconfigured_stages`]'s entry for the stage `ENC-126` wired.
+const AUTHORIZATION_STAGE: &str = "authorization";
+
 /// What `antivirus:` means for the routes *this* binary serves, said once, at start-up.
 ///
 /// # Why the API says this at all when the worker is what scans
@@ -894,11 +900,29 @@ fn report_antivirus_posture(antivirus: &enclave_config::AntivirusConfig) {
 /// The policy stages still permitting everything **after this binary's wiring**.
 ///
 /// [`unconfigured_stages`] is a fixed list in `crates/api/src/state.rs` describing the stages as
-/// `ApiState` finds them, and two of its entries are now decided here instead: conditional access
-/// is `TenantConditionalAccess` and DLP is whatever `dlp.default_mode` names. The list is filtered
-/// rather than edited there because that file is held by another change in flight; `ENC-601` is the
-/// row for deriving it from what was actually wired, which is the shape that cannot go stale — and
-/// this second entry is the case it predicted.
+/// `ApiState` finds them, and **four** of its entries are now decided here instead: conditional
+/// access is `TenantConditionalAccess`, DLP is whatever `dlp.default_mode` names, retention is
+/// `PgRetention` (`ENC-940`) and authorization is `PgAclAuthorization` inside `AdminAuthorization`
+/// (`ENC-126`). The list is filtered rather than edited there because it describes `ApiState`'s
+/// defaults truthfully and this binary's wiring is not `ApiState`'s to know.
+///
+/// # `ENC-983`: the last two were found by an audit, not by this comment
+///
+/// `ENC-601` is the row for deriving this from what was actually wired — the shape that cannot go
+/// stale — and it was priced `P2` when one entry had drifted. It then drifted twice more, and the
+/// second pair were live for longer and said something worse: an operator was told
+/// *`authorization (content is self-read only)`* by a process that resolves ACLs with inheritance
+/// and deny-wins, and *`retention (nothing blocks deletion)`* by one that refuses a delete from
+/// `retention_assignments`.
+///
+/// It was never only a log line. `main`'s `enterprise` profile refuses to start while this list is
+/// non-empty, so those two entries were **refusing to boot an enterprise deployment over stages
+/// that work**. Two stages remain genuinely inert — information barriers and classification — so
+/// the refusal still fires, on the two it should.
+///
+/// Retention is filtered on the same argument this function already makes for DLP rules: whether a
+/// tenant has a retention policy is *tenant data* behind forced row-level security, not a
+/// deployment-wide start-up fact, and `PgRetention` is composed unconditionally.
 ///
 /// Filtering rather than hard-coding the remainder is deliberate: an entry has to be *found* to be
 /// removed, so a rename in `state.rs` fails a test here instead of silently filtering nothing.
@@ -933,7 +957,10 @@ fn unenforcing_stages(dlp_mode: enclave_dlp::DlpMode) -> Vec<String> {
     let mut stages: Vec<String> = unconfigured_stages()
         .iter()
         .filter(|stage| {
-            !stage.starts_with(CONDITIONAL_ACCESS_STAGE) && !stage.starts_with(DLP_STAGE)
+            !stage.starts_with(CONDITIONAL_ACCESS_STAGE)
+                && !stage.starts_with(DLP_STAGE)
+                && !stage.starts_with(RETENTION_STAGE)
+                && !stage.starts_with(AUTHORIZATION_STAGE)
         })
         .map(|stage| (*stage).to_owned())
         .collect();
@@ -1052,8 +1079,49 @@ mod tests {
             "conditional access decides from stored rules and must not be announced as unconfigured"
         );
         // The positive control: the stages that really are stubs are still announced, so this does
-        // not pass against a filter that emptied the list.
-        assert!(after.iter().any(|stage| stage.starts_with("retention")));
+        // not pass against a filter that emptied the list. It named `retention` until `ENC-983`,
+        // which is the bug that row is about — the control was asserting that a wired stage stayed
+        // announced, so the assertion held the staleness in place rather than catching it. The two
+        // named here are the two with no implementation in the workspace at all:
+        // `UnconfiguredBarriers` is the whole of `crates/information_barriers`.
+        assert!(after.iter().any(|stage| stage.starts_with("information_barriers")));
+        assert!(after.iter().any(|stage| stage.starts_with("classification")));
+    }
+
+    /// Retention and authorization decide for real, and the banner said they did not (`ENC-983`).
+    ///
+    /// Written in the same shape as the conditional-access test above: each entry has to be
+    /// **found** in the fixed list before it can be asserted gone from the filtered one, so a
+    /// rename in `state.rs` fails here instead of silently filtering nothing.
+    ///
+    /// The consequence being guarded is not the log line. `main` refuses to start the `enterprise`
+    /// profile while any stage is unenforcing, so an entry that lies about a wired stage refuses a
+    /// legitimate deployment — which is why the two remaining stubs are asserted in the same test
+    /// rather than a separate one. A filter that removed everything would boot an enterprise
+    /// deployment with no barriers and no classification ceilings and announce nothing.
+    #[test]
+    fn the_stages_this_binary_wires_are_not_announced_as_unconfigured() {
+        let before = unconfigured_stages();
+        let after = unenforcing_stages(DlpMode::Disabled);
+
+        for wired in [RETENTION_STAGE, AUTHORIZATION_STAGE] {
+            assert!(
+                before.iter().any(|stage| stage.starts_with(wired)),
+                "the `{wired}` entry this filter removes is no longer in state.rs; the filter is a \
+                 no-op and the banner would be reporting a stage that is wired"
+            );
+            assert!(
+                !after.iter().any(|stage| stage.starts_with(wired)),
+                "`{wired}` is composed unconditionally in this binary and must not be announced as \
+                 unconfigured — the enterprise profile refuses to boot on this list"
+            );
+        }
+
+        assert!(
+            after.iter().any(|stage| stage.starts_with("information_barriers")),
+            "the two genuinely inert stages must survive the filter, or the enterprise profile \
+             would start with no mandatory segmentation and say nothing"
+        );
         assert!(after.iter().any(|stage| stage.starts_with("classification")));
     }
 
@@ -1084,8 +1152,10 @@ mod tests {
             "ENFORCE reads each tenant's stored rules and must not be announced as unenforcing: \
              {enforcing:?}"
         );
-        // The control for that absence: the stages that really are stubs are still announced.
-        assert!(enforcing.iter().any(|stage| stage.starts_with("retention")));
+        // The control for that absence: the stages that really are stubs are still announced. It
+        // read `retention` until `ENC-983` wired that stage and this became a control that only
+        // held while the banner was wrong.
+        assert!(enforcing.iter().any(|stage| stage.starts_with("information_barriers")));
 
         // The three rungs of the rollout ladder that evaluate and never refuse. Each must be named
         // by the mode actually running, because "DLP is on" is what an operator concludes from a
@@ -1139,9 +1209,12 @@ mod tests {
                 "{mode}: refresh re-evaluates conditional access, so announcing it as unenforcing \
                  would be a lie: {stages:?}"
             );
-            // The positive control for that absence, in the same run.
+            // The positive control for that absence, in the same run. `information_barriers`
+            // rather than `retention` since `ENC-983`: retention is wired, and a control naming a
+            // wired stage passes because the banner is stale rather than because the banner is
+            // complete.
             assert!(
-                stages.iter().any(|stage| stage.starts_with("retention")),
+                stages.iter().any(|stage| stage.starts_with("information_barriers")),
                 "{mode}: the genuinely unconfigured stages must still be announced, or the \
                  assertion above holds against an empty list"
             );
