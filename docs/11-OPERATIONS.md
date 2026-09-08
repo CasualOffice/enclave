@@ -1,6 +1,6 @@
 # 11 — Operations
 
-> **Status:** Draft · **Version:** 1.4 · **Owner:** SRE · **Last updated:** 2026-08-22
+> **Status:** Draft · **Version:** 1.5 · **Owner:** SRE · **Last updated:** 2026-09-09
 > **Authoritative for:** SLOs, runbooks, backup/DR, key rotation, migrations, capacity, on-call.
 
 ## 1. Service level objectives
@@ -20,15 +20,34 @@ review has been completed and its actions merged.
 
 ## 2. Environments
 
-| Environment | Purpose | Data |
-|---|---|---|
-| `dev` | Local Compose stack | Synthetic |
-| `ci` | Ephemeral per-PR | Synthetic, seeded |
-| `staging` | Pre-production, production-shaped | Synthetic + anonymized |
-| `production` | Live | Real |
+| Environment | Purpose | Data | Implementation |
+|---|---|---|---|
+| `dev` | Local Compose stack | Synthetic | `deploy/compose/dev.yml` |
+| `ci` | Ephemeral per-PR | Synthetic, seeded | Service containers in `.github/workflows/ci.yml` |
+| `staging` | Pre-production, production-shaped | Synthetic + anonymized | **Single-node only** — `dev.yml` + `deploy/compose/stack.yml`. See below |
+| `production` | Live | Real | **None.** Phase 2 |
 
 Production data is never copied to a lower environment. Reproducing a customer issue uses synthetic
 data plus the customer's *configuration*, which is exportable without content.
+
+**The `Implementation` column was added in `ENC-993`, and two of its four rows say something this
+table implied the opposite of for the whole of M0–M4.** `§3` below describes a rolling deploy —
+*deploy workers, deploy API, roll back by redeploying the previous image* — and nothing in the
+repository built an image until this row was raised. There was no `Dockerfile`, no image in any
+registry, and no manifest of any kind: the `build` CI job produced release binaries and discarded
+them. Three of M5's exit criteria (`ROADMAP.md §5`) — the restore drill in `§4`, the performance
+budgets, and `docs/12 §7`'s chaos pass — each need somewhere to deploy *to*, and could not be
+attempted rather than having been attempted and failed.
+
+**What `staging` is today, stated so nobody reads the row above as more than it is.**
+`deploy/compose/stack.yml` runs one container per process against the dev stack's dependencies. It
+is enough to restore a backup into, to point a load generator at, and to kill a dependency
+underneath — the three things the criteria ask for. It is **not** *production-shaped*: one
+PostgreSQL with no replica and no WAL archive, one MinIO with no replication, no ingress, no secret
+manager and no rolling deploy. So `§4`'s targets — RPO ≤ 5 minutes, RTO ≤ 4 hours — **cannot be
+demonstrated on it**, because continuous WAL archiving is the mechanism both depend on and this
+stack has none. A drill run here proves the runbook's steps and the reconciliation in `§4.1` step 5;
+it does not prove the numbers. Recording which half a drill proved is the point of running it.
 
 ## 3. Deployment
 
@@ -76,10 +95,21 @@ store per tenant. Indexing is the only pass with a backlog, so it is the only on
 round again rather than waiting — but a tick that only *deferred* files counts as idle, because a
 deferral means antivirus has not finished and re-claiming the same rows immediately would spin.
 
-**Two configuration keys the API does not need:**
+**Two configuration keys the worker needs, one of which the API needs too:**
+
+> **Corrected 2026-09-09 (`ENC-993`).** This paragraph read *"Two configuration keys the API does
+> not need"* and named `database.platform_url` first. **The API needs it.** Without it
+> `crates/api/src/main.rs:1019` logs a warning and carries on, and
+> `POST /api/v1/auth/login` then *"cannot resolve a tenant from its host and will answer 404 for
+> every request, and no refresh family can be revoked"* — the API's own words. A deployment that
+> followed this paragraph would start, pass its readiness probe, and let nobody sign in, which is
+> the failure mode this document exists to prevent. The API gained the need in `ENC-686`, when
+> custom-domain routing became the second lawful source of tenant identity; the paragraph was
+> written before that and was never revisited.
 
 * **`database.platform_url`** — the DSN of the `BYPASSRLS` role. **The worker refuses to start
-  without it**, and the refusal names it. The query that produces a tenant list cannot itself be
+  without it**, and the refusal names it. **The API does not refuse — it warns and degrades**, and
+  the degradation is total: every login answers `404`. The query that produces a tenant list cannot itself be
   scoped to a tenant, and every pass takes that list as a parameter; with no credential the process
   would run four loops over nothing while every probe stayed green. Grant it nothing beyond what
   `migrations/0002_rls_policies.sql` already grants `enclave_platform`.

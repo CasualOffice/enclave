@@ -1,0 +1,280 @@
+# Enclave — the application on top of the development infrastructure (`ENC-993`).
+#
+#   docker compose -f deploy/compose/dev.yml -f deploy/compose/stack.yml \
+#                  --profile search --profile av up -d --wait
+#
+# `dev.yml` starts the things Enclave *depends on*. This file starts Enclave, and until it existed
+# nothing in the repository did: `docs/11 §2` names four environments and only `dev` and `ci` had
+# any implementation, while `§3` described a rolling deploy of images that nothing built. Three of
+# M5's exit criteria — the restore drill, the performance budgets and the chaos pass — each need
+# something to deploy *to*, and could not be attempted.
+#
+# # What this is, and the thing it is deliberately not
+#
+# **A single-node staging target.** One container per process on one host, with the dev stack's
+# PostgreSQL, MinIO, Milvus and ClamAV beneath it. That is enough to restore a backup into, to
+# point a load generator at, and to kill a dependency underneath — which is what the three criteria
+# above actually ask for.
+#
+# It is **not** production, and `docs/11 §2`'s row for `staging` says *production-shaped*, which
+# this is not: one PostgreSQL with no replica and no WAL archive, one MinIO with no replication,
+# no ingress, no secret manager, no rolling deploy. `docs/11 §4` targets RPO ≤ 5 minutes and
+# RTO ≤ 4 hours for the enterprise profile and neither is demonstrable here. Production manifests
+# are Phase 2 work; pretending this file is them would be the `ENC-170` shape — a thing that exists
+# and cannot do what its name claims.
+#
+# # Configuration comes from the environment, not from a second YAML
+#
+# Every service below reads `deploy/config/enclave.example.yaml`, mounted read-only as the
+# `enclave.yaml` each process looks for, and overrides exactly the fields that differ between a
+# laptop and a container network. The loader deep-merges `ENCLAVE_SECTION__KEY` over the file
+# (`crates/config/src/loader.rs`), so the overrides are visible here rather than hidden in a
+# generated copy — and there is still one configuration template in the repository. A second file
+# would drift from the first, and the drift would be invisible until a deployment read the stale
+# one.
+#
+# The credentials are `dev.yml`'s, for `dev.yml`'s reason: the images require *a* username and
+# password to start, they are local-loopback values, and nothing here is reachable from another
+# host. `CLAUDE.md` rule 11 is untouched — the configuration file holds `env://` references and
+# this file holds the environment they resolve against.
+
+name: enclave
+
+# ---------------------------------------------------------------------------------------------
+# Everything the three application services share.
+# ---------------------------------------------------------------------------------------------
+x-enclave-common: &enclave-common
+  image: enclave:dev
+  build:
+    context: ../..
+    dockerfile: Dockerfile
+  volumes:
+    # Read-only: a process that could rewrite its own configuration is a process whose
+    # configuration nobody can reason about after an incident.
+    - ../config/enclave.example.yaml:/var/lib/enclave/enclave.yaml:ro
+  environment: &enclave-env
+    # The DSNs the file references by name. `postgres`, `redis`, `nats` and `minio` are
+    # `dev.yml`'s service names, which is the only thing that differs from the laptop values in
+    # the template's own comments.
+    # **The same `${...}` names and the same defaults `dev.yml` uses**, not copies of the values.
+    # Copying them is how a stack breaks silently later: change `ENCLAVE_DEV_MINIO_PASSWORD` for
+    # the container that serves the bucket and not for the process that reads it, and the failure
+    # is a `403 SignatureDoesNotMatch` from MinIO that reads as a permissions problem. That is not
+    # hypothetical — the first version of this file carried `enclave-dev-secret`, taken from CI's
+    # environment rather than from the file next to it, and failed exactly that way.
+    #
+    # The service names are the only genuinely new values here: `postgres`, `redis`, `nats` and
+    # `minio` are container hostnames where the template's comments have `localhost`.
+    DATABASE_URL: "postgres://${ENCLAVE_DEV_DB_USER:-enclave}:${ENCLAVE_DEV_DB_PASSWORD:-enclave}@postgres:5432/${ENCLAVE_DEV_DB_NAME:-enclave}"
+    REDIS_URL: "redis://redis:6379"
+    NATS_URL: "nats://nats:4222"
+    S3_ACCESS_KEY_ID: "${ENCLAVE_DEV_MINIO_USER:-enclave}"
+    S3_SECRET_ACCESS_KEY: "${ENCLAVE_DEV_MINIO_PASSWORD:-enclave-dev-minio}"
+    CLAMD_ADDR: "tcp://clamav:3310"
+
+    # **Both processes need this, and `docs/11 §3.1` said only the worker did until `ENC-993`.**
+    # The worker's need is the documented one — it refuses to start without a tenant list. The
+    # API's is quieter and worse: `crates/api/src/main.rs:1019` falls back to a `warn!` that says
+    # `POST /api/v1/auth/login` *"cannot resolve a tenant from its host and will answer 404 for
+    # every request, and no refresh family can be revoked"*. So a stack without it starts, passes
+    # its readiness probe, serves `/health/ready` — and nobody can sign in. That is `ENC-170`'s
+    # shape and it would have been this file's first bug.
+    #
+    # **Two variables, and the indirection is not decoration.** `enclave.example.yaml` ships
+    # `platform_url_env` *commented out* — which is why `.github/workflows/ci.yml` `sed`s it back
+    # in before the e2e run — so exporting `DATABASE_PLATFORM_URL` alone sets nothing at all. The
+    # first line below is the configuration field, holding a **reference** (`CLAUDE.md` rule 11:
+    # secrets are references, never literals); the second is the environment that reference
+    # resolves against. Setting the field to the DSN directly would put a credential in a tracked
+    # file, and the secrets gate exists to refuse exactly that.
+    #
+    # Verified by getting it wrong: with only the second line, the API logged
+    # `platform_configured: false`, the worker crash-looped nine times, and `--wait` still called
+    # the stack up.
+    #
+    # **It is the superuser here, and that is a real difference from production.**
+    # `deploy/compose/init/01-roles.sql` creates `enclave_platform` with `BYPASSRLS` and
+    # deliberately **no password** — *"credentials come from the deployment's secret store
+    # (CLAUDE.md rule 11); these roles cannot authenticate until one is set. The dev stack connects
+    # as the superuser instead."* So a DSN naming `enclave_platform` fails authentication, which is
+    # the second thing this file got wrong before it was run. `.github/workflows/ci.yml:1004` makes
+    # the same substitution for the same reason, and matching it keeps one answer in the repository
+    # rather than three.
+    #
+    # A production deployment sets a password on `enclave_platform` from its secret store and uses
+    # *that*: the superuser is strictly more privileged than `BYPASSRLS`, and running as it is
+    # acceptable on a single-node stack with synthetic data and nowhere else. It is one of the
+    # reasons `docs/11 §2` records this target as single-node rather than production-shaped.
+    ENCLAVE_DATABASE__PLATFORM_URL: "env://DATABASE_PLATFORM_URL"
+    DATABASE_PLATFORM_URL: "postgres://${ENCLAVE_DEV_DB_USER:-enclave}:${ENCLAVE_DEV_DB_PASSWORD:-enclave}@postgres:5432/${ENCLAVE_DEV_DB_NAME:-enclave}"
+
+    # **The bind and the signing key are one decision, and the product enforces that they are.**
+    #
+    # Setting this to `0.0.0.0` alone makes the API refuse to start, and the refusal is right:
+    #
+    #   auth.signing_keys.key_ref is required for a deployment that binds a non-loopback address.
+    #   A generated development key is reachable only when server.bind is loopback, because a
+    #   process anyone but this host can reach is not a development process.
+    #
+    # So the default here is loopback, which is what lets `up` work on a clean checkout with no
+    # key material anywhere — the community posture the template already describes. A staging
+    # deployment sets **both**:
+    #
+    #   ENCLAVE_STACK_BIND=0.0.0.0 \
+    #   ENCLAVE_STACK_KEY_REF=vault://workspace/jwt#ed25519 \
+    #   docker compose -f deploy/compose/dev.yml -f deploy/compose/stack.yml up -d --wait
+    #
+    # **The loopback default has a real limit and it is platform-specific.** Docker Desktop
+    # forwards a published port to a loopback-bound process inside the container; on Linux the
+    # published port DNATs to the container's own address and a loopback bind is unreachable from
+    # the host. So the default is fine for a laptop and the two variables above are not optional
+    # on a Linux host — which is the same sentence the product's own refusal is making.
+    ENCLAVE_SERVER__BIND: "${ENCLAVE_STACK_BIND:-127.0.0.1}"
+
+    # MinIO has no per-bucket DNS, so the endpoint is the container name and `path_style` in the
+    # template is already `true`. Getting this wrong produces a DNS failure that reads as a network
+    # problem, which the template says in the same words.
+    ENCLAVE_STORAGE__S3__ENDPOINT: "http://minio:9000"
+
+    # Milvus is behind `dev.yml`'s `search` profile. Bring the stack up without `--profile search`
+    # and the coverage probe is not scheduled — `docs/11 §3.1` — which is a documented posture and
+    # not a fault.
+    ENCLAVE_SEARCH__MILVUS__URI: "http://milvus:19530"
+
+    # **There is deliberately no `ENCLAVE_AUTH__SIGNING_KEYS__KEY_REF` line here**, and the reason
+    # is worth the four lines because it is not obvious. The field is an `Option<SecretRef>` where
+    # *absent* means "generate a development key"; an **empty string is not absent**, it is an
+    # invalid reference, and Compose's mapping syntax has no way to omit a variable conditionally
+    # — `"${VAR:-}"` sets it to `""`. A `"${ENCLAVE_STACK_KEY_REF:-}"` default therefore broke
+    # `up` on a clean checkout with `Error: load configuration`, which is how this comment exists.
+    #
+    # A staging deployment supplies it in its own override file, beside `ENCLAVE_STACK_BIND`:
+    #
+    #   # deploy/compose/staging.yml  (not tracked — it names your secret store)
+    #   services:
+    #     api:     { environment: { ENCLAVE_AUTH__SIGNING_KEYS__KEY_REF: "vault://workspace/jwt#ed25519" } }
+    #     worker:  { environment: { ENCLAVE_AUTH__SIGNING_KEYS__KEY_REF: "vault://workspace/jwt#ed25519" } }
+    #
+    # Leaving it out is safe rather than convenient: with a loopback bind the development provider
+    # generates a key under `deploy/config/dev-keys/` (git-ignored — `plans/M0-FOUNDATIONS.md` D5
+    # is the argument for why no throwaway key is ever committed), and with a non-loopback bind the
+    # API refuses to start until a reference exists. Both halves of that are the product deciding,
+    # not this file.
+
+    RUST_LOG: "${ENCLAVE_STACK_LOG:-info}"
+  networks:
+    - default
+
+services:
+  # ---------------------------------------------------------------------------
+  # Migrations — one shot, before anything connects.
+  # ---------------------------------------------------------------------------
+  # A service rather than an entrypoint step in the API, because `docs/11 §3` deploys migrations
+  # *first* and separately: workers and API tolerate both schema shapes across an expand phase, and
+  # folding the migration into a process that also serves traffic makes the order an accident of
+  # which container started first. `service_completed_successfully` below is what makes it an order.
+  migrate:
+    <<: *enclave-common
+    command: ["enclave-cli", "migrate"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
+  # The API.
+  # ---------------------------------------------------------------------------
+  api:
+    <<: *enclave-common
+    command: ["enclave-api"]
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+      # The Prometheus exposition, on its own socket (`§10.1`). Published so a load run can be
+      # read from the host; `docs/11` is explicit that a network where this port is open to the
+      # world is not one this belongs on.
+      - "9464:9464"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      # `/health/ready`, not `/health/live` and not an open port. `web/playwright.e2e.config.ts`
+      # refuses to run when this endpoint does not answer, for the reason `deploy/README.md` gives
+      # about `up --wait`: a container that exists is not a service that works.
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 20s
+
+  # ---------------------------------------------------------------------------
+  # The worker.
+  # ---------------------------------------------------------------------------
+  # **Started alongside the API, and the ordering between them is not arbitrary.** `ENC-935`: the
+  # e2e job started the worker second, and every upload stayed `SCANNING` for ever — the antivirus
+  # pass and the publish that follows it are the worker's, and no read path serves `SCANNING`
+  # content (rule 9). A stack whose worker is down is a stack where uploads never become
+  # `AVAILABLE`, and the symptom is `404` rather than an error.
+  worker:
+    <<: *enclave-common
+    command: ["enclave-worker"]
+    restart: unless-stopped
+    environment:
+      <<: *enclave-env
+      # `DATABASE_PLATFORM_URL` is in the shared block above because both processes need it. The
+      # worker's need is the louder one: it **refuses to start** without a tenant list, because the
+      # query that produces one cannot itself be scoped to a tenant and every pass takes that list
+      # as a parameter. With no credential it would run its loops over nothing while every probe
+      # stayed green.
+      #
+      # Its own metrics socket, and its own key. Sharing `server.metrics_port` with the API is
+      # `ENC-566`: correct for one process per pod, fatal on one host, where whichever started
+      # second died with `Address already in use`. Two containers do not share a port namespace, so
+      # the number could match — it is different here because the two are published to one host.
+      ENCLAVE_METRICS__WORKER_PORT: "9465"
+    ports:
+      - "9465:9465"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      # **Without this, `docker compose up --wait` reported the stack healthy while this container
+      # was on its ninth restart.** A service with no healthcheck is "healthy" the moment it is
+      # running, and a crash loop is running most of the time — which is `deploy/README.md`'s own
+      # sentence about `initdb`, arriving from the other direction and costing an hour.
+      #
+      # The metrics socket rather than a process check: `docs/11 §3.1` is explicit that a worker
+      # with no port publishes the coverage gauges into a registry nothing scrapes, which reads as
+      # zero forever and is indistinguishable from healthy. Probing the port proves the one thing
+      # a process check cannot — that the socket an operator will later scrape is actually bound.
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9465/metrics"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 20s
+
+    # The three staged artefacts (`docs/11 §3.2`), mounted rather than baked — the OCR weights are
+    # CC-BY-SA-4.0 and this product is self-hosted by enterprises, so shipping them in the image
+    # would put a distribution obligation on every customer. Commented rather than absent because
+    # the paths are the interface: uncomment a line once the artefact is staged, and read
+    # `docs/08 §18.1` for the embedding model's conversion step. Without them the worker starts,
+    # refuses to index, and says so in the line `§3.1` tells operators to read.
+    #
+    # volumes:
+    #   - ../../.artefacts/embedding-model:/opt/enclave/embedding-model:ro
+    #   - ../../.artefacts/ocr-models:/opt/enclave/ocr-models:ro
+    #   - ../../.artefacts/pdfium:/opt/enclave/pdfium:ro
+
+networks:
+  default:
+    name: enclave

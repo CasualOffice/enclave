@@ -1,0 +1,40 @@
+# What the image build must not receive (`ENC-993`).
+#
+# `target/` alone is 29 GB on a developer machine — sending it as build context would cost more
+# than the compile it is meant to save, and it cannot be reused anyway: the builder stage is a
+# different libc, a different toolchain layout and, since `ENC-979`, a different profile
+# fingerprint. The build inside the image starts cold on purpose.
+#
+# The exclusions below are ordered by what they cost if forgotten rather than alphabetically.
+
+# Build output — the 29 GB one.
+target/
+web/dist/
+web/node_modules/
+
+# Version control and CI. The build reads no git metadata; `--locked` is what pins the inputs.
+.git/
+.github/
+
+# Secrets and local configuration. `deploy/config/dev-keys/` holds development JWT signing keys
+# generated on first run, and `enclave.yaml` is git-ignored precisely because it is the file an
+# operator fills in with references to real ones. Neither is tracked, so neither would reach a
+# commit — but the build context is not the index, and `COPY . .` does not consult `.gitignore`.
+deploy/config/dev-keys/
+enclave.yaml
+*.pem
+*.key
+
+# Staged artefacts. `docs/11 §3.2` mounts all three at run time and this image deliberately
+# contains none of them; a developer who staged them under the workspace must not have them
+# silently baked in by a `COPY`, which is the licensing failure that section is written about.
+**/embedding-model/
+**/ocr-models/
+**/pdfium/
+
+# Scratch and editor state.
+**/.DS_Store
+**/*.swp
+.idea/
+.vscode/
+opencalc/
