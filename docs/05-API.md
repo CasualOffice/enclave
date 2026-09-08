@@ -1,7 +1,37 @@
 # 05 — API Surface
 
-> **Status:** Draft · **Version:** 1.15 · **Owner:** Platform Engineering · **Last updated:** 2026-09-09
+> **Status:** Draft · **Version:** 1.16 · **Owner:** Platform Engineering · **Last updated:** 2026-09-09
 > **Authoritative for:** REST contracts, error model, pagination, idempotency, versioning, rate limits.
+
+## 0. What is built, and what this document is
+
+**This document is a contract, not an inventory, and `ENC-985` is the row for saying so.** It has
+described the intended surface since the API was drawn; roughly a third of the endpoints in it have
+no implementation, and until 2026-09-09 nothing distinguished the two. A client author reads an API
+document as a list of things they can call, so an unmarked absence is not a gap in the document —
+it is a wrong answer given confidently.
+
+Every section that contains an unimplemented endpoint now says so **in that section**, next to the
+paths, in the form `§14` has used for the administrative block since it was written. The summary:
+
+| Area | State |
+|---|---|
+| Auth, files, folders, libraries, workspaces, uploads, delivery, trash, search, sync, activity, favorites, workflows | **Built** |
+| Sharing (`§10`) | Create, list, amend and revoke are built. **Redemption — `GET /shares/{token}` and its `authenticate` — is not** (`ENC-692`), so external sharing does not work end to end |
+| `/files/{id}/metadata`, `/libraries/{id}/fields` | **Reads built** (`ENC-984`); writes blocked on `ENC-996` |
+| Admin: workspaces, DLP rules, retention policies, audit, audit verification | **Built** — `§14` marks the rest |
+| Lists, pages, views (`§12`) | Not built — `enclave-lists` and `enclave-pages` are stub crates |
+| Signing (`§16`) | Not built — `enclave-signing` is a stub; M9 |
+| MCP (`§15`) | Not built — `enclave-mcp` is a stub; M7 |
+| `POST /search/answer`, `POST /search/suggest` (`§11`) | Not built — `enclave-ai` is a stub; M7 |
+| Webhooks (`§17`) | Not built — no crate owns them |
+
+A section with no such note is one where every path listed is registered and answers. **Adding an
+endpoint to this document without either implementing it or marking it is the defect `ENC-985`
+records**, and the cheapest place to notice it is review of the diff that adds the path.
+
+Nothing here is a promise about *when*: `ROADMAP.md` owns the order and the dates, and `§1.2` of it
+is the part worth reading before inferring a schedule from this table.
 
 ## 1. Principles
 
@@ -835,6 +865,19 @@ redemption — an obligation this path cannot discharge, or a rendition the depl
 
 The raw token appears exactly once, in the creation response. Only its SHA-256 hash is stored.
 
+**Creation and revocation are built; redemption is not** (`ENC-985`). The four `{id}` rows above
+exist. **The two `{token}` rows — the only ones an external recipient ever calls — are not
+registered**, so a link can be minted, listed, amended and revoked, and nobody outside the tenant
+can open one. That is `ENC-692`, deliberately left unregistered rather than answered: the chain can
+now name a link's bearer (`ENC-879` added `Actor::LinkBearer` and a `SHARE_LINK` principal kind),
+but a link's own conditions — password, OTP, MFA, audience — are stored and enforced by nothing
+(`ENC-694`), so a route registered today would authorise the redemption correctly and then hand out
+access past every demand the link states. `ENC-896` is the other prerequisite: nothing writes a
+`SHARE_LINK` ACL row yet, so a minted link grants its bearer nothing.
+
+Worth stating plainly because the paths above read as a working feature: **external sharing does not
+work end to end today.**
+
 ## 11. Search
 
 ```http
@@ -894,7 +937,11 @@ POST /api/v1/search
   to find it in the file.
 - `diagnostics.degraded` is `true` when the vector store is unavailable and the query fell back to
   lexical-only, so the UI can say so honestly rather than silently returning fewer results.
-- Related: `POST /search/suggest`, `POST /search/answer` (RAG; always returns cited chunk sources).
+- Related: `POST /search/suggest`, `POST /search/answer` (RAG; always returns cited chunk
+  sources). **Neither is implemented** (`ENC-985`): `POST /search` is built and these two are not,
+  and the reason is upstream of routing — `enclave-ai` and `enclave-mcp` are five-line stub crates,
+  so there is no LLM provider and no retrieval-augmented path to register. `ROADMAP.md` places
+  both in **M7**.
 
 ## 12. Lists, pages, views, metadata
 
@@ -1493,10 +1540,24 @@ Every tool call is audited with the MCP client identity. Write tools are disable
 client (`mcp_clients.write_tools_enabled`). A tool result never includes content above the client's
 `classification_ceiling`, even when the acting user could read it directly.
 
+**None of this section is implemented** (`ENC-985`). `crates/mcp` is a five-line crate — a module
+doc comment and nothing else — so `/mcp` is served by nothing and not one tool in the table above
+exists. The section is kept because it is the contract M7 builds against, and because the two
+properties in the paragraph above are the ones that must be true *before* a tool is written rather
+than retrofitted after: `docs/12 §4.3` `D7` and `S8` are already written to hold them.
+
 ## 16. Workflows and signing
 
 Semantics, states and the signing pipeline are in `15-WORKFLOWS-AND-SIGNING.md`; the contracts are
 registered here.
+
+**The workflow half is built and the signing half is not** (`ENC-985`). Every `/workflows/*` and
+`/files/{id}/workflows` route below exists (`ENC-965`, `ENC-968`). **Every signing route below —
+`/files/{id}/signature-requests`, all five `/signature-requests/{id}*`, all five `/sign/{token}*`,
+and both version-signature paths — is absent**, because `crates/signing` is a five-line stub: no
+PAdES, no CAdES, no timestamping authority, no signer ceremony. `ROADMAP.md` places it in **M9**,
+and its estimate is one of the two the rebase marks *very low* confidence, because a signature
+chain needs a real certificate authority and a real TSA to test against.
 
 ```text
 GET|POST         /api/v1/workflows/definitions
@@ -1541,6 +1602,10 @@ GET|POST         /admin/webhooks
 DELETE           /admin/webhooks/{id}
 POST             /admin/webhooks/{id}/test
 ```
+
+**Not implemented** (`ENC-985`). No crate owns webhooks, no route is registered, and nothing signs
+or delivers anything. The signing scheme and the retry policy below are the contract a delivery must
+meet when one is built, not a description of behaviour that exists.
 
 Deliveries are signed: `X-Enclave-Signature: t=<unix>,v1=<hex hmac-sha256>` over `t.body`, with the
 secret held in the secret provider. Receivers must reject timestamps older than 5 minutes. Retries
