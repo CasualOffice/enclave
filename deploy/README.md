@@ -1,12 +1,17 @@
-# `deploy/` — the development stack
+# `deploy/` — the development stack, and the single-node target above it
 
-Everything a contributor needs running locally, and the configuration template a deployment starts
-from. Production manifests are not here; this directory is the developer-facing half of
-[`docs/08-BYO-INFRA.md`](../docs/08-BYO-INFRA.md).
+Everything a contributor needs running locally, the configuration template a deployment starts
+from, and — since `ENC-993` — a stack that runs Enclave itself rather than only the things it
+depends on. Production manifests are still not here; this directory is the developer-facing half of
+[`docs/08-BYO-INFRA.md`](../docs/08-BYO-INFRA.md), and
+[`docs/11-OPERATIONS.md §2`](../docs/11-OPERATIONS.md) is where the four environments and what each
+one actually is are recorded.
 
 | Path | What it is |
 |---|---|
 | [`compose/dev.yml`](compose/dev.yml) | The local infrastructure stack |
+| [`compose/stack.yml`](compose/stack.yml) | Enclave on top of it — `migrate`, `api`, `worker` |
+| [`../Dockerfile`](../Dockerfile) | The image those three run, and the one `docs/11 §3`'s rolling deploy assumes |
 | [`config/enclave.example.yaml`](config/enclave.example.yaml) | Template for `enclave.yaml`, which is git-ignored |
 | `config/dev-keys/` | Development JWT signing keys, generated on first run, git-ignored, never committed |
 | [`monitoring/alerts/`](monitoring/alerts) | Prometheus alerting and recording rules |
@@ -17,6 +22,41 @@ from. Production manifests are not here; this directory is the developer-facing 
 ```bash
 docker compose -f deploy/compose/dev.yml up -d --wait
 ```
+
+## Run Enclave on it
+
+```bash
+docker compose -f deploy/compose/dev.yml -f deploy/compose/stack.yml \
+               --profile search --profile av up -d --wait
+```
+
+Two files rather than one: `dev.yml` starts what Enclave depends on and `stack.yml` starts Enclave,
+and keeping them separate means the first is still usable on its own for `cargo test`, which is
+what most contributors want most of the time.
+
+`migrate` runs to completion before `api` and `worker` start — `docs/11 §3` deploys migrations
+first and separately, and `service_completed_successfully` is what makes that an order rather than
+a race. `--wait` returns when `/health/ready` answers, not when the containers exist.
+
+**Seeding is a separate step**, because a stack that seeded itself on every `up` would be one
+nobody could restore a backup into:
+
+```bash
+docker compose -f deploy/compose/dev.yml -f deploy/compose/stack.yml run --rm migrate \
+    enclave-cli seed
+printf '%s' 'Walkthrough-Pass-2026!' | docker compose \
+    -f deploy/compose/dev.yml -f deploy/compose/stack.yml run --rm -T migrate \
+    enclave-cli set-password --tenant tenant-alpha --email admin@tenant-alpha.example
+```
+
+`seed` writes tenants, users and groups and **no credential** — every seeded account answers `401`
+until `set-password` runs, which is `ENC-687` working rather than a broken seed.
+
+**The worker starts without the three staged artefacts and refuses to index.** That is the
+documented posture, not a fault: `docs/11 §3.2` explains why embedding weights, OCR models and
+PDFium are mounted rather than baked — the OCR weights are CC-BY-SA-4.0, and this product is
+self-hosted by enterprises, so shipping them would put a distribution obligation on every customer.
+`stack.yml` carries the mount lines commented, with the paths they expect.
 
 `--wait` returns when every service reports **healthy**, not when the containers exist. That is the
 whole reason each service declares a healthcheck: without one, `up --wait` comes back while
