@@ -26,9 +26,25 @@ docker compose -f deploy/compose/dev.yml up -d --wait
 ## Run Enclave on it
 
 ```bash
+# A signing key, generated here and never committed. plans/M0-FOUNDATIONS.md D5: throwaway keys
+# get copied into production more often than anyone admits, so this repository holds none.
+export STACK_SIGNING_KEY="$(openssl genpkey -algorithm ed25519 -outform DER | base64 | tr -d '\n')"
+
 docker compose -f deploy/compose/dev.yml -f deploy/compose/stack.yml \
                --profile search --profile av up -d --wait
 ```
+
+**The key is required and `up` fails without it**, with the API's own refusal: *`key_ref` is
+required for a deployment that binds a non-loopback address*. That is the correct failure. A
+container must bind `0.0.0.0` — a published port reaches the container's address, not its loopback,
+so a loopback-bound process answers `Connection reset` from the host **while its internal
+healthcheck passes**, which is a stack that reports healthy and serves nothing. The product ties the
+bind and the key together deliberately, and this stack does not work around it.
+
+`STACK_SIGNING_KEY` is named outside the `ENCLAVE_` prefix on purpose: `ConfigLoader` turns every
+`ENCLAVE_*` variable into a configuration field, so a key named into the prefix arrives as an
+unknown field holding an inline credential and stops the process from starting (`ENC-544`). A
+deployment with a secret manager points `key_ref` at that instead — `vault://workspace/jwt#ed25519`.
 
 Two files rather than one: `dev.yml` starts what Enclave depends on and `stack.yml` starts Enclave,
 and keeping them separate means the first is still usable on its own for `cargo test`, which is
