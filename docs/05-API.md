@@ -1,6 +1,6 @@
 # 05 — API Surface
 
-> **Status:** Draft · **Version:** 1.16 · **Owner:** Platform Engineering · **Last updated:** 2026-09-09
+> **Status:** Draft · **Version:** 1.17 · **Owner:** Platform Engineering · **Last updated:** 2026-09-09
 > **Authoritative for:** REST contracts, error model, pagination, idempotency, versioning, rate limits.
 
 ## 0. What is built, and what this document is
@@ -16,7 +16,8 @@ paths, in the form `§14` has used for the administrative block since it was wri
 
 | Area | State |
 |---|---|
-| Auth, files, folders, libraries, workspaces, uploads, delivery, trash, search, sync, activity, favorites, workflows | **Built** |
+| Files, folders, libraries, workspaces, uploads, delivery, trash, search, sync, activity, favorites, workflows | **Built** |
+| Auth (`§3`) | Password login, MFA verify, refresh, logout, sessions are built. **SSO, passkeys, `/auth/token` and `/.well-known/jwks.json` are not** |
 | Sharing (`§10`) | Create, list, amend and revoke are built. **Redemption — `GET /shares/{token}` and its `authenticate` — is not** (`ENC-692`), so external sharing does not work end to end |
 | `/files/{id}/metadata`, `/libraries/{id}/fields` | **Reads built** (`ENC-984`); writes blocked on `ENC-996` |
 | Admin: workspaces, DLP rules, retention policies, audit, audit verification | **Built** — `§14` marks the rest |
@@ -78,6 +79,20 @@ clients, live only in an `HttpOnly; Secure; SameSite=Strict` cookie scoped to `/
 | `POST` | `/auth/webauthn/login/start` · `/finish` | Passkey authentication |
 | `POST` | `/auth/token` | OAuth2 client credentials for service accounts and MCP clients |
 | `GET` | `/.well-known/jwks.json` | Public signing keys (unauthenticated) |
+
+**Six of these are not implemented** (`ENC-997` found them; `ENC-985`'s hand pass had missed the
+whole section). Built: `login`, `logout`, `logout-all`, `refresh`, `mfa/verify`, and both
+`/auth/sessions` routes. **Absent: every SSO and passkey path — `/auth/oidc/{provider}/start`,
+`/auth/saml/{provider}/acs`, both `/auth/webauthn/*` pairs — plus `/auth/token` and
+`/.well-known/jwks.json`.** `crates/api/src` contains no occurrence of `oidc`, `saml`, `webauthn`,
+`jwks` or `auth/token`.
+
+SSO and passkeys are M6 (`13-IDENTITY-SSO-SCIM.md`), and `/auth/token` is what an MCP client or a
+service account would use, so it waits on M7. **`/.well-known/jwks.json` is the one worth noticing
+separately**: this process verifies its own tokens from an in-memory `KeySet`, so nothing internal
+needs the endpoint and its absence is invisible from inside — but it is the only way an *external*
+relying party can verify a token this deployment issued, and `auth.signing_keys.rotation_interval`
+promises a rotation those parties would have no way to follow.
 
 ### 3.1 Login
 

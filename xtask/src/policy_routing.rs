@@ -36,7 +36,7 @@ use syn::visit::Visit;
 ///
 /// Only `api` is scanned: it is the crate that owns the HTTP surface, and a route registered
 /// anywhere else would already be a layering violation caught by the crate-graph rules (D1).
-const API_SRC: &str = "crates/api/src";
+pub(crate) const API_SRC: &str = "crates/api/src";
 
 /// How far the call-graph walk follows helper functions before giving up.
 ///
@@ -665,7 +665,7 @@ fn string_literal(expr: &syn::Expr) -> Option<String> {
 ///
 /// Derived rather than taken from the current directory so the lint gives the same answer whether
 /// CI runs it from the root or a developer runs it from a crate subdirectory.
-fn workspace_root() -> Result<PathBuf> {
+pub(crate) fn workspace_root() -> Result<PathBuf> {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     manifest
         .parent()
@@ -677,7 +677,7 @@ fn workspace_root() -> Result<PathBuf> {
 ///
 /// Paths are relative because they are printed into GitHub annotations, which resolve them against
 /// the repository, not the runner's filesystem.
-fn load_sources(dir: &Path, root: &Path) -> Result<Vec<(String, String)>> {
+pub(crate) fn load_sources(dir: &Path, root: &Path) -> Result<Vec<(String, String)>> {
     let mut out = Vec::new();
     collect_rs_files(dir, root, &mut out)?;
     out.sort_by(|a, b| a.0.cmp(&b.0));

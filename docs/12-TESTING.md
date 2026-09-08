@@ -1,6 +1,6 @@
 # 12 — Testing & Quality Gates
 
-> **Status:** Draft · **Version:** 1.36 · **Owner:** Engineering · **Last updated:** 2026-09-09
+> **Status:** Draft · **Version:** 1.37 · **Owner:** Engineering · **Last updated:** 2026-09-09
 > **Authoritative for:** test strategy, the security leakage matrix, CI gates, release criteria.
 
 ## 1. Philosophy
@@ -562,6 +562,7 @@ Assertions about the codebase itself, not its behavior:
 | Migrations | Numbered, checksummed, no gaps; contract-phase migrations flagged for review |
 | Dependencies | `cargo audit` and `cargo deny` clean; SBOM generated |
 | API contract | Generated OpenAPI matches the committed snapshot, or the diff is explicitly approved |
+| API surface | Every endpoint `docs/05-API.md` documents is registered, or sits in a section whose prose says it is not (`ENC-997`). The pair with `reachability.rs`: that proves *registered ⇒ answers*, this proves *documented ⇒ registered or marked*. Compares **(method, path)** — comparing path alone is what let `ENC-985` report external sharing as built while `GET /shares/{token}` was unregistered — and reads the router through `syn` rather than by matching text |
 | Accessibility | axe passes on every primary route |
 | Bundle size | Main bundle ≤ 250 KB gzipped |
 | i18n | No untranslated user-facing string literals in `web/src` (`14-I18N-L10N.md §8`) |

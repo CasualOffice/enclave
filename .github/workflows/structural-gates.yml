@@ -392,6 +392,75 @@ jobs:
 
 
   # --------------------------------------------------------------------------
+  # Gate: API surface — the other direction from reachability (`ENC-997`).
+  #
+  # `crates/api/tests/reachability.rs` proves *registered => answers*. Nothing
+  # proved *documented => registered or marked*, and `docs/05-API.md` described
+  # roughly a third more surface than the binary serves. A client author reads an
+  # API document as a list of things they can call.
+  #
+  # It exists as a gate rather than a sweep because the hand pass that preceded
+  # it (`ENC-985`) got three things wrong in two days, each by matching text
+  # instead of reading structure — including reporting external sharing as built
+  # when no recipient can open a link. This one compares (method, path) and reads
+  # the router through `syn`, reusing the parser `policy-routing` already has.
+  # --------------------------------------------------------------------------
+  api-surface:
+    name: "RULE: every documented endpoint is registered, or marked as absent"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the pinned toolchain
+        run: |
+          set -euo pipefail
+          channel=$(grep -E '^[[:space:]]*channel' rust-toolchain.toml | head -1 | sed -E 's/.*"(.*)".*/\1/')
+          rustup toolchain install "$channel" --profile minimal --no-self-update
+          rustup default "$channel"
+
+      - name: Fetch dependencies (retried — registry only)
+        id: fetch
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4; do
+            if cargo fetch --locked; then exit 0; fi
+            echo "cargo fetch failed (attempt ${attempt}/4); retrying"
+            sleep $((attempt * 5))
+          done
+          echo "::error title=Dependency registry unavailable — NOT a gate failure::cargo could not fetch from index.crates.io after 4 attempts. The API-surface gate did not run: nothing was asserted and no rule was broken."
+          exit 1
+
+      - name: Compare docs/05-API.md against the registered routes
+        id: gate
+        run: |
+          set -euo pipefail
+          RULE='API surface — every endpoint docs/05-API.md documents is registered, or sits in a section whose prose says it is not (docs/12-TESTING.md §5, ENC-997)'
+          echo "Enforcing: ${RULE}"
+          cargo run --locked -p xtask -- api-surface
+
+      - name: Explain on failure
+        if: failure() && steps.gate.outcome == 'failure'
+        run: |
+          set -euo pipefail
+          {
+            echo "### ❌ FAILED — API surface"
+            echo ""
+            echo "**Rule:** Every endpoint \`docs/05-API.md\` documents is registered, or sits in a"
+            echo "section whose prose says it is not (docs/12-TESTING.md §5)."
+            echo ""
+            echo "The annotations above name the method, the path and the section. Either register"
+            echo "the endpoint, or add a sentence to that section saying it is not built **and why**."
+            echo ""
+            echo "This is not pedantry about a document. \`ENC-985\` found \`§10\` listing six"
+            echo "sharing paths of which the two an external recipient actually calls were absent —"
+            echo "so the section read as a working feature while no link could be opened."
+            echo ""
+            echo "Run it locally with \`cargo run -p xtask -- api-surface\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+
+  # --------------------------------------------------------------------------
   # Gate: audit coverage — the ENC-585 sweep, as a check rather than a review.
   #
   # Two halves, both in this job, because they fail differently and neither is
@@ -1012,6 +1081,12 @@ jobs:
       - grant-coverage
       - composite-fks
       - policy-routing
+      # Beside policy-routing because the two are the halves of one question about the API surface.
+      # `policy-routing` and `reachability` together say every route that exists is enforced and
+      # answers; `api-surface` says every route the contract promises exists at all, or is marked
+      # absent. `ENC-985` is what the third of those looks like when nothing checks it: a section
+      # listing six sharing paths, two of them unregistered, reading as a working feature.
+      - api-surface
       # Beside policy-routing for the same reason grant-coverage sits beside rls-coverage: one
       # says every entry point reaches the chain, the other says every refusal the chain (or
       # anything else) takes leaves a row. A surface that routes correctly and audits nothing is

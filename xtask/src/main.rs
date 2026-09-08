@@ -5,6 +5,7 @@
 //! to understand Rust live here, so that a developer can run the identical check before pushing
 //! instead of discovering it in a red pull request.
 
+mod api_surface;
 mod audit_coverage;
 mod policy_routing;
 
@@ -21,6 +22,7 @@ fn main() -> Result<()> {
     match subcommand.as_deref() {
         Some("policy-routing") => policy_routing::run(),
         Some("audit-coverage") => audit_coverage::run(),
+        Some("api-surface") => api_surface::run(),
         Some(other) => bail!("unknown subcommand `{other}`\n{USAGE}"),
         None => {
             println!("{USAGE}");
@@ -36,4 +38,6 @@ subcommands:
   policy-routing   assert every Axum route handler reaches PolicyEngine::enforce
                    (CLAUDE.md rule 1, docs/12-TESTING.md §5)
   audit-coverage   assert every refusal is constructed where the policy engine records it
-                   (CLAUDE.md rule 10, plans/M4-GOVERNANCE.md D32)";
+                   (CLAUDE.md rule 10, plans/M4-GOVERNANCE.md D32)
+  api-surface      assert every endpoint docs/05-API.md documents is registered, or sits in a
+                   section that says it is not (ENC-997, docs/12-TESTING.md §5)";
