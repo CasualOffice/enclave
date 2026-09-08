@@ -409,8 +409,9 @@ were built — the opposite of `§1`'s old error, and read as a project further 
    `web/tools/lint-web.mjs` still refers to them in the future tense, and `en-XB` is what would
    prove the logical-property rule that lint enforces statically.
 4. Leakage matrix §4.1–4.6 implemented and green — **swept by `ENC-987`, and the criterion is
-   unmeetable as written.** Seventeen rows had a passing test and did not say so; two are genuine
-   gaps and testable today (`ENC-998`); and **ten cannot be tested at all in M5**, because each
+   unmeetable as written.** Nineteen rows had a passing test and did not say so —
+   including the two this sweep first reported as gaps and then corrected (`ENC-998`) — and **ten
+   cannot be tested at all in M5**, because each
    needs a subsystem that is a five-line stub and belongs to M6 or M7 — AI, MCP, classification
    ceilings, barriers, legal hold, records, incidents, and share redemption. The criterion acquired
    a Phase 2 dependency as rows were added to it, and nobody noticed because nobody had read the
