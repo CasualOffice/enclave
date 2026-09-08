@@ -408,7 +408,14 @@ were built — the opposite of `§1`'s old error, and read as a project further 
    by the `lint:i18n` gate). **The `en-XA`/`en-XB` pseudo-locales are not built** — `ENC-994`.
    `web/tools/lint-web.mjs` still refers to them in the future tense, and `en-XB` is what would
    prove the logical-property rule that lint enforces statically.
-4. Leakage matrix §4.1–4.6 implemented and green — **`ENC-987`, open, and on the critical path**.
+4. Leakage matrix §4.1–4.6 implemented and green — **swept by `ENC-987`, and the criterion is
+   unmeetable as written.** Seventeen rows had a passing test and did not say so; two are genuine
+   gaps and testable today (`ENC-998`); and **ten cannot be tested at all in M5**, because each
+   needs a subsystem that is a five-line stub and belongs to M6 or M7 — AI, MCP, classification
+   ceilings, barriers, legal hold, records, incidents, and share redemption. The criterion acquired
+   a Phase 2 dependency as rows were added to it, and nobody noticed because nobody had read the
+   set as a whole. It needs a rescope or a decision to pull those subsystems forward: `ENC-999`,
+   and it is the repo owner's. `docs/12 §4.0` carries the evidence row by row.
    Rows have been filled in as their surfaces landed (ENC-134 for §4.1/§4.2/§4.8, ENC-153 for A1,
    A5, A6 and H1–H3); the sweep that takes the whole set green is this step and had no ID until
    2026-09-09.
@@ -427,7 +434,8 @@ were built — the opposite of `§1`'s old error, and read as a project further 
 **Exit criteria — the MVP gate**
 
 - [ ] Every P1 in Phase 1 `DONE`.
-- [ ] Leakage matrix §4.1–4.6 green, zero skips.
+- [ ] Leakage matrix §4.1–4.6 green, zero skips. **Blocked as written** — see step 4 above and
+      `ENC-999`: ten of its rows describe subsystems scheduled for M6/M7.
 - [ ] Performance budgets met: metadata P95 < 300 ms, search P95 < 500 ms, 100k-item folder
       first paint < 400 ms.
 - [ ] Restore drill executed end to end and documented.
