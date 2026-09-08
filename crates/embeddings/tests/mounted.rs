@@ -19,6 +19,15 @@
 //! **Run it in release.** `rten` says so in its own documentation, and a debug build of the
 //! inference kernels turns a two-second forward pass into something that reads as a hang.
 //!
+//! CI cannot run it in release — it runs `cargo test` — and this paragraph is the one nobody acted
+//! on. On `bc4d8dc` [`the_largest_chunk_the_chunker_produces_reaches_the_model_whole`] was still
+//! inside its forward pass when the thirty-minute job cap cut the shard, having read as exactly the
+//! hang described above; the three tests that did finish took nine to eleven minutes each, in
+//! proportion to their token counts. What makes a debug run viable is `ENC-979`'s package overrides
+//! in the root `Cargo.toml`: `rten`, its kernels and `tokenizers` are built at `opt-level = 2` even
+//! under `dev`, while this workspace's own crates are not. The command above is still the fastest
+//! way to run these locally; it is no longer the only way to run them at all.
+//!
 //! # What is asserted, and what deliberately is not
 //!
 //! `docs/12-TESTING.md §1.1`. Nothing here measures whether `bge-m3` embeds *well* — whether two

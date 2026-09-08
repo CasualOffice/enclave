@@ -351,3 +351,82 @@ strip         = "debuginfo"
 
 [profile.dev]
 debug = 1
+
+# **The inference dependencies are optimised even in a debug build** (`ENC-979`).
+#
+# `crates/embeddings/tests/mounted.rs` opens by saying to run it in release, because a debug build
+# of `rten`'s kernels "turns a two-second forward pass into something that reads as a hang". CI runs
+# `cargo test`, so CI runs them in debug — and that is precisely what happened on `bc4d8dc`: the
+# shard compiled in **1m29s** and then spent every remaining minute inside a matrix multiply built
+# at `opt-level = 0`. One bge-m3 forward pass over a full-size 3,200-byte chunk
+# (`the_largest_chunk_the_chunker_produces_reaches_the_model_whole`) was still running when the
+# thirty-minute cap cut the job at 24 minutes; its three siblings took nine to eleven minutes each,
+# in proportion to their token counts.
+#
+# **So the cost was never in the partition, and three consecutive fixes moved the partition.**
+# `ENC-977` split the workspace job, `ENC-978` rebalanced that split against the measurement, and
+# `ENC-979`'s predecessor split it a third time — while a *single test* needed more than the whole
+# budget. No arrangement of the crate list can shard one test into two runners.
+#
+# Package overrides rather than a workspace-wide `opt-level`, for two reasons. The workspace's own
+# crates stay unoptimised, so a compile stays a compile and a panic still points at a real line;
+# and naming the hot trees one at a time — rather than `"*"` — avoids buying every other shard a
+# cold-cache rebuild of forty-odd dependency trees to fix four.
+#
+# `ocrs` and `rten-imageproc` are here for the same reason on the OCR path, and `tokenizers`
+# because a SentencePiece unigram pass over a full-size chunk is the other half of the forward
+# pass. This invalidates the existing caches once, by design — the profile is part of the
+# fingerprint, exactly as `CARGO_PROFILE_*_DEBUG` was in `.github/workflows/ci.yml`.
+#
+# `debug-assertions` goes with it. `rten-tensor` bounds-checks every index behind a
+# `debug_assert!`, and those assertions check *`rten`'s* invariants rather than this
+# workspace's — leaving them on inside the inner loop of a matrix multiply costs a multiple
+# for a check no test here is asserting. `opt-level = 2` and not `3` because the cliff is
+# `0` → `2`: `rten` vectorises through explicit intrinsics in `rten-simd` rather than through
+# autovectorisation, so `3` buys compile time more than it buys throughput.
+#
+# Set on `dev` and not `test`: `cargo test` builds *dependencies* with the `dev` profile and only
+# the test targets themselves with `test`, and `test` inherits from `dev` in any case.
+[profile.dev.package.rten]
+opt-level        = 2
+debug-assertions = false
+
+[profile.dev.package.rten-base]
+opt-level        = 2
+debug-assertions = false
+
+[profile.dev.package.rten-gemm]
+opt-level        = 2
+debug-assertions = false
+
+[profile.dev.package.rten-simd]
+opt-level        = 2
+debug-assertions = false
+
+[profile.dev.package.rten-tensor]
+opt-level        = 2
+debug-assertions = false
+
+[profile.dev.package.rten-vecmath]
+opt-level        = 2
+debug-assertions = false
+
+[profile.dev.package.rten-shape-inference]
+opt-level        = 2
+debug-assertions = false
+
+[profile.dev.package.rten-model-file]
+opt-level        = 2
+debug-assertions = false
+
+[profile.dev.package.rten-imageproc]
+opt-level        = 2
+debug-assertions = false
+
+[profile.dev.package.ocrs]
+opt-level        = 2
+debug-assertions = false
+
+[profile.dev.package.tokenizers]
+opt-level        = 2
+debug-assertions = false
