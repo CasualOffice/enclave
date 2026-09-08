@@ -21,6 +21,7 @@ pub mod favorites;
 pub mod folders;
 pub mod libraries;
 pub mod lifecycle;
+pub mod metadata;
 pub mod permissions;
 pub mod recent;
 pub mod rehydrate;

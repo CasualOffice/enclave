@@ -204,6 +204,11 @@ pub fn router(state: ApiState, delivery: Delivery) -> Router {
         // have obtained and every upload landed at a library root (`ENC-788`). Registered beside the
         // browse it makes non-trivial, and before `/files/{id}`, in the document's order.
         .route("/api/v1/libraries/{id}/items", get(content::browse))
+        // The definitions a library's contents carry, decided as `container.read` on the library —
+        // a field describes the library's shape, not any one file's. `POST` is absent for
+        // `ENC-996`'s reason *and* a second one: `crates/metadata`'s repository has no function
+        // that creates a field, so that half is missing code as well as a missing decision.
+        .route("/api/v1/libraries/{id}/fields", get(routes::metadata::library_fields))
         .route("/api/v1/libraries/{id}/folders", post(routes::folders::create))
         // The rest of `§7`'s file tree (`ENC-807`). `rename`, `reparent`, `trash` and `restore`
         // have been in `crates/files` since M1 with no caller in any binary, so every folder
@@ -218,6 +223,13 @@ pub fn router(state: ApiState, delivery: Delivery) -> Router {
                 .patch(routes::lifecycle::update)
                 .delete(routes::lifecycle::trash),
         )
+        // `ENC-984`. `docs/05-API.md §12` has documented this path since the API was drawn and
+        // `crates/api` did not depend on `crates/metadata` at all — 1,169 lines and 630 of tests
+        // with no caller outside its own suite. `PUT` is deliberately not here: there is no
+        // `FileAction::MetadataWrite` and no document names the action that would authorize one,
+        // so registering a write would mean inventing a permission inside a wiring task
+        // (`ENC-996`, and `ENC-692` is the precedent for leaving the route off instead).
+        .route("/api/v1/files/{id}/metadata", get(routes::metadata::file_metadata))
         .route("/api/v1/files/{id}/restore", post(routes::lifecycle::restore))
         // `ENC-946`. Asking for archived bytes back, decided as `content_read` — restoring a file
         // to the state it was already in is not a new power, and giving it an action of its own

@@ -1,6 +1,6 @@
 # 05 — API Surface
 
-> **Status:** Draft · **Version:** 1.14 · **Owner:** Platform Engineering · **Last updated:** 2026-08-30
+> **Status:** Draft · **Version:** 1.15 · **Owner:** Platform Engineering · **Last updated:** 2026-09-09
 > **Authoritative for:** REST contracts, error model, pagination, idempotency, versioning, rate limits.
 
 ## 1. Principles
@@ -909,8 +909,29 @@ POST             /pages/{id}/publish
 GET|POST         /libraries/{id}/views
 GET|PATCH|DELETE /views/{id}
 GET|PUT          /files/{id}/metadata
+   GET is built (ENC-984); PUT is not — see below.
 GET|POST         /libraries/{id}/fields
+   GET is built (ENC-984); POST is not — see below.
 ```
+
+**Which of these exist**, in the form `§14` already uses for the administrative block, because a
+contract document that does not distinguish the built half from the intended half is read as an
+inventory. Everything above except the two `GET`s is **not implemented**: lists and pages are
+five-line stub crates (`enclave-lists`, `enclave-pages`), and views are `library_views` with no
+route.
+
+**Neither write is registered, and the reason is a permission that does not exist.**
+`enclave_core::FileAction` has `MetadataRead` and no `MetadataWrite`, and no document — this one
+included — names the action that authorizes writing a field value. The two candidates decide
+different products: `file.edit` says whoever may change a document's *content* may change its
+*properties*, which makes "may tag, may not edit" inexpressible in a system that sorts, filters and
+applies retention on those properties; a new `FileAction::MetadataWrite` is expressive and reaches
+`acl_entries`, `docs/06`, the `capabilities` object and the i18n catalog. That is a design decision
+rather than a wiring task (`ENC-996`), and `ENC-692` is the precedent for leaving a route absent
+rather than answering it against a guessed authorization.
+
+`POST /libraries/{id}/fields` carries a second reason: `crates/metadata`'s repository can read
+definitions and read and write values, and has no function that creates a field at all.
 
 ## 13. Sync
 
