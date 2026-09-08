@@ -1,6 +1,6 @@
 # 12 — Testing & Quality Gates
 
-> **Status:** Draft · **Version:** 1.35 · **Owner:** Engineering · **Last updated:** 2026-09-09
+> **Status:** Draft · **Version:** 1.36 · **Owner:** Engineering · **Last updated:** 2026-09-09
 > **Authoritative for:** test strategy, the security leakage matrix, CI gates, release criteria.
 
 ## 1. Philosophy
@@ -133,7 +133,7 @@ path had no ID for the whole of M0–M4.
 
 The sweep resolved every row in `§4.1`–`§4.6`. Three findings, in order of how much they change:
 
-**1. The matrix was greener than it read.** Seventeen rows had a passing test all along and did not
+**1. The matrix was greener than it read.** Nineteen rows had a passing test all along and did not
 say so, because the link ran one way: a test named `k5_…` points at its row, and the row pointed
 back at nothing. Naming them was most of this sweep's diff and none of its work.
 
@@ -152,11 +152,22 @@ deliberately unregistered (`ENC-692`, `ENC-694`).
 > decision to pull those subsystems forward. `ENC-999` is the row, and it is a decision for the repo
 > owner rather than one to take inside a sweep.
 
-**3. Two rows are genuine gaps and testable today** — `T2` and `T4`, both cross-tenant, both in the
-section that matters most. `ENC-998`.
+**3. There are no gaps in `§4.1`–`§4.6`.** This section first said `T2` and `T4` were untested, and
+that was wrong — `ENC-998` records it. Both are covered: `T2` by the post-filter test that proposes
+a beta-tenant file among its candidates, `T4` by the delivery test that asserts
+`store.touched().is_empty()` after a cross-tenant attempt. **The error came from inferring coverage
+by name**: many tests are prefixed with the row they prove (`k5_…`, `s5_…`), and the two that matter
+here are not, so a search for `t2_`/`t4_` found nothing and *nothing* was read as *no test*. That is
+the third wrong conclusion this method has produced in two days, after `ENC-988` and the `§10`
+sharing entry in `ENC-985`, and it is the whole argument for `ENC-989` and `ENC-997` being scripts
+rather than sweeps: **a convention followed most of the time is worse than none for anyone
+searching by it.**
 
-A row here now carries one of three things: the test that proves it, `**Gap**` with the row that
-will close it, or `**Not testable**` with the reason and the milestone. A row with none of the three
+So the split is **nineteen rows already tested and now saying so, and ten that cannot be tested at
+all** — and the second number is the one that decides M5.
+
+A row here now carries one of two things: the test that proves it, or `**Not testable**` with the
+reason and the milestone. A row with none of the three
 is an unswept row, and `§4.7`, `§4.9`–`§4.12` still hold 46 of them — outside the M5 criterion, and
 outside this sweep on purpose.
 
@@ -165,9 +176,9 @@ outside this sweep on purpose.
 | # | Assertion |
 |---|---|
 | T1 | A `tenant-beta` file ID requested by a `tenant-alpha` user returns `404`, never `403` — `t1_a_foreign_file_id_is_not_found_and_never_forbidden`, `crates/testing/tests/leakage.rs`, and `t1_a_file_in_another_tenant_is_reported_as_absent_on_all_three_routes`, `crates/api/tests/delivery_routes.rs` — the chain and the delivery routes separately, because a `404` from the chain says nothing about what a route that never asks it returns |
-| T2 | Search never returns a chunk whose `tenant_id` differs from the caller's — **Gap, and testable today.** `a_created_collection_carries_the_tenant_partition_key` and `a_census_counts_only_the_tenant_it_was_asked_about` cover the partition key and the census; nothing presents *another tenant's* chunk to the post-filter and asserts it is dropped. `ENC-998` |
+| T2 | Search never returns a chunk whose `tenant_id` differs from the caller's — `s5_over_permissive_candidates_are_dropped_however_confident_the_index_is`, `crates/search/tests/postfilter.rs` — which proposes a **beta-tenant file** among its candidates and asserts it does not survive. Held structurally as well as behaviourally: `Candidate` has no tenant field, so the post-filter builds every `ResourceRef` from `ctx.tenant_id` and *cannot* take a tenant from the index (`crates/search/src/vector.rs`: *the tenant, taken from the verified request context and never from a caller-supplied field*) |
 | T3 | A cursor issued in one tenant is rejected in another — `t3_a_cursor_issued_in_one_tenant_is_rejected_in_another`, `crates/testing/tests/leakage.rs` |
-| T4 | A signed URL issued for one tenant's object cannot be minted from another tenant's context — **Gap, and testable today.** Nothing mints a signed URL from one tenant's context against another tenant's object. `ENC-998` |
+| T4 | A signed URL issued for one tenant's object cannot be minted from another tenant's context — `a_file_in_another_tenant_is_reported_as_absent_on_both_paths`, `crates/api/tests/delivery.rs` — an alpha token against a beta file on preview *and* download, and the assertion that matters for this row rather than for `T1` is the last line: `store.touched().is_empty()`. **No URL is minted**, because the chain refuses before the store is reached |
 | T5 | RLS blocks a cross-tenant read even when the application predicate is deliberately removed — `t5_row_level_security_alone_blocks_a_cross_tenant_read`, `crates/testing/tests/leakage.rs` |
 | T6 | An access token with a mismatched `tid` against the routed custom domain is rejected — `t6_a_token_is_not_valid_on_another_tenants_host`, `crates/api/tests/auth.rs` |
 | T7 | **`T1` on the write surfaces: an upload session, a library and a share link in `tenant-beta` are `404` for a `tenant-alpha` caller, on every method, and are indistinguishable from ids that never existed.** Each row is real, created by the other tenant's own member through the same endpoint, so none of it is an assertion about a fabricated UUID; every leg is paired with the same call against the caller's own resource, which must answer something other than `404`. Two mechanisms hold this and the tests separate them rather than conflating them: `conceal` renders an `ACCESS_DENIED` on a container as an absence — deleting it turns the library case into a `403` and the test fails — while the session and link cases are held by row-level security *as well*, which is why they survived a break that made `POST /uploads` ignore the chain entirely. That survival is `T5`'s point restated from the other direction, and `G15`/`H8` are the rows that close what RLS cannot. `crates/api/tests/uploads.rs`, `crates/api/tests/shares.rs` (`ENC-690`) |
