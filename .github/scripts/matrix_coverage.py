@@ -20,6 +20,8 @@ the auth tables. The matrix is 216 rows and cites 100-odd files.
 4. The rows carrying that note are **exactly** the ten [`DEFERRED`] names M5's rescoped criterion
    excepts (`ENC-999`). Checked in both directions, so the exception can neither grow silently nor
    outlive the subsystem that caused it.
+5. No two rows in one section share an id, and no *new* id is reused across sections — the eight
+   that already are live in [`PREFIX_REUSE`] (`ENC-918`).
 
 # Why the citation rule is what it is
 
@@ -89,6 +91,21 @@ DEFERRED: dict[str, str] = {
     "D8": "M6 — crates/incidents is a stub",
 }
 
+# Row ids that appear in two sections, grandfathered (`ENC-918`).
+#
+# `§4.13` took the `N` prefix `§4.9` was already using, and `§4.14` took `C` from `§4.11` — a later
+# section reusing a letter, not two rows colliding inside one. Four ids *did* collide inside one
+# section (`A20` twice in `§4.2`, `D10`-`D12` twice in `§4.5`) and those were renumbered, because
+# there "A20 is green" had two meanings and no reader could tell which.
+#
+# These eight are left where they are, on `TRACKER.md §2.3`'s argument about its own ids:
+# renumbering to recover a property nothing reads would rewrite references that live outside this
+# file — in prose, in commit messages, in merged pull requests — and the ids are unambiguous in
+# the only place anyone uses them, which is inside a section.
+#
+# Listed rather than tolerated, so a *ninth* is a failure and not a habit.
+PREFIX_REUSE: frozenset[str] = frozenset({"N1", "N2", "N4", "N5", "N6", "C1", "C2", "C3"})
+
 ROW = re.compile(r"^\|\s*\*{0,2}([A-Z]{1,2}\d+)\*{0,2}\s*\|\s*(.+?)\s*\|\s*$")
 HEADING = re.compile(r"^### (4\.\d+)")
 PATH = re.compile(r"(?:crates|web|\.github)/[A-Za-z0-9_./-]+\.(?:rs|tsx?|py|sql)")
@@ -139,6 +156,29 @@ def main() -> int:
 
     problems: list[str] = []
     cited_rows = 0
+
+    # Ids must be unique, because everything downstream keys on them: the `DEFERRED` map above, a
+    # test named `k5_…` for the row it proves, and `§9`'s release criterion counting what passed.
+    # Within a section a duplicate is unambiguous nonsense; across sections it is a reused prefix,
+    # and the eight that exist are named in `PREFIX_REUSE` rather than tolerated silently.
+    by_id: dict[str, list[str]] = {}
+    for rid, _cell, section, _offset in rows:
+        by_id.setdefault(rid, []).append(section)
+    for rid, sections in sorted(by_id.items()):
+        if len(sections) == 1:
+            continue
+        if len(set(sections)) == 1:
+            problems.append(
+                f"{rid} appears {len(sections)} times in §{sections[0]}. Two rows in one section "
+                f"cannot share an id — \"{rid} is green\" would have two meanings, and a test named "
+                f"for it would prove one of them."
+            )
+        elif rid not in PREFIX_REUSE:
+            problems.append(
+                f"{rid} appears in §{' and §'.join(sorted(set(sections)))} — a later section reusing "
+                f"a prefix. Eight of these are grandfathered in `PREFIX_REUSE` (`ENC-918`); a ninth "
+                f"is a new one. Give the section its own letter."
+            )
 
     for rid, cell, section, offset in rows:
         paths = PATH.findall(cell)
