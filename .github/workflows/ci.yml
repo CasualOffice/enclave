@@ -119,7 +119,7 @@ jobs:
 
   test:
     name: test — ${{ matrix.shard.name }}
-    # **Two shards, because one job could not finish inside the ceiling** (`ENC-977`).
+    # **Three shards, measured rather than guessed** (`ENC-977`, `ENC-978`, `ENC-979`, `ENC-980`).
     #
     # `cargo test --workspace -- --include-ignored` needed more than twenty-two minutes on top of
     # roughly eight of setup, and `ENC-974` capped every job at thirty. It was cancelled at the cap,
@@ -142,23 +142,43 @@ jobs:
           # at seventeen minutes — about ten compiling and six running — so this one fits.
           - name: services
             args: -p enclave-api -p enclave-db -p enclave-audit -p enclave-testing
-          # The heavy half of what is left: search, indexing, embeddings and the subsystems that
-          # pull them in. Named explicitly because these are the crates being *moved out* of the
-          # default shard, and a list that grows is safe in this direction — anything forgotten
-          # here still runs, in `rest`.
-          # Split again: `pipeline` measured 26 minutes once and went over thirty on the next
-          # run. Four minutes of margin is not margin. The vector and model crates are one half.
-          - name: pipeline-index
+          # Search, indexing, embeddings and the subsystems that pull them in. Named explicitly
+          # because these are the crates being *moved out* of the default shard, and a list that
+          # grows is safe in this direction — anything forgotten here still runs, in `rest`.
+          #
+          # **One shard again (`ENC-980`), and this is the third time this partition has moved.**
+          # `ENC-977` split the workspace job, `ENC-978` rebalanced it, and `bc4d8dc` split
+          # `pipeline` in two after it measured 26 minutes once and went over thirty on the next
+          # run. All three were cutting a job whose time was not in the partition at all: it was in
+          # `crates/embeddings` running bge-m3 through `rten` built at `opt-level = 0`, which
+          # `ENC-979` fixed at the profile. Measured over five green runs on `main` afterwards:
+          #
+          #   shard             setup   cargo test   total
+          #   services            3.3m       12.2m   15.5m
+          #   pipeline-index      4.1m        4.8m    8.9m
+          #   pipeline-docs       4.8m        2.8m    7.6m
+          #   rest                4.1m        4.8m    8.9m
+          #
+          # Merged, `pipeline` is one setup plus both halves of the work — about **11.7 minutes**,
+          # comfortably under `services`, which is now the longest job and therefore the one that
+          # sets this workflow's wall clock. So the merge costs **no wall-clock time at all** and
+          # returns a runner and one four-minute setup, which is `ENC-974`'s concern: this
+          # repository's appetite for concurrent runners starved every other repository in the
+          # organisation for an afternoon.
+          #
+          # **`services` is deliberately not split**, and that is the same measurement read the
+          # other way: at 15.5 minutes it has 14.5 minutes of margin against the thirty-minute cap,
+          # and splitting it would buy a second setup and a second runner for no reduction in wall
+          # clock. `ENC-978`'s lesson applies in reverse — do not split what fits.
+          - name: pipeline
             args: >-
               -p enclave-search -p enclave-indexing -p enclave-embeddings -p enclave-ai
-          - name: pipeline-docs
-            args: >-
               -p enclave-mcp -p enclave-workflows -p enclave-signing -p enclave-preview
               -p enclave-storage -p enclave-sync
           # Everything else, by subtraction — and this is the shard a newly added crate lands in
-          # without anybody deciding. `ENC-977` split four crates from forty-three and the big
-          # half never finished; three shards is that split rebalanced against the measurement
-          # rather than against my guess about which half was expensive.
+          # without anybody deciding. The subtraction list is unchanged by `ENC-980`: it names the
+          # crates that run *elsewhere*, so merging two shards that both ran here-excluded crates
+          # moves nothing across the boundary.
           - name: rest
             args: >-
               --workspace
