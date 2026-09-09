@@ -35,10 +35,11 @@ updates:
         update-types: ["minor", "patch"]
 
   # ---------------------------------------------------------------------------
-  # Frontend. web/ does not exist yet — it lands in M6 (ROADMAP.md). This entry
-  # is written now so the ecosystem is not forgotten at the moment the directory
-  # appears; until then Dependabot reports "no manifest found" for it, which is
-  # visible and harmless. Remove this comment when web/package.json lands.
+  # Frontend. This comment used to say `web/` did not exist yet and to remove the
+  # note when `web/package.json` landed (`ENC-1006`). It landed — `web/` is ~18k
+  # lines with its own test, lint, a11y and bundle gates — and the instruction
+  # outlived the condition it was written for, which is the same failure the
+  # `docker` block below exists to stop happening to an image tag.
   # ---------------------------------------------------------------------------
   - package-ecosystem: npm
     directory: "/web"
@@ -65,6 +66,63 @@ updates:
   # repository credentials; an unmaintained or compromised one is a supply-chain
   # compromise of the build, which is a worse position than a vulnerable library.
   # ---------------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # Container images (`ENC-1006`). Two directories, because Dependabot's `docker`
+  # ecosystem reads a Dockerfile and a Compose file as separate manifests.
+  #
+  # Nothing updated these for the whole of M0–M4, and the drift is not academic:
+  # when this entry was written, `deploy/compose/dev.yml` pinned MinIO
+  # `RELEASE.2025-04-22` — **sixteen months old** — and it is the backend whose
+  # missing whole-object checksum support refuses every upload above 16 MiB
+  # (`ENC-829`). A stale pin was standing in for a product limitation.
+  #
+  # `clamav` is the one that matters most. Its *signatures* refresh at run time
+  # through freshclam, so the tell is absent: the scanner keeps finding new
+  # malware while the engine parsing the archive formats ages, and an engine CVE
+  # in a process whose entire job is opening hostile files is the shape `docs/06`
+  # takes seriously (D17 — the sandboxed worker exists because parsers are not
+  # trusted).
+  #
+  # Grouped like cargo and npm: patch and minor together, majors separate. A
+  # major here is a database or a broker changing its on-disk format under a
+  # named volume, which is a migration decision and not a bump.
+  # ---------------------------------------------------------------------------
+  - package-ecosystem: docker
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+    labels:
+      - dependencies
+      - docker
+    groups:
+      docker-minor-and-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: docker
+    directory: "/deploy/compose"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+    labels:
+      - dependencies
+      - docker
+    groups:
+      compose-minor-and-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
