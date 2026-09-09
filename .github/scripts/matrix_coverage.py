@@ -17,6 +17,9 @@ the auth tables. The matrix is 216 rows and cites 100-odd files.
    that exists nowhere is a row nobody can follow.
 3. Every row in `§4.1`-`§4.6` — the set M5's exit criterion names — carries either a citation or an
    explicit `Not testable` note. That convention is `§4.0`'s, written by `ENC-987`'s sweep.
+4. The rows carrying that note are **exactly** the ten [`DEFERRED`] names M5's rescoped criterion
+   excepts (`ENC-999`). Checked in both directions, so the exception can neither grow silently nor
+   outlive the subsystem that caused it.
 
 # Why the citation rule is what it is
 
@@ -58,6 +61,33 @@ MIN_UNDERSCORES = 3
 
 # The note `§4.0` defines for a row whose subsystem does not exist yet.
 NOT_TESTABLE = "not testable"
+
+# The ten rows M5's exit criterion excepts, and the milestone that closes each (`ENC-999`).
+#
+# The criterion used to read "§4.1-4.6 green, zero skips" and was unmeetable: every row below needs
+# a subsystem that is a five-line stub scheduled for M6 or M7. The repo owner rescoped it to "green
+# except these ten, named individually" — and a named exception is only worth more than a waived one
+# while the naming is enforced, which is what this list is for.
+#
+# It is checked in BOTH directions:
+#
+#   * a row marked `Not testable` that is NOT here means the exception grew, quietly, and a security
+#     criterion got easier without anybody deciding it should;
+#   * a row here that is NO LONGER marked `Not testable` means its subsystem landed — remove it from
+#     this list and tick the row, because an exception nobody retires is a permanent hole with a
+#     milestone written next to it.
+DEFERRED: dict[str, str] = {
+    "S7": "M7 — enclave-ai is a stub, so there is no RAG path to cite from",
+    "S9": "M6 — nothing can set NO_INDEX; classification has no ceiling",
+    "S10": "M6 — UnconfiguredBarriers has no segment to exclude",
+    "H2": "share redemption — ENC-692/ENC-694, a link's conditions are enforced by nothing",
+    "H5": "share redemption — there is no share context to enumerate from",
+    "H6": "share redemption — a link's audience is enforced by nothing",
+    "D5": "M6 — crates/legal_hold is a stub",
+    "D6": "M6 — crates/records is a stub",
+    "D7": "M7 — crates/mcp is a stub",
+    "D8": "M6 — crates/incidents is a stub",
+}
 
 ROW = re.compile(r"^\|\s*\*{0,2}([A-Z]{1,2}\d+)\*{0,2}\s*\|\s*(.+?)\s*\|\s*$")
 HEADING = re.compile(r"^### (4\.\d+)")
@@ -125,9 +155,25 @@ def main() -> int:
                     f"this row can find what proves it"
                 )
 
+        deferred_here = NOT_TESTABLE in cell.lower()
+        if section in CRITERION:
+            if deferred_here and rid not in DEFERRED:
+                problems.append(
+                    f"{rid} is marked `Not testable` and is not in this script's DEFERRED list. M5's "
+                    f"criterion excepts ten named rows (`ENC-999`); an eleventh means the exception "
+                    f"grew without anybody deciding it should. Add it here with its milestone, or "
+                    f"make the row testable."
+                )
+            if rid in DEFERRED and not deferred_here:
+                problems.append(
+                    f"{rid} is in the DEFERRED list but is no longer marked `Not testable` — its "
+                    f"subsystem has landed. Remove it from `DEFERRED` and tick the row: an exception "
+                    f"nobody retires is a permanent hole with a milestone written beside it."
+                )
+
         if paths or names:
             cited_rows += 1
-        elif section in CRITERION and NOT_TESTABLE not in cell.lower():
+        elif section in CRITERION and not deferred_here:
             problems.append(
                 f"{rid} is in §{section} — inside M5's exit criterion — and carries neither a test "
                 f"nor a `Not testable` note (§4.0)"

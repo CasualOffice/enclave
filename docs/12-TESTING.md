@@ -1,6 +1,6 @@
 # 12 — Testing & Quality Gates
 
-> **Status:** Draft · **Version:** 1.40 · **Owner:** Engineering · **Last updated:** 2026-09-10
+> **Status:** Draft · **Version:** 1.41 · **Owner:** Engineering · **Last updated:** 2026-09-10
 > **Authoritative for:** test strategy, the security leakage matrix, CI gates, release criteria.
 
 ## 1. Philosophy
@@ -144,13 +144,20 @@ ceiling that `UnconfiguredClassification` cannot express; `S10` needs a barrier 
 `enclave-records` and `enclave-incidents`; `H2`, `H5` and `H6` need a share redemption that is
 deliberately unregistered (`ENC-692`, `ENC-694`).
 
-> **So `§4.1`–`§4.6` cannot go green in M5, and the criterion as written is unmeetable.** Every one
-> of those ten belongs to M6 or M7 by `ROADMAP.md`'s own sequencing. This is not a discovery about
-> testing; it is a discovery about the *gate* — the criterion was written when the matrix was a
-> specification, and it silently acquired a dependency on Phase 2 as rows were added to it. It needs
-> either a rescope (green *except* the rows whose subsystems are Phase 2, named individually) or a
-> decision to pull those subsystems forward. `ENC-999` is the row, and it is a decision for the repo
-> owner rather than one to take inside a sweep.
+> **So `§4.1`–`§4.6` could not go green in M5, and the criterion as written was unmeetable.** Every
+> one of those ten belongs to M6 or M7 by `ROADMAP.md`'s own sequencing. This was not a discovery
+> about testing; it was a discovery about the *gate* — the criterion was written when the matrix was
+> a specification, and it silently acquired a dependency on Phase 2 as rows were added to it.
+>
+> **Decided 2026-09-10 by the repo owner (`ENC-999`): rescope, with the ten named individually.**
+> M5's criterion is now *green except these ten*, and each carries the milestone that closes it.
+> The alternative — pulling the subsystems forward — is most of Phase 2 and moves MVP GA by months.
+>
+> **The naming is enforced, and that is the whole of why this is a rescope rather than a waiver.**
+> `matrix_coverage.py` holds the list and fails in both directions: an eleventh untestable row means
+> the exception grew without a decision, and a listed row that becomes testable without being
+> retired means an exception outliving its cause. Every release after M5 carries the criterion
+> unqualified.
 
 **3. There are no gaps in `§4.1`–`§4.6`.** This section first said `T2` and `T4` were untested, and
 that was wrong — `ENC-998` records it. Both are covered: `T2` by the post-filter test that proposes
@@ -603,7 +610,10 @@ continue, new fetches fail closed) · partition object storage (metadata browsin
 
 A release ships only when all of the following hold:
 
-1. every test in `§4` passes — no skips, no quarantined security tests;
+1. every test in `§4` passes — no skips, no quarantined security tests. **For M5 only**, the ten
+   rows in `.github/scripts/matrix_coverage.py`'s `DEFERRED` list are excepted, each named with the
+   milestone that closes it (`ENC-999`); the gate fails if that list grows or if an entry outlives
+   its cause. Every later release carries the criterion unqualified;
 2. structural gates in `§5` pass;
 3. no open SEV1/SEV2 defects;
 4. performance within 20% of the previous release;
