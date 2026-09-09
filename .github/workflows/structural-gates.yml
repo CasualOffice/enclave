@@ -927,7 +927,7 @@ jobs:
   # gate itself still exists, because a deleted workflow is a silent green.
   # --------------------------------------------------------------------------
   dependencies:
-    name: "RULE: cargo audit, cargo deny and SBOM stay wired up"
+    name: "RULE: the supply-chain checks stay wired up, for both halves of the product"
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -936,7 +936,7 @@ jobs:
       - name: Assert the supply-chain workflow and policy are present
         run: |
           set -euo pipefail
-          RULE='Dependencies — cargo audit and cargo deny run on PRs and on a schedule, and an SBOM is produced (docs/12-TESTING.md §5)'
+          RULE='Dependencies — cargo audit, cargo deny and npm audit run on PRs and on a schedule, and an SBOM is produced for both halves of the product (docs/12-TESTING.md §5)'
           echo "Enforcing: ${RULE}"
           failed=0
           wf=.github/workflows/security.yml
@@ -947,7 +947,11 @@ jobs:
             fi
           done
           if [ -f "$wf" ]; then
-            for needle in 'cargo audit' 'cargo deny' 'cyclonedx' 'schedule:'; do
+            # `npm audit` and `npm sbom` are `ENC-990`: for the whole of M0-M4 this list named
+            # only the Rust half, so the gate was green while nothing audited `web/` at all and
+            # the SBOM described half the product. A gate that checks one half of a rule is the
+            # `ENC-543` shape wearing a smaller hat.
+            for needle in 'cargo audit' 'cargo deny' 'cyclonedx' 'npm audit' 'npm sbom' 'schedule:'; do
               if ! grep -q "$needle" "$wf"; then
                 echo "::error file=${wf},title=GATE FAILED: dependencies::${RULE} — '${needle}' no longer appears in the security workflow."
                 failed=1
