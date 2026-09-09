@@ -65,7 +65,10 @@ function mount(options: { readonly collapsed?: readonly string[]; readonly dir?:
 
   /* Direction is read from the *computed* style of the scroller, which
    * inherits — so setting it on the document element is how a locale sets it,
-   * and is what `en-XB` will do. */
+   * and is what `en-XB` does: `applyDocumentLocale('en-XB')` writes
+   * `dir="rtl"` onto `<html>` (`src/shared/i18n`, `ENC-994`). Set directly here
+   * rather than through that helper so this file tests the keyboard and not the
+   * locale machinery. */
   document.documentElement.dir = options.dir ?? 'ltr';
 
   render(
