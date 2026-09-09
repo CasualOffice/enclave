@@ -644,7 +644,17 @@ jobs:
         # artefact is platform-independent — a `.rten` graph and a JSON vocabulary — so every job on
         # every runner shares one entry.
         id: embedding-model-cache
-        uses: actions/cache@v4
+        # `@v6` like every other cache step here (`ENC-1003`). This was the last `@v4` in the
+        # repository and therefore the sole source of the `Node.js 20 is deprecated` annotation that
+        # appeared on every test job — `actions/cache@v4` targets a Node 20 runtime the runners now
+        # force onto Node 24.
+        #
+        # **This entry may miss once.** The key is unchanged, but `actions/cache` moved to GitHub's
+        # v2 cache service across this range and entries are not shared between the two backends, so
+        # the first run after this merge may re-download and re-convert the 2.2 GB model. That is a
+        # one-off on a single job, and the alternative is carrying a deprecated action until the
+        # runtime is withdrawn and the annotation becomes a failure.
+        uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}/embedding-model
           key: bge-m3-rten-convert-0.22.0-v1
