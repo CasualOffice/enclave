@@ -16,11 +16,25 @@ criterion for what is in this milestone.
 
 ### Exit criteria (from the roadmap — may not be weakened here)
 
-- [ ] One end-to-end request: login → JWT → `enforce` → tenant-scoped query → audit row.
-- [ ] Cross-tenant read fails **with the application predicate deliberately removed** (test T5).
-- [ ] Refresh rotation works; replaying a consumed token revokes the family (K3, K4).
-- [ ] All four structural CI gates fail correctly when deliberately violated.
-- [ ] `docker compose up` → healthy stack on a clean machine, documented in `CONTRIBUTING.md`.
+Evidenced one by one on 2026-09-10 (`ENC-991`); `ROADMAP.md §5` carries the same ticks and the same
+citations, and is authoritative if the two ever disagree. **All five are met.**
+
+- [x] One end-to-end request: login → JWT → `enforce` → tenant-scoped query → audit row —
+      `the_issued_token_is_accepted_by_another_endpoint` (`crates/api/tests/auth.rs`) and
+      `a_request_traverses_authentication_the_chain_the_database_and_audit`
+      (`crates/api/tests/me.rs`), which asserts exactly one `ALLOW` row in `audit_events`. This is
+      the criterion G0 recorded **Partial** in `§4.1` of its own report; `ENC-124` closed it.
+- [x] Cross-tenant read fails **with the application predicate deliberately removed** (test T5) —
+      `t5_row_level_security_alone_blocks_a_cross_tenant_read`, `crates/testing/tests/leakage.rs`.
+- [x] Refresh rotation works; replaying a consumed token revokes the family (K3, K4) —
+      `k3_rotation_consumes_the_presented_token` (`crates/auth/src/refresh.rs`) and
+      `k4_a_replayed_token_revokes_every_row_in_the_family` (`crates/api/tests/auth_postgres.rs`).
+- [x] All four structural CI gates fail correctly when deliberately violated —
+      [`G0-GATE.md §3`](G0-GATE.md) names six, each with the violation that failed it; all are live
+      in `.github/workflows/structural-gates.yml`.
+- [x] `docker compose up` → healthy stack on a clean machine, documented in `CONTRIBUTING.md` —
+      `deploy/compose/dev.yml` health-checks all eight services; `CONTRIBUTING.md` documents
+      `up -d --wait`, which returns on *healthy* rather than on *created*.
 
 ---
 

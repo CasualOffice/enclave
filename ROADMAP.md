@@ -1,7 +1,7 @@
 # ROADMAP
 
 > **Milestones, sequencing and exit criteria for Enclave.**
-> Owner: Casual Office · Last updated: 2026-08-21 · Baseline: 2026-09-01
+> Owner: Casual Office · Last updated: 2026-09-10 · Baseline: 2026-08-18
 
 This is the plan we follow. [`TRACKER.md`](TRACKER.md) is what we work from day to day; this document
 says **why the work is in that order, when each milestone completes, and what "complete" means**.
@@ -95,14 +95,18 @@ Phase 2 ──── M6 Enterprise identity ──┐                       │
 | # | Milestone | Phase | State | Evidence |
 |---|---|---|---|---|
 | M0 | Foundations | 0 | **Delivered** | Gate G0 passed — [`plans/G0-GATE.md`](plans/G0-GATE.md) |
-| M1 | Content core | 1 | **Delivered** | [`plans/M1-CONTENT-CORE.md`](plans/M1-CONTENT-CORE.md); `ENC-144` demonstrated the 5 GB criterion |
-| M2 | Access & delivery | 1 | **Delivered** | [`plans/M2-CLOSEOUT.md`](plans/M2-CLOSEOUT.md) |
-| M3 | Discovery | 1 | **Delivered, one gap carried** | `ENC-161` is `BLOCKED` on OCR model files, so *a scanned PDF is searchable* is **not met** — `§5` already records this |
-| M4 | Governance baseline | 1 | **Delivered** | `ENC-580`–`ENC-585`; DLP, conditional access, retention and the audit sweep are wired in `crates/api/src/main.rs` |
+| M1 | Content core | 1 | **Delivered, two gaps carried** | [`plans/M1-CONTENT-CORE.md`](plans/M1-CONTENT-CORE.md). `ENC-144` demonstrated the *flat-memory* half of the 5 GB criterion and no deployment can accept such an upload (`ENC-829`); the EICAR criterion's *incident* clause is a log line (`ENC-645`) — `§5` records both |
+| M2 | Access & delivery | 1 | **Delivered** | [`plans/M2-CLOSEOUT.md`](plans/M2-CLOSEOUT.md); all five exit criteria evidenced in `§5` |
+| M3 | Discovery | 1 | **Delivered, one gap carried — and it is not the one this row named** | The scanned-PDF criterion **is** met: `ENC-545`, `ENC-546`, `ENC-577` and `ENC-578` closed it on 2026-08-22, `plans/M3-DISCOVERY.md §1` has carried the tick since, and `§5` names the tests. `TRACKER.md`'s `ENC-161` row is stale. What is carried instead is the **denylist-size gauge, which nothing publishes** — two of its alerts are structurally incapable of firing, and no row covers it (`§5`) |
+| M4 | Governance baseline | 1 | **Delivered** | `ENC-580`–`ENC-585`; DLP, conditional access, retention and the audit sweep are wired in `crates/api/src/main.rs`; all four exit criteria evidenced in `§5` |
 
-No exit-criteria checkbox in `§5` has ever been ticked, for any of these (`ENC-991`). "Delivered"
-above means the milestone's rows are `DONE` and its plan closed — it does not mean its criteria were
-evidenced one by one, and the difference is exactly what `ENC-991` is for.
+**The exit criteria for M0–M4 were evidenced one by one on 2026-09-10 (`ENC-991`), and until then no
+checkbox in `§5` had ever been ticked for any of them.** "Delivered" above had meant only that the
+milestone's rows were `DONE` and its plan closed. Of the twenty-five criteria, **twenty-two are met
+and ticked with the test, migration or gate that proves each**; three are not, and each names what
+is missing rather than being left blank. Every claim comes from a file that was opened — the three
+that changed the picture are the two M1 gaps above and the M3 correction, none of which was visible
+from the tracker.
 
 ### 2.2 Remaining
 
@@ -234,11 +238,26 @@ three were found during the milestone and are not in the step list below) ·
 
 **Exit criteria**
 
-- [ ] One end-to-end request: login → JWT → `enforce` → tenant-scoped query → audit row.
-- [ ] Cross-tenant read fails **with the application predicate deliberately removed** (T5).
-- [ ] Refresh rotation works; replaying a consumed token revokes the family (K3, K4).
-- [ ] All four structural CI gates fail correctly when deliberately violated.
-- [ ] `docker compose up` → healthy stack on a clean machine, documented in `CONTRIBUTING.md`.
+- [x] One end-to-end request: login → JWT → `enforce` → tenant-scoped query → audit row —
+      `the_issued_token_is_accepted_by_another_endpoint` (`crates/api/tests/auth.rs`) drives
+      `POST /auth/login` → `GET /me`, and `a_request_traverses_authentication_the_chain_the_database_and_audit`
+      (`crates/api/tests/me.rs`) asserts exactly one `ALLOW` row in `audit_events`. G0 recorded this
+      **Partial**; `ENC-124` closed it.
+- [x] Cross-tenant read fails **with the application predicate deliberately removed** (T5) —
+      `t5_row_level_security_alone_blocks_a_cross_tenant_read`, `crates/testing/tests/leakage.rs`:
+      every query is `SELECT … FROM <table>` with no `tenant_id` clause, checked in both directions
+      per table, over a table list read from the catalog rather than a literal.
+- [x] Refresh rotation works; replaying a consumed token revokes the family (K3, K4) —
+      `k3_rotation_consumes_the_presented_token` (`crates/auth/src/refresh.rs`) and
+      `k4_a_replayed_token_revokes_every_row_in_the_family` (`crates/api/tests/auth_postgres.rs`),
+      which asserts `SESSION_REPLAY` and zero usable rows left in the family.
+- [x] All four structural CI gates fail correctly when deliberately violated —
+      [`plans/G0-GATE.md §3`](plans/G0-GATE.md) records **six** proven that way, each naming what was
+      broken; all are live jobs or steps in `.github/workflows/structural-gates.yml`
+      (`rls-coverage`, `policy-routing`, no-raw-pool, the secrets scan).
+- [x] `docker compose up` → healthy stack on a clean machine, documented in `CONTRIBUTING.md` —
+      `deploy/compose/dev.yml` health-checks all eight services and `CONTRIBUTING.md §Development setup`
+      documents `up -d --wait`, which returns on *healthy* rather than on *created*.
 
 **Risks.** RLS interacts badly with connection pooling if `SET LOCAL` is misused — prove it in week 1
 with a pool-exhaustion test, not in month 6. Stub services that default to *allow* would quietly
@@ -270,11 +289,41 @@ disable the chain; they default to deny.
 
 **Exit criteria**
 
-- [ ] 5 GB resumable upload with flat API memory.
-- [ ] Version rows reject mutation of `object_key`, `checksum`, `size`, `major`, `minor`.
-- [ ] EICAR upload → `QUARANTINED`, unreadable through every path, incident raised (G1).
-- [ ] AV down with `HOLD` → uploads wait in `SCANNING`, existing content unaffected (G6).
-- [ ] Sibling name collision rejected by constraint, not by application check alone.
+- [ ] 5 GB resumable upload with flat API memory. **Half met, and the half that is missing is the
+      one a user meets.** Flat memory is demonstrated — `a_five_gigabyte_upload_is_completed_without_the_api_touching_a_byte`
+      (`crates/uploads/tests/sessions.rs`, `ENC-144`) drives a session declared at the full size
+      through create, resume, complete and hand-off against a store whose two byte-bearing methods
+      abort the test. But **no deployment can accept such an upload**: `declared_sha256` is a
+      mandatory `String`, and `crates/storage/src/s3/store.rs` returns `ChecksumUnverifiable` for
+      *every* multipart request because S3's composite checksum is not the whole-object digest — so
+      anything above the 16 MiB threshold is refused before a URL exists. `ENC-829` (P1) is the row,
+      and it names this criterion itself.
+- [x] Version rows reject mutation of `object_key`, `checksum`, `size`, `major`, `minor` —
+      `an_available_version_refuses_every_change_to_its_content_identity`,
+      `crates/versions/tests/versions.rs`, against the `file_versions_immutable` `BEFORE UPDATE`
+      trigger in `migrations/0006`; all five refused one at a time and each named by the column the
+      trigger reports, with `an_available_version_still_accepts_its_governance_columns` as the
+      control that the trigger is not simply freezing the row.
+- [ ] EICAR upload → `QUARANTINED`, unreadable through every path, incident raised (G1). **Two of
+      the three.** Quarantine is proved with its positive control —
+      `an_infected_version_is_quarantined_while_a_clean_one_beside_it_becomes_readable`
+      (`crates/worker/tests/antivirus.rs`) — and *unreadable through every path* is `G16`'s
+      `status` × `av_status` cross-product against a real database and the live preview route
+      (`the_two_spellings_of_readable_agree_against_a_real_database`,
+      `the_file_response_and_the_preview_route_agree_about_every_version_state`). **No incident is
+      raised**: `crates/worker/src/antivirus.rs::raise` is a `tracing::error!` line, there is no
+      incident table and `crates/incidents` is a five-line stub, so nothing notifies security and
+      nothing survives a log rotation — `ENC-645` (P2).
+- [x] AV down with `HOLD` → uploads wait in `SCANNING`, existing content unaffected (G6) —
+      `an_engine_that_is_down_holds_the_version_and_an_engine_that_answers_releases_it`,
+      `crates/worker/tests/antivirus.rs`: the pass writes nothing (`held: 1`, `written: 0`), the row
+      stays `SCANNING`/`PENDING`, and the same fixture becomes readable once an engine answers —
+      which is the control that stops "still `SCANNING`" passing against a pass nobody called.
+- [x] Sibling name collision rejected by constraint, not by application check alone —
+      `a_second_sibling_with_the_same_folded_name_is_refused_by_the_index`,
+      `crates/files/tests/tree.rs`, against `uq_files_sibling_name` (`migrations/0005`);
+      `crates/files/src/repo.rs` documents and takes no preceding `SELECT`, so there is no
+      read-then-write window for a concurrent create to slip through.
 
 ---
 
@@ -304,11 +353,32 @@ phase table · **Plan:** [`plans/M2-ACCESS-DELIVERY.md`](plans/M2-ACCESS-DELIVER
 
 **Exit criteria**
 
-- [ ] `preview=ALLOW, download=DENY` produces a rendition and **no** signed original URL (A1).
-- [ ] A `DENY` beats an inherited `ALLOW` at every level (A3).
-- [ ] `max_downloads` holds under 50 concurrent redemptions — exactly N succeed (H3).
-- [ ] Watermarked output is never written to the rendition cache.
-- [ ] Cursor from one tenant rejected in another (T3).
+- [x] `preview=ALLOW, download=DENY` produces a rendition and **no** signed original URL (A1) —
+      `preview_allowed_and_download_denied_yields_a_rendition_path_and_no_signed_url`,
+      `crates/api/tests/delivery.rs`: the preview is `200 image/png` carrying the pipeline's bytes,
+      the download is `403 ACCESS_DENIED`, and `store.touched()` is **empty** — the URL was never
+      asked for rather than generated and withheld.
+- [x] A `DENY` beats an inherited `ALLOW` at every level (A3) —
+      `a3_a_deny_overrides_an_inherited_allow_at_every_level`, `crates/testing/tests/leakage.rs`:
+      four arrangements over workspace, library, folder and file, each flipped back afterwards so
+      the refusal cannot be something unrelated refusing everything.
+- [x] `max_downloads` holds under 50 concurrent redemptions — exactly N succeed (H3) —
+      `h3_the_download_budget_holds_under_fifty_concurrent_redemptions`,
+      `crates/sharing/tests/redemption.rs`, on a **sixteen-connection** pool because the harness
+      default of two made the first version of this test pass against a read-then-write
+      implementation; asserted on the successes and on their distinct counts `1..=N`, not on the
+      final counter. `h3_the_limit_lives_in_the_where_clause_and_holds_when_every_reader_is_stale`
+      is the deterministic half.
+- [x] Watermarked output is never written to the rendition cache — structural, and the structure is
+      the guarantee: `RenditionKey::new` takes version, profile and generator and **no principal**
+      (`the_base_object_both_viewers_share_is_keyed_without_them`,
+      `crates/preview/tests/watermark.rs`), and `RenditionSink::keep` has exactly one caller in the
+      workspace — `crates/preview/src/service.rs`, handed the renderer's identity-free artefact.
+      The mark is composited downstream in `crates/api/src/preview.rs`, after the cache.
+- [x] Cursor from one tenant rejected in another (T3) —
+      `t3_a_cursor_issued_in_one_tenant_is_rejected_in_another`, `crates/testing/tests/leakage.rs`,
+      through a real listing rather than the codec, with both controls: beta pages perfectly well
+      without the cursor, and the cursor still works in the tenant that issued it.
 
 ---
 
@@ -341,14 +411,51 @@ phase table · **Plan:** [`plans/M3-DISCOVERY.md`](plans/M3-DISCOVERY.md)
 
 **Exit criteria**
 
-- [ ] S3: revoked file vanishes from results **immediately**, before any index update.
-- [ ] S4: S3 still holds with the invalidation worker stopped.
-- [ ] S5: deliberately over-permissive index candidates are dropped by the post-filter.
-- [ ] S8: `RESTRICTED` text never reaches a non-local embedding provider.
-- [ ] Post-filter drop ratio and denylist size exported as metrics with alerts wired.
-- [ ] A scanned, text-free PDF is searchable by its content (ENC-161). **Not met**: OCR landed, and
-      nothing in the tree rasterises a PDF page for it to read (ENC-537). A scanned *image* is
-      searchable today; a scanned *PDF* is not.
+- [x] S3: revoked file vanishes from results **immediately**, before any index update —
+      `s3_a_revoked_file_leaves_the_results_before_the_index_is_touched`,
+      `crates/search/tests/postfilter.rs`: the candidate generator is unchanged across the
+      revocation and still proposes the file, and the pre-revocation confirmation is the control.
+- [x] S4: S3 still holds with the invalidation worker stopped —
+      `s4_the_answer_is_right_with_no_worker_running_at_all`, same file: there is no worker in the
+      test at all, and nothing calls `lift_expired`. Recorded as the *weaker* half —
+      `the_denylist_suppresses_what_the_acl_alone_would_still_admit` is what isolates the denylist,
+      because a revocation removes the ACL too.
+- [x] S5: deliberately over-permissive index candidates are dropped by the post-filter —
+      `s5_over_permissive_candidates_are_dropped_however_confident_the_index_is`, same file: an
+      ungranted file, a beta-tenant file and a file that does not exist, with the permitted one in
+      the middle so a post-filter that refused everything fails too (`confirmed == 1` is asserted).
+- [x] S8: `RESTRICTED` text never reaches a non-local embedding provider —
+      `restricted_text_never_reaches_a_remote_provider`, `crates/embeddings/tests/routing.rs`,
+      against a remote double that **panics** on contact, sweeping `RESTRICTED` itself and the ranks
+      above it; the fallback a tired engineer would write does not compile. The *input* half is
+      `a_deployment_that_cannot_classify_a_file_refuses_rather_than_guessing_a_rank`,
+      `crates/worker/tests/indexing.rs` (`ENC-557`).
+- [ ] Post-filter drop ratio and denylist size exported as metrics with alerts wired. **Half met,
+      and the missing half is a producer rather than a consumer.** The drop ratio is real:
+      `PostFilter::confirm` publishes every pass (`crates/search/src/postfilter.rs::publish` →
+      `enclave_observability::metrics::search::PostFilterPass`), and
+      `deploy/monitoring/alerts/search.yml` carries the ratio's single recording rule and both
+      alerts, each with a runbook annotation. **Nothing ever sets the denylist gauges**:
+      `search::record_denylist_size` has no caller anywhere outside `metrics.rs`'s own unit tests,
+      so `enclave_search_denylist_entries` and `_limit` are never exported and
+      `SearchDenylistBacklogGrowing` / `SearchDenylistOverflowedAndTenantIsDegraded` are
+      structurally incapable of firing — the file's own `SearchDenylistSizeUnreported` describes the
+      deployment exactly, and would be firing today. **No tracker row covers this**; it needs one.
+- [x] A scanned, text-free PDF is searchable by its content (ENC-161). **Met 2026-08-22, and the
+      note that stood here was three rows out of date.** `ENC-545` added `PdfTextExtractor`, which
+      returns `NoText` carrying the pages that yielded nothing; `ENC-546` wired
+      `MountedOcr::retry` into `crates/worker/src/indexing.rs`, which recovers text from exactly
+      those pages and commits it; `ENC-577` made `crates/worker/src/main.rs` register
+      `application/pdf` — only when PDFium is mounted; and `ENC-578` crossed the last join,
+      `text_an_indexing_pass_committed_is_text_lexical_search_finds`
+      (`crates/worker/tests/indexing.rs`), where a pass writes rows and a search reads them back in
+      one process. [`plans/M3-DISCOVERY.md §1`](plans/M3-DISCOVERY.md) has carried this tick and its
+      link-by-link evidence since; **this document did not, which is `ENC-991` in one line.**
+      Two honest qualifications, both stated there: **no single test spans all four boundaries** —
+      they are joined pairwise, each with real components on both sides — and OCR is a deployment
+      option, since a worker without the two mounted volumes routes PDFs nowhere and records
+      `SKIPPED` rather than failing. `TRACKER.md`'s `ENC-161` row still reads `BLOCKED` on the
+      model-file question `ENC-535` answered; that row is stale.
 
 **Measured before this milestone starts (`ENC-145`).** `authorize_many` resolves 200 candidates in **p50 7.0 ms** (debug build), and one candidate in 1.4 ms — so the post-filter's cost is ~80% fixed: transaction setup plus three round trips, not candidate count. That inverts the obvious intuition twice over. Raising over-fetch is nearly free; adding a *second* resolution pass costs more than tripling the batch. Whether result disclosure and excerpt disclosure can be answered in one call is therefore a design decision to take before the search path sets, not after (`ENC-167`).
 
@@ -375,11 +482,36 @@ name — `ENC-303` on DLP detectors, `ENC-306` on the audit coverage sweep.
 
 **Exit criteria**
 
-- [ ] D1–D4 green: enforce blocks, simulation records only, missing facts fail closed, dropped
-      obligation fails the operation.
-- [ ] Forged `X-Forwarded-For` from an untrusted peer is ignored.
-- [ ] Quota exhaustion blocks writes while reads, deletes and exports keep working.
-- [ ] Every row in the audit table maps to a real enforcement point; no silent successes.
+- [x] D1–D4 green: enforce blocks, simulation records only, missing facts fail closed, dropped
+      obligation fails the operation — `crates/dlp/tests/modes.rs`.
+      `d1_and_d2_one_policy_both_ways_records_the_same_decision` runs one policy over one set of
+      facts in both modes and asserts `ENFORCE` refuses *first*, so D2's absence means something;
+      `d3_missing_facts_follow_the_tenants_policy` carries both controls (`FAIL_OPEN_AUDIT` over the
+      same absent facts permits and leaves the evidence, `FAIL_CLOSED` with fresh clean facts
+      permits); `d4_an_obligation_that_cannot_be_satisfied_fails_the_operation` refuses through
+      `Obligations::require_none` with the clean document as its control. Extended to a running
+      deployment reading `security_facts` through `TenantScoped` by `crates/dlp/tests/stored_facts.rs`
+      (`ENC-594`).
+- [x] Forged `X-Forwarded-For` from an untrusted peer is ignored —
+      `a_forged_forwarded_for_is_ignored_from_an_untrusted_peer_and_honoured_from_a_trusted_one`,
+      `crates/conditional_access/tests/forwarded_for.rs`: the same header and the same configuration,
+      differing only in the peer address, so a resolver that ignored the header unconditionally
+      fails the control. `crates/api/src/edge.rs`'s
+      `a_forged_forwarded_for_reaches_the_context_only_from_a_trusted_peer` is the HTTP layer.
+- [x] Quota exhaustion blocks writes while reads, deletes and exports keep working —
+      `quota_exhaustion_blocks_writes_while_reads_deletes_and_exports_keep_working`,
+      `crates/db/tests/storage_quota.rs`, in one fixture with the refusal asserted **first** so the
+      three "still works" legs are statements about a demonstrably exhausted quota, and closing the
+      loop: after the delete frees room, the charge refused in step 1 is admitted.
+- [x] Every row in the audit table maps to a real enforcement point; no silent successes — two
+      halves that fail differently, both wired as the `audit-coverage` job. `xtask audit-coverage`
+      enumerates every site that can *construct* a refusal and classifies it by the enclosing
+      function's return type, with an acknowledgement list that fails on a **stale** entry as well
+      as on a new unaudited one; `crates/audit/tests/policy_audit_coverage.rs` drives the real
+      engine once per `Stage::ORDER` and asserts the row carries outcome, reason code and the stage
+      in `policy_refs` — deleting `record_deny` leaves the static gate green, which is why both
+      exist. The cascade hole this left is closed: `ENC-923`/`A46`, one audit row per resource
+      through `PolicyEngine::enforce_many`.
 
 ---
 

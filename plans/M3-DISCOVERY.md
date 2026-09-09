@@ -21,7 +21,17 @@ of who may see it. Both of those — the second copy, and the second idea — ar
 - [x] **S4**: S3 still holds with the invalidation worker stopped.
 - [x] **S5**: deliberately over-permissive index candidates are dropped by the post-filter.
 - [x] **S8**: `RESTRICTED` text never reaches a non-local embedding provider.
-- [x] Post-filter drop ratio and denylist size exported as metrics, with alerts wired.
+- [ ] Post-filter drop ratio and denylist size exported as metrics, with alerts wired. **Ticked
+      until `ENC-991` read it against the tree; it is half met.** The drop ratio is genuinely
+      exported — `PostFilter::confirm` publishes every pass (`crates/search/src/postfilter.rs::publish`)
+      and `deploy/monitoring/alerts/search.yml` holds its single recording rule and both alerts.
+      **Nothing sets the denylist gauges**: `enclave_observability::metrics::search::record_denylist_size`
+      has no caller outside `metrics.rs`'s own unit tests, so `enclave_search_denylist_entries` and
+      `_limit` are never published and `SearchDenylistBacklogGrowing` and
+      `SearchDenylistOverflowedAndTenantIsDegraded` cannot fire. The rule file's own
+      `SearchDenylistSizeUnreported` — `absent(enclave_search_denylist_entries)` — describes this
+      deployment exactly. The declaration, the listener and the alerts were all built; the *producer*
+      is what is missing, and **no tracker row covers it**.
 - [x] A scanned, text-free PDF is searchable by its content (`ENC-161`). **Met 2026-08-22**, and
       the evidence is worth stating precisely because five sessions in a row declined to claim it.
       The chain is proven link by link with real components at every boundary: `PdfTextExtractor`
@@ -172,13 +182,17 @@ research project to arrange in Milvus.
 - [ ] Every M3 P1 is `DONE`. **One remains: `ENC-574`** — nothing can resolve a file's
       effective classification. It blocks *embedding*, not the exit criterion above, and both
       plausible defaults are wrong in opposite undetectable directions.
-- [x] All six exit criteria demonstrated, each by a test that has been watched to fail.
+- [ ] All six exit criteria demonstrated, each by a test that has been watched to fail. **Five of
+      six** — the metrics criterion in `§1` is half met, and `ENC-991` found it ticked here as
+      whole.
 - [x] Leakage matrix §4.3 (S1–S10) complete and green. `§4.8` also gained **G7** — the indexer
       never reads a version antivirus has not cleared, which is rule 9 on the one path with no user
       present.
-- [x] The post-filter's drop ratio and the denylist size are exported, with alerts wired to a runbook
+- [ ] The post-filter's drop ratio and the denylist size are exported, with alerts wired to a runbook
       — and, since `ENC-521`, a listener that serves them. They existed for a while with nothing
-      scraping them, which is a metric that reads as zero forever.
+      scraping them, which is a metric that reads as zero forever. **The drop ratio is; the denylist
+      size is not** — `record_denylist_size` has no caller, so this row's own warning came true one
+      layer further in: the listener serves a series nothing ever writes. See `§1`.
 - [x] `docs/07 §6.2`'s example updated to the single-call form of D20, so it is not copied wrongly
       (`ENC-505`).
 - [x] A written threat walkthrough of the search path, reviewed before merge — the roadmap asks for

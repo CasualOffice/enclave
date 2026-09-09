@@ -14,16 +14,37 @@ test of whether they are usable rather than merely correct.
 
 ### Exit criteria (from the roadmap — may not be weakened here)
 
-- [ ] 5 GB resumable upload with flat API memory.
-- [ ] Version rows reject mutation of `object_key`, `checksum`, `size`, `major`, `minor`.
-- [ ] EICAR upload → `QUARANTINED`, unreadable through every path, incident raised (G1).
-- [ ] AV down with `HOLD` → versions wait in `SCANNING`, existing content unaffected (G6).
-- [ ] Sibling name collision rejected by constraint, not by application check alone.
+Evidenced one by one on 2026-09-10 (`ENC-991`); `ROADMAP.md §5` carries the same ticks and the fuller
+citations, and is authoritative if the two ever disagree. **Three of five are met, and the two that
+are not were both recorded as delivered.**
+
+- [ ] 5 GB resumable upload with flat API memory. **Half met.** Flat memory is demonstrated —
+      `a_five_gigabyte_upload_is_completed_without_the_api_touching_a_byte`,
+      `crates/uploads/tests/sessions.rs` (`ENC-144`) — but `declared_sha256` is mandatory and
+      `crates/storage/src/s3/store.rs` answers `ChecksumUnverifiable` to every multipart request, so
+      a real deployment refuses anything over 16 MiB. `ENC-829` (P1) names this criterion itself.
+- [x] Version rows reject mutation of `object_key`, `checksum`, `size`, `major`, `minor` —
+      `an_available_version_refuses_every_change_to_its_content_identity`,
+      `crates/versions/tests/versions.rs`, against `migrations/0006`'s `file_versions_immutable`
+      trigger; D12's other half is `an_available_version_still_accepts_its_governance_columns`.
+- [ ] EICAR upload → `QUARANTINED`, unreadable through every path, incident raised (G1). **Two of
+      three.** Quarantine and unreadability are proved (`crates/worker/tests/antivirus.rs`, and
+      `G16`'s cross-product in `crates/versions/tests/versions.rs` and `crates/api/tests/content.rs`);
+      **no incident is raised** — `crates/worker/src/antivirus.rs::raise` is a `tracing::error!` line,
+      `crates/incidents` is a five-line stub and there is no incident table. `ENC-645` (P2).
+- [x] AV down with `HOLD` → versions wait in `SCANNING`, existing content unaffected (G6) —
+      `an_engine_that_is_down_holds_the_version_and_an_engine_that_answers_releases_it`,
+      `crates/worker/tests/antivirus.rs`: `held: 1`, `written: 0`, and the same fixture clears once
+      an engine answers.
+- [x] Sibling name collision rejected by constraint, not by application check alone —
+      `a_second_sibling_with_the_same_folded_name_is_refused_by_the_index`,
+      `crates/files/tests/tree.rs`, against `uq_files_sibling_name` (`migrations/0005`).
 
 Plus the condition carried from G0:
 
-- [ ] **Criterion 1 of M0 fully met**: one real request traverses login → JWT → `enforce` →
-      tenant-scoped query → audit row.
+- [x] **Criterion 1 of M0 fully met**: one real request traverses login → JWT → `enforce` →
+      tenant-scoped query → audit row — `ENC-124`; the two tests are named in `ROADMAP.md §5` under
+      M0's first criterion.
 
 ---
 
