@@ -1,6 +1,6 @@
 # 12 — Testing & Quality Gates
 
-> **Status:** Draft · **Version:** 1.39 · **Owner:** Engineering · **Last updated:** 2026-09-09
+> **Status:** Draft · **Version:** 1.40 · **Owner:** Engineering · **Last updated:** 2026-09-10
 > **Authoritative for:** test strategy, the security leakage matrix, CI gates, release criteria.
 
 ## 1. Philosophy
@@ -562,6 +562,7 @@ Assertions about the codebase itself, not its behavior:
 | Migrations | Numbered, checksummed, no gaps; contract-phase migrations flagged for review |
 | Dependencies | **Both halves of the product.** Rust: `cargo audit --deny warnings`, `cargo deny check`, CycloneDX SBOM. Web (`ENC-990`): `npm audit` at two thresholds — production dependencies fail at `moderate` because they are the bundle a browser executes, dev dependencies at `high` because they are build tooling that never reaches a user — plus a CycloneDX SBOM of the production graph. Until `ENC-990` this row named only the Rust half, so it read as green while nothing audited `web/` at all |
 | API contract | Generated OpenAPI matches the committed snapshot, or the diff is explicitly approved |
+| Shard partition | Every workspace crate is tested by exactly one CI shard (`ENC-1000`). The matrix names crates with `-p` and one shard is defined by subtraction, so the two lists must agree exactly: named-and-not-excluded runs a crate's tests twice, excluded-and-named-nowhere runs them **nowhere** while CI stays green |
 | Matrix coverage | Every row in `§4` names a test that exists — the file resolves and the identifier appears in the tree — and every row inside `§4.1`–`§4.6` carries a citation or an explicit `Not testable` note (`ENC-989`). `§4` opens with *each row is at minimum one permanent test*; this is what makes that checkable rather than aspirational |
 | API surface | Every endpoint `docs/05-API.md` documents is registered, or sits in a section whose prose says it is not (`ENC-997`). The pair with `reachability.rs`: that proves *registered ⇒ answers*, this proves *documented ⇒ registered or marked*. Compares **(method, path)** — comparing path alone is what let `ENC-985` report external sharing as built while `GET /shares/{token}` was unregistered — and reads the router through `syn` rather than by matching text |
 | Accessibility | axe passes on every primary route |

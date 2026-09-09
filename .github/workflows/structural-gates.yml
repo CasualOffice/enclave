@@ -651,6 +651,33 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
     # --- tracker-unique-ids ---
+      # `ENC-1000`. The shard matrix and the `--exclude` list have to be edited together, and
+      # nothing checked that they were. A crate named in a shard and not excluded runs twice; a
+      # crate excluded and named nowhere **runs nowhere**, reports nothing, and leaves CI green —
+      # which is the one worth a gate.
+      - name: Every crate is tested by exactly one CI shard
+        id: g_shard_partition
+        run: python3 .github/scripts/shard_partition.py
+      - name: Explain on failure
+        if: failure() && steps.g_shard_partition.outcome == 'failure'
+        run: |
+          {
+            echo "### FAILED - CI shard partition"
+            echo ""
+            echo "**Rule:** every workspace crate is tested by exactly one shard in"
+            echo "\`.github/workflows/ci.yml\`."
+            echo ""
+            echo "The shards name their crates with \`-p\`, except one defined by subtraction"
+            echo "(\`--workspace\` minus \`--exclude\`) so a newly added crate is tested by"
+            echo "default. The two lists must agree exactly."
+            echo ""
+            echo "* **named and not excluded** - the crate's tests run twice, wasting a runner;"
+            echo "* **excluded and named nowhere** - the crate's tests run **nowhere**, report"
+            echo "  nothing, and CI stays green regardless of what they would have said."
+            echo ""
+            echo "Run it locally with \`python3 .github/scripts/shard_partition.py\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
       # `ENC-989`. `docs/12 §4` opens with "each row is at minimum one permanent test" and nothing
       # checked that the test beside a row was real. That is `ENC-543` in a larger place: a gate
       # whose test file did not exist exited 0 and printed pass in green for a whole milestone.
