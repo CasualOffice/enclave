@@ -155,8 +155,20 @@ x-enclave-common: &enclave-common
     #
     # The field below holds a **reference**; the environment holds the value (`CLAUDE.md` rule 11).
     # A deployment with a secret manager points it at that instead: `vault://workspace/jwt#ed25519`.
+    # **`:-` and not `:?`** (`ENC-1002`). The `:?` form was here so that `up` without a key failed
+    # immediately with a sentence naming the fix. It does — and it also fails `down`, `logs`, `ps`
+    # and `config`, because Compose interpolates the whole file for *every* subcommand. Somebody who
+    # brought the stack up in one shell and tries to stop it in another is told to generate a
+    # signing key in order to stop containers, which is an error message about the wrong thing at
+    # the worst moment. Found while tearing this stack down.
+    #
+    # Empty is the right default because the refusal already exists one layer down and is better
+    # written: `enclave-api` resolves this reference at start-up and bails naming
+    # `auth.signing_keys.key_ref`, which is the product deciding rather than Compose guessing. So
+    # `up` still fails without a key, `down` still works without one, and the failure a person
+    # reads is the one that knows why the key is required.
     ENCLAVE_AUTH__SIGNING_KEYS__KEY_REF: "env://STACK_SIGNING_KEY"
-    STACK_SIGNING_KEY: "${STACK_SIGNING_KEY:?generate one — see the comment above this line}"
+    STACK_SIGNING_KEY: "${STACK_SIGNING_KEY:-}"
 
     # **Not `RUST_LOG`** — this product ignores it. `crates/observability` reserves `ENCLAVE_LOG`
     # for the filter, *"deliberately not `RUST_LOG`: an operator debugging Enclave inside a
