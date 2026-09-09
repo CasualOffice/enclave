@@ -589,6 +589,28 @@ async fn plan<'a>(
     let store = vector.index().reachability().await;
     let denylisted = enclave_search::in_force(conn, tenant).await.map_err(Error::from)?;
 
+    // **`ENC-1005`.** The gauge is published here because this is the one place that already has
+    // both numbers: `in_force` counted above, and the limit `decide` is about to judge it against.
+    // `record_denylist_size`'s own doc comment names this call site, and it had no caller at all —
+    // so `enclave_search_denylist_entries` was never published, `SearchDenylistBacklogGrowing` and
+    // `SearchDenylistOverflowedAndTenantIsDegraded` could not fire, and the alert written to catch
+    // exactly that, `SearchDenylistSizeUnreported` — `absent(enclave_search_denylist_entries)` —
+    // described this deployment.
+    //
+    // Both numbers in one call, deliberately: a size published against a limit some other process
+    // recorded under different configuration is an alert that fires, or fails to, for a reason
+    // nobody can reconstruct.
+    //
+    // **A tenant that never searches never publishes**, and that is the honest behaviour rather
+    // than a gap: the denylist matters when it is *read*, and the only process that reads it is
+    // this one. Counting it on a schedule for tenants nobody is querying would put a `count(*)` per
+    // tenant per interval on the database to keep a gauge warm for a search that is not happening.
+    enclave_observability::metrics::search::record_denylist_size(
+        tenant,
+        denylisted as u64,
+        DEFAULT_DENYLIST_LIMIT as u64,
+    );
+
     Ok(match Retrieval::decide(store, denylisted, DEFAULT_DENYLIST_LIMIT) {
         Retrieval::Complete => Path::Dense(vector),
         Retrieval::Degraded(reason) => Path::Lexical(reason),

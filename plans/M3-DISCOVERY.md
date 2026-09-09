@@ -21,17 +21,18 @@ of who may see it. Both of those — the second copy, and the second idea — ar
 - [x] **S4**: S3 still holds with the invalidation worker stopped.
 - [x] **S5**: deliberately over-permissive index candidates are dropped by the post-filter.
 - [x] **S8**: `RESTRICTED` text never reaches a non-local embedding provider.
-- [ ] Post-filter drop ratio and denylist size exported as metrics, with alerts wired. **Ticked
-      until `ENC-991` read it against the tree; it is half met.** The drop ratio is genuinely
-      exported — `PostFilter::confirm` publishes every pass (`crates/search/src/postfilter.rs::publish`)
-      and `deploy/monitoring/alerts/search.yml` holds its single recording rule and both alerts.
-      **Nothing sets the denylist gauges**: `enclave_observability::metrics::search::record_denylist_size`
-      has no caller outside `metrics.rs`'s own unit tests, so `enclave_search_denylist_entries` and
-      `_limit` are never published and `SearchDenylistBacklogGrowing` and
-      `SearchDenylistOverflowedAndTenantIsDegraded` cannot fire. The rule file's own
-      `SearchDenylistSizeUnreported` — `absent(enclave_search_denylist_entries)` — describes this
-      deployment exactly. The declaration, the listener and the alerts were all built; the *producer*
-      is what is missing, and **no tracker row covers it**.
+- [x] Post-filter drop ratio and denylist size exported as metrics, with alerts wired. **Ticked,
+      unticked by `ENC-991`, and ticked again by `ENC-1005` — the middle step is the one worth
+      keeping.** The drop ratio was always exported: `PostFilter::confirm` publishes every pass
+      (`crates/search/src/postfilter.rs::publish`). The denylist gauges were not — the declaration,
+      the listener and all three alerts existed and **nothing called the recorder**, so
+      `enclave_search_denylist_entries` was absent, two alerts could not fire, and the third,
+      `SearchDenylistSizeUnreported`, is `absent(enclave_search_denylist_entries)` and described
+      this deployment. `ENC-1005` wired it into `routes::search::plan`, the one place already
+      holding the count and the limit, and pinned it with
+      `a_search_publishes_the_denylist_gauge_the_alerts_read`, which scrapes the rendered exposition
+      after a real search rather than reading the gauge back through its own accessor — a test that
+      did the latter would pass against a route that never publishes.
 - [x] A scanned, text-free PDF is searchable by its content (`ENC-161`). **Met 2026-08-22**, and
       the evidence is worth stating precisely because five sessions in a row declined to claim it.
       The chain is proven link by link with real components at every boundary: `PdfTextExtractor`
