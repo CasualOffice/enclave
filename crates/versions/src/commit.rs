@@ -93,7 +93,7 @@ use serde_json::json;
 use sqlx::Row as _;
 
 use crate::error::{classify_write, Result, VersionsError};
-use crate::model::{AvStatus, FileVersion, VersionBump, VersionStatus};
+use crate::model::{AvStatus, DigestEvidence, FileVersion, VersionBump, VersionStatus};
 use crate::row::{version_columns, version_from_row};
 
 /// The status every freshly committed version is written with.
@@ -168,6 +168,19 @@ pub struct NewVersion {
     pub size_bytes: i64,
     /// Lowercase hex SHA-256 of the content, computed over the bytes that were stored.
     pub checksum_sha256: String,
+    /// Who has confirmed [`NewVersion::checksum_sha256`] against those bytes, and when (`ENC-829`).
+    ///
+    /// **Not optional and not defaulted**, and the column's `DEFAULT` is dropped by
+    /// `migrations/0035` to make sure of it. A caller committing a single-shot upload the object
+    /// store hashed passes [`DigestEvidence::provider`]; a caller committing a multipart upload —
+    /// for which no S3-compatible store computes a whole-object digest at all — passes
+    /// [`DigestEvidence::unconfirmed`], and the antivirus pass settles it while it streams the
+    /// bytes it was going to stream anyway.
+    ///
+    /// A default here would have to be one of the two, and `PROVIDER` — the useful one — is the
+    /// claim that an object store vouched for these bytes. That claim being available by omission
+    /// is exactly the shape of `ENC-820`.
+    pub digest: DigestEvidence,
     /// The media type recorded for this version.
     pub mime_type: String,
     /// Whether this is a published version or a draft.
@@ -312,6 +325,13 @@ impl VersionService {
             size_bytes: source.size_bytes,
             checksum_sha256: source.checksum_sha256.clone(),
             mime_type: source.mime_type.clone(),
+            // `UNCONFIRMED`, and **not** copied from the source alongside the digest it belongs to.
+            // The source's evidence is about the source's object; this row names a *different*
+            // object, at a key the caller supplied, which nothing in this process has hashed. The
+            // antivirus pass streams every byte of it like any other new version and settles the
+            // state there — so a copy that silently lost bytes is caught rather than inheriting a
+            // confirmation earned by the object it was copied from (`ENC-829`).
+            digest: DigestEvidence::unconfirmed(),
             bump: request.bump,
             created_by: request.restored_by,
             comment: request.comment.clone(),
@@ -375,6 +395,8 @@ impl VersionService {
             .bind(new.bump.is_major())
             .bind(COMMITTED_STATUS.as_str())
             .bind(COMMITTED_AV_STATUS.as_str())
+            .bind(new.digest.state.as_str())
+            .bind(new.digest.verified_at)
             .fetch_one(&mut **tx)
             .await
             // The revision handed to the classifier is the one the file held *before* this
@@ -600,13 +622,15 @@ const INSERT_VERSION: &str = concat!(
     ") ",
     "INSERT INTO file_versions",
     " (id, tenant_id, file_id, object_key, storage_profile_id, size_bytes, checksum_sha256,",
-    " mime_type, major, minor, status, av_status, created_by, created_at, comment) ",
+    " mime_type, major, minor, status, av_status, created_by, created_at, comment,",
+    " digest_state, digest_verified_at) ",
     "SELECT $1::uuid, $2::uuid, $3::uuid, $4::text, $5::uuid, $6::bigint, $7::text, $8::text,",
     " numbering.major,",
     " CASE WHEN $12 THEN 0 ELSE COALESCE((SELECT MAX(v.minor) FROM file_versions v",
     " WHERE v.tenant_id = $2::uuid AND v.file_id = $3::uuid AND v.major = numbering.major), -1)",
     " + 1 END,",
-    " $13::text, $14::text, $9::uuid, $10::timestamptz, $11::text",
+    " $13::text, $14::text, $9::uuid, $10::timestamptz, $11::text,",
+    " $15::text, $16::timestamptz",
     " FROM numbering ",
     "RETURNING ",
     version_columns!()
@@ -642,6 +666,27 @@ mod tests {
         // is no literal in the SQL that could be edited independently of them.
         assert!(!INSERT_VERSION.contains("'AVAILABLE'"));
         assert!(!INSERT_VERSION.contains("'CLEAN'"));
+    }
+
+    /// **The commit says which digest state it is writing; it never lets the column decide.**
+    ///
+    /// `migrations/0035` drops the column's `DEFAULT` so that an `INSERT` which omits it fails
+    /// rather than claiming `PROVIDER` — that an object store hashed these bytes and agreed. This
+    /// is the other half: the statement names the column and binds it from
+    /// [`NewVersion::digest`], so the value comes from the caller that knows how the bytes arrived
+    /// rather than from the schema.
+    #[test]
+    fn the_commit_binds_the_digest_state_rather_than_leaving_it_to_a_default() {
+        assert!(INSERT_VERSION.contains("digest_state"), "{INSERT_VERSION}");
+        assert!(INSERT_VERSION.contains("$15::text"), "{INSERT_VERSION}");
+        assert!(INSERT_VERSION.contains("digest_verified_at"), "{INSERT_VERSION}");
+        assert!(INSERT_VERSION.contains("$16::timestamptz"), "{INSERT_VERSION}");
+        // And no literal state in the SQL that could be edited away from `NewVersion`. The needles
+        // are assembled so they do not appear in this file's own source (`docs/12 §1.2`).
+        for state in crate::model::DigestState::all() {
+            let literal = format!("'{}'", state.as_str());
+            assert!(!INSERT_VERSION.contains(&literal), "{literal} is hard-coded in the insert");
+        }
     }
 
     #[test]

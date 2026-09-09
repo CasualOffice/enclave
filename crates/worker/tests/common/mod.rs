@@ -221,11 +221,11 @@ pub(crate) async fn a_version(
     sqlx::query(
         "INSERT INTO file_versions
            (id, tenant_id, file_id, object_key, storage_profile_id, size_bytes, checksum_sha256,
-            mime_type, major, minor, status, av_status, created_by, created_at)
+            mime_type, major, minor, status, av_status, created_by, created_at, digest_state)
          VALUES ($1, $2, $3, $4, $5, 12, 'deadbeef', $6, 1,
                  COALESCE((SELECT max(v.minor) + 1 FROM file_versions v
                             WHERE v.tenant_id = $2 AND v.file_id = $3 AND v.major = 1), 0),
-                 $7, $8, $9, $10)",
+                 $7, $8, $9, $10, 'PROVIDER')",
     )
     .bind(id)
     .bind(tenant.as_uuid())

@@ -42,7 +42,9 @@ use enclave_db::TenantScoped;
 use enclave_storage::{BlobStore, CompletedPart, StorageError, UploadRequest, UploadTarget};
 use sqlx::PgConnection;
 
-use crate::content::{is_lowercase_sha256_hex, FailureReason, ReportedContent, VerifiedContent};
+use crate::content::{
+    is_lowercase_sha256_hex, FailureReason, ProviderDigest, ReportedContent, VerifiedContent,
+};
 use crate::error::{Result, UploadError};
 use crate::id::UploadSessionId;
 use crate::limits::UploadLimits;
@@ -197,10 +199,12 @@ impl UploadService {
         if let Some(mime) = &request.declared_mime {
             upload = upload.with_content_type(mime.clone());
         }
-        // A store that cannot have the provider confirm a digest for an upload this size refuses
-        // here rather than issuing a session whose checksum nothing will check. Reported as the
-        // per-file ceiling it is: above that number this deployment cannot accept an upload at all,
-        // and a client shown the limit can act on it (`ENC-829`).
+        // A store that can neither have the provider confirm a digest nor leave one to be confirmed
+        // later refuses here, rather than issuing a session whose checksum nothing will *ever*
+        // check. No store in this workspace does: the S3 backend issues a multipart session with
+        // the digest unsigned, and `complete` records it unconfirmed for the antivirus pass to
+        // settle (`ENC-829`). The arm is kept for a BYO backend that can offer neither, and it is
+        // still reported as the per-file ceiling it would be.
         let issued = match blob.create_upload(upload).await {
             Ok(issued) => issued,
             Err(StorageError::ChecksumUnverifiable { threshold, .. }) => {
@@ -341,7 +345,22 @@ impl UploadService {
         )?;
         let observed = blob.complete_upload(&store_session).await?;
 
-        let verified = match VerifiedContent::verify(declared_size, reported, &observed) {
+        // Which question the completion asks of the provider's digest, and it is read off the row
+        // rather than guessed: `multipart_id` is set exactly when `create` was handed a
+        // `UploadTarget::Multipart`, which is exactly when the store could not sign
+        // `x-amz-checksum-sha256` into anything. A single-shot session was signed, so a provider
+        // that reports no digest has failed us; a multipart one never could, so the confirmation is
+        // deferred to the antivirus pass (`ENC-829`).
+        //
+        // Safe in both directions if a future backend changes: `verify` prefers a matching provider
+        // digest whenever one is present, whichever branch asked.
+        let provider = if record.multipart_id.is_some() {
+            ProviderDigest::Deferred
+        } else {
+            ProviderDigest::Required
+        };
+
+        let verified = match VerifiedContent::verify(declared_size, reported, &observed, provider) {
             Ok(verified) => verified,
             Err(reason) => {
                 // Persisted, not merely returned: the staged bytes are wrong and this session can

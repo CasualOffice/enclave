@@ -221,8 +221,8 @@ async fn commit_version(
     sqlx::query(
         "INSERT INTO file_versions
            (id, tenant_id, file_id, object_key, storage_profile_id, size_bytes, checksum_sha256,
-            mime_type, major, minor, status, av_status, created_by, created_at)
-         VALUES ($1, $2, $3, $4, $5, 64, $6, 'text/plain', 1, 0, 'SCANNING', 'PENDING', $7, $8)",
+            mime_type, major, minor, status, av_status, created_by, created_at, digest_state)
+         VALUES ($1, $2, $3, $4, $5, 64, $6, 'text/plain', 1, 0, 'SCANNING', 'PENDING', $7, $8, 'PROVIDER')",
     )
     .bind(Uuid::now_v7())
     .bind(tenant.as_uuid())

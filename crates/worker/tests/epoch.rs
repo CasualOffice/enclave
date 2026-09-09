@@ -54,8 +54,8 @@ async fn indexed_file(db: &TestDb, tenant: TenantId, owner: UserId, status: &str
     sqlx::query(
         "INSERT INTO file_versions
            (id, tenant_id, file_id, object_key, storage_profile_id, size_bytes, checksum_sha256,
-            mime_type, major, minor, status, created_by, created_at)
-         VALUES ($1, $2, $3, $4, $5, 12, 'deadbeef', 'text/plain', 1, 0, 'AVAILABLE', $6, $7)",
+            mime_type, major, minor, status, created_by, created_at, digest_state)
+         VALUES ($1, $2, $3, $4, $5, 12, 'deadbeef', 'text/plain', 1, 0, 'AVAILABLE', $6, $7, 'PROVIDER')",
     )
     .bind(version)
     .bind(tenant.as_uuid())

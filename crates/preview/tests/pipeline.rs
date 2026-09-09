@@ -125,8 +125,8 @@ async fn insert_version(
     sqlx::query(
         "INSERT INTO file_versions
            (id, tenant_id, file_id, object_key, storage_profile_id, size_bytes, checksum_sha256,
-            mime_type, major, minor, status, av_status, created_by, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 1, $13, $9, $10, $11, $12)",
+            mime_type, major, minor, status, av_status, created_by, created_at, digest_state)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 1, $13, $9, $10, $11, $12, 'PROVIDER')",
     )
     .bind(id.as_uuid())
     .bind(tenant.as_uuid())

@@ -292,12 +292,18 @@ pub struct UploadRequest {
     ///
     /// Not advisory, and not a hint. Setting this obliges the implementation to make the provider
     /// **compute the digest of the bytes it receives and refuse them if they disagree** — see
-    /// [`BlobStore::create_upload`](crate::BlobStore::create_upload). An implementation that cannot
-    /// arrange that for this request must return
-    /// [`StorageError::ChecksumUnverifiable`](crate::StorageError::ChecksumUnverifiable) rather
-    /// than issue a session whose digest nothing will check. `ENC-820` is what the permissive
-    /// reading cost: the field was already here, already populated, and quietly dropped on the
-    /// floor by the S3 implementation.
+    /// [`BlobStore::create_upload`](crate::BlobStore::create_upload). `ENC-820` is what the
+    /// permissive reading cost: the field was already here, already populated, and quietly dropped
+    /// on the floor by the S3 implementation.
+    ///
+    /// An implementation that cannot arrange that for *this* request — a multipart upload, for
+    /// which no S3-compatible provider computes a whole-object digest — issues the session with the
+    /// digest unsigned, and the returned [`UploadTarget`] shows which happened: `Single` reports the
+    /// checksum header among `required_headers`, `Multipart` reports no such header. The caller
+    /// commits the version with its digest unconfirmed and the antivirus pass settles it
+    /// (`ENC-829`). Issuing a session whose digest nothing will *ever* check remains forbidden;
+    /// a store that can offer neither returns
+    /// [`StorageError::ChecksumUnverifiable`](crate::StorageError::ChecksumUnverifiable).
     pub checksum_sha256: Option<String>,
 }
 

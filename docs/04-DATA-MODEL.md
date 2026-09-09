@@ -1,6 +1,6 @@
 # 04 — Data Model
 
-> **Status:** Draft · **Version:** 2.6 · **Owner:** Platform Engineering · **Last updated:** 2026-08-30
+> **Status:** Draft · **Version:** 2.7 · **Owner:** Platform Engineering · **Last updated:** 2026-09-10
 > **Authoritative for:** all PostgreSQL DDL, tenant isolation, quotas. No other document defines schema.
 
 ## 1. Conventions
@@ -514,8 +514,13 @@ CREATE TABLE file_versions (
     created_by       UUID NOT NULL,
     created_at       TIMESTAMPTZ NOT NULL,
     comment          TEXT,
+    -- Who confirmed `checksum_sha256` against the stored bytes, and when. No DEFAULT: see §12C.
+    digest_state     TEXT NOT NULL CHECK (digest_state IN ('PROVIDER','ANTIVIRUS','UNCONFIRMED','MISMATCH')),
+    digest_verified_at TIMESTAMPTZ,
     UNIQUE (tenant_id, id),
-    FOREIGN KEY (tenant_id, file_id) REFERENCES files (tenant_id, id)
+    FOREIGN KEY (tenant_id, file_id) REFERENCES files (tenant_id, id),
+    CONSTRAINT file_versions_available_digest_is_confirmed
+        CHECK (status <> 'AVAILABLE' OR digest_state IN ('PROVIDER','ANTIVIRUS'))
 );
 CREATE UNIQUE INDEX uq_version_number ON file_versions (tenant_id, file_id, major, minor);
 CREATE UNIQUE INDEX uq_version_object ON file_versions (object_key);
@@ -523,8 +528,8 @@ CREATE INDEX idx_versions_file ON file_versions (tenant_id, file_id, major DESC,
 ```
 
 Rows in `file_versions` are **immutable** after reaching `AVAILABLE`, except for governance columns
-(`approval_state`, AV rescan columns). A trigger rejects updates to `object_key`, `checksum_sha256`,
-`size_bytes`, `major` and `minor`.
+(`approval_state`, AV rescan columns, the tier columns of §12A and the digest columns of §12C). A
+trigger rejects updates to `object_key`, `checksum_sha256`, `size_bytes`, `major` and `minor`.
 
 ```sql
 CREATE TABLE upload_sessions (
@@ -1487,6 +1492,59 @@ compliance value in the record that somebody once favourited a document, and wit
 would mean carrying tombstones of a preference nobody audits. The pattern elsewhere is deliberate,
 not a house style to copy.
 
+## 12C. Digest evidence (`ENC-829`)
+
+`file_versions` carries `digest_state` and `digest_verified_at`, added by
+`migrations/0035_version_digest_evidence.sql`. They record **who confirmed `checksum_sha256` against
+the bytes that are actually stored, and when** — a question this schema previously had only one
+possible answer to, and paid for.
+
+```sql
+digest_state       TEXT NOT NULL
+                   CHECK (digest_state IN ('PROVIDER','ANTIVIRUS','UNCONFIRMED','MISMATCH')),
+digest_verified_at TIMESTAMPTZ,
+CONSTRAINT file_versions_available_digest_is_confirmed
+    CHECK (status <> 'AVAILABLE' OR digest_state IN ('PROVIDER','ANTIVIRUS'))
+```
+
+The column has **no `DEFAULT`**. Existing rows were backfilled `PROVIDER` — correctly, and as a fact
+rather than a convenience: every version written before this migration passed a completion check that
+cannot succeed unless the object store computed the digest itself, and every multipart session was
+refused outright. The default was then dropped, so an `INSERT` that omits the column fails loudly
+instead of claiming that an object store vouched for bytes it never saw.
+
+**Why the state exists at all.** `ENC-820` made `checksum_sha256` mean *"the object store hashed the
+body and it matched"*, which is the right meaning and cost the product every upload above 16 MiB.
+Above the multipart threshold, what S3 and MinIO compute is a **composite** checksum — a hash of the
+part hashes, suffixed `-N` — which is not the whole-object digest and cannot be compared with one.
+AWS's `FULL_OBJECT` checksum type would close it on AWS; MinIO answers `InvalidArgument: Invalid
+checksum provided.` to it on both `RELEASE.2025-04-22` and `RELEASE.2025-09-07`, so the self-hosted
+default has nothing to fall back on. With nowhere to write down *"this digest is not yet evidence"*,
+the only honest answer was to refuse the session.
+
+The confirmation therefore **moves in time rather than disappearing**. The antivirus pass already
+streams every byte of every version — it must, because a header-only scan is the shortcut
+`CLAUDE.md` rule 9 exists to prevent — so it hashes as it goes and settles the state. See
+`11-OPERATIONS.md §3.3` for what that pass does with the answer.
+
+**Why `UNCONFIRMED` is a state and not a `NULL` timestamp.** *"Nobody has checked"* and *"somebody
+checked and the bytes are wrong"* are opposite facts, and a schema in which both are an absence
+cannot tell an operator which one they are looking at. `MISMATCH` is also what stops the version from
+being re-read forever: the object is immutable, so there is no later pass that gets a different
+answer.
+
+**The constraint is the part that cannot be routed around.** The worker decides not to publish a
+version whose digest is unconfirmed, and a decision in one function is one refactor away from being
+lost — while `AVAILABLE` is precisely the value rule 9 is about. With
+`file_versions_available_digest_is_confirmed` in place, a regressed build fails its `UPDATE` with a
+`23514` an operator can read rather than serving an object nobody hashed. It is added `NOT VALID`
+then `VALIDATE`d, so the table scan runs under `SHARE UPDATE EXCLUSIVE` instead of holding
+`ACCESS EXCLUSIVE` over every version of every file ever written.
+
+`READABLE_PREDICATE` is deliberately **not** widened to mention these columns. The constraint already
+makes `AVAILABLE` imply a confirmed digest for every row a read path can observe, and a second
+spelling of a rule the database holds is what `ENC-828` came out of.
+
 ## 13. Compliance
 
 ```sql
@@ -2421,6 +2479,7 @@ CREATE INDEX idx_jobs_ready ON jobs (state, run_after) WHERE state = 'QUEUED';
 | 1.10 | 2026-08-29 | Added §15.2, `print_tokens` — the durable home of a print capability, and the single-use property moved out of one API process's `HashMap` and into PostgreSQL (`ENC-724`, closing the limit `ENC-720` recorded in its own source). The decision worth reading is that **`redeemed_at` is nullable rather than a `redeemed BOOLEAN`**: redemption is one `UPDATE … WHERE redeemed_at IS NULL … RETURNING`, whose predicate names the column it writes, so under `READ COMMITTED` the second of two concurrent redemptions re-checks the updated row and matches nothing — exactly one winner, across replicas, with the loser needing no arm of its own because zero rows is already the answer for a token that never existed. A `SELECT` then an `UPDATE` is the shape D18 forbids for download budgets; a `DELETE … RETURNING` would collapse *replayed* and *reaped* into one state. Expiry sits in the same predicate and against PostgreSQL's `now()` rather than a replica's, which is `crates/worker/src/invalidation.rs`'s clock finding restated. **Tenancy is not what stops a colleague**: a grant binds one actor, RLS is blind to that, and the `actor_type`/`actor_id` pair is in the `WHERE` rather than checked after it, so a wrong principal cannot burn a grant on its way to being refused — which is why `docs/12 §4.2` A21 uses a *same-tenant* thief. `session_id` is matched, not merely recorded, and costs nothing because `sid` is the refresh family and constant across rotation. `actor_id` carries no foreign key because it is polymorphic over `actor_type`, the limitation `acl_entries.resource_id` already has. `enclave_app` holds `DELETE` — a print token is a live capability with a stated lifetime, not a record; the record is in `audit_events` — and the sweep is its own worker pass rather than a limb of `upload-reaper`, which is wired only when object storage is configured. `migrations/0028_print_tokens.sql` applies it. |
 | 1.9 | 2026-08-27 | Added §15.1, sync as created — `sync_devices` and `sync_cursors` per §15, plus `sync_scope_sequences` and `sync_change_log`, which §15 did not model and without which `sync_cursors.cursor` counts nothing (`ENC-732`). The decision worth reading is that `seq` comes from a **transactional counter row** rather than a PostgreSQL `SEQUENCE` or a timestamp: the incrementing `UPDATE` holds a row lock to commit, so allocation order is commit order and the visible sequence is always a contiguous prefix — `nextval` neither locks nor rolls back, so two writers can take 5 and 6 and commit in the other order, after which a reader that saw 6 never sees 5. The cost, per-scope write serialisation, is why a scope is a library. The feed is appended by a **trigger on `files`** rather than by each writer, on the same completeness argument RLS makes about tenant predicates; the gap that leaves — an `acl_entries`-only revocation produces no entry — is `ENC-737` and is caught by `10-SYNC-AND-EDITING.md §5`'s re-evaluation at byte-fetch time. `sync_devices` is **not** `devices` (0001, Auth domain, written by nothing yet); reconciling them when device-bound tokens land is `ENC-736`. `enclave_app` holds `DELETE` on `sync_change_log` alone — deleting a counter row restarts a scope at 1 and every device holding a higher cursor stops receiving changes silently and permanently. `migrations/0023_sync_devices.sql` applies it. |
 | 1.9 | 2026-08-27 | Added §13.1, the three workflow tables as created — `workflow_definitions`, `workflow_instances`, `workflow_steps`, the schema behind `docs/05-API.md §16`'s eight endpoints (`ENC-739`). The reconciled form of `docs/15 §7`, under **Compliance** because an approval governs a document's lifecycle exactly as retention and a record declaration do, and because a top-level section would renumber `§§18`–`§20`, which three files cite by number. `§13.2` is reserved for the signing tables. **Four departures, all on §12.3's test** — storing a column the evaluator does not read is storing a promise: no `trigger` (five trigger kinds in `docs/15 §5`, none evaluated, so a stored trigger is a workflow that never starts — `ENC-745`); no `resource_type` or `assignee_type`, because a polymorphic reference cannot carry a foreign key and **the composite key is the discriminator**, which is strictly stronger than the `CHECK` would have been (`ENC-744`); and `step_type` without `AUTOMATION` or `CONDITION`, which is §12.3's `ALLOW` case exactly — a step with no evaluator instantiates `ASSIGNED` and stalls the instance with nobody able to decide it and nothing able to skip it. `SIGNATURE` **is** in the vocabulary, because `signature_requests.workflow_step_id` anchors on these rows. **Four columns `§7` does not have, each a security property.** The instance pins `allow_self_approval`, `delegation` and `on_new_version` from its definition, because otherwise one `UPDATE` on a template retroactively makes every in-flight approval under it self-approvable with nothing recording that the terms changed mid-flight — `docs/15 §2`'s determinism as a column, and the step rows freeze their quorum in `config` for the same reason, so the evaluator never re-reads the template. And `workflow_steps.decided_by`, without which an `APPROVED` step cannot distinguish *the assignee decided before delegating* from *the delegate decided* — which is the whole content of §4's requirement that a delegation never be a silent substitution. **`version_id` is `NOT NULL`** where §7 has it nullable: §2.1's first core property is that an approval approves what was actually reviewed, a nullable column is how an instance bound to nothing gets created, and NULLs being distinct would let `uq_workflow_instances_trigger` be evaded unboundedly. **`delegation` has two values and neither is a chain** — `FORBIDDEN` and `ONCE`, so an unbounded delegate chain is unstorable on every path including `psql`, which is §12.1's shape for keeping `ALLOW` out of an effect (`ENC-740`). One row per assignee per `(stage, position)`, so a quorum is a `count` rather than a running total a repaired row desynchronises. `enclave_app` holds no `DELETE`: an instance is the record of who was asked and what they said. `migrations/0024_workflows.sql` applies it. |
+| 2.7 | 2026-09-10 | `file_versions.digest_state` and `digest_verified_at` (`ENC-829`, §12C, `migrations/0035`): **who confirmed the whole-object SHA-256 against the stored bytes, and when.** Until now there was one possible answer — the object store, at upload — and holding to it cost every upload above 16 MiB, because no S3-compatible backend computes a whole-object digest for a multipart upload and MinIO refuses AWS's `FULL_OBJECT` type on every release probed. The decision worth recording is that the confirmation **moves in time rather than disappearing**: the antivirus pass already streams every byte of every version, so it hashes as it goes and settles the state, and until it does no read path serves the version. `UNCONFIRMED` is a state rather than a `NULL` timestamp because *"nobody checked"* and *"somebody checked and the bytes are wrong"* are opposite facts and a schema that spells both as an absence cannot tell an operator which it is looking at — the second is `MISMATCH`, which quarantines the version as seriously as an infection does and takes it out of the rescan queue, since immutable bytes cannot hash differently later. The column has **no `DEFAULT`**, so a forgetful `INSERT` fails rather than claiming provider confirmation, and `file_versions_available_digest_is_confirmed` is what makes the guarantee structural instead of a habit in one Rust function. `READABLE_PREDICATE` is deliberately not widened: the constraint already makes `AVAILABLE` imply a confirmed digest, and a second spelling of one rule is what `ENC-828` came out of. |
 | 2.6 | 2026-08-30 | `favorites` (`ENC-959`, §12B, `migrations/0034`), a table this schema has never had while the navigation advertised the feature. It is the user's own data — a favorite grants nothing, reveals nothing and decides nothing — so the natural key is all three columns and no other table references it. `DELETE` is granted here and withheld on every policy table, and §12B says why the difference is deliberate rather than an inconsistency. |
 | 2.5 | 2026-08-30 | `file_versions.tier_verified_at` (`ENC-951`, §12A, `migrations/0033`): when the object store last confirmed the tier, `NULL` for never. The tier changes without this product being told — a bucket lifecycle rule is how content usually reaches cold storage — and detecting that costs one `HeadObject` per version, so the scan is bounded and ordered by this column. It is not evidence the tier is correct *now*; the oldest value in the table is the deployment's worst-case staleness, and the worker reports it every pass. |
 | 2.4 | 2026-08-30 | **Storage tiers exist** (`ENC-946`, §12A). `file_versions` gains `storage_tier` and `restore_requested_at` from `migrations/0032`. Archival appeared nowhere in this document before it. The decision worth recording is that **a tier is not a `status`**: `status` is rule 9's column and answers whether content is safe to serve; a tier answers how long fetching it takes, and a version can be `AVAILABLE` and `ARCHIVED` at once. Folding them would make archived content indistinguishable from quarantined content at every `status = 'AVAILABLE'` predicate in the tree. |

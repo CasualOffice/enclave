@@ -222,9 +222,9 @@ async fn insert_version(
         "INSERT INTO file_versions
            (id, tenant_id, file_id, object_key, storage_profile_id, size_bytes, checksum_sha256,
             mime_type, major, minor, status, av_status, encryption_mode, created_by, created_at,
-            comment)
+            comment, digest_state)
          VALUES ($1, $2, $3, $4, $5, 1024, $6, 'application/pdf', $7, $8, $9, $10, 'PROVIDER', $11,
-                 $12, 'a comment')",
+                 $12, 'a comment', 'PROVIDER')",
     )
     .bind(id.as_uuid())
     .bind(spine.tenant.as_uuid())

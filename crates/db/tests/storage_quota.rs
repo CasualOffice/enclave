@@ -160,9 +160,9 @@ async fn seed_versions(
         sqlx::query(
             "INSERT INTO file_versions
                (id, tenant_id, file_id, object_key, storage_profile_id, size_bytes,
-                checksum_sha256, mime_type, major, minor, status, created_by, created_at)
+                checksum_sha256, mime_type, major, minor, status, created_by, created_at, digest_state)
              VALUES ($1, $2, $3, $4, $5, $6, 'sha256:test', 'application/octet-stream',
-                     $7, 0, $8, $9, now())",
+                     $7, 0, $8, $9, now(), 'PROVIDER')",
         )
         .bind(Uuid::new_v4())
         .bind(tenant.as_uuid())

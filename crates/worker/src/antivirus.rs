@@ -97,6 +97,45 @@
 //! turns both into `warn!` lines. Gauges belong with `ENC-637`'s treatment of the content scan and
 //! are logged as `ENC-648`; a log line an operator can grep is what this ships with.
 //!
+//! # The second thing this pass now decides: whether the digest is real (`ENC-829`)
+//!
+//! `file_versions.checksum_sha256` used to mean *"the object store hashed these bytes and agreed"*,
+//! and that meaning cost the product every upload above 16 MiB: no S3-compatible backend computes a
+//! whole-object digest for a multipart upload, so a large upload had a digest nothing could confirm
+//! and `crates/storage` refused the session outright.
+//!
+//! This pass is where that confirmation now happens, because it is the one thing in the workspace
+//! that already reads every byte of every version. The stream handed to the engine goes through
+//! [`crate::digest::DigestTap`] on its way, so the SHA-256 costs one `update` per chunk and no
+//! second read.
+//!
+//! `file_versions.digest_state` carries the answer, and it changes what [`Target::of`] may write:
+//!
+//! | the tap says | the row's digest becomes | and the version |
+//! |---|---|---|
+//! | matches `checksum_sha256` | `ANTIVIRUS` | follows the antivirus verdict, as always |
+//! | differs | `MISMATCH` | is **quarantined**, whatever the verdict was |
+//! | nothing (short read) | *unchanged*, so `UNCONFIRMED` | may not be published |
+//!
+//! **A mismatch is treated exactly as an infection**, because it is the same fact one layer down:
+//! the stored object is not the object the uploader vouched for, so every downstream statement that
+//! quotes its digest — a retention record, an audit row, a signature — is about something else.
+//! `Publish` is not available for it and neither is `Hold`; there is no retry that makes immutable
+//! bytes hash differently.
+//!
+//! **The third row is the one rule 9 is about.** A scanner is entitled to stop reading — clamd
+//! closes the connection when it has decided, and `ClamavScanner` refuses anything past
+//! `max_scan_bytes` before opening a socket — so a version can come out of a scan with no digest
+//! opinion at all. Publishing it would make an unconfirmed digest readable, which is the window
+//! this row exists to not open, so `Target::of` quarantines instead. That is terminal rather than
+//! retried, for the reason the mismatch arm is: the same engine reading the same object will stop
+//! at the same place.
+//!
+//! A version whose digest was already settled — every single-shot upload, whose store *did* hash
+//! the body (`ENC-820`) — is not re-hashed. Re-verifying settled digests on every rescan is
+//! integrity scanning, which is a different feature with a different cost model; this pass confirms
+//! what nothing else could and stops there.
+//!
 //! # Counts and identifiers, never content
 //!
 //! `CLAUDE.md` rule 10. The one field here that carries free text from outside is the engine's
@@ -114,11 +153,12 @@ use enclave_antivirus::{
 use enclave_core::{FileId, TenantId, VersionId};
 use enclave_db::DbPool;
 use enclave_storage::{BlobStore, ByteRange, StorageError};
-use enclave_versions::{AvStatus, VersionStatus};
+use enclave_versions::{AvStatus, DigestState, VersionStatus};
 use sqlx::Row as _;
 use tracing::{debug, error, warn};
 use uuid::Uuid;
 
+use crate::digest::{Digest, DigestTap};
 use crate::{Result, Stop, WorkerError};
 
 /// Where the next pass over a tenant's unverdicted versions resumes.
@@ -176,6 +216,22 @@ pub struct AvPass {
     /// Versions recorded `ERROR`: the scan failed in a way retrying will not fix, so they will not
     /// be offered again.
     pub errored: usize,
+    /// Versions whose stored bytes did not hash to the digest declared at upload (`ENC-829`).
+    ///
+    /// A **second view** of versions already counted in [`Self::quarantined`], not a sixth
+    /// disposition — the five above still partition every version considered. It is separate
+    /// because it is a different alarm: `quarantined` climbing is malware or policy, and this
+    /// climbing is content that does not match what its uploader vouched for, which is a storage
+    /// fault, a truncated upload, or somebody writing to the bucket around this product.
+    pub digest_mismatched: usize,
+    /// Versions the tenant's policy would have published, refused because nothing has confirmed
+    /// their digest.
+    ///
+    /// Also counted in [`Self::quarantined`], for [`Self::digest_mismatched`]'s reason. Reached
+    /// when the engine stops reading before the end of the object — its own size ceiling, or clamd
+    /// deciding early — so no whole-object hash exists. Distinct from a mismatch because nothing is
+    /// known to be wrong with the content; what is missing is the evidence.
+    pub digest_unconfirmed: usize,
     /// Versions whose row actually changed.
     ///
     /// The scheduler's progress signal, and it is a different question from the five above: a
@@ -205,18 +261,45 @@ impl AvPass {
     }
 }
 
-/// The two columns this pass writes on a version, and whether they are a change at all.
+/// What this pass learned about a version's digest while the engine read it (`ENC-829`).
 ///
-/// A named type rather than a tuple built inline, so that the mapping from `docs/06 §6.2` to the
-/// schema is one function with one test rather than a sequence of assignments.
+/// Four values and not three: *"nothing was hashed because nothing needed to be"* and *"nothing was
+/// hashed because the engine stopped reading"* have opposite consequences. The first leaves a
+/// settled digest alone; the second is the case that must not be published.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DigestReading {
+    /// The row's digest was already confirmed, so the stream was not hashed at all.
+    ///
+    /// Every single-shot upload: the object store hashed the body against a signed
+    /// `x-amz-checksum-sha256` (`ENC-820`). Re-hashing a settled digest on every rescan is
+    /// integrity scanning, which is a different feature with a different cost.
+    AlreadySettled,
+    /// The whole object was hashed and it matched `file_versions.checksum_sha256`.
+    Confirmed,
+    /// The whole object was hashed and it did **not** match.
+    Failed,
+    /// The object was not read to its end, so there is no whole-object digest to compare.
+    ///
+    /// Not a failure of the content: `ClamavScanner` refuses anything past `max_scan_bytes` before
+    /// opening a socket, and clamd closes the connection when it has decided from the first block.
+    /// A prefix hashes to something unrelated to the object, so guessing either way would be wrong.
+    NoReading,
+}
+
+/// The three columns this pass writes on a version, and whether they are a change at all.
+///
+/// A named type rather than a tuple built inline, so that the mapping from `docs/06 §6.2` — and now
+/// from `ENC-829` — to the schema is one function with one test rather than a sequence of
+/// assignments.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Target {
     status: VersionStatus,
     av_status: AvStatus,
+    digest: DigestState,
 }
 
 impl Target {
-    /// Translates an outcome into the pair of column values a version should end up with.
+    /// Translates an outcome into the column values a version should end up with.
     ///
     /// `observed` is what the queue found, and it is a parameter rather than an assumption because
     /// two of the three dispositions depend on it:
@@ -228,14 +311,47 @@ impl Target {
     ///   a recorded `SKIPPED` with `PENDING` or `ERROR` would delete the only evidence of the
     ///   earlier scan to record that this one did not happen.
     ///
+    /// # The digest can overrule the disposition, in one direction only (`ENC-829`)
+    ///
+    /// It can refuse a publication and it can never cause one. Two cases reach for it, and the
+    /// module documentation carries the argument for each:
+    ///
+    /// * **A digest that was checked and disagreed is quarantined outright**, whatever the engine
+    ///   concluded and whichever policy is in force. The bytes are not the bytes the uploader
+    ///   vouched for. `Hold` is not available either: the object is immutable, so a retry reads the
+    ///   same bytes and gets the same answer.
+    /// * **A digest nobody has confirmed cannot be published.** `AVAILABLE` is the value
+    ///   `CLAUDE.md` rule 9 is about, and a version carrying a digest that is still only the
+    ///   client's word is exactly what `migrations/0035`'s
+    ///   `file_versions_available_digest_is_confirmed` refuses. Deciding it here means the pass
+    ///   never asks the database for something the database will refuse; the constraint is the
+    ///   backstop for the day this function is edited, not the primary control.
+    ///
     /// Everything else is `decide`'s answer, taken verbatim.
-    fn of(outcome: &ScanOutcome, observed: Target) -> Result<Self> {
+    fn of(outcome: &ScanOutcome, observed: Target, reading: DigestReading) -> Result<Self> {
         let av_status = convert_av_status(outcome.av_status)?;
 
+        let digest = match reading {
+            DigestReading::AlreadySettled | DigestReading::NoReading => observed.digest,
+            DigestReading::Confirmed => DigestState::Antivirus,
+            DigestReading::Failed => DigestState::Mismatch,
+        };
+
+        if digest == DigestState::Mismatch {
+            return Ok(Self { status: VersionStatus::Quarantined, av_status, digest });
+        }
+
         Ok(match outcome.disposition {
-            VersionDisposition::Publish => Self { status: VersionStatus::Available, av_status },
+            // The one place the digest refuses a publication. Quarantine rather than hold: the
+            // engine that stopped reading this object will stop at the same place next time.
+            VersionDisposition::Publish if !digest.is_confirmed() => {
+                Self { status: VersionStatus::Quarantined, av_status, digest }
+            }
+            VersionDisposition::Publish => {
+                Self { status: VersionStatus::Available, av_status, digest }
+            }
             VersionDisposition::Quarantine => {
-                Self { status: VersionStatus::Quarantined, av_status }
+                Self { status: VersionStatus::Quarantined, av_status, digest }
             }
             VersionDisposition::Hold => Self {
                 status: observed.status,
@@ -244,6 +360,7 @@ impl Target {
                 } else {
                     observed.av_status
                 },
+                digest,
             },
         })
     }
@@ -273,6 +390,8 @@ struct Due {
     object_key: String,
     mime_type: String,
     size_bytes: i64,
+    /// The digest declared at upload, lowercase hex — what a whole-object hash is compared against.
+    checksum_sha256: String,
     observed: Target,
 }
 
@@ -282,13 +401,20 @@ struct Due {
 /// configured engine actually inspects content, which is what gates the `SKIPPED` rescan; the
 /// `tenant_id = $1` predicate sits beside row-level security, the two-layer arrangement of
 /// `docs/04 §3`.
+/// `digest_state <> 'MISMATCH'` is the same argument as the absence of `INFECTED` above, one layer
+/// down (`ENC-829`). A version whose stored bytes do not hash to the digest declared for them is
+/// already quarantined and its bytes are immutable, so no rescan can change the answer in our
+/// favour — and without the predicate such a version stays in the queue forever, because the
+/// antivirus verdict it also carries may legitimately be a retryable one. Re-reading a 5 GB object
+/// every tick to reconfirm a permanent failure is the whole cost of leaving it out.
 const DUE_SQL: &str = "
 SELECT v.id, v.file_id, v.created_at, v.object_key, v.mime_type, v.size_bytes,
-       v.status, v.av_status
+       v.checksum_sha256, v.status, v.av_status, v.digest_state
   FROM file_versions v
  WHERE v.tenant_id = $1
    AND v.status IN ('SCANNING','PROCESSING','AVAILABLE','QUARANTINED')
    AND (v.av_status = 'PENDING' OR (v.av_status = 'SKIPPED' AND $2))
+   AND v.digest_state <> 'MISMATCH'
    AND ($3::timestamptz IS NULL OR (v.created_at, v.id) > ($3, $4))
  ORDER BY v.created_at, v.id
  LIMIT $5
@@ -301,17 +427,23 @@ SELECT v.id, v.file_id, v.created_at, v.object_key, v.mime_type, v.size_bytes,
 /// this statement a second replica may have scanned the same version, or a rescan may have
 /// quarantined it. Writing unconditionally would let the slower of two workers overwrite the
 /// faster's verdict with a stale one, and the stale one might be `CLEAN`.
+/// `digest_verified_at` is `COALESCE`d rather than overwritten: `$12` is `NULL` unless the digest
+/// state actually moved this pass, so a version whose digest was settled earlier keeps the moment it
+/// was settled instead of having it advanced by every later rescan.
 const RECORD_SQL: &str = "
 UPDATE file_versions
    SET status               = $4,
        av_status            = $5,
        av_engine            = $6,
        av_signature_version = $7,
-       av_scanned_at        = $8
- WHERE tenant_id = $1
-   AND id        = $2
-   AND status    = $3
-   AND av_status = $9
+       av_scanned_at        = $8,
+       digest_state         = $10,
+       digest_verified_at   = COALESCE($12, digest_verified_at)
+ WHERE tenant_id    = $1
+   AND id           = $2
+   AND status       = $3
+   AND av_status    = $9
+   AND digest_state = $11
 ";
 
 /// Moves the file to match the verdict on its **current** version.
@@ -376,13 +508,16 @@ pub async fn av_pass<S: BlobStore + ?Sized>(
             return Ok(outcome);
         }
 
-        let verdict = verdict_for(scanner, store, &item).await?;
+        let (verdict, reading) = verdict_for(scanner, store, &item).await?;
         let decision = decide(&verdict, policy, classification_rank());
         if let Some(incident) = decision.incident.as_ref() {
             raise(tenant, &item, incident);
         }
+        if reading == DigestReading::Failed {
+            report_digest_mismatch(tenant, &item);
+        }
 
-        let target = Target::of(&decision, item.observed)?;
+        let target = Target::of(&decision, item.observed, reading)?;
         if target == item.observed {
             debug!(
                 tenant = %tenant,
@@ -413,6 +548,8 @@ pub async fn av_pass<S: BlobStore + ?Sized>(
         quarantined = outcome.quarantined,
         held = outcome.held,
         errored = outcome.errored,
+        digest_mismatched = outcome.digest_mismatched,
+        digest_unconfirmed = outcome.digest_unconfirmed,
         written = outcome.written,
         swept,
         stopped = outcome.stopped,
@@ -443,6 +580,23 @@ const fn classification_rank() -> Option<enclave_core::ClassificationRank> {
 /// A function rather than an inline `match` so that "every version considered is counted exactly
 /// once" is a property a test can assert against the code that holds it.
 fn count(pass: &mut AvPass, decision: &ScanOutcome, target: Target) {
+    // The digest can overrule the disposition (`ENC-829`), so the counters follow what was actually
+    // written. Counting from `decision.disposition` alone would report a version quarantined for a
+    // bad digest as published, which is the one number an operator must be able to trust. Both arms
+    // also add to `quarantined`, so the five dispositions still partition the pass.
+    if target.digest == DigestState::Mismatch {
+        pass.digest_mismatched += 1;
+        pass.quarantined += 1;
+        return;
+    }
+    if decision.disposition == VersionDisposition::Publish
+        && target.status == VersionStatus::Quarantined
+    {
+        pass.digest_unconfirmed += 1;
+        pass.quarantined += 1;
+        return;
+    }
+
     match decision.disposition {
         VersionDisposition::Publish => {
             if target.av_status == AvStatus::Clean {
@@ -524,6 +678,7 @@ fn due_from_row(row: sqlx::postgres::PgRow) -> Result<Due> {
 
     let status: String = column(&row, "status")?;
     let av_status: String = column(&row, "av_status")?;
+    let digest_state: String = column(&row, "digest_state")?;
 
     Ok(Due {
         version: VersionId::from_uuid(column::<Uuid>(&row, "id")?),
@@ -532,6 +687,7 @@ fn due_from_row(row: sqlx::postgres::PgRow) -> Result<Due> {
         object_key: column(&row, "object_key")?,
         mime_type: column(&row, "mime_type")?,
         size_bytes: column(&row, "size_bytes")?,
+        checksum_sha256: column(&row, "checksum_sha256")?,
         observed: Target {
             status: status.parse().map_err(|_| WorkerError::MalformedRow {
                 column: "file_versions.status",
@@ -540,6 +696,12 @@ fn due_from_row(row: sqlx::postgres::PgRow) -> Result<Due> {
             av_status: av_status.parse().map_err(|_| WorkerError::MalformedRow {
                 column: "file_versions.av_status",
                 reason: "not an antivirus status this build knows",
+            })?,
+            // Refused rather than defaulted. A build that cannot read the state must not fall back
+            // to `PROVIDER`, which would treat an unconfirmed digest as evidence and publish it.
+            digest: digest_state.parse().map_err(|_| WorkerError::MalformedRow {
+                column: "file_versions.digest_state",
+                reason: "not a digest state this build knows",
             })?,
         },
     })
@@ -563,11 +725,22 @@ fn due_from_row(row: sqlx::postgres::PgRow) -> Result<Due> {
 /// * a stream that broke part-way is `Error { retryable: true }`, because the object is there and
 ///   the read is worth repeating;
 /// * a scanner constructed with a configuration it cannot honour is `Error { retryable: false }`.
+/// # The digest rides along (`ENC-829`)
+///
+/// The same stream is tapped on its way to the engine when — and only when — the row's digest is
+/// still unconfirmed. The engine cannot tell: [`DigestTap`] forwards every chunk unchanged and
+/// observes nothing but lengths.
+///
+/// The tap answers [`Digest::Partial`] whenever the stream was not read to its end or delivered a
+/// different number of bytes than the row claims, and that becomes [`DigestReading::NoReading`]
+/// rather than a mismatch. Both halves matter: a scanner is *entitled* to stop early, and the
+/// SHA-256 of a prefix matches nothing, so a tap that reported it would quarantine sound content as
+/// corrupt every time an object passed `max_scan_bytes`.
 async fn verdict_for<S: BlobStore + ?Sized>(
     scanner: &dyn AntivirusScanner,
     store: &S,
     item: &Due,
-) -> Result<ScanVerdict> {
+) -> Result<(ScanVerdict, DigestReading)> {
     let hint = ScanHint::empty()
         .with_mime(item.mime_type.clone())
         .with_size(u64::try_from(item.size_bytes).unwrap_or(u64::MAX));
@@ -585,18 +758,48 @@ async fn verdict_for<S: BlobStore + ?Sized>(
                 missing = matches!(error, StorageError::NotFound { .. }),
                 "a version's bytes could not be read, so it is recorded ERROR and not re-offered"
             );
-            return Ok(ScanVerdict::Error { retryable: false });
+            return Ok((ScanVerdict::Error { retryable: false }, DigestReading::NoReading));
         }
     };
 
-    match scanner.scan(stream, hint).await {
-        Ok(verdict) => Ok(verdict),
-        Err(AntivirusError::Source(_)) => Ok(ScanVerdict::Error { retryable: true }),
+    // Only an unconfirmed digest is worth hashing. A settled one was confirmed by the object store
+    // against a signed header (`ENC-820`) and re-checking it every rescan is a different feature.
+    let (tap, stream) = if item.observed.digest.is_confirmed() {
+        (None, stream)
+    } else {
+        let expected = u64::try_from(item.size_bytes).unwrap_or(u64::MAX);
+        let (tap, tapped) = DigestTap::wrap(stream, expected);
+        (Some(tap), tapped)
+    };
+
+    let verdict = match scanner.scan(stream, hint).await {
+        Ok(verdict) => verdict,
+        Err(AntivirusError::Source(_)) => ScanVerdict::Error { retryable: true },
         Err(error) => {
             warn!(%error, version = %item.version, "the antivirus scanner refused to run");
-            Ok(ScanVerdict::Error { retryable: false })
+            ScanVerdict::Error { retryable: false }
         }
-    }
+    };
+
+    let reading = match tap {
+        None => DigestReading::AlreadySettled,
+        Some(tap) => match tap.finish() {
+            Digest::Whole(hex) if hex == item.checksum_sha256 => DigestReading::Confirmed,
+            Digest::Whole(_) => DigestReading::Failed,
+            Digest::Partial { seen, expected } => {
+                debug!(
+                    version = %item.version,
+                    seen,
+                    expected,
+                    "the engine did not read this version to the end, so its digest is still \
+                     unconfirmed and it cannot be published"
+                );
+                DigestReading::NoReading
+            }
+        },
+    };
+
+    Ok((verdict, reading))
 }
 
 /// Writes the verdict, and the file's status with it, in one transaction.
@@ -625,6 +828,10 @@ async fn record(
         .bind(engine.and_then(|info| info.signature_version.as_deref()))
         .bind(Utc::now())
         .bind(item.observed.av_status.as_str())
+        .bind(target.digest.as_str())
+        .bind(item.observed.digest.as_str())
+        // `None` unless the state moved, so `COALESCE` keeps the moment an earlier pass settled it.
+        .bind((target.digest != item.observed.digest).then(Utc::now))
         .execute(&mut *tx)
         .await?
         .rows_affected();
@@ -691,6 +898,30 @@ fn raise(tenant: TenantId, item: &Due, incident: &Incident) {
     );
 }
 
+/// Reports a version whose stored bytes are not the bytes its uploader declared (`ENC-829`).
+///
+/// `error!`, beside [`raise`] and for the same reason: there is no incident table yet (`ENC-645`),
+/// and a log line an operator can grep is what this deployment has. It is at the same level as a
+/// detection because it is the same class of fact — the object is not what the record says it is —
+/// and the three causes are all things somebody has to look at: a storage fault, an upload that was
+/// truncated without the store noticing, or a writer to the bucket that is not this product.
+///
+/// **Neither digest is logged.** `CLAUDE.md` rule 10 lists file content, and a whole-object hash is
+/// a fingerprint of exactly that; the declared value is already on the row for anybody entitled to
+/// read it. What is logged instead is the pair of *sizes*, which is what actually distinguishes the
+/// causes: equal sizes with a different hash is substituted or corrupted content, and a short read
+/// is a truncated upload.
+fn report_digest_mismatch(tenant: TenantId, item: &Due) {
+    error!(
+        tenant = %tenant,
+        file = %item.file,
+        version = %item.version,
+        size_bytes = item.size_bytes,
+        "a version's stored bytes do not hash to the digest declared for them; it is quarantined \
+         and will not be offered for rescan"
+    );
+}
+
 #[cfg(test)]
 mod tests {
     // Assertions are the point of a test: a panic here is the failure signal.
@@ -702,11 +933,28 @@ mod tests {
     use super::*;
 
     fn observed(status: VersionStatus, av_status: AvStatus) -> Target {
-        Target { status, av_status }
+        Target { status, av_status, digest: DigestState::Provider }
     }
 
+    /// A freshly committed **single-shot** upload: the object store already confirmed its digest,
+    /// so the antivirus verdict is the only thing left to decide. The default for tests about
+    /// `docs/06 §6.2`, so that adding `ENC-829` did not silently change what they assert.
     fn fresh() -> Target {
         observed(VersionStatus::Scanning, AvStatus::Pending)
+    }
+
+    /// A freshly committed **multipart** upload: nothing has confirmed its digest yet.
+    fn fresh_multipart() -> Target {
+        Target {
+            status: VersionStatus::Scanning,
+            av_status: AvStatus::Pending,
+            digest: DigestState::Unconfirmed,
+        }
+    }
+
+    /// `Target::of` for the versions this pass does not need to hash — the common case.
+    fn target_of(outcome: &ScanOutcome, was: Target) -> Result<Target> {
+        Target::of(outcome, was, DigestReading::AlreadySettled)
     }
 
     /// Whether a delivery route would serve a version carrying this pair.
@@ -749,7 +997,7 @@ mod tests {
     #[test]
     fn a_clean_verdict_targets_the_pair_the_readable_predicate_accepts() {
         let decision = decide(&ScanVerdict::Clean, ScanPolicy::default(), None);
-        let target = Target::of(&decision, fresh()).expect("clean converts");
+        let target = target_of(&decision, fresh()).expect("clean converts");
 
         assert_eq!(target.status, VersionStatus::Available);
         assert_eq!(target.av_status, AvStatus::Clean);
@@ -780,7 +1028,7 @@ mod tests {
                     ScanVerdict::Error { retryable: false },
                 ] {
                     let decision = decide(&verdict, policy, None);
-                    let target = Target::of(&decision, fresh()).expect("converts");
+                    let target = target_of(&decision, fresh()).expect("converts");
 
                     // `Publish` with no verdict at all — `ALLOW_AND_RESCAN` — is the one case the
                     // disposition and the predicate still disagree about. `ENC-646`'s open half.
@@ -814,7 +1062,7 @@ mod tests {
         let decision = decide(&ScanVerdict::Error { retryable: true }, policy, None);
         assert_eq!(decision.disposition, VersionDisposition::Publish);
 
-        let target = Target::of(&decision, fresh()).expect("converts");
+        let target = target_of(&decision, fresh()).expect("converts");
         assert_eq!(target.status, VersionStatus::Available);
         assert_eq!(target.av_status, AvStatus::Pending, "published without a verdict");
         assert!(!readable(target), "AVAILABLE/PENDING reached a read path");
@@ -824,7 +1072,7 @@ mod tests {
         let flagged =
             ScanPolicy { unsupported: UnsupportedPolicy::AllowWithFlag, ..ScanPolicy::default() };
         let published = decide(&ScanVerdict::Unsupported, flagged, None);
-        let target = Target::of(&published, fresh()).expect("converts");
+        let target = target_of(&published, fresh()).expect("converts");
         assert_eq!(
             (target.status, target.av_status),
             (VersionStatus::Available, AvStatus::Skipped)
@@ -858,7 +1106,7 @@ mod tests {
             enclave_core::ClassificationRank::new(50),
         ] {
             let decision = decide(&ScanVerdict::Unsupported, policy, Some(rank));
-            let target = Target::of(&decision, fresh()).expect("converts");
+            let target = target_of(&decision, fresh()).expect("converts");
             assert_eq!(target.status, VersionStatus::Quarantined, "rank {rank:?}");
             assert_eq!(target.av_status, AvStatus::Skipped, "rank {rank:?}");
             assert!(
@@ -872,7 +1120,7 @@ mod tests {
         // assertions above hold of a build in which ALLOW_WITH_FLAG does nothing at all.
         for rank in [None, Some(enclave_core::ClassificationRank::new(20))] {
             let decision = decide(&ScanVerdict::Unsupported, policy, rank);
-            let target = Target::of(&decision, fresh()).expect("converts");
+            let target = target_of(&decision, fresh()).expect("converts");
             assert!(readable(target), "rank {rank:?} is below the ceiling and was refused");
         }
     }
@@ -906,7 +1154,7 @@ mod tests {
     fn an_outage_under_hold_leaves_a_fresh_version_untouched() {
         let policy = ScanPolicy { unavailable: UnavailablePolicy::Hold, ..ScanPolicy::default() };
         let decision = decide(&ScanVerdict::Error { retryable: true }, policy, None);
-        assert_eq!(Target::of(&decision, fresh()).expect("converts"), fresh());
+        assert_eq!(target_of(&decision, fresh()).expect("converts"), fresh());
     }
 
     /// A permanent scanner failure *is* recorded, so the version stops being offered and an operator
@@ -915,7 +1163,7 @@ mod tests {
     fn a_permanent_scanner_failure_is_recorded_rather_than_retried_forever() {
         let policy = ScanPolicy { unavailable: UnavailablePolicy::Hold, ..ScanPolicy::default() };
         let decision = decide(&ScanVerdict::Error { retryable: false }, policy, None);
-        let target = Target::of(&decision, fresh()).expect("converts");
+        let target = target_of(&decision, fresh()).expect("converts");
         assert_eq!(target.status, VersionStatus::Scanning, "HOLD never moves the status");
         assert_eq!(target.av_status, AvStatus::Error);
         assert_ne!(target, fresh(), "an ERROR that wrote nothing would be re-offered forever");
@@ -934,13 +1182,13 @@ mod tests {
 
         for retryable in [true, false] {
             let decision = decide(&ScanVerdict::Error { retryable }, policy, None);
-            assert_eq!(Target::of(&decision, was).expect("converts"), was, "retryable={retryable}");
+            assert_eq!(target_of(&decision, was).expect("converts"), was, "retryable={retryable}");
         }
 
         // The positive control: a *clean* rescan of the same row does move it, so the assertion
         // above is about `Hold` rather than about a `Target::of` that ignores its outcome.
         let clean = decide(&ScanVerdict::Clean, policy, None);
-        let target = Target::of(&clean, was).expect("converts");
+        let target = target_of(&clean, was).expect("converts");
         assert_eq!(target.status, VersionStatus::Available);
         assert_eq!(target.av_status, AvStatus::Clean);
     }
@@ -978,9 +1226,164 @@ mod tests {
     /// a newer verdict with a stale one — and a stale one can be `CLEAN`.
     #[test]
     fn recording_a_verdict_matches_on_the_state_it_was_decided_from() {
-        assert!(RECORD_SQL.contains("AND status    = $3"), "{RECORD_SQL}");
-        assert!(RECORD_SQL.contains("AND av_status = $9"), "{RECORD_SQL}");
-        assert!(RECORD_SQL.contains("WHERE tenant_id = $1"), "{RECORD_SQL}");
+        assert!(RECORD_SQL.contains("AND status       = $3"), "{RECORD_SQL}");
+        assert!(RECORD_SQL.contains("AND av_status    = $9"), "{RECORD_SQL}");
+        assert!(RECORD_SQL.contains("AND digest_state = $11"), "{RECORD_SQL}");
+        assert!(RECORD_SQL.contains("WHERE tenant_id    = $1"), "{RECORD_SQL}");
+    }
+
+    /// A version that has been found to be the wrong bytes is never offered again (`ENC-829`).
+    ///
+    /// The same argument as `INFECTED`'s absence: the object is immutable, so no later pass gets a
+    /// different answer. Without the predicate such a version stays in the queue permanently — its
+    /// antivirus verdict may legitimately be a retryable one — and every sweep re-reads the whole
+    /// object to reconfirm a failure that cannot change.
+    #[test]
+    fn the_queue_never_offers_a_version_whose_digest_already_failed() {
+        assert!(DUE_SQL.contains("v.digest_state <> 'MISMATCH'"), "{DUE_SQL}");
+        // The positive control: the needle is findable, so the assertion is not passing on a typo.
+        assert!(
+            format!("digest_state <> '{}'", DigestState::Mismatch.as_str()).contains("MISMATCH")
+        );
+    }
+
+    /// **A digest that was checked and disagreed quarantines the version, whatever the engine
+    /// said.**
+    ///
+    /// Over every verdict under every policy a deployment can express, because the point is that
+    /// this is not one arm of the disposition table — it overrules all of them. `Clean` is in the
+    /// list and is the case that matters: a perfectly clean object that is not the object its
+    /// uploader vouched for must not be served.
+    #[test]
+    fn a_failed_digest_quarantines_a_version_under_every_policy_and_every_verdict() {
+        for unavailable in [UnavailablePolicy::Hold, UnavailablePolicy::AllowAndRescan] {
+            for unsupported in [UnsupportedPolicy::Block, UnsupportedPolicy::AllowWithFlag] {
+                let policy = ScanPolicy { unsupported, unavailable, ..ScanPolicy::default() };
+                for verdict in [
+                    ScanVerdict::Clean,
+                    ScanVerdict::Infected { signature: "Eicar-Test-Signature".into() },
+                    ScanVerdict::Unsupported,
+                    ScanVerdict::Error { retryable: true },
+                    ScanVerdict::Error { retryable: false },
+                ] {
+                    let decision = decide(&verdict, policy, None);
+                    let target = Target::of(&decision, fresh_multipart(), DigestReading::Failed)
+                        .expect("converts");
+
+                    assert_eq!(target.digest, DigestState::Mismatch, "{verdict:?}");
+                    assert_eq!(
+                        target.status,
+                        VersionStatus::Quarantined,
+                        "{verdict:?} under {unsupported:?}/{unavailable:?} left a version whose \
+                         bytes are not the declared bytes outside quarantine"
+                    );
+                    assert!(!readable(target), "{verdict:?}");
+                }
+            }
+        }
+
+        // The control, in the same shape: the identical clean verdict on a version whose digest
+        // *was* confirmed publishes. Without it these assertions hold of a build that quarantines
+        // everything, which is the failure `docs/12 §1.2` is about.
+        let clean = decide(&ScanVerdict::Clean, ScanPolicy::default(), None);
+        let confirmed =
+            Target::of(&clean, fresh_multipart(), DigestReading::Confirmed).expect("converts");
+        assert_eq!(confirmed.digest, DigestState::Antivirus);
+        assert!(readable(confirmed), "a confirmed digest with a clean scan must be servable");
+    }
+
+    /// **A version whose digest nothing has confirmed is never published** (`CLAUDE.md` rule 9).
+    ///
+    /// The window this row exists to not open. It is reachable only through the two policies that
+    /// publish something other than a clean scan, and only when the engine stopped reading before
+    /// the end of the object — its own size ceiling, or clamd deciding early — so there is no
+    /// whole-object hash to compare. The safe answer is to refuse, and to refuse terminally: the
+    /// same engine reading the same object stops at the same place.
+    #[test]
+    fn an_unconfirmed_digest_is_never_published_even_when_the_policy_would() {
+        for (policy, verdict) in [
+            (
+                ScanPolicy {
+                    unsupported: UnsupportedPolicy::AllowWithFlag,
+                    ..ScanPolicy::default()
+                },
+                ScanVerdict::Unsupported,
+            ),
+            (
+                ScanPolicy {
+                    unavailable: UnavailablePolicy::AllowAndRescan,
+                    ..ScanPolicy::default()
+                },
+                ScanVerdict::Error { retryable: true },
+            ),
+        ] {
+            let decision = decide(&verdict, policy, None);
+            assert_eq!(
+                decision.disposition,
+                VersionDisposition::Publish,
+                "{verdict:?} must be a publishing policy or this test proves nothing"
+            );
+
+            let target = Target::of(&decision, fresh_multipart(), DigestReading::NoReading)
+                .expect("converts");
+            assert_eq!(target.digest, DigestState::Unconfirmed, "the state is left alone");
+            assert_eq!(
+                target.status,
+                VersionStatus::Quarantined,
+                "{verdict:?} published a version carrying a digest nothing has checked"
+            );
+            assert!(!readable(target));
+
+            // The control: the same policy, the same verdict, on a version whose store already
+            // confirmed the digest — which is every single-shot upload — still publishes. `ENC-828`
+            // is what refusing that would undo.
+            let settled = target_of(&decision, fresh()).expect("converts");
+            assert_eq!(settled.status, VersionStatus::Available, "{verdict:?}");
+        }
+    }
+
+    /// Reading nothing leaves a settled digest exactly where it was.
+    ///
+    /// The other direction of the case above, and the reason [`DigestReading`] has four values
+    /// rather than three: a scan that stopped early must not downgrade a version whose digest the
+    /// object store confirmed at upload.
+    #[test]
+    fn a_scan_that_read_nothing_does_not_disturb_a_digest_that_was_already_settled() {
+        let clean = decide(&ScanVerdict::Clean, ScanPolicy::default(), None);
+        for reading in [DigestReading::AlreadySettled, DigestReading::NoReading] {
+            let target = Target::of(&clean, fresh(), reading).expect("converts");
+            assert_eq!(target.digest, DigestState::Provider, "{reading:?}");
+            assert!(readable(target), "{reading:?}");
+        }
+    }
+
+    /// A version quarantined for its digest is counted as quarantined **and** named separately.
+    ///
+    /// Both halves. The separate counter is the operator's only signal that content is arriving
+    /// corrupted rather than infected; folding it into `quarantined` would make a storage fault
+    /// look like a malware outbreak. Counting it *also* as quarantined is what keeps the five
+    /// dispositions a partition of the versions considered.
+    #[test]
+    fn a_digest_failure_is_counted_apart_from_a_detection_and_still_as_a_quarantine() {
+        let mut pass = AvPass::default();
+
+        let clean = decide(&ScanVerdict::Clean, ScanPolicy::default(), None);
+        let failed =
+            Target::of(&clean, fresh_multipart(), DigestReading::Failed).expect("converts");
+        count(&mut pass, &clean, failed);
+        assert_eq!(pass.digest_mismatched, 1);
+        assert_eq!(pass.quarantined, 1);
+        assert_eq!(pass.cleared, 0, "a version whose bytes are wrong was counted as clean");
+
+        let flagged =
+            ScanPolicy { unsupported: UnsupportedPolicy::AllowWithFlag, ..ScanPolicy::default() };
+        let unsupported = decide(&ScanVerdict::Unsupported, flagged, None);
+        let refused = Target::of(&unsupported, fresh_multipart(), DigestReading::NoReading)
+            .expect("converts");
+        count(&mut pass, &unsupported, refused);
+        assert_eq!(pass.digest_unconfirmed, 1);
+        assert_eq!(pass.quarantined, 2);
+        assert_eq!(pass.flagged, 0, "a version refused publication was counted as published");
     }
 
     /// The file only follows the version it is actually pointing at.
@@ -1017,7 +1420,7 @@ mod tests {
             (ScanVerdict::Error { retryable: false }, fresh()),
         ] {
             let decision = decide(&verdict, policy, None);
-            let target = Target::of(&decision, was).expect("converts");
+            let target = target_of(&decision, was).expect("converts");
             count(&mut pass, &decision, target);
             pass.considered += 1;
         }
@@ -1044,7 +1447,7 @@ mod tests {
         let policy =
             ScanPolicy { unavailable: UnavailablePolicy::AllowAndRescan, ..ScanPolicy::default() };
         let decision = decide(&ScanVerdict::Error { retryable: true }, policy, None);
-        let target = Target::of(&decision, fresh()).expect("converts");
+        let target = target_of(&decision, fresh()).expect("converts");
 
         let mut pass = AvPass::default();
         count(&mut pass, &decision, target);
