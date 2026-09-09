@@ -408,16 +408,26 @@ impl BlobStore for S3BlobStore {
             });
         }
 
-        // Multipart, and this backend cannot be made to verify a whole-object digest for one. See
-        // `StorageError::ChecksumUnverifiable`. Refused here, above every `presigned()` call below,
-        // so the client is told before it spends a byte.
-        if expected.is_some() {
-            return Err(StorageError::ChecksumUnverifiable {
-                content_length: request.content_length,
-                threshold: self.config.multipart_threshold_bytes,
-            });
-        }
-
+        // Multipart, and this backend cannot be made to verify a *whole-object* digest for one: what
+        // S3 and MinIO compute is a checksum of the part checksums, with a `-N` suffix, and AWS's
+        // `FULL_OBJECT` type is refused by every MinIO release probed (`InvalidArgument: Invalid
+        // checksum provided.`, `RELEASE.2025-04-22` and `RELEASE.2025-09-07`).
+        //
+        // **The digest is therefore not signed into the part URLs, and the session is issued
+        // anyway** — `ENC-829`. Until this, it was refused, which made every upload above
+        // `multipart_threshold_bytes` (16 MiB) impossible and blocked M1's 5 GB criterion.
+        //
+        // Nothing is quietly accepted by that change. The caller can see which of the two happened
+        // without being told: a `Single` target reports `x-amz-checksum-sha256` in
+        // `required_headers`, and a `Multipart` one carries no such header because there is no
+        // header that would work. `crates/uploads` reads that distinction back off the session row
+        // at completion and records the version `UNCONFIRMED`, and the antivirus pass — which
+        // streams every byte of every version regardless — hashes as it goes and settles it. The
+        // digest is confirmed later rather than never, and no read path serves the version in
+        // between (`migrations/0035`, `CLAUDE.md` rule 9).
+        //
+        // The declared value is still *parsed* above, before either branch: a caller that hands
+        // this store something that is not a lowercase hex SHA-256 is refused whatever size it is.
         let part_size = self.config.part_size_bytes;
         let needed = request.content_length.div_ceil(part_size);
         if needed > u64::from(S3_MAX_PARTS) {

@@ -1039,6 +1039,10 @@ async fn commit_version(
         checksum_sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
             .to_owned(),
         mime_type: "application/pdf".to_owned(),
+        // The single-shot upload path's evidence: this fixture stands in for a version whose
+        // digest the object store confirmed, which is what every version in the tree was before
+        // `ENC-829` made multipart possible.
+        digest: enclave_versions::DigestEvidence::provider(Utc::now()),
         bump: VersionBump::Major,
         created_by,
         comment: None,

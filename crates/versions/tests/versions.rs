@@ -47,8 +47,9 @@ use enclave_db::{
 };
 use enclave_testing::{Fixtures, TestDb};
 use enclave_versions::{
-    classify_write, CommittedVersion, FileVersion, NewVersion, PageLimit, RestoreVersion,
-    VersionBump, VersionRepository, VersionService, VersionStatus, VersionsError,
+    classify_write, CommittedVersion, DigestEvidence, DigestState, FileVersion, NewVersion,
+    PageLimit, RestoreVersion, VersionBump, VersionRepository, VersionService, VersionStatus,
+    VersionsError,
 };
 use sqlx::{PgConnection, Row as _};
 
@@ -145,6 +146,9 @@ impl Fixture {
             size_bytes: 4_096,
             checksum_sha256: "e3b0c44298fc1c149afbf4c8996fb924".to_owned(),
             mime_type: "application/pdf".to_owned(),
+            // A single-shot upload's evidence, which is what the fixtures in this file model.
+            // `crates/worker/tests/antivirus.rs` owns the `UNCONFIRMED` path (`ENC-829`).
+            digest: DigestEvidence::provider(Utc::now()),
             bump,
             created_by: self.owner,
             comment: Some("first draft".to_owned()),
@@ -536,6 +540,94 @@ async fn an_available_version_still_accepts_its_governance_columns() {
             .await
             .unwrap_or_else(|error| panic!("`{assignment}` should be allowed: {error:?}"));
     }
+}
+
+/// **A version whose digest nothing has confirmed cannot be made `AVAILABLE`** — asked of
+/// PostgreSQL, not of any Rust that could be edited around (`ENC-829`).
+///
+/// This is the backstop under `crates/worker`'s decision not to publish such a version.
+/// `migrations/0035` is what makes it impossible rather than merely intended, and the reason it is
+/// worth having both is that `AVAILABLE` is the value `CLAUDE.md` rule 9 is about: a refactor that
+/// loses the check in `Target::of` must fail loudly, not leak.
+///
+/// The commit path writes `UNCONFIRMED` for a multipart upload — one no S3-compatible store can
+/// hash — so this is the state a real 5 GB upload sits in until the antivirus pass reads it.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL with migrations 0004, 0005, 0006 and 0035 applied; CI runs it with --include-ignored"]
+async fn an_unconfirmed_digest_cannot_be_published_by_any_statement_at_all() {
+    let (_db, pool, alpha, _beta) = setup().await;
+
+    let multipart = NewVersion {
+        digest: DigestEvidence::unconfirmed(),
+        ..alpha.new_version(VersionBump::Major)
+    };
+    let committed = commit(&pool, &alpha, &multipart).await;
+    let version = committed.version.id;
+    assert_eq!(committed.version.digest.state, DigestState::Unconfirmed);
+    assert_eq!(committed.version.digest.verified_at, None, "nothing has confirmed it");
+
+    // The `UPDATE` the antivirus pass would run for a clean verdict, minus the digest column. The
+    // database refuses it, so there is no ordering of writes that makes an unconfirmed digest
+    // readable.
+    let refused =
+        try_update(&pool, &alpha, version, "status = 'AVAILABLE', av_status = 'CLEAN'").await;
+    assert!(
+        refused.is_err(),
+        "an unconfirmed digest reached AVAILABLE: {refused:?} — ENC-829, CLAUDE.md rule 9"
+    );
+
+    let stored = read(&pool, &alpha, version).await.expect("the version is still there");
+    assert_eq!(stored.status, VersionStatus::Scanning, "and the refusal left the row alone");
+    assert!(!stored.is_readable());
+
+    // The control, in the same test and over the same row: settling the digest is exactly what
+    // unblocks it. Without this the assertion above holds of a build in which nothing can ever
+    // become `AVAILABLE`, which is what `ENC-641` looked like for four milestones.
+    try_update(
+        &pool,
+        &alpha,
+        version,
+        "status = 'AVAILABLE', av_status = 'CLEAN', digest_state = 'ANTIVIRUS'",
+    )
+    .await
+    .expect("a confirmed digest with a clean verdict is publishable");
+
+    let published = read(&pool, &alpha, version).await.expect("the version is still there");
+    assert_eq!(published.digest.state, DigestState::Antivirus);
+    assert!(published.is_readable(), "a confirmed digest and a clean scan must be servable");
+}
+
+/// And the other settled-but-bad state is refused too.
+///
+/// Split from the test above because they are different facts: that one is *"nobody has checked"*
+/// and this is *"somebody checked and the bytes are wrong"*. A constraint written as
+/// `digest_state <> 'UNCONFIRMED'` would pass that test and publish this row.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL with migrations 0004, 0005, 0006 and 0035 applied; CI runs it with --include-ignored"]
+async fn a_version_whose_digest_failed_cannot_be_published_either() {
+    let (_db, pool, alpha, _beta) = setup().await;
+
+    let multipart = NewVersion {
+        digest: DigestEvidence::unconfirmed(),
+        ..alpha.new_version(VersionBump::Major)
+    };
+    let version = commit(&pool, &alpha, &multipart).await.version.id;
+
+    try_update(&pool, &alpha, version, "digest_state = 'MISMATCH', status = 'QUARANTINED'")
+        .await
+        .expect("recording a mismatch beside a quarantine is what the pass does");
+
+    let refused =
+        try_update(&pool, &alpha, version, "status = 'AVAILABLE', av_status = 'CLEAN'").await;
+    assert!(
+        refused.is_err(),
+        "a version whose bytes are not the declared bytes reached AVAILABLE: {refused:?}"
+    );
+
+    let stored = read(&pool, &alpha, version).await.expect("the version is still there");
+    assert_eq!(stored.digest.state, DigestState::Mismatch);
+    assert_eq!(stored.status, VersionStatus::Quarantined);
+    assert!(!stored.is_readable());
 }
 
 #[tokio::test]

@@ -78,8 +78,8 @@ async fn new_version(
     sqlx::query(
         "INSERT INTO file_versions
            (id, tenant_id, file_id, object_key, storage_profile_id, size_bytes, checksum_sha256,
-            mime_type, major, minor, status, created_by, created_at)
-         VALUES ($1, $2, $3, $4, $5, 12, 'deadbeef', 'text/plain', $6, 0, 'AVAILABLE', $7, $8)",
+            mime_type, major, minor, status, created_by, created_at, digest_state)
+         VALUES ($1, $2, $3, $4, $5, 12, 'deadbeef', 'text/plain', $6, 0, 'AVAILABLE', $7, $8, 'PROVIDER')",
     )
     .bind(id)
     .bind(tenant.as_uuid())

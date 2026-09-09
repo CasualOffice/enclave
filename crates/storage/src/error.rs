@@ -144,16 +144,27 @@ pub enum StorageError {
     /// Raised by [`BlobStore::create_upload`](crate::BlobStore::create_upload) *before* anything is
     /// signed, so the refusal costs no bandwidth — `docs/05-API.md §8`.
     ///
-    /// The case that reaches it is multipart. A single `PUT` carrying `x-amz-checksum-sha256` is
-    /// verified by S3 and by MinIO against the body they receive; a multipart upload is not, because
-    /// what those backends compute for one is a *checksum of the part checksums* with a `-N` suffix,
-    /// which is not the whole-object SHA-256 a version row records. AWS's `FULL_OBJECT` checksum
-    /// type would close it and MinIO `RELEASE.2025-04-22` answers `InvalidArgument` to it, so on the
-    /// backend this product ships with there is nothing to fall back to.
+    /// **No implementation in this workspace returns this any more** (`ENC-829`), and the history is
+    /// worth carrying because the obvious change would put it back. The case that used to reach it
+    /// is multipart: a single `PUT` carrying `x-amz-checksum-sha256` is verified by S3 and by MinIO
+    /// against the body they receive, and a multipart upload is not, because what those backends
+    /// compute for one is a *checksum of the part checksums* with a `-N` suffix, which is not the
+    /// whole-object SHA-256 a version row records. AWS's `FULL_OBJECT` type would close it on AWS;
+    /// MinIO answers `InvalidArgument: Invalid checksum provided.` to it on both
+    /// `RELEASE.2025-04-22` and `RELEASE.2025-09-07`, so the self-hosted default has nothing to fall
+    /// back on.
     ///
-    /// Refusing here rather than accepting the upload and recording the client's unverified word is
-    /// the whole of `ENC-820`: a stored digest nobody checked reads as evidence, and is worse than
-    /// an absent one, which at least reads as unknown.
+    /// `ENC-820` refused rather than record the client's unverified word, because there was nowhere
+    /// to *write down* that a digest was unverified: `file_versions.checksum_sha256` is `NOT NULL`
+    /// and immutable, so the row read as proof either way. That constraint is what `migrations/0035`
+    /// removes. A multipart session is now issued with the digest unsigned, the version is committed
+    /// `UNCONFIRMED`, no read path serves it, and the antivirus pass confirms it while streaming the
+    /// bytes it was going to stream anyway.
+    ///
+    /// What remains here is the answer for a store that can do **neither** — one that cannot have
+    /// the provider check the digest *and* cannot produce a session whose bytes this product will
+    /// later read. Accepting such a request and leaving the digest unchecked is still the one thing
+    /// an implementation may not do.
     #[error(
         "this store cannot have the provider verify a whole-object SHA-256 for an upload of \
          {content_length} bytes: above {threshold} bytes it is sent as a multipart upload, for \

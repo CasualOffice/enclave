@@ -41,9 +41,32 @@
 //! evidence. A digest nobody verified is worse than an absent one, because absent reads as unknown
 //! and stored reads as proof.
 //!
-//! So there is no longer any evidence level to carry. [`VerifiedContent`] exists **only** when the
-//! object store computed the digest itself and it matched, and that is now a fact about the type
-//! rather than a field on it.
+//! # The one upload for which no provider can, and what changed (`ENC-829`)
+//!
+//! A **multipart** upload. S3 and MinIO compute a checksum of the part checksums for one, never the
+//! whole-object SHA-256, and AWS's `FULL_OBJECT` type is refused by every MinIO release probed. So
+//! `ENC-820`'s refusal was not a judgement that large uploads should fail — it was the only honest
+//! answer available while there was nowhere to write down *"this digest is not yet evidence"*.
+//! `file_versions.checksum_sha256` is `NOT NULL` and immutable, so the row read as proof either way.
+//!
+//! `migrations/0035` is that place. So this module now answers the question in two parts:
+//!
+//! * [`ProviderDigest::Required`] — a single-shot upload, whose pre-signed `PUT` carries a signed
+//!   `x-amz-checksum-sha256`. A provider that then reports no digest has failed to do something it
+//!   was asked to do, and the completion is refused exactly as before.
+//! * [`ProviderDigest::Deferred`] — a multipart upload, where no provider was ever asked because
+//!   none could answer. The client's digest is recorded and carried as
+//!   [`DigestEvidence::AwaitingContentScan`], which is what the version row stores and what keeps
+//!   it off every read path until the antivirus pass hashes the object and settles it.
+//!
+//! **The type-level guarantee survives, one word narrower.** [`VerifiedContent`] still cannot be
+//! constructed from a client's numbers alone: size is checked against the declaration *and* against
+//! the store in both cases, and a provider digest that is present and *wrong* is still a refusal in
+//! both. What it no longer asserts on its own is that the digest has been confirmed — so that fact
+//! is [`VerifiedContent::evidence`], a value with a real consumer this time. `ENC-820`'s lesson was
+//! that an evidence level nothing acts on is worse than none; the consumer here is
+//! `file_versions.digest_state`, a `CHECK` constraint that refuses to let such a row become
+//! `AVAILABLE`, and a worker pass that settles it.
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
@@ -89,18 +112,18 @@ pub enum FailureReason {
     #[error("the stored object's SHA-256 is not the one the client reported")]
     ChecksumMismatch,
 
-    /// The object store holds no SHA-256 of its own, so nothing has checked the reported one.
+    /// The object store holds no SHA-256 of its own for an upload it was **asked** to hash.
     ///
-    /// Not reachable through a session this crate created against a store that honoured
-    /// `UploadRequest::checksum_sha256` — the header is signed into the pre-signed URL, so a `PUT`
-    /// that omitted it never succeeded. What it catches is the deployment where that stopped being
-    /// true: a BYO S3-compatible backend that accepts the header and does not report the digest, or
-    /// a session whose bytes arrived by some other route.
+    /// [`ProviderDigest::Required`] only. Not reachable through a single-shot session this crate
+    /// created against a store that honoured `UploadRequest::checksum_sha256` — the header is signed
+    /// into the pre-signed URL, so a `PUT` that omitted it never succeeded. What it catches is the
+    /// deployment where that stopped being true: a BYO S3-compatible backend that accepts the header
+    /// and does not report the digest, or a session whose bytes arrived by some other route.
     ///
-    /// Refusing is the only honest answer available. `file_versions.checksum_sha256` is `NOT NULL`
-    /// and immutable once written (`plans/M1-CONTENT-CORE.md` D12), so there is no way to record
-    /// *"this digest is the client's word"* on the row — the choice is between a verified digest and
-    /// no version at all, and `ENC-820` is what choosing the third, unavailable option looked like.
+    /// **A multipart upload is not this case** and never was, though until `ENC-829` it was refused
+    /// at session creation and so never reached here. No provider computes a whole-object digest for
+    /// one, so none was asked; the completion carries [`DigestEvidence::AwaitingContentScan`] and
+    /// the antivirus pass confirms the digest against the stored bytes.
     #[error("the object store computed no SHA-256, so the reported one is unverified")]
     ChecksumUnconfirmed,
 
@@ -161,21 +184,59 @@ impl FailureReason {
     }
 }
 
+/// Whether the object store was in a position to compute a whole-object digest for this upload.
+///
+/// An enumeration and not a `bool`, because the two cases are not "on" and "off": one is a promise
+/// the provider made and must keep, the other is a question nobody could ask it. A boolean at this
+/// call site would be passed wrongly exactly once, and the direction it would be passed wrongly in
+/// is the one that accepts an unchecked digest as evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ProviderDigest {
+    /// A single-shot upload. `x-amz-checksum-sha256` was signed into the pre-signed `PUT`, so the
+    /// provider hashed the body and refused it if the two disagreed. A provider that then reports
+    /// no digest at all has failed to do what it was asked, and the completion is refused.
+    Required,
+
+    /// A multipart upload. No S3-compatible provider computes a whole-object digest for one, so
+    /// none was asked for. The client's digest is recorded unconfirmed and the antivirus pass
+    /// settles it (`ENC-829`).
+    Deferred,
+}
+
+/// What has actually checked the digest on a [`VerifiedContent`].
+///
+/// Carried on the value rather than implied by its existence, because with `ENC-829` the two cases
+/// both exist and land on different `file_versions.digest_state` values. It is the deliberate
+/// reintroduction of the distinction `ENC-820` deleted — with the difference that made deleting it
+/// right: there is now a consumer that acts on it, and a `CHECK` constraint that refuses to publish
+/// the unconfirmed case even if a future caller forgets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DigestEvidence {
+    /// The object store computed this digest over the bytes it holds and it matched.
+    ProviderConfirmed,
+
+    /// Nothing has hashed the stored bytes yet. The digest is the client's, checked for shape and
+    /// for nothing else, and the version it lands on may not be served until the antivirus pass
+    /// has confirmed it.
+    AwaitingContentScan,
+}
+
 /// The size and checksum a version row may be written from.
 ///
 /// Constructible only through [`VerifiedContent::verify`]. The fields are private so that a caller
 /// cannot assemble one from a client's numbers and hand it to the state machine as though it had
 /// been checked.
 ///
-/// **Its existence is the guarantee.** One of these means the object store computed this digest
-/// over the bytes it holds and it matched what the client reported — not that the value was
-/// plausible, and not that it was the client's word marked as such. There is no unconfirmed
-/// variant to check for, and therefore none for a caller to forget to check for, which is exactly
-/// what `ENC-820` was: the distinction existed, was correct, and was read by one log field.
+/// **Its existence is still a guarantee, and it is now a narrower one.** One of these means all
+/// three sizes agreed — the declaration, the client's report and the store's observation — and that
+/// any digest the provider *did* compute matched. What it no longer promises on its own is that a
+/// provider computed one, because for a multipart upload none can; that is
+/// [`VerifiedContent::evidence`], and the version row records it (`ENC-829`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedContent {
     size_bytes: u64,
     sha256_hex: String,
+    evidence: DigestEvidence,
 }
 
 impl VerifiedContent {
@@ -190,6 +251,7 @@ impl VerifiedContent {
         declared_size: Option<i64>,
         reported: &ReportedContent,
         observed: &ObjectMeta,
+        provider: ProviderDigest,
     ) -> Result<Self, FailureReason> {
         if !is_lowercase_sha256_hex(&reported.sha256_hex) {
             return Err(FailureReason::MalformedChecksum);
@@ -208,16 +270,42 @@ impl VerifiedContent {
             return Err(FailureReason::SizeDiffersFromStore);
         }
 
-        match observed.checksum_sha256.as_deref().and_then(decode_provider_sha256) {
-            Some(provider_hex) if provider_hex == reported.sha256_hex => {}
+        let evidence = match observed.checksum_sha256.as_deref().and_then(decode_provider_sha256) {
+            // The provider hashed the bytes and agrees. This is the strongest answer available and
+            // it is taken whichever branch asked for it — including `Deferred`, so a backend that
+            // one day *does* report a whole-object digest for a multipart upload is believed on the
+            // spot rather than sent round the slow path.
+            Some(provider_hex) if provider_hex == reported.sha256_hex => {
+                DigestEvidence::ProviderConfirmed
+            }
+            // A digest the provider computed and disagrees with is a refusal in **both** branches.
+            // The bytes are not what the client says they are, and no later pass can make them so.
             Some(_) => return Err(FailureReason::ChecksumMismatch),
-            // The provider has no digest of its own, so nothing has compared the reported one
-            // against the bytes. Refused rather than recorded — see the module documentation and
-            // `FailureReason::ChecksumUnconfirmed`.
-            None => return Err(FailureReason::ChecksumUnconfirmed),
-        }
+            // Nothing hashed the object. Whether that is a failure depends on whether anything was
+            // asked to: for a single-shot `PUT` the header was signed in and the provider owed us
+            // an answer, and for a multipart upload no provider could have given one.
+            None => match provider {
+                ProviderDigest::Required => return Err(FailureReason::ChecksumUnconfirmed),
+                ProviderDigest::Deferred => DigestEvidence::AwaitingContentScan,
+            },
+        };
 
-        Ok(Self { size_bytes: reported.size_bytes, sha256_hex: reported.sha256_hex.clone() })
+        Ok(Self {
+            size_bytes: reported.size_bytes,
+            sha256_hex: reported.sha256_hex.clone(),
+            evidence,
+        })
+    }
+
+    /// What has actually checked this digest against the stored bytes.
+    ///
+    /// Read by the commit path, which writes it to `file_versions.digest_state`. A caller that
+    /// ignores it commits a version claiming an object store vouched for bytes it never saw —
+    /// which is why the column has no `DEFAULT` and the database refuses to publish the
+    /// unconfirmed case (`migrations/0035`).
+    #[must_use]
+    pub const fn evidence(&self) -> DigestEvidence {
+        self.evidence
     }
 
     /// The verified size, in bytes.
@@ -322,11 +410,16 @@ mod tests {
     /// so "refused" is not the only answer this function knows.
     #[test]
     fn a_provider_confirmed_digest_is_the_only_way_to_build_verified_content() {
-        let verified =
-            VerifiedContent::verify(Some(10), &reported(10), &observed(10, Some(DIGEST_B64)))
-                .unwrap();
+        let verified = VerifiedContent::verify(
+            Some(10),
+            &reported(10),
+            &observed(10, Some(DIGEST_B64)),
+            ProviderDigest::Required,
+        )
+        .unwrap();
         assert_eq!(verified.size_bytes(), 10);
         assert_eq!(verified.sha256_hex(), DIGEST_HEX);
+        assert_eq!(verified.evidence(), DigestEvidence::ProviderConfirmed);
     }
 
     /// `ENC-820`. This is the case that used to return `Ok` with the client's word attached.
@@ -337,9 +430,104 @@ mod tests {
     #[test]
     fn a_provider_that_computed_no_digest_is_refused_rather_than_recorded() {
         assert_eq!(
-            VerifiedContent::verify(Some(10), &reported(10), &observed(10, None)).unwrap_err(),
+            VerifiedContent::verify(
+                Some(10),
+                &reported(10),
+                &observed(10, None),
+                ProviderDigest::Required
+            )
+            .unwrap_err(),
             FailureReason::ChecksumUnconfirmed
         );
+    }
+
+    /// `ENC-829`. **The same store answer, on a multipart upload, completes instead of refusing —
+    /// and the value it produces says nobody has checked the digest.**
+    ///
+    /// This is the whole product change in one assertion. The refusal above is what made every
+    /// upload over 16 MiB impossible; the difference between the two is not the store's behaviour,
+    /// which is identical, but whether anything was ever *asked* to hash the object.
+    ///
+    /// The `AwaitingContentScan` half is what stops that from being a hole. It is what the version
+    /// row records, what `migrations/0035`'s constraint refuses to let become `AVAILABLE`, and what
+    /// the antivirus pass settles. Asserting only that the completion succeeds would pass against a
+    /// build that recorded the client's word as provider-confirmed, which is `ENC-820` exactly.
+    #[test]
+    fn a_multipart_completion_records_the_digest_as_awaiting_the_content_scan() {
+        let verified = VerifiedContent::verify(
+            Some(10),
+            &reported(10),
+            &observed(10, None),
+            ProviderDigest::Deferred,
+        )
+        .expect("a multipart upload no provider could hash is not a client error");
+
+        assert_eq!(verified.sha256_hex(), DIGEST_HEX, "the client's digest is still recorded");
+        assert_eq!(verified.evidence(), DigestEvidence::AwaitingContentScan);
+        assert_ne!(
+            verified.evidence(),
+            DigestEvidence::ProviderConfirmed,
+            "a digest nothing hashed was recorded as one the object store vouched for"
+        );
+    }
+
+    /// Deferring **only** defers the missing case. Every other refusal holds unchanged.
+    ///
+    /// The control the test above needs: without it, `Deferred` could be a build that accepts
+    /// anything at all, and the assertion that a multipart completion succeeds would be measuring
+    /// nothing. A composite multipart checksum — the `-N` value a provider actually returns — is
+    /// among the shapes, because that is the one this branch exists for.
+    #[test]
+    fn deferring_the_digest_does_not_defer_any_of_the_other_checks() {
+        // A provider digest that is present and disagrees: still a mismatch, not a deferral.
+        let wrong = observed(10, Some(&STANDARD.encode([0_u8; 32])));
+        assert_eq!(
+            VerifiedContent::verify(Some(10), &reported(10), &wrong, ProviderDigest::Deferred)
+                .unwrap_err(),
+            FailureReason::ChecksumMismatch
+        );
+        // The store holds a different number of bytes: still refused. This is the one that catches
+        // a truncated multipart upload, and it is the check that matters most on this path.
+        assert_eq!(
+            VerifiedContent::verify(
+                Some(10),
+                &reported(10),
+                &observed(11, None),
+                ProviderDigest::Deferred
+            )
+            .unwrap_err(),
+            FailureReason::SizeDiffersFromStore
+        );
+        // And a digest that is not a lowercase hex SHA-256 is refused before anything else.
+        let malformed = ReportedContent { size_bytes: 10, sha256_hex: "nope".to_owned() };
+        assert_eq!(
+            VerifiedContent::verify(
+                Some(10),
+                &malformed,
+                &observed(10, None),
+                ProviderDigest::Deferred
+            )
+            .unwrap_err(),
+            FailureReason::MalformedChecksum
+        );
+    }
+
+    /// A backend that *does* produce a whole-object digest for a multipart upload is believed.
+    ///
+    /// `Deferred` means "no provider was asked", not "no provider answer will be accepted". AWS
+    /// full-object checksums exist and MinIO refuses them today; the day a backend answers, this
+    /// path records `PROVIDER` and the version is readable as soon as antivirus clears it rather
+    /// than waiting for a hash it does not need.
+    #[test]
+    fn a_deferred_upload_takes_a_whole_object_digest_when_the_provider_does_produce_one() {
+        let verified = VerifiedContent::verify(
+            Some(10),
+            &reported(10),
+            &observed(10, Some(DIGEST_B64)),
+            ProviderDigest::Deferred,
+        )
+        .expect("a matching provider digest is accepted whoever asked for it");
+        assert_eq!(verified.evidence(), DigestEvidence::ProviderConfirmed);
     }
 
     /// And the refusal is not a `400` blaming the client, because the client did nothing wrong.
@@ -368,7 +556,8 @@ mod tests {
         // The provider holds a digest of 32 zero bytes; the client reported the empty-string
         // digest. Different objects, and completion must refuse rather than record either.
         let meta = observed(10, Some(&STANDARD.encode([0_u8; 32])));
-        let err = VerifiedContent::verify(Some(10), &reported(10), &meta).unwrap_err();
+        let err = VerifiedContent::verify(Some(10), &reported(10), &meta, ProviderDigest::Required)
+            .unwrap_err();
         assert_eq!(err, FailureReason::ChecksumMismatch);
     }
 
@@ -377,15 +566,25 @@ mod tests {
         // Declared 10, reported 5. The store's digest is present and correct throughout, so a size
         // failure is what is being asserted rather than the checksum refusal beneath it.
         assert_eq!(
-            VerifiedContent::verify(Some(10), &reported(5), &observed(5, Some(DIGEST_B64)))
-                .unwrap_err(),
+            VerifiedContent::verify(
+                Some(10),
+                &reported(5),
+                &observed(5, Some(DIGEST_B64)),
+                ProviderDigest::Required
+            )
+            .unwrap_err(),
             FailureReason::SizeDiffersFromDeclaration
         );
         // Declared 10, reported 10, store holds 11 — the case that catches a truncated multipart
         // upload the client believes succeeded.
         assert_eq!(
-            VerifiedContent::verify(Some(10), &reported(10), &observed(11, Some(DIGEST_B64)))
-                .unwrap_err(),
+            VerifiedContent::verify(
+                Some(10),
+                &reported(10),
+                &observed(11, Some(DIGEST_B64)),
+                ProviderDigest::Required
+            )
+            .unwrap_err(),
             FailureReason::SizeDiffersFromStore
         );
     }
@@ -393,13 +592,23 @@ mod tests {
     #[test]
     fn a_missing_or_impossible_declaration_refuses_rather_than_guesses() {
         assert_eq!(
-            VerifiedContent::verify(None, &reported(10), &observed(10, Some(DIGEST_B64)))
-                .unwrap_err(),
+            VerifiedContent::verify(
+                None,
+                &reported(10),
+                &observed(10, Some(DIGEST_B64)),
+                ProviderDigest::Required
+            )
+            .unwrap_err(),
             FailureReason::NoDeclaredSize
         );
         assert_eq!(
-            VerifiedContent::verify(Some(-1), &reported(10), &observed(10, Some(DIGEST_B64)))
-                .unwrap_err(),
+            VerifiedContent::verify(
+                Some(-1),
+                &reported(10),
+                &observed(10, Some(DIGEST_B64)),
+                ProviderDigest::Required
+            )
+            .unwrap_err(),
             FailureReason::NoDeclaredSize
         );
     }
@@ -416,8 +625,13 @@ mod tests {
         ] {
             let report = ReportedContent { size_bytes: 10, sha256_hex: (*bad).to_owned() };
             assert_eq!(
-                VerifiedContent::verify(Some(10), &report, &observed(10, Some(DIGEST_B64)))
-                    .unwrap_err(),
+                VerifiedContent::verify(
+                    Some(10),
+                    &report,
+                    &observed(10, Some(DIGEST_B64)),
+                    ProviderDigest::Required
+                )
+                .unwrap_err(),
                 FailureReason::MalformedChecksum,
                 "`{bad}` was accepted as a SHA-256"
             );
@@ -435,7 +649,8 @@ mod tests {
         {
             let meta = observed(10, Some(&unreadable));
             assert_eq!(
-                VerifiedContent::verify(Some(10), &reported(10), &meta).unwrap_err(),
+                VerifiedContent::verify(Some(10), &reported(10), &meta, ProviderDigest::Required)
+                    .unwrap_err(),
                 FailureReason::ChecksumUnconfirmed,
                 "`{unreadable}` was accepted as evidence"
             );

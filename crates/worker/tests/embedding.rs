@@ -269,6 +269,9 @@ async fn a_committed_document(
         size_bytes: DOCUMENT.len() as i64,
         checksum_sha256: "e3b0c44298fc1c149afbf4c8996fb924".to_owned(),
         mime_type: "text/plain".to_owned(),
+        // A single-shot upload's evidence: this fixture is about embedding, and a version whose
+        // digest is still unconfirmed could not become readable at all (`ENC-829`).
+        digest: enclave_versions::DigestEvidence::provider(tick()),
         bump: VersionBump::Minor,
         created_by: owner,
         comment: Some("the first draft".to_owned()),

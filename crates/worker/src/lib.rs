@@ -112,6 +112,7 @@
 
 pub mod antivirus;
 pub mod coverage;
+pub mod digest;
 pub mod embedding;
 pub mod epoch;
 pub mod error;

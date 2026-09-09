@@ -46,18 +46,32 @@ pub trait BlobStore: PublicAccessCheck + Send + Sync {
     /// [`UploadTarget::Single::required_headers`](crate::UploadTarget), because the process that
     /// signs the URL is not the process that sends the bytes.
     ///
-    /// An implementation that cannot arrange it for this particular request returns
-    /// [`crate::StorageError::ChecksumUnverifiable`] and issues nothing. Accepting the request and
-    /// leaving the digest unchecked is the one thing it may not do: the value ends up on
-    /// `file_versions.checksum_sha256`, which is immutable once written and is read later as
-    /// evidence that the stored bytes are the bytes that were sent (`ENC-820`).
+    /// # When the provider cannot be made to check it (`ENC-829`)
+    ///
+    /// No S3-compatible backend computes a *whole-object* digest for a **multipart** upload: what it
+    /// computes is a checksum of the part checksums, and AWS's `FULL_OBJECT` type is refused by
+    /// every MinIO release this product has been probed against. An implementation in that position
+    /// issues the session **without** signing the digest, and says so by the shape of what it
+    /// returns: a [`UploadTarget::Single`](crate::UploadTarget) names the checksum header among its
+    /// `required_headers`, and a [`UploadTarget::Multipart`](crate::UploadTarget) names no such
+    /// header, because there is no header that would work.
+    ///
+    /// **That is a deferral, not a waiver.** The caller records the version's digest as
+    /// unconfirmed (`file_versions.digest_state`, `migrations/0035`), no read path serves it, and
+    /// the antivirus pass — which streams every byte of every version anyway — hashes as it goes
+    /// and settles the state. What an implementation may *not* do is issue such a session and let
+    /// the caller believe the provider checked, which is why the distinction is visible in the
+    /// return value rather than left to a convention.
+    ///
+    /// [`crate::StorageError::ChecksumUnverifiable`] remains for a store that can do neither —
+    /// neither have the provider check nor produce a session the caller can defer on. No
+    /// implementation in this workspace returns it.
     ///
     /// # Errors
     ///
     /// [`crate::StorageError`] — most usefully `TooManyParts` when the object is larger than the
-    /// configured part size can address, `ChecksumUnverifiable` when a declared digest cannot be
-    /// confirmed for an upload of this size, and `AccessDenied` when the credential cannot create a
-    /// multipart upload.
+    /// configured part size can address, `MalformedChecksum` when the declared digest is not
+    /// lowercase hex, and `AccessDenied` when the credential cannot create a multipart upload.
     async fn create_upload(&self, request: UploadRequest) -> Result<UploadSession>;
 
     /// Finalizes an upload and returns what the provider says it stored.
