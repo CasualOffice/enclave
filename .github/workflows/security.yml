@@ -253,12 +253,108 @@ jobs:
           retention-days: 90
 
 
+  # --------------------------------------------------------------------------
+  # The other half of the supply chain (`ENC-990`).
+  #
+  # `supply-chain` above covers `crates/`. Nothing covered `web/`, and the gap was
+  # not small: `docs/12 §5`'s Dependencies row read as though the product had one
+  # dependency graph, the SBOM that job uploads described half the product, and
+  # `npm audit` had never run in CI. Dependabot raises update pull requests for
+  # `web/`, which is not the same control — nothing failed on a known-vulnerable
+  # package that nobody had got round to updating.
+  #
+  # **Two thresholds, because the two halves ship differently**, and this mirrors
+  # the reasoning `cargo audit` already applies to packages that are never
+  # compiled:
+  #
+  #   * production dependencies are the bundle a browser executes, so anything
+  #     `moderate` or worse fails;
+  #   * dev dependencies are build tooling. They never reach a user, and holding
+  #     them to the same bar would mean a path traversal in a test runner blocking
+  #     a release. They fail at `high`, because build-tooling compromise is how a
+  #     supply-chain attack reaches a bundle that is itself clean.
+  #
+  # Measured when this was written: two `moderate` advisories, both in `vitest`
+  # and `@vitest/mocker`, both dev-only, both with a fix available. They are named
+  # here rather than suppressed, because npm has no `audit.toml` to carry a reason
+  # and an expiry the way `cargo audit`'s suppressions do — so the record lives in
+  # this comment and in `ENC-1001`.
+  # --------------------------------------------------------------------------
+  web-supply-chain:
+    name: Supply chain — web (npm audit, SBOM)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # `npm ci` and not `npm install`: the lockfile is the thing being audited,
+      # and a command that may rewrite it audits something nobody reviewed.
+      - name: Install web dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: npm audit — production dependencies
+        working-directory: web
+        # What a browser executes. `--omit=dev` is the whole distinction: this is
+        # the graph that reaches a user, and it is held to `moderate`.
+        run: |
+          set -euo pipefail
+          if ! npm audit --omit=dev --audit-level=moderate; then
+            echo "::error title=Vulnerable production dependency::A package in the shipped bundle has a moderate or worse advisory. This is the graph a browser executes. Update it, or — if it is genuinely not exploitable here — say why in web/package.json's overrides and in this workflow, the way audit.toml carries a reason and an expiry for Rust."
+            exit 1
+          fi
+
+      - name: npm audit — the whole graph, including build tooling
+        working-directory: web
+        # Dev dependencies never reach a user, so they fail at `high` rather than
+        # `moderate`. Not zero: a compromised build tool produces a compromised
+        # bundle out of a clean dependency graph, which is the attack this half is
+        # for.
+        run: |
+          set -euo pipefail
+          if ! npm audit --audit-level=high; then
+            echo "::error title=Vulnerable build dependency::A high or critical advisory in web/'s dev graph. Build tooling is how a supply-chain attack reaches a bundle whose own dependencies are clean."
+            exit 1
+          fi
+
+      - name: Generate the web SBOM
+        working-directory: web
+        # The Rust job uploads an inventory of half the product. This is the other
+        # half, in the same format, so a customer asking what is in a release gets
+        # one answer rather than one and a shrug.
+        run: |
+          set -euo pipefail
+          mkdir -p ../sbom-web
+          npm sbom --sbom-format cyclonedx --omit=dev > ../sbom-web/web.cdx.json
+          test -s ../sbom-web/web.cdx.json || { echo "::error::web SBOM generation produced nothing"; exit 1; }
+          wc -c ../sbom-web/web.cdx.json
+
+      - name: Upload the web SBOM
+        uses: actions/upload-artifact@v7
+        with:
+          name: sbom-web-cyclonedx-${{ github.sha }}
+          path: sbom-web/
+          if-no-files-found: error
+          retention-days: 90
+
+
   # A weekly run that fails must produce something a human sees. A red scheduled
   # workflow with nobody watching is the same as no workflow at all.
   report-scheduled-failure:
     name: Raise a P0 for a failed scheduled scan
     if: failure() && github.event_name == 'schedule'
-    needs: [supply-chain]
+    # Both halves. A scheduled run that finds a vulnerable npm package must raise the same
+    # P0 as one that finds a vulnerable crate — `ENC-990` added the second half, and a
+    # reporter that watched only the first would make the new job's weekly failures silent,
+    # which is the shape it exists to prevent.
+    needs: [supply-chain, web-supply-chain]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

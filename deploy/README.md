@@ -34,8 +34,21 @@ docker compose -f deploy/compose/dev.yml -f deploy/compose/stack.yml \
                --profile search --profile av up -d --wait
 ```
 
-**The key is required and `up` fails without it**, with the API's own refusal: *`key_ref` is
-required for a deployment that binds a non-loopback address*. That is the correct failure. A
+**The key is required and `up` fails without it**, with the API's own refusal — and the refusal
+names the field, the reference and the reason:
+
+```text
+Error: resolve secrets
+Caused by:
+  - auth.signing_keys.key_ref: secret `env://STACK_SIGNING_KEY` resolved to an empty value
+    (SECRET_UNRESOLVABLE)
+```
+
+That is the correct failure, and it is deliberately the *product's* rather than Compose's
+(`ENC-1002`). An earlier version made the variable mandatory in `stack.yml` itself, which failed
+`up` one step sooner and also failed `down`, `ps`, `logs` and `config` — Compose interpolates the
+whole file for every subcommand, so anyone who brought the stack up in one shell was told to
+generate a signing key in order to **stop** containers. A
 container must bind `0.0.0.0` — a published port reaches the container's address, not its loopback,
 so a loopback-bound process answers `Connection reset` from the host **while its internal
 healthcheck passes**, which is a stack that reports healthy and serves nothing. The product ties the

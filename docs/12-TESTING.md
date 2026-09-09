@@ -1,6 +1,6 @@
 # 12 — Testing & Quality Gates
 
-> **Status:** Draft · **Version:** 1.38 · **Owner:** Engineering · **Last updated:** 2026-09-09
+> **Status:** Draft · **Version:** 1.39 · **Owner:** Engineering · **Last updated:** 2026-09-09
 > **Authoritative for:** test strategy, the security leakage matrix, CI gates, release criteria.
 
 ## 1. Philosophy
@@ -560,7 +560,7 @@ Assertions about the codebase itself, not its behavior:
 | Obligations | `PolicyDecision` is `#[must_use]`; no `let _ =` discards it |
 | Secrets | No literal credential patterns in configuration files or fixtures |
 | Migrations | Numbered, checksummed, no gaps; contract-phase migrations flagged for review |
-| Dependencies | `cargo audit` and `cargo deny` clean; SBOM generated |
+| Dependencies | **Both halves of the product.** Rust: `cargo audit --deny warnings`, `cargo deny check`, CycloneDX SBOM. Web (`ENC-990`): `npm audit` at two thresholds — production dependencies fail at `moderate` because they are the bundle a browser executes, dev dependencies at `high` because they are build tooling that never reaches a user — plus a CycloneDX SBOM of the production graph. Until `ENC-990` this row named only the Rust half, so it read as green while nothing audited `web/` at all |
 | API contract | Generated OpenAPI matches the committed snapshot, or the diff is explicitly approved |
 | Matrix coverage | Every row in `§4` names a test that exists — the file resolves and the identifier appears in the tree — and every row inside `§4.1`–`§4.6` carries a citation or an explicit `Not testable` note (`ENC-989`). `§4` opens with *each row is at minimum one permanent test*; this is what makes that checkable rather than aspirational |
 | API surface | Every endpoint `docs/05-API.md` documents is registered, or sits in a section whose prose says it is not (`ENC-997`). The pair with `reachability.rs`: that proves *registered ⇒ answers*, this proves *documented ⇒ registered or marked*. Compares **(method, path)** — comparing path alone is what let `ENC-985` report external sharing as built while `GET /shares/{token}` was unregistered — and reads the router through `syn` rather than by matching text |
