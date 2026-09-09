@@ -6,10 +6,15 @@
  * a JSON file so that `MessageKey` below is a union type — a mistyped key is a
  * compile error rather than a `[missing key]` rendered at a customer.
  *
- * Locale negotiation, lazy per-locale bundles and the `en-XA`/`en-XB`
- * pseudo-locales are M5 step 5 and deliberately absent here: this file
- * establishes the pattern the first component is written against so nothing
- * has to be retrofitted, and stops short of the scaffolding that owns the rest.
+ * Locale negotiation and lazy per-locale bundles are M5 step 5 and deliberately
+ * absent here: this file establishes the pattern the first component is written
+ * against so nothing has to be retrofitted, and stops short of the scaffolding
+ * that owns the rest.
+ *
+ * The `en-XA`/`en-XB` pseudo-locales are **derived from this object** by
+ * `./pseudo.ts` (`ENC-994`, `docs/14 §9`). There is no second catalog to keep in
+ * step, which is the point: a key added below is pseudo-localized by the act of
+ * adding it, and `tests/unit/pseudo-locale.test.tsx` fails if it is not.
  *
  * Keys are never derived from English text (`docs/14 §4`) — rewording
  * "Restricted" must not orphan five translations.

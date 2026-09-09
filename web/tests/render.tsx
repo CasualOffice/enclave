@@ -1,7 +1,7 @@
 import type { ReactElement, ReactNode } from 'react';
 import { render, type RenderResult } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { I18nProvider } from '../src/shared/i18n/index.tsx';
+import { I18nProvider, SOURCE_LOCALE } from '../src/shared/i18n/index.tsx';
 
 /* The providers a screen needs to mount at all.
  *
@@ -28,15 +28,31 @@ export function testQueryClient(): QueryClient {
   });
 }
 
-export function Providers({ children }: { children: ReactNode }) {
+export function Providers({
+  children,
+  locale = SOURCE_LOCALE,
+}: {
+  children: ReactNode;
+  locale?: string;
+}) {
   return (
     <QueryClientProvider client={testQueryClient()}>
-      <I18nProvider>{children}</I18nProvider>
+      <I18nProvider locale={locale}>{children}</I18nProvider>
     </QueryClientProvider>
   );
 }
 
-/** `render`, with the providers the application supplies in `main.tsx`. */
-export function renderWithProviders(ui: ReactElement): RenderResult {
-  return render(<Providers>{ui}</Providers>);
+/**
+ * `render`, with the providers the application supplies in `main.tsx`.
+ *
+ * `locale` is how a screen test runs under `en-XA` or `en-XB` (`docs/14 §9`).
+ * It defaults to the source locale, so an existing test asserting English text
+ * keeps asserting English text — a pseudo-locale that silently became the
+ * default would turn every one of them red for the wrong reason.
+ */
+export function renderWithProviders(
+  ui: ReactElement,
+  options: { readonly locale?: string } = {},
+): RenderResult {
+  return render(<Providers locale={options.locale ?? SOURCE_LOCALE}>{ui}</Providers>);
 }

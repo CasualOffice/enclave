@@ -6,8 +6,10 @@
  * Until now nothing enforced any of them, because the job that would have run
  * this script exited zero when `web/package.json` was absent (`ENC-677`). Five
  * of the six are mechanical and are checked here; the sixth (missing keys fall
- * back to `en-US` and render normally) is a runtime property and belongs to the
- * pseudo-locale run in M5 step 5.
+ * back to `en-US` and render normally) is a runtime property, so it is proved
+ * where it can be — `web/tests/unit/pseudo-locale.test.tsx`, against the
+ * `en-XA`/`en-XB` catalogs `src/shared/i18n/pseudo.ts` derives from `en-US`
+ * (`ENC-994`, `docs/14 §9`).
  *
  *   1. No user-facing string literal in `web/src` outside the catalog.
  *   2. Every key referenced in code exists in the catalog; every catalog key is
@@ -353,7 +355,7 @@ for (const file of files) {
           rel,
           number,
           'css/physical-direction',
-          'physical direction — use a logical property (`inline-start`, `inline-end`, `text-align: start`). `en-XB` mirrors direction in CI',
+          'physical direction — use a logical property (`inline-start`, `inline-end`, `text-align: start`). This is the static half of the rule; `en-XB` mirrors direction at run time (`src/shared/i18n/pseudo.ts`) and catches what a scan cannot',
         );
         break;
       }

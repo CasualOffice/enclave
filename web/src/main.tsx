@@ -3,12 +3,21 @@ import { createRoot } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { App } from './app/app.tsx';
 import { initTheme } from './app/theme-store.ts';
-import { I18nProvider } from './shared/i18n/index.tsx';
+import { I18nProvider, applyDocumentLocale, requestedLocale } from './shared/i18n/index.tsx';
 import './styles/base.css';
 
 /* Theme is resolved and painted before React mounts, so a dark-preferring user
  * never sees a light frame first (`docs/09 §17`). */
 initTheme();
+
+/* The locale, resolved once and written to `<html>` before the first paint —
+ * same reasoning as the theme. `dir` arriving after mount means an `en-XB` or
+ * `ar-AE` session lays out left-to-right for a frame and then flips, which
+ * looks like a rendering bug and hides the mirroring defects `en-XB` exists to
+ * expose (`docs/14 §9`). Only the `en-XA`/`en-XB` pseudo-locales are reachable
+ * this way; see `requestedLocale`. */
+const locale = requestedLocale(window.location.search);
+applyDocumentLocale(locale);
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -36,7 +45,7 @@ if (container === null) throw new Error('#root is missing from index.html');
 createRoot(container).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <I18nProvider>
+      <I18nProvider locale={locale}>
         <App />
       </I18nProvider>
     </QueryClientProvider>
