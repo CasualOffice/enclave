@@ -16,11 +16,28 @@ system can honour both at once. Today the preview endpoint returns `501` rather 
 
 ### Exit criteria (from the roadmap — may not be weakened here)
 
-- [ ] `preview=ALLOW, download=DENY` produces a rendition and **no** signed original URL (A1).
-- [ ] A `DENY` beats an inherited `ALLOW` at every level (A3).
-- [ ] `max_downloads` holds under 50 concurrent redemptions — exactly N succeed (H3).
-- [ ] Watermarked output is never written to the rendition cache.
-- [ ] Cursor from one tenant rejected in another (T3).
+Evidenced one by one on 2026-09-10 (`ENC-991`); `ROADMAP.md §5` carries the same ticks and the fuller
+citations, and is authoritative if the two ever disagree. **All five are met.**
+
+- [x] `preview=ALLOW, download=DENY` produces a rendition and **no** signed original URL (A1) —
+      `preview_allowed_and_download_denied_yields_a_rendition_path_and_no_signed_url`,
+      `crates/api/tests/delivery.rs`; `store.touched()` is empty, so the URL was never asked for.
+      The `501` this section's objective names is gone (`ENC-148`).
+- [x] A `DENY` beats an inherited `ALLOW` at every level (A3) —
+      `a3_a_deny_overrides_an_inherited_allow_at_every_level`, `crates/testing/tests/leakage.rs`,
+      four levels, each flipped back afterwards.
+- [x] `max_downloads` holds under 50 concurrent redemptions — exactly N succeed (H3) —
+      `h3_the_download_budget_holds_under_fifty_concurrent_redemptions`,
+      `crates/sharing/tests/redemption.rs`, on a sixteen-connection pool (D18, and the reason
+      `TestDb::pool_with_connections` exists).
+- [x] Watermarked output is never written to the rendition cache — structural: `RenditionKey::new`
+      accepts no principal (`the_base_object_both_viewers_share_is_keyed_without_them`,
+      `crates/preview/tests/watermark.rs`), and `RenditionSink::keep` has one caller in the
+      workspace, handed the identity-free artefact (`crates/preview/src/service.rs`). The mark is
+      composited after the cache, in `crates/api/src/preview.rs`.
+- [x] Cursor from one tenant rejected in another (T3) —
+      `t3_a_cursor_issued_in_one_tenant_is_rejected_in_another`, `crates/testing/tests/leakage.rs`,
+      through a real listing rather than the codec.
 
 ---
 
