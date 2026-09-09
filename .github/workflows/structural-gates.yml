@@ -651,6 +651,35 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
     # --- tracker-unique-ids ---
+      # `ENC-989`. `docs/12 §4` opens with "each row is at minimum one permanent test" and nothing
+      # checked that the test beside a row was real. That is `ENC-543` in a larger place: a gate
+      # whose test file did not exist exited 0 and printed pass in green for a whole milestone.
+      - name: Every leakage-matrix row names a test that exists
+        id: g_matrix_coverage
+        run: python3 .github/scripts/matrix_coverage.py
+      - name: Explain on failure
+        if: failure() && steps.g_matrix_coverage.outcome == 'failure'
+        run: |
+          {
+            echo "### FAILED - Leakage matrix coverage"
+            echo ""
+            echo "**Rule:** every row in \`docs/12-TESTING.md §4\` names a test that exists, and"
+            echo "every row inside §4.1-§4.6 - M5's exit criterion - is resolved (§4.0)."
+            echo ""
+            echo "Three things fail this, and they need different fixes:"
+            echo ""
+            echo "* **a cited file does not exist** - the test was moved or deleted and the row"
+            echo "  was not; fix the row, or restore the test;"
+            echo "* **a cited identifier exists nowhere** - usually the row wrote a test's name in"
+            echo "  the wrong style. A web test called \`will not confirm a rejection without a"
+            echo "  reason\` cited as \`will_not_confirm_a_rejection_without_a_reason\` is not"
+            echo "  greppable, which defeats the point of citing it;"
+            echo "* **a row inside §4.1-§4.6 carries neither a test nor \`Not testable\`** - decide"
+            echo "  which it is and say so, with the milestone if it is the latter."
+            echo ""
+            echo "Run it locally with \`python3 .github/scripts/matrix_coverage.py\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: No tracker ID is used twice
         id: g_tracker_unique_ids
         run: python3 .github/scripts/tracker_unique_ids.py
