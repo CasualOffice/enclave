@@ -430,17 +430,18 @@ phase table · **Plan:** [`plans/M3-DISCOVERY.md`](plans/M3-DISCOVERY.md)
       above it; the fallback a tired engineer would write does not compile. The *input* half is
       `a_deployment_that_cannot_classify_a_file_refuses_rather_than_guessing_a_rank`,
       `crates/worker/tests/indexing.rs` (`ENC-557`).
-- [ ] Post-filter drop ratio and denylist size exported as metrics with alerts wired. **Half met,
-      and the missing half is a producer rather than a consumer.** The drop ratio is real:
-      `PostFilter::confirm` publishes every pass (`crates/search/src/postfilter.rs::publish` →
-      `enclave_observability::metrics::search::PostFilterPass`), and
-      `deploy/monitoring/alerts/search.yml` carries the ratio's single recording rule and both
-      alerts, each with a runbook annotation. **Nothing ever sets the denylist gauges**:
-      `search::record_denylist_size` has no caller anywhere outside `metrics.rs`'s own unit tests,
-      so `enclave_search_denylist_entries` and `_limit` are never exported and
-      `SearchDenylistBacklogGrowing` / `SearchDenylistOverflowedAndTenantIsDegraded` are
-      structurally incapable of firing — the file's own `SearchDenylistSizeUnreported` describes the
-      deployment exactly, and would be firing today. **No tracker row covers this**; it needs one.
+- [x] Post-filter drop ratio and denylist size exported as metrics with alerts wired. **Both halves
+      now, and the second was found by `ENC-991` reading this criterion against the tree.** The drop
+      ratio was always real: `PostFilter::confirm` publishes every pass
+      (`crates/search/src/postfilter.rs::publish` at the `confirm` call site →
+      `enclave_observability::metrics::search::PostFilterPass`). **Nothing set the denylist gauges**
+      — `record_denylist_size` had no caller outside `metrics.rs`'s own unit tests, so
+      `enclave_search_denylist_entries` was never exported, `SearchDenylistBacklogGrowing` and
+      `SearchDenylistOverflowedAndTenantIsDegraded` were structurally incapable of firing, and the
+      file's own `SearchDenylistSizeUnreported` described the deployment exactly. `ENC-1005` wired
+      it at the one place holding both numbers, `routes::search::plan`, and
+      `a_search_publishes_the_denylist_gauge_the_alerts_read` drives a real search and scrapes the
+      rendered exposition — it fails when the recorder call is removed.
 - [x] A scanned, text-free PDF is searchable by its content (ENC-161). **Met 2026-08-22, and the
       note that stood here was three rows out of date.** `ENC-545` added `PdfTextExtractor`, which
       returns `NoText` carrying the pages that yielded nothing; `ENC-546` wired

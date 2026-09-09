@@ -1036,6 +1036,50 @@ fn corpus_of(spine: &Spine) -> Vec<(FileId, &'static str)> {
 /// The controls are `readable` — same caller, same query, same folder, and it *is* returned — and
 /// `degraded: false`, which is what makes this a test of the dense arm rather than a test that
 /// silently ran the fallback.
+/// A search publishes the denylist gauge the alerts are written against — `ENC-1005`.
+///
+/// `enclave_observability::metrics::search::record_denylist_size` had **no caller**, so
+/// `enclave_search_denylist_entries` was never published and two alerts over a real capacity limit
+/// could not fire: `SearchDenylistBacklogGrowing` and
+/// `SearchDenylistOverflowedAndTenantIsDegraded` in `deploy/monitoring/alerts/search.yml`. The
+/// third, `SearchDenylistSizeUnreported`, is literally `absent(enclave_search_denylist_entries)` —
+/// it was written to catch this and described the deployment.
+///
+/// The assertion is against the **rendered exposition** rather than the gauge's own accessor. A
+/// test that called the recorder and then read the static back would pass against a route that
+/// never calls it, which is the defect. This drives a real search and then scrapes what Prometheus
+/// would scrape.
+///
+/// Both series are asserted because the recorder publishes both in one call for a stated reason: a
+/// size judged against a limit some other process recorded under different configuration is an
+/// alert nobody can reconstruct afterwards.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL; CI runs it with --include-ignored"]
+async fn a_search_publishes_the_denylist_gauge_the_alerts_read() {
+    let (db, fixtures, alpha, _beta) = setup().await;
+    let harness =
+        harness_with(&db, Some(dense(corpus_of(&alpha), enclave_search::VectorStore::Available)))
+            .await;
+
+    let tenant = fixtures.alpha.id.as_uuid().to_string();
+
+    let (status, body) =
+        post_search(&harness, fixtures.alpha.id, fixtures.alpha.member, query(TERM)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let exposition = enclave_observability::metrics::render_prometheus();
+
+    for series in ["enclave_search_denylist_entries", "enclave_search_denylist_limit"] {
+        let published =
+            exposition.lines().any(|line| line.starts_with(series) && line.contains(&tenant));
+        assert!(
+            published,
+            "a completed search must publish `{series}` for its tenant, or the alerts reading it \
+             cannot fire and `SearchDenylistSizeUnreported` describes the deployment.\n{exposition}"
+        );
+    }
+}
+
 #[tokio::test]
 #[ignore = "requires a live PostgreSQL; CI runs it with --include-ignored"]
 async fn a_vector_candidate_the_caller_may_not_read_never_appears_and_one_they_may_does() {
