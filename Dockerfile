@@ -36,7 +36,7 @@
 # that file and fails on drift; this image would otherwise be the one place the pin does not apply,
 # and a release binary built by a different compiler than the one the tests ran under is exactly
 # the seam this repository keeps finding.
-FROM rust:1.96.0-bookworm AS builder
+FROM rust:1.98.0-bookworm AS builder
 
 # CI's `ubuntu-latest` image happens to carry these, which is why no workflow installs them and why
 # a slim build is where their absence surfaces. Named individually rather than as `build-essential`
