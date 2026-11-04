@@ -547,7 +547,13 @@ mod tests {
             server_side_encryption: None,
         };
         let reported = ReportedContent { size_bytes: size, sha256_hex: DIGEST_HEX.to_owned() };
-        VerifiedContent::verify(record.declared_size, &reported, &observed).unwrap()
+        VerifiedContent::verify(
+            record.declared_size,
+            &reported,
+            &observed,
+            crate::content::ProviderDigest::Required,
+        )
+        .unwrap()
     }
 
     #[test]

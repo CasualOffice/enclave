@@ -73,9 +73,9 @@ async fn content(conn: &mut PgConnection, tenant: TenantId, owner: UserId) -> (S
     sqlx::query(
         "INSERT INTO file_versions
            (id, tenant_id, file_id, object_key, storage_profile_id, size_bytes, checksum_sha256,
-            mime_type, major, minor, status, av_status, created_by, created_at)
+            mime_type, major, minor, status, av_status, created_by, created_at, digest_state)
          VALUES ($1, $2, $3, $4, $5, 4096, $6, 'application/pdf', 1, $7, 'AVAILABLE', 'CLEAN',
-                 $8, $9)",
+                 $8, $9, 'PROVIDER')",
     )
     .bind(version.as_uuid())
     .bind(tenant.as_uuid())

@@ -18,7 +18,8 @@ use sqlx::Row as _;
 
 use crate::error::{Result, VersionsError};
 use crate::model::{
-    ApprovalState, AvScan, AvStatus, FileVersion, StorageTier, VersionNumber, VersionStatus,
+    ApprovalState, AvScan, AvStatus, DigestEvidence, DigestState, FileVersion, StorageTier,
+    VersionNumber, VersionStatus,
 };
 
 /// The `file_versions` columns every statement in this crate selects or returns.
@@ -34,7 +35,8 @@ macro_rules! version_columns {
         "id, tenant_id, file_id, object_key, storage_profile_id, size_bytes, checksum_sha256, \
          mime_type, major, minor, status, av_status, av_engine, av_signature_version, \
          av_scanned_at, approval_state, encryption_mode, encryption_key_ref, created_by, \
-         created_at, comment, storage_tier, restore_requested_at"
+         created_at, comment, storage_tier, restore_requested_at, digest_state, \
+         digest_verified_at"
     };
 }
 
@@ -83,6 +85,14 @@ pub(crate) fn version_from_row(row: &PgRow) -> Result<FileVersion> {
         // reason `status` above does.
         storage_tier: parse_enum::<StorageTier>(row, "storage_tier", "not a known storage tier")?,
         restore_requested_at: row.try_get("restore_requested_at")?,
+        // Refused rather than defaulted, for the reason `storage_tier` above is (`ENC-829`). The
+        // tempting default is `PROVIDER`, and it is the one that must never be taken: a build that
+        // cannot read the state would then report every version as carrying a digest the object
+        // store vouched for, which is `ENC-820`'s defect arriving through the decoder.
+        digest: DigestEvidence {
+            state: parse_enum::<DigestState>(row, "digest_state", "not a known digest state")?,
+            verified_at: row.try_get("digest_verified_at")?,
+        },
         encryption_key_ref: row.try_get("encryption_key_ref")?,
         created_by: row.try_get_id("created_by")?,
         created_at: timestamp(row, "created_at")?,
@@ -147,8 +157,9 @@ mod tests {
         // field this crate cannot see; a column named here that the table does not have is a
         // runtime `ColumnNotFound`. The migrations are the reference for both.
         //
-        // 21 from `0006`, plus `storage_tier` and `restore_requested_at` from `0032` (`ENC-946`).
-        assert_eq!(VERSION_COLUMNS.split(',').count(), 23);
+        // 21 from `0006`, plus `storage_tier` and `restore_requested_at` from `0032` (`ENC-946`),
+        // plus `digest_state` and `digest_verified_at` from `0035` (`ENC-829`).
+        assert_eq!(VERSION_COLUMNS.split(',').count(), 25);
     }
 
     /// A column added by a later `ALTER TABLE` is read too.
@@ -164,8 +175,13 @@ mod tests {
     /// written against a list of migrations so the next `ALTER` is one line rather than a new test.
     #[test]
     fn every_column_a_later_migration_adds_is_read() {
-        const ALTERS: &[(&str, &str)] =
-            &[("0032_storage_tier", include_str!("../../../migrations/0032_storage_tier.sql"))];
+        const ALTERS: &[(&str, &str)] = &[
+            ("0032_storage_tier", include_str!("../../../migrations/0032_storage_tier.sql")),
+            (
+                "0035_version_digest_evidence",
+                include_str!("../../../migrations/0035_version_digest_evidence.sql"),
+            ),
+        ];
 
         let mut found = 0_usize;
         for (name, sql) in ALTERS {
@@ -184,7 +200,7 @@ mod tests {
         }
         // Without this the loop is vacuous: a parser that matches nothing passes every assertion
         // inside it, which is `docs/12 §1.2` in its purest form.
-        assert!(found >= 2, "the ALTER parser found {found} columns; it has stopped matching");
+        assert!(found >= 4, "the ALTER parser found {found} columns; it has stopped matching");
     }
 
     #[test]

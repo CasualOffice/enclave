@@ -35,11 +35,16 @@
 //!    [`SecretRef`](enclave_config::SecretRef)s, and `aws-config` is deliberately not a dependency,
 //!    so this process has no ambient AWS identity to fall back on if a reference fails to resolve
 //!    (`CLAUDE.md` rule 11).
-//! 4. **A declared digest is a promise the store keeps or refuses.**
+//! 4. **A declared digest is a promise the store keeps, defers visibly, or refuses.**
 //!    [`UploadRequest::checksum_sha256`] obliges the implementation to make the provider compute
-//!    and compare the digest of the bytes it receives; an implementation that cannot arrange it for
-//!    a given request returns [`StorageError::ChecksumUnverifiable`] instead of issuing a session
-//!    nothing will check. `ENC-820` is what the field being merely advisory cost.
+//!    and compare the digest of the bytes it receives (`ENC-820` is what the field being merely
+//!    advisory cost). Where no provider can — a multipart upload, for which S3 and MinIO compute
+//!    only a checksum of the part checksums — the session is issued with the digest unsigned and
+//!    the *shape of the returned target says so*: a [`UploadTarget::Single`] names the checksum
+//!    header among its `required_headers` and a [`UploadTarget::Multipart`] names none. The caller
+//!    then records the version's digest unconfirmed and the antivirus pass settles it while
+//!    streaming (`ENC-829`). [`StorageError::ChecksumUnverifiable`] is left for a store that can do
+//!    neither; nothing in this workspace returns it.
 //!
 //! # Dependencies pinned here rather than in the workspace
 //!

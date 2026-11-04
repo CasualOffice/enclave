@@ -329,9 +329,9 @@ impl Content {
             "INSERT INTO file_versions
                (id, tenant_id, file_id, object_key, storage_profile_id, size_bytes,
                 checksum_sha256, mime_type, major, minor, status, av_status, encryption_mode,
-                created_by, created_at)
+                created_by, created_at, digest_state)
              VALUES ($1, $2, $3, $4, $5, 1024, $6, 'application/pdf', 1, 0, $7, $8, 'PROVIDER',
-                     $9, $10)",
+                     $9, $10, 'PROVIDER')",
         )
         .bind(self.version.as_uuid())
         .bind(self.tenant.as_uuid())

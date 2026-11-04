@@ -17,6 +17,11 @@ the auth tables. The matrix is 216 rows and cites 100-odd files.
    that exists nowhere is a row nobody can follow.
 3. Every row in `§4.1`-`§4.6` — the set M5's exit criterion names — carries either a citation or an
    explicit `Not testable` note. That convention is `§4.0`'s, written by `ENC-987`'s sweep.
+4. The rows carrying that note are **exactly** the ten [`DEFERRED`] names M5's rescoped criterion
+   excepts (`ENC-999`). Checked in both directions, so the exception can neither grow silently nor
+   outlive the subsystem that caused it.
+5. No two rows in one section share an id, and no *new* id is reused across sections — the eight
+   that already are live in [`PREFIX_REUSE`] (`ENC-918`).
 
 # Why the citation rule is what it is
 
@@ -58,6 +63,48 @@ MIN_UNDERSCORES = 3
 
 # The note `§4.0` defines for a row whose subsystem does not exist yet.
 NOT_TESTABLE = "not testable"
+
+# The ten rows M5's exit criterion excepts, and the milestone that closes each (`ENC-999`).
+#
+# The criterion used to read "§4.1-4.6 green, zero skips" and was unmeetable: every row below needs
+# a subsystem that is a five-line stub scheduled for M6 or M7. The repo owner rescoped it to "green
+# except these ten, named individually" — and a named exception is only worth more than a waived one
+# while the naming is enforced, which is what this list is for.
+#
+# It is checked in BOTH directions:
+#
+#   * a row marked `Not testable` that is NOT here means the exception grew, quietly, and a security
+#     criterion got easier without anybody deciding it should;
+#   * a row here that is NO LONGER marked `Not testable` means its subsystem landed — remove it from
+#     this list and tick the row, because an exception nobody retires is a permanent hole with a
+#     milestone written next to it.
+DEFERRED: dict[str, str] = {
+    "S7": "M7 — enclave-ai is a stub, so there is no RAG path to cite from",
+    "S9": "M6 — nothing can set NO_INDEX; classification has no ceiling",
+    "S10": "M6 — UnconfiguredBarriers has no segment to exclude",
+    "H2": "share redemption — ENC-692/ENC-694, a link's conditions are enforced by nothing",
+    "H5": "share redemption — there is no share context to enumerate from",
+    "H6": "share redemption — a link's audience is enforced by nothing",
+    "D5": "M6 — crates/legal_hold is a stub",
+    "D6": "M6 — crates/records is a stub",
+    "D7": "M7 — crates/mcp is a stub",
+    "D8": "M6 — crates/incidents is a stub",
+}
+
+# Row ids that appear in two sections, grandfathered (`ENC-918`).
+#
+# `§4.13` took the `N` prefix `§4.9` was already using, and `§4.14` took `C` from `§4.11` — a later
+# section reusing a letter, not two rows colliding inside one. Four ids *did* collide inside one
+# section (`A20` twice in `§4.2`, `D10`-`D12` twice in `§4.5`) and those were renumbered, because
+# there "A20 is green" had two meanings and no reader could tell which.
+#
+# These eight are left where they are, on `TRACKER.md §2.3`'s argument about its own ids:
+# renumbering to recover a property nothing reads would rewrite references that live outside this
+# file — in prose, in commit messages, in merged pull requests — and the ids are unambiguous in
+# the only place anyone uses them, which is inside a section.
+#
+# Listed rather than tolerated, so a *ninth* is a failure and not a habit.
+PREFIX_REUSE: frozenset[str] = frozenset({"N1", "N2", "N4", "N5", "N6", "C1", "C2", "C3"})
 
 ROW = re.compile(r"^\|\s*\*{0,2}([A-Z]{1,2}\d+)\*{0,2}\s*\|\s*(.+?)\s*\|\s*$")
 HEADING = re.compile(r"^### (4\.\d+)")
@@ -110,6 +157,29 @@ def main() -> int:
     problems: list[str] = []
     cited_rows = 0
 
+    # Ids must be unique, because everything downstream keys on them: the `DEFERRED` map above, a
+    # test named `k5_…` for the row it proves, and `§9`'s release criterion counting what passed.
+    # Within a section a duplicate is unambiguous nonsense; across sections it is a reused prefix,
+    # and the eight that exist are named in `PREFIX_REUSE` rather than tolerated silently.
+    by_id: dict[str, list[str]] = {}
+    for rid, _cell, section, _offset in rows:
+        by_id.setdefault(rid, []).append(section)
+    for rid, sections in sorted(by_id.items()):
+        if len(sections) == 1:
+            continue
+        if len(set(sections)) == 1:
+            problems.append(
+                f"{rid} appears {len(sections)} times in §{sections[0]}. Two rows in one section "
+                f"cannot share an id — \"{rid} is green\" would have two meanings, and a test named "
+                f"for it would prove one of them."
+            )
+        elif rid not in PREFIX_REUSE:
+            problems.append(
+                f"{rid} appears in §{' and §'.join(sorted(set(sections)))} — a later section reusing "
+                f"a prefix. Eight of these are grandfathered in `PREFIX_REUSE` (`ENC-918`); a ninth "
+                f"is a new one. Give the section its own letter."
+            )
+
     for rid, cell, section, offset in rows:
         paths = PATH.findall(cell)
         names = [n for n in IDENT.findall(cell) if n.count("_") >= MIN_UNDERSCORES]
@@ -125,9 +195,25 @@ def main() -> int:
                     f"this row can find what proves it"
                 )
 
+        deferred_here = NOT_TESTABLE in cell.lower()
+        if section in CRITERION:
+            if deferred_here and rid not in DEFERRED:
+                problems.append(
+                    f"{rid} is marked `Not testable` and is not in this script's DEFERRED list. M5's "
+                    f"criterion excepts ten named rows (`ENC-999`); an eleventh means the exception "
+                    f"grew without anybody deciding it should. Add it here with its milestone, or "
+                    f"make the row testable."
+                )
+            if rid in DEFERRED and not deferred_here:
+                problems.append(
+                    f"{rid} is in the DEFERRED list but is no longer marked `Not testable` — its "
+                    f"subsystem has landed. Remove it from `DEFERRED` and tick the row: an exception "
+                    f"nobody retires is a permanent hole with a milestone written beside it."
+                )
+
         if paths or names:
             cited_rows += 1
-        elif section in CRITERION and NOT_TESTABLE not in cell.lower():
+        elif section in CRITERION and not deferred_here:
             problems.append(
                 f"{rid} is in §{section} — inside M5's exit criterion — and carries neither a test "
                 f"nor a `Not testable` note (§4.0)"

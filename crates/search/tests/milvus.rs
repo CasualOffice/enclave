@@ -812,9 +812,9 @@ async fn manifest(
     sqlx::query(
         "INSERT INTO file_versions
            (id, tenant_id, file_id, object_key, storage_profile_id, size_bytes, checksum_sha256,
-            mime_type, major, minor, status, av_status, created_by, created_at)
+            mime_type, major, minor, status, av_status, created_by, created_at, digest_state)
          VALUES ($1, $2, $3, $4, $5, 1024, 'deadbeef', 'application/pdf', 1, 0, 'AVAILABLE',
-                 'CLEAN', $6, $7)",
+                 'CLEAN', $6, $7, 'PROVIDER')",
     )
     .bind(version)
     .bind(tenant.as_uuid())

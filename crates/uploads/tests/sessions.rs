@@ -40,8 +40,8 @@ use enclave_storage::{
 };
 use enclave_testing::{Fixtures, TestDb};
 use enclave_uploads::{
-    Completion, LoadedSession, NewUpload, ReportedContent, UploadError, UploadIntent, UploadLimits,
-    UploadRepository, UploadService, UploadState,
+    Completion, DigestEvidence, LoadedSession, NewUpload, ReportedContent, UploadError,
+    UploadIntent, UploadLimits, UploadRepository, UploadService, UploadState,
 };
 use sqlx::PgConnection;
 use url::Url;
@@ -161,10 +161,10 @@ impl BlobStore for RecordingStore {
         let multipart = request.content_length > 8 * 1024 * 1024;
 
         // The contract `BlobStore::create_upload` states since `ENC-820`: a declared digest is
-        // binding, and a store that cannot arrange for the provider to verify it says so instead of
-        // issuing a session. Modelled here so the stub cannot be more permissive than the real one
-        // — and refused *before* `created` is recorded, so `store.created().is_empty()` still means
-        // "no URL was minted for this request".
+        // binding, and a store that can arrange neither for the provider to verify it nor for the
+        // caller to confirm it later says so instead of issuing a session. Modelled here so the
+        // stub cannot be more permissive than the real one — and refused *before* `created` is
+        // recorded, so `store.created().is_empty()` still means "no URL was minted".
         if request.checksum_sha256.is_some() && state.unverifiable {
             return Err(enclave_storage::StorageError::ChecksumUnverifiable {
                 content_length: request.content_length,
@@ -172,7 +172,13 @@ impl BlobStore for RecordingStore {
             });
         }
         state.created.push(request.key.as_str().to_owned());
-        state.requested_checksum = request.checksum_sha256.as_deref().map(base64_of_hex);
+        // **A multipart upload records no requested digest, and that is the fidelity that matters**
+        // (`ENC-829`). No S3-compatible provider computes a whole-object SHA-256 for one, so the
+        // real store does not sign the header and `HeadObject` reports nothing — see
+        // `complete_upload` below. A stub that echoed the digest anyway would send every multipart
+        // test down the provider-confirmed path and prove nothing about the deferred one.
+        state.requested_checksum =
+            if multipart { None } else { request.checksum_sha256.as_deref().map(base64_of_hex) };
 
         let target = if multipart {
             UploadTarget::Multipart { upload_id: "test-multipart".to_owned(), parts: Vec::new() }
@@ -1610,9 +1616,9 @@ async fn commit_version_for(
     sqlx::query(
         "INSERT INTO file_versions
            (id, tenant_id, file_id, object_key, storage_profile_id, size_bytes, checksum_sha256,
-            mime_type, major, minor, status, av_status, created_by, created_at)
+            mime_type, major, minor, status, av_status, created_by, created_at, digest_state)
          VALUES ($1, $2, $3, $4, $5, 64, $6, 'application/pdf', 1, 0, 'SCANNING', 'PENDING', $7,
-                 $8)",
+                 $8, 'PROVIDER')",
     )
     .bind(Uuid::now_v7())
     .bind(sql(tenant))
@@ -1837,6 +1843,109 @@ async fn a_reclaim_scoped_to_one_tenant_cannot_see_anothers_stranded_session() {
     assert_eq!(stored_state(&mut conn, &alpha_id.to_string()).await, "EXPIRED");
     assert_eq!(stored_state(&mut conn, &beta_id.to_string()).await, "SCANNING");
 
+    pool.close().await;
+    drop(db);
+}
+
+/// **`ENC-829` through the whole service: an upload too large for one `PUT` is accepted, and the
+/// digest it carries is marked as nobody's evidence yet.**
+///
+/// Until this task the session was refused at `create` — `UploadError::ChecksumUnverifiable`, from
+/// a store that could not have the provider hash a multipart body — so no deployment could accept
+/// an upload above the multipart threshold at all. That is the half a user meets, and it is what
+/// blocked M1's 5 GB exit criterion.
+///
+/// Two assertions, and the second is the one that keeps `ENC-820` closed. Accepting the completion
+/// alone would be the old defect with a larger file: a client's unverified digest recorded on an
+/// immutable column that later reads as proof. `AwaitingContentScan` is what says otherwise, and it
+/// is what the version row stores, what `migrations/0035` refuses to publish, and what the
+/// antivirus pass settles.
+///
+/// The single-shot control runs through the same store and the same service, so "deferred" cannot
+/// pass by the service having stopped confirming anything at all.
+#[tokio::test]
+#[ignore = "requires a live PostgreSQL and migration 0006 (upload_sessions); CI runs it with --include-ignored"]
+async fn an_upload_too_large_for_one_put_is_accepted_with_its_digest_still_unconfirmed() {
+    let (db, fixtures, pool) = start().await;
+    let alpha = fixtures.alpha.id;
+    let store = RecordingStore::default();
+
+    let mut tx = TenantScoped::begin(&pool, alpha).await.expect("begin");
+    let (_workspace, library_id) =
+        library(&mut tx, alpha, fixtures.alpha.owner, "contracts", None).await;
+    // Above the stub's 8 MiB threshold, so the store issues a multipart session — the shape no
+    // provider computes a whole-object digest for.
+    let large = 16 * 1024 * 1024;
+    let limits = UploadLimits::unrestricted_up_to(large);
+
+    let issued = UploadService::create(
+        &mut tx,
+        &store,
+        alpha,
+        &upload(library_id, fixtures.alpha.owner, "deposition.mp4", large),
+        &limits,
+        Duration::hours(24),
+        Utc::now(),
+    )
+    .await
+    .expect("a multipart upload carrying a digest is no longer refused — ENC-829");
+    assert!(
+        matches!(issued.target, UploadTarget::Multipart { .. }),
+        "the fixture must be large enough to be multipart or this test proves nothing"
+    );
+
+    let completion = UploadService::complete(
+        &mut tx,
+        &store,
+        alpha,
+        issued.session.id(),
+        &reported(large),
+        Vec::new(),
+        Utc::now(),
+    )
+    .await
+    .expect("complete");
+
+    let Completion::HandedOff { handoff, .. } = completion else {
+        panic!("a multipart upload no provider could hash must complete, not be refused");
+    };
+    assert_eq!(handoff.content.sha256_hex(), DIGEST_HEX, "the client's digest is still recorded");
+    assert_eq!(
+        handoff.content.evidence(),
+        DigestEvidence::AwaitingContentScan,
+        "a digest no provider hashed was carried as one the object store confirmed — ENC-820"
+    );
+
+    // The control: below the threshold the same store signs and echoes the digest, and the same
+    // service records it as provider-confirmed.
+    let small = UploadService::create(
+        &mut tx,
+        &store,
+        alpha,
+        &upload(library_id, fixtures.alpha.owner, "memo.pdf", 64),
+        &limits,
+        Duration::hours(24),
+        Utc::now(),
+    )
+    .await
+    .expect("create");
+    let completion = UploadService::complete(
+        &mut tx,
+        &store,
+        alpha,
+        small.session.id(),
+        &reported(64),
+        Vec::new(),
+        Utc::now(),
+    )
+    .await
+    .expect("complete");
+    let Completion::HandedOff { handoff, .. } = completion else {
+        panic!("a single-shot upload the store confirmed must be handed off");
+    };
+    assert_eq!(handoff.content.evidence(), DigestEvidence::ProviderConfirmed);
+
+    tx.commit().await.expect("commit");
     pool.close().await;
     drop(db);
 }

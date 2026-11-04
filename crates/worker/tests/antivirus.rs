@@ -947,3 +947,336 @@ async fn the_engine_is_handed_the_whole_object_and_not_a_prefix() {
 
     drop(db);
 }
+
+// =================================================================================================
+// The digest the object store could not compute — `ENC-829`
+// =================================================================================================
+
+/// The lowercase hex SHA-256 of `body`, as `file_versions.checksum_sha256` spells it.
+fn digest_of(body: &[u8]) -> String {
+    use sha2::Digest as _;
+    sha2::Sha256::digest(body).iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// Turns a freshly committed version into what a **multipart** upload leaves behind: the client's
+/// declared digest on the row, its real size, and nothing having confirmed either.
+///
+/// An `UPDATE` rather than a second fixture builder, so that these tests share `an_upload`'s file,
+/// spine and pointer with every test above and differ in exactly the columns under test. The
+/// immutability trigger does not fire, because it guards only rows that are already `AVAILABLE`.
+async fn declared_but_unconfirmed(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    version: VersionId,
+    declared: &str,
+    size: i64,
+) {
+    sqlx::query(
+        "UPDATE file_versions
+            SET checksum_sha256 = $3, size_bytes = $4, digest_state = 'UNCONFIRMED',
+                digest_verified_at = NULL
+          WHERE tenant_id = $1 AND id = $2",
+    )
+    .bind(tenant.as_uuid())
+    .bind(version.as_uuid())
+    .bind(declared)
+    .bind(size)
+    .execute(&mut *conn)
+    .await
+    .expect("declare a digest nothing has confirmed");
+}
+
+/// The digest evidence a version now carries.
+async fn digest_state(
+    conn: &mut PgConnection,
+    version: VersionId,
+) -> (String, Option<DateTime<Utc>>) {
+    let row =
+        sqlx::query("SELECT digest_state, digest_verified_at FROM file_versions WHERE id = $1")
+            .bind(version.as_uuid())
+            .fetch_one(&mut *conn)
+            .await
+            .expect("the version row is still there");
+    (
+        row.try_get("digest_state").expect("digest_state"),
+        row.try_get("digest_verified_at").expect("digest_verified_at"),
+    )
+}
+
+/// An engine that reads one chunk and then stops, exactly as clamd does when it has decided early
+/// or when an object passes its own `StreamMaxLength`.
+///
+/// It answers `Unsupported`, which is `ClamavScanner`'s verdict for both of those, and it drops the
+/// stream without draining it — which is the whole point: there is then no whole-object digest, and
+/// the pass has to decide what to do with a version whose digest nothing has confirmed.
+#[derive(Debug, Default)]
+struct StopsReadingEarly;
+
+#[async_trait]
+impl AntivirusScanner for StopsReadingEarly {
+    async fn scan(&self, mut stream: ByteStream, _hint: ScanHint) -> AvResult<ScanVerdict> {
+        let _first = stream.next().await;
+        Ok(ScanVerdict::Unsupported)
+    }
+
+    async fn engine_info(&self) -> AvResult<EngineInfo> {
+        Ok(EngineInfo {
+            engine: "FakeAV 1.0".to_owned(),
+            signature_version: Some("27621".to_owned()),
+            scans_content: true,
+        })
+    }
+}
+
+/// **`ENC-829`'s reason for existing: a multipart upload becomes readable once the pass has hashed
+/// it.**
+///
+/// Before this, `crates/storage` refused every multipart session carrying a declared digest, so no
+/// deployment could accept an upload above 16 MiB at all and M1's 5 GB criterion could not be met.
+/// The confirmation did not disappear — it moved to the one pass that already reads every byte.
+///
+/// The `digest_verified_at` assertion is not decoration: the state alone cannot distinguish a
+/// version this pass confirmed from one committed before the migration, and the operator question
+/// behind the column is *how long did the confirmation take to arrive*.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a live PostgreSQL; CI runs it with --include-ignored"]
+async fn a_multipart_upload_becomes_readable_once_the_pass_confirms_its_digest() {
+    let (db, fixtures, pool) = start().await;
+    let alpha = fixtures.alpha.id;
+    let mut conn = db.connect().await.expect("connection");
+    let store = KeyedStore::new();
+
+    let body = b"a document too large for a single PUT".to_vec();
+    let (file, version) = an_upload(&mut conn, &fixtures, alpha, &store, body.clone()).await;
+    declared_but_unconfirmed(&mut conn, alpha, version, &digest_of(&body), body.len() as i64).await;
+
+    assert!(!is_readable(&pool, alpha, version).await, "an unconfirmed digest must not be served");
+
+    let pass = sweep(&pool, alpha, &FakeEngine, &store).await;
+
+    assert_eq!(pass.considered, 1);
+    assert_eq!(pass.cleared, 1);
+    assert_eq!(pass.digest_mismatched, 0);
+    assert_eq!(pass.digest_unconfirmed, 0);
+    assert_eq!(store.read_count(version), 1, "hashing must not cost a second read of the object");
+
+    assert_eq!(state(&mut conn, version).await, ("AVAILABLE".to_owned(), "CLEAN".to_owned()));
+    assert_eq!(file_status(&mut conn, file).await, "AVAILABLE");
+    assert!(is_readable(&pool, alpha, version).await, "a confirmed digest is still not served");
+
+    let (evidence, verified_at) = digest_state(&mut conn, version).await;
+    assert_eq!(evidence, "ANTIVIRUS", "the pass did not record who confirmed the digest");
+    assert!(verified_at.is_some(), "a settled digest with no moment attached");
+
+    drop(db);
+}
+
+/// **A version whose stored bytes do not hash to its declared digest is quarantined, unreadable,
+/// and never offered again** — the same seriousness as an infected verdict.
+///
+/// The engine reports this content **clean**, and that is the point: the antivirus verdict is
+/// correct and irrelevant. The object is not the object its uploader vouched for, so every
+/// downstream statement quoting its digest — a retention record, an audit row, a signature — is
+/// about something else.
+///
+/// The clean control beside it is what stops this passing against a build that quarantines
+/// everything, and the second sweep is what proves the queue does not re-read the object every tick
+/// to reconfirm a failure that cannot change.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a live PostgreSQL; CI runs it with --include-ignored"]
+async fn a_version_whose_bytes_do_not_match_its_declared_digest_is_quarantined_and_unreadable() {
+    let (db, fixtures, pool) = start().await;
+    let alpha = fixtures.alpha.id;
+    let mut conn = db.connect().await.expect("connection");
+    let store = KeyedStore::new();
+
+    // The bytes are wholesome and the declaration is of some other object entirely — a truncated
+    // upload, a storage fault, or somebody writing to the bucket around this product.
+    let body = b"the bytes that are actually stored".to_vec();
+    let (bad_file, lying) = an_upload(&mut conn, &fixtures, alpha, &store, body.clone()).await;
+    let elsewhere = digest_of(b"a completely different document");
+    declared_but_unconfirmed(&mut conn, alpha, lying, &elsewhere, body.len() as i64).await;
+
+    let honest_body = b"a document whose digest is its own".to_vec();
+    let (good_file, honest) =
+        an_upload(&mut conn, &fixtures, alpha, &store, honest_body.clone()).await;
+    declared_but_unconfirmed(
+        &mut conn,
+        alpha,
+        honest,
+        &digest_of(&honest_body),
+        honest_body.len() as i64,
+    )
+    .await;
+
+    let pass = sweep(&pool, alpha, &FakeEngine, &store).await;
+
+    assert_eq!(pass.considered, 2);
+    assert_eq!(pass.digest_mismatched, 1, "the mismatch was not counted as one");
+    assert_eq!(pass.quarantined, 1, "and it is a quarantine as well as a digest failure");
+    assert_eq!(pass.cleared, 1, "the honest version was not cleared");
+
+    let (status, av_status) = state(&mut conn, lying).await;
+    assert_eq!(status, "QUARANTINED", "a version whose bytes are wrong stayed outside quarantine");
+    assert_eq!(av_status, "CLEAN", "the engine's verdict is recorded honestly, not overwritten");
+    assert_eq!(digest_state(&mut conn, lying).await.0, "MISMATCH");
+    assert!(!is_readable(&pool, alpha, lying).await, "a version with the wrong bytes was served");
+    assert_eq!(file_status(&mut conn, bad_file).await, "QUARANTINED");
+
+    // The control, through the same pass and the same engine.
+    assert_eq!(state(&mut conn, honest).await, ("AVAILABLE".to_owned(), "CLEAN".to_owned()));
+    assert!(is_readable(&pool, alpha, honest).await);
+    assert_eq!(file_status(&mut conn, good_file).await, "AVAILABLE");
+
+    // The queue does not offer either of them again — but for these two that is already true of
+    // `av_status = 'CLEAN'`, so it says nothing about the digest predicate. The test below is where
+    // that is actually asserted.
+    let second = sweep(&pool, alpha, &FakeEngine, &store).await;
+    assert_eq!(second.considered, 0);
+
+    drop(db);
+}
+
+/// An engine that reads the whole object and *then* fails to produce a verdict.
+///
+/// The combination the queue predicate exists for, and it is not contrived: clamd reads an entire
+/// multi-gigabyte stream and then dies, or answers while reloading its signature database. The
+/// stream is drained, so the digest **is** computed; the verdict is a retryable error, so `HOLD`
+/// leaves `av_status = 'PENDING'` — which is exactly what the queue re-offers.
+#[derive(Debug, Default)]
+struct DrainsThenFails;
+
+#[async_trait]
+impl AntivirusScanner for DrainsThenFails {
+    async fn scan(&self, mut stream: ByteStream, _hint: ScanHint) -> AvResult<ScanVerdict> {
+        while let Some(chunk) = stream.next().await {
+            let _ = chunk?;
+        }
+        Ok(ScanVerdict::Error { retryable: true })
+    }
+
+    async fn engine_info(&self) -> AvResult<EngineInfo> {
+        Ok(EngineInfo {
+            engine: "FakeAV 1.0".to_owned(),
+            signature_version: Some("27621".to_owned()),
+            scans_content: true,
+        })
+    }
+}
+
+/// **A version whose digest already failed is never read again**, even though its antivirus verdict
+/// is one the queue would ordinarily retry forever.
+///
+/// This is the case `digest_state <> 'MISMATCH'` is for, and it cannot be reached with a clean
+/// verdict: `CLEAN` leaves the queue on its own, so a test using it asserts nothing about the
+/// digest predicate. Here the engine drains the object — so the digest *is* computed and does not
+/// match — and then fails retryably, which under `HOLD` records `av_status = 'PENDING'`. Without
+/// the predicate the pass re-reads the whole object on every tick, forever, to reconfirm a failure
+/// that immutable bytes cannot change.
+///
+/// The control is the second version beside it, whose digest is honest: the same engine leaves it
+/// `PENDING` and the queue *does* offer it again, which is correct and is what makes the exclusion
+/// above a property of the digest rather than of the sweep having stopped.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a live PostgreSQL; CI runs it with --include-ignored"]
+async fn a_version_whose_digest_failed_is_not_re_read_on_every_tick() {
+    let (db, fixtures, pool) = start().await;
+    let alpha = fixtures.alpha.id;
+    let mut conn = db.connect().await.expect("connection");
+    let store = KeyedStore::new();
+
+    let body = b"the bytes that are actually stored".to_vec();
+    let (_bad_file, lying) = an_upload(&mut conn, &fixtures, alpha, &store, body.clone()).await;
+    let elsewhere = digest_of(b"a completely different document");
+    declared_but_unconfirmed(&mut conn, alpha, lying, &elsewhere, body.len() as i64).await;
+
+    let honest_body = b"a document whose digest is its own".to_vec();
+    let (_good_file, honest) =
+        an_upload(&mut conn, &fixtures, alpha, &store, honest_body.clone()).await;
+    declared_but_unconfirmed(
+        &mut conn,
+        alpha,
+        honest,
+        &digest_of(&honest_body),
+        honest_body.len() as i64,
+    )
+    .await;
+
+    let first = sweep(&pool, alpha, &DrainsThenFails, &store).await;
+    assert_eq!(first.considered, 2);
+    assert_eq!(first.digest_mismatched, 1);
+
+    let (status, av_status) = state(&mut conn, lying).await;
+    assert_eq!(status, "QUARANTINED");
+    assert_eq!(av_status, "PENDING", "the fixture must leave a verdict the queue would retry");
+    assert_eq!(digest_state(&mut conn, lying).await.0, "MISMATCH");
+
+    let bad_reads = store.read_count(lying);
+    let good_reads = store.read_count(honest);
+
+    let second = sweep(&pool, alpha, &DrainsThenFails, &store).await;
+
+    assert_eq!(store.read_count(lying), bad_reads, "a permanently failed version was read again");
+    assert_eq!(
+        store.read_count(honest),
+        good_reads + 1,
+        "the control was not re-offered either, so the sweep simply stopped"
+    );
+    assert_eq!(second.considered, 1, "exactly one of the two is still in the queue");
+
+    drop(db);
+}
+
+/// **A version the engine never read to the end is not published, whatever the policy says.**
+///
+/// `CLAUDE.md` rule 9, applied to the digest. `ALLOW_WITH_FLAG` publishes content nothing
+/// inspected — `ENC-828` made that real and it must stay real — but a version whose *digest* is
+/// still only the client's word is a different thing, and `migrations/0035` refuses to let one be
+/// `AVAILABLE` at all. Quarantine rather than hold, because the same engine reading the same object
+/// stops in the same place.
+///
+/// The control is the identical engine and policy over a version whose digest the object store
+/// already confirmed — every single-shot upload — which still publishes. Without it this passes
+/// against a build in which `ALLOW_WITH_FLAG` does nothing, which is exactly the state `ENC-828`
+/// fixed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a live PostgreSQL; CI runs it with --include-ignored"]
+async fn a_version_the_engine_stopped_reading_is_never_published() {
+    let (db, fixtures, pool) = start().await;
+    let alpha = fixtures.alpha.id;
+    let mut conn = db.connect().await.expect("connection");
+    let store = KeyedStore::new();
+
+    let body = b"a version larger than the engine will look at".to_vec();
+    let (_file, unread) = an_upload(&mut conn, &fixtures, alpha, &store, body.clone()).await;
+    declared_but_unconfirmed(&mut conn, alpha, unread, &digest_of(&body), body.len() as i64).await;
+
+    let (_control_file, settled) = an_upload(&mut conn, &fixtures, alpha, &store, body).await;
+
+    let flagged = ScanPolicy {
+        unsupported: enclave_antivirus::UnsupportedPolicy::AllowWithFlag,
+        ..ScanPolicy::from_config(&enclave_config::AntivirusConfig::default())
+    };
+    let pass = sweep_with(&pool, alpha, &StopsReadingEarly, &store, flagged).await;
+
+    assert_eq!(pass.considered, 2);
+    assert_eq!(pass.digest_unconfirmed, 1, "the refusal to publish was not counted");
+    assert_eq!(pass.digest_mismatched, 0, "nothing is known to be wrong with the content");
+
+    let (status, av_status) = state(&mut conn, unread).await;
+    assert_eq!(status, "QUARANTINED", "a digest nothing confirmed reached AVAILABLE");
+    assert_eq!(av_status, "SKIPPED", "the engine's own verdict is still recorded");
+    assert_eq!(digest_state(&mut conn, unread).await.0, "UNCONFIRMED", "and it is not a mismatch");
+    assert_eq!(digest_state(&mut conn, unread).await.1, None, "nothing confirmed it, so no moment");
+    assert!(!is_readable(&pool, alpha, unread).await);
+
+    // The control: same engine, same policy, digest already confirmed by the store.
+    assert_eq!(state(&mut conn, settled).await, ("AVAILABLE".to_owned(), "SKIPPED".to_owned()));
+    assert_eq!(digest_state(&mut conn, settled).await.0, "PROVIDER", "the pass disturbed it");
+    assert!(
+        is_readable(&pool, alpha, settled).await,
+        "ENC-828: ALLOW_WITH_FLAG must still buy availability for content whose digest is settled"
+    );
+
+    drop(db);
+}

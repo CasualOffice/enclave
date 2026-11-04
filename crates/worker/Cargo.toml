@@ -58,6 +58,15 @@ enclave-observability = { workspace = true, features = ["exposition"] }
 anyhow    = { workspace = true }
 async-trait = { workspace = true }
 chrono    = { workspace = true }
+# `ENC-829`: the antivirus pass hashes each version's bytes as it hands them to the engine, so that
+# a whole-object digest exists for the uploads no object store can compute one for. `sha2` is the
+# same one five other crates use, so there is no second SHA-256 implementation in the tree; `futures`
+# and `bytes` are `enclave_storage::ByteStream`'s own vocabulary, and the tap is a `Stream` that
+# forwards its `Bytes` unchanged. All three were dev-dependencies until this pass needed them at run
+# time.
+sha2    = { workspace = true }
+futures = { workspace = true }
+bytes   = "1"
 sqlx      = { workspace = true }
 thiserror = { workspace = true }
 # The scheduler is the reason this is a normal dependency rather than a dev one: it owns the clock
@@ -75,8 +84,6 @@ enclave-authorization = { workspace = true }
 # consistency for a write-then-read is the SDK's own type. `crates/search/tests/vector_write.rs`
 # takes the same dependency for the same reason: the knob is what stops the test sleeping.
 milvus-sdk-rust = { workspace = true }
-futures = { workspace = true }
-bytes = "1"
 url = { workspace = true }
 # `ENC-806`'s reaper tests `PUT` their fixture objects to a pre-signed URL over real HTTP, exactly
 # as `crates/storage/tests/minio.rs` does and for its reason: an object staged by a different client

@@ -568,8 +568,21 @@ were built — the opposite of `§1`'s old error, and read as a project further 
 **Exit criteria — the MVP gate**
 
 - [ ] Every P1 in Phase 1 `DONE`.
-- [ ] Leakage matrix §4.1–4.6 green, zero skips. **Blocked as written** — see step 4 above and
-      `ENC-999`: ten of its rows describe subsystems scheduled for M6/M7.
+- [ ] Leakage matrix §4.1–4.6 green, **except the ten rows named in
+      `.github/scripts/matrix_coverage.py`'s `DEFERRED` list, each with the milestone that closes
+      it** — `S7`, `S9`, `S10`, `H2`, `H5`, `H6`, `D5`, `D6`, `D7`, `D8`. No other skips, and no
+      quarantined test.
+
+      **Rescoped 2026-09-10 by the repo owner (`ENC-999`); it read *zero skips* and was
+      unmeetable.** Each of the ten needs a subsystem that is a five-line stub scheduled for M6 or
+      M7 — AI, MCP, classification ceilings, barriers, legal hold, records, incidents, and a share
+      redemption that is deliberately unregistered. The criterion acquired that dependency one row
+      at a time, and nobody noticed until `ENC-987` read the set as a whole.
+
+      **The exception is enforced rather than waived**, which is the difference between this and
+      dropping the criterion: `matrix_coverage.py` fails if an eleventh row is marked untestable,
+      and fails again if one of the ten becomes testable and nobody retires it. An exception nobody
+      can grow and nobody can forget is a scope decision; one written in prose is an erosion.
 - [ ] Performance budgets met: metadata P95 < 300 ms, search P95 < 500 ms, 100k-item folder
       first paint < 400 ms.
 - [ ] Restore drill executed end to end and documented.

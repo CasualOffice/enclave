@@ -109,11 +109,11 @@ use enclave_files::{FileRepository, NewFile, Parent};
 use enclave_libraries::LibraryRepository;
 use enclave_storage::{BlobStore, CompletedPart, UploadTarget};
 use enclave_uploads::{
-    Completion, IssuedUpload, LoadedSession, NewUpload, ReportedContent, ScanHandoff, UploadIntent,
-    UploadLimits, UploadService, UploadSessionId,
+    Completion, DigestEvidence as UploadDigestEvidence, IssuedUpload, LoadedSession, NewUpload,
+    ReportedContent, ScanHandoff, UploadIntent, UploadLimits, UploadService, UploadSessionId,
 };
 use enclave_versions::{
-    CommittedVersion, NewVersion, VersionBump, VersionRepository, VersionService,
+    CommittedVersion, DigestEvidence, NewVersion, VersionBump, VersionRepository, VersionService,
     UNPROVISIONED_STORAGE_PROFILE,
 };
 use serde::{Deserialize, Serialize};
@@ -734,6 +734,16 @@ async fn promote(
         storage_profile_id: UNPROVISIONED_STORAGE_PROFILE,
         size_bytes,
         checksum_sha256: handoff.content.sha256_hex().to_owned(),
+        // Who has actually checked that digest against the stored bytes — translated here rather
+        // than defaulted, because the two vocabularies belong to different crates and a `From`
+        // impl between them would put the mapping somewhere neither crate's reader would look
+        // (`ENC-829`). `AwaitingContentScan` is a multipart upload no provider could hash; the
+        // antivirus pass settles it while streaming, and `migrations/0035` refuses to let the
+        // version become `AVAILABLE` until it does.
+        digest: match handoff.content.evidence() {
+            UploadDigestEvidence::ProviderConfirmed => DigestEvidence::provider(at),
+            UploadDigestEvidence::AwaitingContentScan => DigestEvidence::unconfirmed(),
+        },
         mime_type,
         bump: VersionBump::Major,
         created_by: handoff.created_by,

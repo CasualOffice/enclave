@@ -1,6 +1,6 @@
 # 11 — Operations
 
-> **Status:** Draft · **Version:** 1.5 · **Owner:** SRE · **Last updated:** 2026-09-09
+> **Status:** Draft · **Version:** 1.6 · **Owner:** SRE · **Last updated:** 2026-09-10
 > **Authoritative for:** SLOs, runbooks, backup/DR, key rotation, migrations, capacity, on-call.
 
 ## 1. Service level objectives
@@ -238,6 +238,44 @@ extractor version**, followed by the index rebuild in `§5.1`. Nothing in the ty
 this today; it is recorded here because the operator action and the code change have to travel
 together.
 
+### 3.3 The antivirus pass also confirms the whole-object digest (`ENC-829`)
+
+**The antivirus pass now does two jobs, and a version can be quarantined by either of them.** Beside
+the malware verdict it computes the SHA-256 of every version whose digest nothing has confirmed, and
+compares it with the digest declared when the upload completed. This costs no extra read — the pass
+was already streaming every byte, because a verdict is about the whole object — and it exists because
+no S3-compatible object store computes a whole-object digest for a **multipart** upload, so uploads
+above 16 MiB have no provider confirmation to record. `04-DATA-MODEL.md §12C` carries the schema and
+the reasoning.
+
+What an operator sees:
+
+| `file_versions.digest_state` | means |
+|---|---|
+| `PROVIDER` | the object store hashed the body at upload and agreed — every single-shot upload |
+| `ANTIVIRUS` | this pass hashed the stored object and agreed |
+| `UNCONFIRMED` | nobody has yet. **Not servable.** Normal for minutes after a large upload |
+| `MISMATCH` | the stored bytes are not the bytes that were declared. Quarantined |
+
+Two numbers appear in the pass's log line beside the verdict counts, and they mean different things:
+
+* **`digest_mismatched`** — versions whose bytes do not hash to their declared digest. Treat as a
+  storage incident, not a malware one: the causes are a truncated upload the store did not notice, a
+  storage fault, or a writer to the bucket that is not this product. Each one also emits an `error!`
+  line naming the tenant, file and version, with the declared size beside it — the digests themselves
+  are deliberately not logged. These versions are **not** re-offered for rescan: the object is
+  immutable, so the answer cannot change, and re-reading a multi-gigabyte object every tick to
+  reconfirm a permanent failure is pure cost.
+* **`digest_unconfirmed`** — versions the tenant's policy would have published, refused because the
+  engine stopped reading before the end of the object and there is therefore no whole-object hash.
+  Nothing is known to be wrong with the content. The usual cause is `antivirus.max_scan_bytes`
+  (default 2 GiB): an object above it is never sent to the engine, so it is never hashed either.
+  **A deployment that accepts uploads larger than `max_scan_bytes` should raise that ceiling**, or
+  those versions will be quarantined rather than published.
+
+A version stuck in `UNCONFIRMED` is the antivirus backlog wearing a different hat — the same
+`oldest_due` warning in §3.1 applies, because the digest is confirmed by the same pass.
+
 ## 4. Backup and restore
 
 | Store | Method | Frequency | Retention | RPO |
@@ -318,6 +356,20 @@ result quality and latency.
 5. Release (privileged, MFA, audited, reason recorded) or purge.
 6. Rescan sibling content from the same uploader in the same window.
 ```
+
+**Read `digest_state` before step 2.** A `QUARANTINED` version is not always a detection: since
+`ENC-829` the same pass quarantines a version whose stored bytes do not hash to the digest declared
+for them (`MISMATCH`), and one it could not hash at all and therefore may not publish
+(`UNCONFIRMED` — see §3.3). `av_status` still carries the engine's own verdict in both cases and is
+recorded honestly, so `MISMATCH` beside `av_status = 'CLEAN'` is exactly what it looks like: the
+content is not malware and is not the content that was uploaded.
+
+A `MISMATCH` follows a different runbook. There is nothing to release — the version cannot be made
+correct, because `checksum_sha256` is immutable and the bytes are not what it names — so the outcome
+is always *ask the uploader to upload it again, then purge*. Step 6 changes too: rescanning siblings
+is the wrong sweep, and the right one is to check whether other versions written to the same bucket
+in the same window are also mismatching, which is what distinguishes one bad upload from a storage
+fault.
 
 ### 5.4 Quota reconciliation
 

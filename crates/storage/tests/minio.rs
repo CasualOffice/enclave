@@ -535,49 +535,66 @@ async fn a_lying_client_cannot_store_an_object_under_a_digest_it_declared() {
     );
 }
 
-/// An upload above the multipart threshold, with a digest to verify, is refused before anything is
-/// signed — because this backend cannot verify one.
+/// **An upload above the multipart threshold, with a digest to verify, is issued** — and the
+/// session says plainly that the provider is not the one who will check it (`ENC-829`).
 ///
-/// MinIO computes a *composite* checksum for a multipart upload (a checksum of the part checksums,
-/// suffixed `-N`), which is not the whole-object SHA-256 a version row records; and it answers
-/// `InvalidArgument` to AWS's `FULL_OBJECT` checksum type, verified by hand against
-/// `RELEASE.2025-04-22`. So there is nothing to fall back on, and issuing the session anyway would
-/// mean recording an unverified digest — `ENC-820` again with more bytes. `ENC-829` is the row for
-/// restoring large uploads under a scheme the provider can confirm.
+/// This assertion was its own inverse until this task: the session was *refused*, which meant no
+/// deployment could accept an upload above 16 MiB and M1's 5 GB exit criterion could not be met.
+/// The reason has not changed and is not a bug in this store — MinIO computes a *composite*
+/// checksum for a multipart upload, a checksum of the part checksums suffixed `-N`, which is not
+/// the whole-object SHA-256 a version row records; and it answers `InvalidArgument: Invalid
+/// checksum provided.` to AWS's `FULL_OBJECT` type, probed by hand against both
+/// `RELEASE.2025-04-22` and `RELEASE.2025-09-07`.
 ///
-/// Paired with its control: the same store, the same size, no digest asked for, is issued. A store
-/// that refused every multipart upload would pass the first assertion alone.
+/// What changed is that there is now somewhere to *record* that the digest is unconfirmed
+/// (`file_versions.digest_state`, `migrations/0035`) and something that later confirms it — the
+/// antivirus pass, which streams every byte of every version regardless. So the store defers rather
+/// than refuses.
+///
+/// **The absence of a required checksum header is the whole assertion.** It is how a caller tells
+/// the two cases apart without being told: a single-shot session names `x-amz-checksum-sha256`
+/// among its required headers, and this one names nothing, because there is no header that would
+/// work. The single-shot control below is what makes that a difference rather than a fact about
+/// this store never signing anything.
 #[tokio::test]
 #[ignore = "requires the dev-stack MinIO and TEST_S3_*; CI runs it with --include-ignored"]
-async fn a_multipart_upload_whose_digest_cannot_be_verified_is_refused_before_a_url_exists() {
+async fn a_multipart_upload_defers_its_digest_instead_of_refusing_the_session() {
     let (config, _admin, secrets) = fixture().await;
     let threshold = config.multipart_threshold_bytes;
     let store = S3BlobStore::connect_and_verify(config, &secrets).await.expect("connect");
 
+    const DIGEST: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
     let size = threshold + 1;
-    let err = store
-        .create_upload(UploadRequest::new(new_key(), size).with_checksum_sha256(
-            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_owned(),
-        ))
-        .await
-        .expect_err("a digest this backend cannot verify must not produce a session");
-    assert!(
-        matches!(
-            err,
-            StorageError::ChecksumUnverifiable { content_length, threshold: reported }
-                if content_length == size && reported == threshold
-        ),
-        "got: {err:?}"
-    );
 
-    // The control: the same size, no digest asked for, is issued as usual. Internal writes take
-    // this path, and this process is its own client on them.
     let session = store
-        .create_upload(UploadRequest::new(new_key(), size))
+        .create_upload(UploadRequest::new(new_key(), size).with_checksum_sha256(DIGEST.to_owned()))
         .await
-        .expect("a multipart upload with no digest to verify is still issued");
-    assert!(matches!(session.target, UploadTarget::Multipart { .. }));
+        .expect("a multipart upload is no longer refused for carrying a digest — ENC-829");
+    assert!(
+        matches!(session.target, UploadTarget::Multipart { .. }),
+        "above the threshold this must still be a multipart session"
+    );
     store.abort_upload(&session).await.expect("abort_upload");
+
+    // The control, and the part that keeps `ENC-820` intact: *below* the threshold the same
+    // request still signs the digest into the URL and reports the header the client must send, so
+    // the provider verifies the body. A build that stopped signing it would pass every assertion
+    // above and quietly go back to recording digests nobody checked.
+    let single = store
+        .create_upload(
+            UploadRequest::new(new_key(), threshold).with_checksum_sha256(DIGEST.to_owned()),
+        )
+        .await
+        .expect("a single-shot upload with a digest is issued");
+    match &single.target {
+        UploadTarget::Single { required_headers, .. } => {
+            assert!(
+                required_headers.iter().any(|header| header.name == "x-amz-checksum-sha256"),
+                "the checksum header stopped being signed into a single-shot PUT: {required_headers:?}"
+            );
+        }
+        other => panic!("at the threshold this must be single-shot: {other:?}"),
+    }
 }
 
 /// A digest the store cannot parse is refused rather than dropped.
